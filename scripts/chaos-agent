@@ -113,7 +113,7 @@ case "$cmd" in
     chaos migrate
     chaos doctor
     chaos analyze "$repo"
-    chaos refresh "$repo" --all-features
+    chaos refresh "$repo"
     ;;
   update)
     repo="${1:-}"
