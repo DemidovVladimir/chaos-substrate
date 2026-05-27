@@ -30,11 +30,12 @@ Prefer the wrapper when registering this repository as an MCP server:
 
 ```sh
 scripts/chaos-agent claude-code-add local
-scripts/chaos-agent claude-code-add project
+scripts/chaos-agent claude-code-add project /absolute/path/to/target-repo
 ```
 
 Use `local` for private setup and `project` when a target repository should receive a shareable
-`.mcp.json`. Keep MCP on stdio and launch the release binary directly.
+`.mcp.json`. The optional path argument selects the Claude Code project directory; if omitted, the
+current working directory is used. Keep MCP on stdio and launch the release binary directly.
 
 ## Validation
 

@@ -170,8 +170,11 @@ scripts/chaos-agent claude-code-add local
 Use `project` instead of `local` when you want a team-shared `.mcp.json` in the target repository:
 
 ```sh
-scripts/chaos-agent claude-code-add project
+scripts/chaos-agent claude-code-add project /absolute/path/to/typescript-repo
 ```
+
+The path argument is the Claude Code project where `.mcp.json` should be written. If omitted, the
+wrapper uses the current working directory.
 
 For manual setup, copy `docs/claude_code_mcp.example.json` into the target repository as
 `.mcp.json` and set `CHAOS_BIN`, `CHAOS_CONFIG`, and `DATABASE_URL` for each developer machine.

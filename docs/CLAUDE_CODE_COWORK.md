@@ -35,8 +35,17 @@ Scopes:
 For a team-shared project config, run:
 
 ```sh
-scripts/chaos-agent claude-code-add project
+scripts/chaos-agent claude-code-add project /absolute/path/to/target-repo
 ```
+
+For example:
+
+```sh
+scripts/chaos-agent claude-code-add project /absolute/path/to/infra-repo
+```
+
+The second argument is the Claude Code project directory where `.mcp.json` should be written. If you
+omit it, the wrapper uses the current working directory.
 
 Claude Code will ask for approval before using project-scoped MCP servers from `.mcp.json`.
 

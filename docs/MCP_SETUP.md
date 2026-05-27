@@ -65,7 +65,14 @@ scripts/chaos-agent claude-code-add local
 ```
 
 Use `scripts/chaos-agent claude-code-add project` to create a project-scoped `.mcp.json` that can
-be shared with a team. See `docs/CLAUDE_CODE_COWORK.md`.
+be shared with a team. Pass the target project path to avoid relying on the current working
+directory:
+
+```sh
+scripts/chaos-agent claude-code-add project /absolute/path/to/repo
+```
+
+See `docs/CLAUDE_CODE_COWORK.md`.
 
 ## Validation
 

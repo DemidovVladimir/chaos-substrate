@@ -37,7 +37,7 @@ scripts/chaos-agent init /absolute/path/to/project
 scripts/chaos-agent update /absolute/path/to/project
 scripts/chaos-agent context /absolute/path/to/project "authorization and RBAC"
 scripts/chaos-agent explain /absolute/path/to/project "authorization and RBAC"
-scripts/chaos-agent claude-code-add project
+scripts/chaos-agent claude-code-add project /absolute/path/to/project
 ```
 
 Natural language mapping for agents:

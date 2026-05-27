@@ -14,7 +14,7 @@ Usage:
   scripts/chaos-agent update <repo-path>
   scripts/chaos-agent context <repo-path> <task>
   scripts/chaos-agent explain <repo-path> <feature-or-task>
-  scripts/chaos-agent claude-code-add [local|project|user]
+  scripts/chaos-agent claude-code-add [local|project|user] [claude-project-dir]
   scripts/chaos-agent mcp
 
 Environment:
@@ -156,6 +156,7 @@ case "$cmd" in
     ;;
   claude-code-add)
     scope="${1:-local}"
+    project_dir="${2:-$PWD}"
     case "$scope" in
       local|project|user) ;;
       *)
@@ -163,6 +164,10 @@ case "$cmd" in
         exit 2
         ;;
     esac
+    if [ ! -d "$project_dir" ]; then
+      printf 'Claude project directory does not exist: %s\n' "$project_dir" >&2
+      exit 2
+    fi
     if ! command -v claude >/dev/null 2>&1; then
       cat <<'CLAUDE'
 Claude Code CLI is not installed or is not on PATH.
@@ -173,10 +178,13 @@ CLAUDE
       exit 1
     fi
     ensure_binary
-    claude mcp add chaos-substrate \
-      --scope "$scope" \
-      --env "DATABASE_URL=${DATABASE_URL:-postgres://chaos:chaos@localhost:54329/chaos_substrate}" \
-      -- "$BIN" --config "$CONFIG" mcp
+    (
+      cd "$project_dir"
+      claude mcp add chaos-substrate \
+        --scope "$scope" \
+        --env "DATABASE_URL=${DATABASE_URL:-postgres://chaos:chaos@localhost:54329/chaos_substrate}" \
+        -- "$BIN" --config "$CONFIG" mcp
+    )
     ;;
   mcp)
     ensure_binary
