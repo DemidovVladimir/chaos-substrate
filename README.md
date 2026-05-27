@@ -110,7 +110,8 @@ websites are generated from focused queries with `feature-context --output-html`
 with machine-readable manifests embedded in generated feature websites. Use it before implementing a
 subfeature so related feature flows, code snippets, and page-backed relationships are included in the
 agent context. Feature manifests are generic: they include feature metadata, claims, graph modes,
-nodes, edges, evidence, and confidence fields.
+nodes, edges, story-step scopes, evidence, and confidence fields. Story steps should use explicit
+`node_ids` and optional `edge_ids`; broad graph highlights belong in modes.
 
 ## Graph Webpage
 

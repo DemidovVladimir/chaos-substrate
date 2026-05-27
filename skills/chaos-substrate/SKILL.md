@@ -82,6 +82,11 @@ docs/features_memory
 Do not scan the whole `docs/` tree for generated feature memory. Use `feature-context` or read only
 direct HTML files in `docs/features_memory` with `chaos-feature-manifest`.
 
+When creating or updating feature-memory websites, make story steps explicit. Each step should have
+curated `node_ids` and, when useful, `edge_ids` in the manifest. Do not derive a story-step
+highlight by transitive graph expansion from the first node. A step should highlight only the
+subflow it explains; broader architecture or security-boundary highlights belong in `modes`.
+
 ## Validation Commands
 
 ```sh

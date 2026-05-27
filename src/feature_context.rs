@@ -27,7 +27,7 @@ pub struct FeatureMatch {
     pub score: usize,
     pub claims: Vec<FeatureClaim>,
     pub modes: Vec<FeatureMode>,
-    pub story: Vec<String>,
+    pub story: Vec<FeatureStoryStep>,
     pub matched_nodes: Vec<FeatureContextNode>,
     pub related_edges: Vec<FeatureContextEdge>,
 }
@@ -46,7 +46,8 @@ pub struct FeatureManifest {
     pub modes: Vec<FeatureMode>,
     pub nodes: Vec<FeatureContextNode>,
     pub edges: Vec<FeatureContextEdge>,
-    pub story: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_story_steps")]
+    pub story: Vec<FeatureStoryStep>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -71,6 +72,18 @@ pub struct FeatureMode {
     pub id: String,
     pub title: String,
     pub node_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct FeatureStoryStep {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub node_ids: Vec<String>,
+    #[serde(default)]
+    pub edge_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -111,6 +124,32 @@ pub struct FeatureEvidence {
 
 fn default_schema_version() -> String {
     "legacy".to_string()
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum FeatureStoryStepInput {
+    Text(String),
+    Step(FeatureStoryStep),
+}
+
+fn deserialize_story_steps<'de, D>(deserializer: D) -> Result<Vec<FeatureStoryStep>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let inputs = Vec::<FeatureStoryStepInput>::deserialize(deserializer)?;
+    Ok(inputs
+        .into_iter()
+        .enumerate()
+        .map(|(idx, input)| match input {
+            FeatureStoryStepInput::Text(title) => FeatureStoryStep {
+                id: format!("step-{}", idx + 1),
+                title,
+                ..FeatureStoryStep::default()
+            },
+            FeatureStoryStepInput::Step(step) => step,
+        })
+        .collect())
 }
 
 pub fn load_feature_matches(
@@ -203,7 +242,12 @@ fn score_manifest(
             manifest.subtitle.as_str(),
             &claims_text,
             &modes_text,
-            &manifest.story.join(" "),
+            &manifest
+                .story
+                .iter()
+                .map(|step| format!("{} {} {}", step.title, step.body, step.node_ids.join(" ")))
+                .collect::<Vec<_>>()
+                .join(" "),
         ],
     ) * 3;
 
@@ -358,7 +402,8 @@ const hits=document.getElementById("hits");
 
 #[cfg(test)]
 mod tests {
-    use super::tokenize;
+    use super::{tokenize, FeatureManifest};
+    use serde_json::json;
 
     #[test]
     fn tokenizes_task_text() {
@@ -366,5 +411,45 @@ mod tests {
         assert!(tokens.contains(&"secure".to_string()));
         assert!(tokens.contains(&"icon".to_string()));
         assert!(!tokens.contains(&"store".to_string()));
+    }
+
+    #[test]
+    fn accepts_legacy_string_story_steps() {
+        let manifest: FeatureManifest = serde_json::from_value(json!({
+            "title": "Feature Map",
+            "subtitle": "Legacy story",
+            "nodes": [],
+            "edges": [],
+            "story": ["Start upload"]
+        }))
+        .unwrap();
+
+        assert_eq!(manifest.story[0].id, "step-1");
+        assert_eq!(manifest.story[0].title, "Start upload");
+        assert!(manifest.story[0].node_ids.is_empty());
+    }
+
+    #[test]
+    fn accepts_scoped_story_steps() {
+        let manifest: FeatureManifest = serde_json::from_value(json!({
+            "title": "Feature Map",
+            "subtitle": "Scoped story",
+            "nodes": [],
+            "edges": [],
+            "story": [{
+                "id": "request-key",
+                "title": "Client asks backend/KMS for a DEK",
+                "node_ids": ["uploader", "generate-dek", "kms-key"],
+                "edge_ids": ["uploader->generate-dek"]
+            }]
+        }))
+        .unwrap();
+
+        assert_eq!(manifest.story[0].id, "request-key");
+        assert_eq!(
+            manifest.story[0].node_ids,
+            vec!["uploader", "generate-dek", "kms-key"]
+        );
+        assert_eq!(manifest.story[0].edge_ids, vec!["uploader->generate-dek"]);
     }
 }

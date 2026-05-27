@@ -93,7 +93,15 @@ Shape:
   ],
   "nodes": [],
   "edges": [],
-  "story": []
+  "story": [
+    {
+      "id": "request-enters-api",
+      "title": "Request enters the API boundary",
+      "body": "The request reaches the backend enforcement point.",
+      "node_ids": ["auth-middleware", "permission-check"],
+      "edge_ids": ["auth-middleware->permission-check"]
+    }
+  ]
 }
 ```
 
@@ -101,6 +109,10 @@ Every node and edge should include:
 
 - `evidence`: source, extraction or curation method, and notes
 - `confidence`: a numeric confidence score from `0.0` to `1.0`
+
+Every story step should include explicit `node_ids` and, when useful, `edge_ids`. Do not infer a
+story-step highlight by expanding the graph from the first node. Step highlighting should show the
+curated subflow for that step only; broader views belong in `modes`.
 
 For manually curated built-in maps, evidence currently records `manual-feature-map`. Future
 query-generated maps should record extractor/query provenance more precisely.

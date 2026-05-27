@@ -36,6 +36,11 @@ Agents should use this manifest, not the visual DOM, when they need feature-page
 manifest schema is generic and contains feature metadata, claims, modes, nodes, edges, evidence, and
 confidence fields.
 
+Story steps in feature maps should carry explicit `node_ids` and optional `edge_ids`. Renderers
+should highlight exactly that curated step scope. They should not expand a story step through the
+graph automatically, because that turns a local flow step into an unreadable neighborhood. Use
+`modes` for intentionally broader graph views.
+
 ## 3. Generate Feature Pages
 
 Generate a focused feature explanation page from the current index:
