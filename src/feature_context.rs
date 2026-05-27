@@ -321,7 +321,7 @@ const CONTEXT_HTML: &str = r##"<!doctype html>
 :root{--bg:#07080d;--panel:#10131d;--panel2:#151927;--ink:#f5f7fb;--muted:#8d9ab8;--line:#293047;--cyan:#32e6ff;--pink:#ff3d9a;--amber:#ffb000;--green:#3cff98;--red:#ff5a4e}
 *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 16% 0%,rgba(50,230,255,.18),transparent 28%),radial-gradient(circle at 82% 10%,rgba(255,61,154,.16),transparent 24%),linear-gradient(180deg,#090a12,#05060a);color:var(--ink);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 header{padding:30px 34px 22px;border-bottom:1px solid var(--line);background:linear-gradient(90deg,rgba(16,19,29,.94),rgba(16,19,29,.72));box-shadow:0 20px 70px rgba(0,0,0,.45)}h1{margin:0 0 8px;font-size:clamp(30px,4vw,54px);letter-spacing:0;text-shadow:0 0 28px rgba(50,230,255,.28)}.muted{color:var(--muted)}
-main{padding:18px;display:grid;gap:18px}.grid{display:grid;grid-template-columns:minmax(360px,.8fr) minmax(520px,1.2fr);gap:18px}.panel{background:linear-gradient(180deg,rgba(21,25,39,.96),rgba(12,14,22,.96));border:1px solid var(--line);border-radius:8px;box-shadow:0 22px 80px rgba(0,0,0,.45),0 0 34px rgba(50,230,255,.08);padding:16px}h2{margin:0 0 12px;font-size:18px}.item{border:1px solid var(--line);border-radius:7px;background:#0b0e16;padding:12px;margin-top:10px}.item strong{color:var(--cyan)}.claim strong{color:var(--amber)}.meta{font-size:13px;color:var(--muted);line-height:1.45;overflow-wrap:anywhere}.pill{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:3px 8px;margin:4px 5px 0 0;color:var(--cyan);font-size:12px}pre{margin:10px 0 0;padding:14px;border-radius:8px;background:#030409;color:#d8e2ff;overflow:auto;font-size:12px;line-height:1.48;border:1px solid #242a3d;max-height:360px}
+main{padding:18px;display:grid;gap:18px}.grid{display:grid;grid-template-columns:minmax(360px,.8fr) minmax(520px,1.2fr);gap:18px}.panel{background:linear-gradient(180deg,rgba(21,25,39,.96),rgba(12,14,22,.96));border:1px solid var(--line);border-radius:8px;box-shadow:0 22px 80px rgba(0,0,0,.45),0 0 34px rgba(50,230,255,.08);padding:16px}h2{margin:0 0 12px;font-size:18px}.item{border:1px solid var(--line);border-radius:7px;background:#0b0e16;padding:12px;margin-top:10px}.item strong{color:var(--cyan)}.item.doc{border-color:rgba(255,176,0,.42);box-shadow:0 0 22px rgba(255,176,0,.08)}.item.doc strong{color:var(--amber)}.claim strong{color:var(--amber)}.meta{font-size:13px;color:var(--muted);line-height:1.45;overflow-wrap:anywhere}.pill{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:3px 8px;margin:4px 5px 0 0;color:var(--cyan);font-size:12px}.tag{display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:2px 7px;margin-right:6px;font-size:11px;font-weight:800;color:var(--green);text-transform:uppercase}.tag.doc{color:var(--amber)}pre{margin:10px 0 0;padding:14px;border-radius:8px;background:#030409;color:#d8e2ff;overflow:auto;font-size:12px;line-height:1.48;border:1px solid #242a3d;max-height:360px}
 @media(max-width:1000px){.grid{grid-template-columns:1fr}header{padding:24px 18px}main{padding:10px}}
 </style>
 </head>
@@ -332,11 +332,14 @@ main{padding:18px;display:grid;gap:18px}.grid{display:grid;grid-template-columns
 <div class="panel"><h2>Feature Matches</h2><div id="features"></div></div>
 <div class="panel"><h2>Matched Source</h2><div id="nodes"></div></div>
 </section>
+<section class="panel"><h2>Documentation Evidence</h2><div id="docs"></div></section>
 <section class="panel"><h2>Postgres Retrieval</h2><div id="hits"></div></section>
 </main>
 <script>
 const data=__CONTEXT__;
 function esc(v){return String(v??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;")}
+function isDoc(h){return h?.metadata?.source_priority==="supplemental"||h?.metadata?.kind==="documentation"}
+function sourceTag(h){return isDoc(h)?'<span class="tag doc">docs</span>':'<span class="tag">code</span>'}
 document.getElementById("task").textContent=data.task;
 const features=document.getElementById("features");
 if(!data.feature_matches.length){features.innerHTML='<div class="meta">No generated feature manifests matched. Use Postgres hits below as starting context.</div>'}
@@ -344,8 +347,11 @@ data.feature_matches.forEach(f=>{const el=document.createElement("div");el.class
 const nodes=document.getElementById("nodes");
 data.feature_matches.flatMap(f=>f.matched_nodes||[]).forEach(n=>{const el=document.createElement("div");el.className="item";el.innerHTML=`<strong>${esc(n.label)}</strong><div>${esc(n.role)}</div><div class="meta">${esc(n.file)} | lines ${esc(n.lines)} | confidence ${Math.round((n.confidence||0)*100)}%</div><pre><code>${esc(n.code)}</code></pre>`;nodes.appendChild(el)});
 if(!nodes.children.length){nodes.innerHTML='<div class="meta">No feature-manifest nodes matched.</div>'}
+const docs=document.getElementById("docs");
+(data.postgres?.hits||[]).filter(isDoc).forEach(h=>{const el=document.createElement("div");el.className="item doc";el.innerHTML=`<strong>${esc(h.file_path||"documentation")}</strong><div class="meta">${sourceTag(h)}lines ${esc(h.line_start)}-${esc(h.line_end)} | score ${(h.score||0).toFixed(3)}</div><pre><code>${esc(h.content)}</code></pre>`;docs.appendChild(el)});
+if(!docs.children.length){docs.innerHTML='<div class="meta">No matching docs were returned for this query. Re-index after adding Markdown/MDX docs, or raise --limit if the task is very code-specific.</div>'}
 const hits=document.getElementById("hits");
-(data.postgres?.hits||[]).forEach(h=>{const el=document.createElement("div");el.className="item";el.innerHTML=`<strong>${esc(h.file_path||"unknown file")}</strong><div class="meta">lines ${esc(h.line_start)}-${esc(h.line_end)} | score ${(h.score||0).toFixed(3)}</div><pre><code>${esc(h.content)}</code></pre>`;hits.appendChild(el)});
+(data.postgres?.hits||[]).forEach(h=>{const el=document.createElement("div");el.className=`item ${isDoc(h)?"doc":""}`;el.innerHTML=`<strong>${esc(h.file_path||"unknown file")}</strong><div class="meta">${sourceTag(h)}lines ${esc(h.line_start)}-${esc(h.line_end)} | score ${(h.score||0).toFixed(3)}</div><pre><code>${esc(h.content)}</code></pre>`;hits.appendChild(el)});
 </script>
 </body>
 </html>"##;

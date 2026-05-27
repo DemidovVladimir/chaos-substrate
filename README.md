@@ -188,6 +188,8 @@ Generated feature websites include a `<script type="application/json" id="chaos-
 block specifically for agents. The visual DOM stays for humans; the manifest is the stable machine
 contract. The command only scans direct `*.html` files in `docs/features_memory` by default and
 ignores pages without this manifest, so it does not load the whole `docs/` tree.
+Markdown/MDX docs indexed from the repository are shown separately as supplemental documentation
+evidence when they match the task.
 
 See [docs/FEATURE_CONTEXT.md](docs/FEATURE_CONTEXT.md) for the agent workflow.
 See [docs/PLUGIN_WORKFLOW.md](docs/PLUGIN_WORKFLOW.md) for the plugin wrapper workflow.

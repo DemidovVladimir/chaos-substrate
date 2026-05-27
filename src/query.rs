@@ -40,6 +40,7 @@ pub async fn query_repo(
     merge_hits(&mut hits, keyword_hits);
     rerank_hits(&mut hits, query);
     suppress_dependency_noise(&mut hits, query, limit as usize);
+    retain_supplemental_context(&mut hits, limit as usize);
     hits.truncate(limit as usize);
 
     let node_ids = hits.iter().filter_map(|h| h.node_id).collect::<Vec<_>>();
@@ -190,6 +191,30 @@ fn suppress_dependency_noise(hits: &mut Vec<SearchHit>, query: &str, _limit: usi
     }
 }
 
+fn is_supplemental_doc(hit: &SearchHit) -> bool {
+    hit.metadata
+        .get("source_priority")
+        .and_then(|v| v.as_str())
+        .is_some_and(|priority| priority == "supplemental")
+        || hit
+            .metadata
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .is_some_and(|kind| kind == "documentation")
+}
+
+fn retain_supplemental_context(hits: &mut Vec<SearchHit>, limit: usize) {
+    if limit == 0 || hits.len() <= limit || hits.iter().take(limit).any(is_supplemental_doc) {
+        return;
+    }
+    let Some(doc_idx) = hits.iter().position(is_supplemental_doc) else {
+        return;
+    };
+    let doc_hit = hits.remove(doc_idx);
+    let insert_at = limit.saturating_sub(1).min(hits.len());
+    hits.insert(insert_at, doc_hit);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,6 +253,25 @@ mod tests {
         assert!(hits
             .iter()
             .any(|hit| hit.metadata.get("dependency").is_some()));
+    }
+
+    #[test]
+    fn keeps_one_matching_supplemental_doc_in_limited_context() {
+        let mut hits = vec![
+            hit(json!({"kind": "function"}), 0.95),
+            hit(json!({"kind": "struct"}), 0.9),
+            hit(json!({"kind": "module"}), 0.85),
+            hit(
+                json!({"kind": "documentation", "source_priority": "supplemental"}),
+                0.4,
+            ),
+        ];
+
+        retain_supplemental_context(&mut hits, 3);
+        hits.truncate(3);
+
+        assert!(hits.iter().any(is_supplemental_doc));
+        assert_eq!(hits.len(), 3);
     }
 
     fn hit(metadata: serde_json::Value, score: f64) -> SearchHit {
