@@ -159,7 +159,26 @@ docs/claude_desktop_config.example.json
 
 Restart Claude Desktop after editing the config.
 
-## 9. Use From Claude
+## 9. Add MCP To Claude Code Or Cowork
+
+For Claude Code, use the wrapper:
+
+```sh
+scripts/chaos-agent claude-code-add local
+```
+
+Use `project` instead of `local` when you want a team-shared `.mcp.json` in the target repository:
+
+```sh
+scripts/chaos-agent claude-code-add project
+```
+
+For manual setup, copy `docs/claude_code_mcp.example.json` into the target repository as
+`.mcp.json` and set `CHAOS_BIN`, `CHAOS_CONFIG`, and `DATABASE_URL` for each developer machine.
+
+See `docs/CLAUDE_CODE_COWORK.md` for the full Claude Code / Cowork workflow.
+
+## 10. Use From Claude
 
 Ask Claude to use `chaos_analyze` to index and `chaos_query` to search.
 
@@ -188,7 +207,7 @@ Tool input:
 }
 ```
 
-## 10. Skills / Instructions
+## 11. Skills / Instructions
 
 Claude does not consume Codex `.codex-plugin` skills directly.
 
@@ -204,7 +223,7 @@ Codex-specific plugin/skill files remain available:
 - `.codex-plugin/plugin.json`
 - `skills/chaos-substrate/SKILL.md`
 
-## 11. Validate MCP Framing
+## 12. Validate MCP Framing
 
 Chaos Substrate MCP uses newline-delimited JSON-RPC over stdio. It must not emit `Content-Length` headers.
 
@@ -217,7 +236,7 @@ printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n' \
 
 Expected result: one JSON response line.
 
-## 12. Troubleshooting
+## 13. Troubleshooting
 
 If Claude cannot see the tool:
 

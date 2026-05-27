@@ -37,6 +37,7 @@ scripts/chaos-agent init /absolute/path/to/project
 scripts/chaos-agent update /absolute/path/to/project
 scripts/chaos-agent context /absolute/path/to/project "authorization and RBAC"
 scripts/chaos-agent explain /absolute/path/to/project "authorization and RBAC"
+scripts/chaos-agent claude-code-add project
 ```
 
 Natural language mapping for agents:
@@ -194,6 +195,7 @@ evidence when they match the task.
 
 See [docs/FEATURE_CONTEXT.md](docs/FEATURE_CONTEXT.md) for the agent workflow.
 See [docs/PLUGIN_WORKFLOW.md](docs/PLUGIN_WORKFLOW.md) for the plugin wrapper workflow.
+See [docs/CLAUDE_CODE_COWORK.md](docs/CLAUDE_CODE_COWORK.md) for Claude Code and Cowork setup.
 
 ## Storage
 

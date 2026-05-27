@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "chaos-substrate": {
+      "type": "stdio",
+      "command": "${CHAOS_BIN:-/absolute/path/to/chaos-substrate/target/release/chaos}",
+      "args": [
+        "--config",
+        "${CHAOS_CONFIG:-/absolute/path/to/chaos-substrate/chaos-substrate.toml}",
+        "mcp"
+      ],
+      "env": {
+        "DATABASE_URL": "${DATABASE_URL:-postgres://chaos:chaos@localhost:54329/chaos_substrate}"
+      }
+    }
+  }
+}

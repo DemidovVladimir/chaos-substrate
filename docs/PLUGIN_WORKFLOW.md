@@ -24,6 +24,7 @@ scripts/chaos-agent init /absolute/path/to/project
 scripts/chaos-agent update /absolute/path/to/project
 scripts/chaos-agent context /absolute/path/to/project "authorization and RBAC"
 scripts/chaos-agent explain /absolute/path/to/project "authorization and RBAC"
+scripts/chaos-agent claude-code-add local
 scripts/chaos-agent mcp
 ```
 
@@ -46,6 +47,9 @@ See `docs/OLLAMA_SETUP.md` for installation and troubleshooting.
   - Run `scripts/chaos-agent explain <repo-path> "X"`.
 - "Find context for implementing X"
   - Run `scripts/chaos-agent context <repo-path> "X"`.
+- "Use this with Claude Code or Claude Cowork"
+  - Run `scripts/chaos-agent claude-code-add local` for private setup or `project` for shared
+    `.mcp.json`.
 
 ## Outputs
 

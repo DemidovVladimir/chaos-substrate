@@ -54,6 +54,7 @@ Supported extracted knowledge:
 - `docs/GRAPH_WEBPAGE.md` - graph export tutorial
 - `docs/REFRESH_EXPORTS.md` - generated feature memory and Obsidian refresh tutorial
 - `docs/FEATURE_CONTEXT.md` - focused implementation context tutorial
+- `docs/CLAUDE_CODE_COWORK.md` - Claude Code / Cowork MCP setup
 - `Cargo.toml` - Rust package and dependencies
 - `src/main.rs` - CLI entrypoint
 - `src/models.rs` - persisted data model

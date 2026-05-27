@@ -14,11 +14,13 @@ Usage:
   scripts/chaos-agent update <repo-path>
   scripts/chaos-agent context <repo-path> <task>
   scripts/chaos-agent explain <repo-path> <feature-or-task>
+  scripts/chaos-agent claude-code-add [local|project|user]
   scripts/chaos-agent mcp
 
 Environment:
   CHAOS_CONFIG     Path to chaos-substrate.toml. Defaults to this repo's config.
   CHAOS_BIN        Path to chaos binary. Defaults to target/release/chaos.
+  DATABASE_URL     Database URL passed to Claude Code MCP. Defaults to local docker compose URL.
   CHAOS_NO_DOCKER  Set to 1 to skip docker compose up -d.
 USAGE
 }
@@ -151,6 +153,30 @@ case "$cmd" in
     output="$repo/docs/features_memory/$slug-explanation.html"
     chaos feature-context "$repo" "$task" --output-html "$output"
     printf '\nWrote %s\n' "$output"
+    ;;
+  claude-code-add)
+    scope="${1:-local}"
+    case "$scope" in
+      local|project|user) ;;
+      *)
+        usage
+        exit 2
+        ;;
+    esac
+    if ! command -v claude >/dev/null 2>&1; then
+      cat <<'CLAUDE'
+Claude Code CLI is not installed or is not on PATH.
+
+Install Claude Code first, then rerun:
+  scripts/chaos-agent claude-code-add local
+CLAUDE
+      exit 1
+    fi
+    ensure_binary
+    claude mcp add chaos-substrate \
+      --scope "$scope" \
+      --env "DATABASE_URL=${DATABASE_URL:-postgres://chaos:chaos@localhost:54329/chaos_substrate}" \
+      -- "$BIN" --config "$CONFIG" mcp
     ;;
   mcp)
     ensure_binary

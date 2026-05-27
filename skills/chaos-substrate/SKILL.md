@@ -33,6 +33,7 @@ Natural language mapping:
 - "Update index" or "refresh memory" -> `scripts/chaos-agent update <repo-path>`
 - "What context do I need for X?" -> `scripts/chaos-agent context <repo-path> "X"`
 - "Generate explanation for X feature" -> `scripts/chaos-agent explain <repo-path> "X"`
+- "Add this to Claude Code" or "use with Claude Cowork" -> `scripts/chaos-agent claude-code-add local` or `scripts/chaos-agent claude-code-add project`
 - "Use Ollama" or "set up local embeddings" -> `scripts/chaos-agent ollama-setup`, then rerun with `CHAOS_CONFIG=chaos-substrate.local.toml`
 - "Run MCP" -> `scripts/chaos-agent mcp`
 
@@ -59,6 +60,7 @@ scripts/chaos-agent init /absolute/path/to/project
 scripts/chaos-agent update /absolute/path/to/project
 scripts/chaos-agent context /absolute/path/to/project "authorization and RBAC"
 scripts/chaos-agent explain /absolute/path/to/project "authorization and RBAC"
+scripts/chaos-agent claude-code-add local
 scripts/chaos-agent mcp
 ```
 

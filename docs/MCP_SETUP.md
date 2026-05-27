@@ -58,6 +58,15 @@ Example shape:
 
 Use the exact subcommand exposed by the current CLI if it differs from `mcp`.
 
+For Claude Code, prefer:
+
+```sh
+scripts/chaos-agent claude-code-add local
+```
+
+Use `scripts/chaos-agent claude-code-add project` to create a project-scoped `.mcp.json` that can
+be shared with a team. See `docs/CLAUDE_CODE_COWORK.md`.
+
 ## Validation
 
 ```sh

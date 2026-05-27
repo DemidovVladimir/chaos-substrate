@@ -20,8 +20,21 @@ cargo run -- doctor
 cargo run -- analyze /path/to/repo
 cargo run -- query /path/to/repo "question"
 cargo run -- graph /path/to/repo --output graph.html
+cargo run -- feature-context /path/to/repo "task"
 cargo run -- mcp
 ```
+
+## Claude Code / Cowork MCP
+
+Prefer the wrapper when registering this repository as an MCP server:
+
+```sh
+scripts/chaos-agent claude-code-add local
+scripts/chaos-agent claude-code-add project
+```
+
+Use `local` for private setup and `project` when a target repository should receive a shareable
+`.mcp.json`. Keep MCP on stdio and launch the release binary directly.
 
 ## Validation
 
