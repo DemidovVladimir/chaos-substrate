@@ -10,6 +10,7 @@ pub enum Language {
     TypeScript,
     JavaScript,
     Json,
+    Markdown,
 }
 
 impl Language {
@@ -19,6 +20,7 @@ impl Language {
             Self::TypeScript => "typescript",
             Self::JavaScript => "javascript",
             Self::Json => "json",
+            Self::Markdown => "markdown",
         }
     }
 }

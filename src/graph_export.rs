@@ -488,28 +488,11 @@ function inferTopic(node) {
     if (node.kind === 'dependency') return 'external imports';
     return 'workspace';
   }
-  if (parts[0] === 'desci-ecosystem') {
-    if (parts[1] === 'apps' && parts[2]) return `app: ${parts[2]}`;
-    if (parts[1] === 'packages' && parts[2]) return `package: ${parts[2]}`;
-    return 'desci-ecosystem';
-  }
-  if (parts[0] === 'desci-infra') {
-    if (parts[1] === 'lambda' && parts[2]) return `lambda: ${parts[2]}`;
-    if (parts[1] === 'lib' || parts[1] === 'bin') return 'infra cdk';
-    return 'desci-infra';
-  }
-  if (parts[0] === 'science.beach') {
-    if (parts[1] === 'src' && parts[2]) return `science.beach: ${parts[2]}`;
-    return 'science.beach';
-  }
-  if (parts[0] === 'studio-molecule') {
-    if (parts[1] === 'app' || parts[1] === 'components' || parts[1] === 'schemaTypes') return `studio: ${parts[1]}`;
-    return 'studio-molecule';
-  }
-  if (parts[0] === 'IPNFT') {
-    if (parts[1]) return `IPNFT: ${parts[1]}`;
-    return 'IPNFT';
-  }
+  if ((parts[0] === 'apps' || parts[0] === 'packages' || parts[0] === 'crates') && parts[1]) return `${parts[0]}: ${parts[1]}`;
+  if ((parts[0] === 'services' || parts[0] === 'lambdas' || parts[0] === 'lambda') && parts[1]) return `service: ${parts[1]}`;
+  if (parts[0] === 'docs') return parts[1] ? `docs: ${parts[1]}` : 'docs';
+  if (parts[0] === 'src') return parts[1] ? `src: ${parts[1]}` : 'src';
+  if (parts[0] === 'lib' || parts[0] === 'bin') return 'library';
   return parts[0];
 }
 

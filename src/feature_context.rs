@@ -356,8 +356,8 @@ mod tests {
 
     #[test]
     fn tokenizes_task_text() {
-        let tokens = tokenize("implement store nft icon in encrypted data room");
-        assert!(tokens.contains(&"nft".to_string()));
+        let tokens = tokenize("implement store icon in secure upload");
+        assert!(tokens.contains(&"secure".to_string()));
         assert!(tokens.contains(&"icon".to_string()));
         assert!(!tokens.contains(&"store".to_string()));
     }

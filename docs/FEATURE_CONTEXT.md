@@ -19,13 +19,13 @@ It does not read the whole `docs/` tree. By default it scans only direct `*.html
 ## Usage
 
 ```bash
-cargo run -- feature-context /absolute/path/to/repo "implement store nft icon"
+cargo run -- feature-context /absolute/path/to/repo "implement secure upload icon"
 ```
 
 With explicit paths and limits:
 
 ```bash
-cargo run -- feature-context /absolute/path/to/repo "implement store nft icon" \
+cargo run -- feature-context /absolute/path/to/repo "implement secure upload icon" \
   --features-dir /absolute/path/to/repo/docs/features_memory \
   --limit 10 \
   --feature-limit 3 \
@@ -54,9 +54,8 @@ The JSON response contains:
 
 ## Manifest Schema
 
-Generated feature pages use a generic schema. E2E encryption is only one feature instance; the same
-contract should also support Authorization/RBAC, billing, search, uploads, infrastructure, or other
-feature areas.
+Generated feature pages use a generic schema. The same contract should support Authorization/RBAC,
+billing, search, uploads, infrastructure, or other feature areas.
 
 Shape:
 

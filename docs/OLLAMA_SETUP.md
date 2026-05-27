@@ -74,7 +74,7 @@ cargo build --release
 ./target/release/chaos --config chaos-substrate.local.toml migrate
 ./target/release/chaos --config chaos-substrate.local.toml doctor
 ./target/release/chaos --config chaos-substrate.local.toml analyze /absolute/path/to/project
-./target/release/chaos --config chaos-substrate.local.toml refresh /absolute/path/to/project --all-features
+./target/release/chaos --config chaos-substrate.local.toml refresh /absolute/path/to/project
 ```
 
 For normal agent use, prefer the wrapper:

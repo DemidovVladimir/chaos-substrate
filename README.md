@@ -22,7 +22,7 @@ cargo run -- migrate
 cargo run -- doctor
 cargo run -- analyze /path/to/repo
 cargo run -- query /path/to/repo "where is the request handler validated?"
-cargo run -- feature-context /path/to/repo "implement store nft icon"
+cargo run -- feature-context /path/to/repo "implement secure upload icon"
 cargo run -- graph /path/to/repo --output graph.html
 cargo run -- obsidian /path/to/repo --output chaos-obsidian-vault
 cargo run -- refresh /path/to/repo
@@ -87,6 +87,7 @@ chaos mcp
 
 - Rust files and Cargo dependencies
 - TypeScript/JavaScript files, package.json dependencies/scripts, tsconfig/jsconfig files, AWS CDK apps/stacks/resources
+- Markdown/MDX docs as supplemental context with lower retrieval and graph weight than source code
 - files, functions, classes, interfaces, type aliases, enums, structs, traits, impls, modules, tests
 - source line ranges where available
 - contains/imports/depends-on/calls graph edges
@@ -102,16 +103,14 @@ Obsidian to browse topic notes, node notes, backlinks, outgoing/incoming edges, 
 graph view.
 
 `refresh` is the after-reindex command for project-local generated artifacts. It reads the current
-persisted graph from Postgres, regenerates the repository Obsidian vault, and refreshes known static
-feature websites that already exist. Use `--all-features` to create every built-in feature website
-template even when the page is missing.
+persisted graph from Postgres and regenerates the repository Obsidian vault. Feature explanation
+websites are generated from focused queries with `feature-context --output-html`.
 
 `feature-context` builds an implementation brief for an agent. It combines live Postgres retrieval
 with machine-readable manifests embedded in generated feature websites. Use it before implementing a
 subfeature so related feature flows, code snippets, and page-backed relationships are included in the
 agent context. Feature manifests are generic: they include feature metadata, claims, graph modes,
-nodes, edges, evidence, and confidence fields. E2E encryption is the current built-in example, not
-the schema boundary.
+nodes, edges, evidence, and confidence fields.
 
 ## Graph Webpage
 
@@ -166,12 +165,6 @@ cargo run -- refresh /absolute/path/to/repo
 By default this writes:
 
 - `/absolute/path/to/repo/chaos-obsidian-vault`
-- existing known feature pages in `/absolute/path/to/repo/docs/features_memory`
-
-For the encrypted data-room feature, the generated pages use a dark Blade Runner-inspired interface:
-
-- `docs/features_memory/e2e-encryption-feature-map.html`
-- `docs/features_memory/e2e-encryption-infra-map.html`
 
 See [docs/REFRESH_EXPORTS.md](docs/REFRESH_EXPORTS.md) for the command reference.
 
@@ -180,7 +173,7 @@ See [docs/REFRESH_EXPORTS.md](docs/REFRESH_EXPORTS.md) for the command reference
 Before implementing a related task, ask Chaos Substrate for focused context:
 
 ```bash
-cargo run -- feature-context /absolute/path/to/repo "implement store nft icon"
+cargo run -- feature-context /absolute/path/to/repo "implement secure upload icon"
 ```
 
 The command returns:

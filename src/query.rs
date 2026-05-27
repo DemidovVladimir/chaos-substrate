@@ -116,6 +116,14 @@ fn rerank_hits(hits: &mut [SearchHit], query: &str) {
         if hit.metadata.get("dependency").is_some() && !dependency_query {
             hit.score *= 0.25;
         }
+        if hit
+            .metadata
+            .get("source_priority")
+            .and_then(|v| v.as_str())
+            .is_some_and(|priority| priority == "supplemental")
+        {
+            hit.score *= 0.72;
+        }
         if hit.metadata.get("script").is_some() {
             hit.score *= 1.25;
         }

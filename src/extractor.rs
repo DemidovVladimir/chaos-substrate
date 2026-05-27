@@ -77,6 +77,17 @@ impl RustRepositoryExtractor {
                 self.extract_json_config(root, &path, repo_id, repo_node.id, &mut result)?;
                 continue;
             }
+            if markdown_language(&path).is_some() {
+                self.extract_markdown_file(
+                    root,
+                    &path,
+                    repo_id,
+                    commit_sha.clone(),
+                    repo_node.id,
+                    &mut result,
+                )?;
+                continue;
+            }
             if path.extension().and_then(|s| s.to_str()) == Some("rs") {
                 self.extract_rust_file(
                     root,
@@ -128,9 +139,66 @@ impl RustRepositoryExtractor {
                     || path.file_name().and_then(|s| s.to_str()) == Some("tsconfig.json")
                     || path.file_name().and_then(|s| s.to_str()) == Some("jsconfig.json")
                     || path.extension().and_then(|s| s.to_str()) == Some("rs")
+                    || markdown_language(path).is_some()
                     || js_ts_language(path).is_some()
             })
             .collect()
+    }
+
+    fn extract_markdown_file(
+        &self,
+        root: &Path,
+        path: &Path,
+        repo_id: Uuid,
+        commit_sha: Option<String>,
+        repo_node_id: Uuid,
+        result: &mut ExtractionResult,
+    ) -> Result<()> {
+        let content = fs::read_to_string(path)?;
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string();
+        let file = SourceFile {
+            id: Uuid::new_v4(),
+            repo_id,
+            commit_sha,
+            path: rel.clone(),
+            language: Language::Markdown,
+            content: content.clone(),
+            content_hash: hash(&content),
+            line_count: content.lines().count() as i32,
+        };
+        result.files.push(file.clone());
+
+        let file_node = file_node(repo_id, &file, &rel);
+        result.edges.push(edge(
+            repo_id,
+            repo_node_id,
+            file_node.id,
+            EdgeKind::Contains,
+            0.45,
+            0.8,
+            json!({"source_priority": "supplemental"}),
+        ));
+        result.chunks.push(chunk_for_node(
+            repo_id,
+            Some(file.id),
+            Some(file_node.id),
+            "documentation",
+            &format!("Documentation file: {rel}\n\n{content}"),
+            Some(1),
+            Some(file.line_count),
+            json!({
+                "kind": "documentation",
+                "file": rel,
+                "source_priority": "supplemental",
+                "guidance": "Documentation can add context but source code should be prioritized when they disagree."
+            }),
+        ));
+        result.nodes.push(file_node);
+        Ok(())
     }
 
     fn extract_cargo(
@@ -1081,6 +1149,13 @@ fn js_ts_language(path: &Path) -> Option<Language> {
     }
 }
 
+fn markdown_language(path: &Path) -> Option<Language> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "md" | "mdx" => Some(Language::Markdown),
+        _ => None,
+    }
+}
+
 fn is_js_ts_test_file(path: &str) -> bool {
     path.contains(".test.")
         || path.contains(".spec.")
@@ -1580,6 +1655,48 @@ mod tests {
             js_ts_language(Path::new("types.d.ts")),
             Some(Language::TypeScript)
         );
+    }
+
+    #[test]
+    fn extracts_markdown_as_supplemental_documentation() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("README.md"),
+            "# Project\n\nThis documentation may explain source behavior.\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("lib.rs"), "pub fn source_truth() {}\n").unwrap();
+
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor
+            .extract(dir.path(), Uuid::new_v4(), Some("test".into()))
+            .unwrap();
+
+        assert!(result
+            .files
+            .iter()
+            .any(|file| file.path == "README.md" && file.language == Language::Markdown));
+        let doc_chunk = result
+            .chunks
+            .iter()
+            .find(|chunk| chunk.chunk_type == "documentation")
+            .expect("documentation chunk");
+        assert_eq!(
+            doc_chunk
+                .metadata
+                .get("source_priority")
+                .and_then(|v| v.as_str()),
+            Some("supplemental")
+        );
+        assert!(result.edges.iter().any(|edge| {
+            edge.kind == EdgeKind::Contains
+                && edge.cost > 0.1
+                && edge
+                    .metadata
+                    .get("source_priority")
+                    .and_then(|v| v.as_str())
+                    == Some("supplemental")
+        }));
     }
 
     #[test]

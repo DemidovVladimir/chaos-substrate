@@ -79,7 +79,7 @@ enum Commands {
         #[arg(short, long, default_value = "chaos-obsidian-vault")]
         output: PathBuf,
     },
-    /// Refresh generated feature websites and the Obsidian vault from the persisted index.
+    /// Refresh generated Obsidian artifacts from the persisted index.
     Refresh {
         repo: String,
         #[arg(long)]

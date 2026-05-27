@@ -1,10 +1,10 @@
 {
   "mcpServers": {
     "chaos-substrate": {
-      "command": "/Users/vladimirdemidov/development/chaos-substrate/target/release/chaos",
+      "command": "/absolute/path/to/chaos-substrate/target/release/chaos",
       "args": [
         "--config",
-        "/Users/vladimirdemidov/development/chaos-substrate/chaos-substrate.toml",
+        "/absolute/path/to/chaos-substrate/chaos-substrate.toml",
         "mcp"
       ],
       "env": {

@@ -246,19 +246,13 @@ fn infer_topic(node: &GraphExportNode) -> String {
         };
     }
     match parts.as_slice() {
-        ["desci-ecosystem", "apps", app, ..] => format!("app: {app}"),
-        ["desci-ecosystem", "packages", package, ..] => format!("package: {package}"),
-        ["desci-ecosystem", ..] => "desci-ecosystem".into(),
-        ["desci-infra", "lambda", lambda, ..] => format!("lambda: {lambda}"),
-        ["desci-infra", "lib" | "bin", ..] => "infra cdk".into(),
-        ["desci-infra", ..] => "desci-infra".into(),
-        ["science.beach", "src", feature, ..] => format!("science.beach: {feature}"),
-        ["science.beach", ..] => "science.beach".into(),
-        ["studio-molecule", "app" | "components" | "schemaTypes", area, ..] => {
-            format!("studio: {area}")
-        }
-        ["studio-molecule", ..] => "studio-molecule".into(),
-        ["IPNFT", area, ..] => format!("IPNFT: {area}"),
+        ["apps" | "packages" | "crates", name, ..] => format!("{}: {name}", parts[0]),
+        ["services" | "lambdas" | "lambda", name, ..] => format!("service: {name}"),
+        ["docs", area, ..] => format!("docs: {area}"),
+        ["docs", ..] => "docs".into(),
+        ["src", area, ..] => format!("src: {area}"),
+        ["src", ..] => "src".into(),
+        ["lib" | "bin", ..] => "library".into(),
         [top, ..] => (*top).into(),
         [] => "workspace".into(),
     }
@@ -307,11 +301,11 @@ mod tests {
 
     #[test]
     fn infers_topics_from_workspace_paths() {
-        let first = node("desci-ecosystem/packages/client-sdk/src/index.ts");
-        assert_eq!(infer_topic(&first), "package: client-sdk");
+        let first = node("packages/client-sdk/src/index.ts");
+        assert_eq!(infer_topic(&first), "packages: client-sdk");
 
-        let second = node("desci-infra/lambda/desci-api-lambda/index.ts");
-        assert_eq!(infer_topic(&second), "lambda: desci-api-lambda");
+        let second = node("lambda/api/index.ts");
+        assert_eq!(infer_topic(&second), "service: api");
     }
 
     #[test]

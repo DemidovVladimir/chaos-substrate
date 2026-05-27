@@ -46,7 +46,7 @@ Example shape:
     "chaos-substrate": {
       "command": "cargo",
       "args": ["run", "--", "mcp"],
-      "cwd": "/Users/vladimirdemidov/development/chaos-substrate",
+      "cwd": "/absolute/path/to/chaos-substrate",
       "env": {
         "DATABASE_URL": "postgres://USER:PASSWORD@HOST:PORT/DB",
         "OPENAI_API_KEY": "..."
@@ -83,7 +83,7 @@ an MCP transport, HTTP API, or long-running browser service.
 For CLI-driven agent work, use `feature-context` before implementing related subfeatures:
 
 ```sh
-cargo run -- feature-context /absolute/path/to/repo "implement store nft icon"
+cargo run -- feature-context /absolute/path/to/repo "implement secure upload icon"
 ```
 
 This reads Postgres retrieval results and generated feature manifests from

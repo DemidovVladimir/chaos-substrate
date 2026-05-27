@@ -7,7 +7,7 @@ This guide installs Chaos Substrate as a local MCP server for Claude and uses it
 From Chaos Substrate:
 
 ```sh
-cd /Users/vladimirdemidov/development/chaos-substrate
+cd /absolute/path/to/chaos-substrate
 docker compose up -d
 ```
 
@@ -96,23 +96,23 @@ a web server or call the embedding provider.
 
 For a full walkthrough, see `docs/GRAPH_WEBPAGE.md`.
 
-## 7. Refresh Feature Memory
+## 7. Refresh Generated Views
 
-Generate or update the project-local feature-memory websites and Obsidian vault from the persisted
-index:
+Regenerate the project-local Obsidian vault from the persisted index:
 
 ```sh
-cargo run -- refresh /absolute/path/to/typescript-repo --all-features
+cargo run -- refresh /absolute/path/to/typescript-repo
 ```
 
-By default, feature websites are written to `docs/features_memory`. These pages are for humans, but
-they also include a `chaos-feature-manifest` JSON block for agents. This keeps generated feature
-memory separate from normal docs.
+Focused feature websites are generated with `feature-context --output-html` and should be written to
+`docs/features_memory`. These pages are for humans, but they also include a
+`chaos-feature-manifest` JSON block for agents. This keeps generated feature memory separate from
+normal docs.
 
 Before implementing a related task, ask for focused context:
 
 ```sh
-cargo run -- feature-context /absolute/path/to/typescript-repo "implement store nft icon"
+cargo run -- feature-context /absolute/path/to/typescript-repo "implement secure upload icon"
 ```
 
 The command combines Postgres retrieval with matching feature manifests. It scans only direct HTML
@@ -134,10 +134,10 @@ Example:
 {
   "mcpServers": {
     "chaos-substrate": {
-      "command": "/Users/vladimirdemidov/development/chaos-substrate/target/release/chaos",
+      "command": "/absolute/path/to/chaos-substrate/target/release/chaos",
       "args": [
         "--config",
-        "/Users/vladimirdemidov/development/chaos-substrate/chaos-substrate.toml",
+        "/absolute/path/to/chaos-substrate/chaos-substrate.toml",
         "mcp"
       ],
       "env": {

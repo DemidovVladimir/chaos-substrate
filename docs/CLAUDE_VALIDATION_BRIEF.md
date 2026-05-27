@@ -75,7 +75,7 @@ Supported extracted knowledge:
 From project root:
 
 ```sh
-cd /Users/vladimirdemidov/development/chaos-substrate
+cd /absolute/path/to/chaos-substrate
 cargo fmt --check
 cargo test
 cargo clippy --all-targets --all-features -- -D warnings
@@ -122,7 +122,7 @@ cargo run -- --config chaos-substrate.local.toml analyze /path/to/repo
 cargo run -- --config chaos-substrate.local.toml query /path/to/repo "where is request validation handled?"
 cargo run -- --config chaos-substrate.local.toml feature-context /path/to/repo "implement related feature"
 cargo run -- --config chaos-substrate.local.toml graph /path/to/repo --output graph.html
-cargo run -- --config chaos-substrate.local.toml refresh /path/to/repo --all-features
+cargo run -- --config chaos-substrate.local.toml refresh /path/to/repo
 ```
 
 Expected behavior:
