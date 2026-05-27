@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG="${CHAOS_CONFIG:-$ROOT/chaos-substrate.toml}"
+BIN="${CHAOS_BIN:-$ROOT/target/release/chaos}"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  scripts/chaos-agent doctor
+  scripts/chaos-agent ollama-setup
+  scripts/chaos-agent init <repo-path>
+  scripts/chaos-agent update <repo-path>
+  scripts/chaos-agent context <repo-path> <task>
+  scripts/chaos-agent explain <repo-path> <feature-or-task>
+  scripts/chaos-agent mcp
+
+Environment:
+  CHAOS_CONFIG     Path to chaos-substrate.toml. Defaults to this repo's config.
+  CHAOS_BIN        Path to chaos binary. Defaults to target/release/chaos.
+  CHAOS_NO_DOCKER  Set to 1 to skip docker compose up -d.
+USAGE
+}
+
+slugify() {
+  printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/-+/-/g'
+}
+
+ensure_binary() {
+  if [ ! -x "$BIN" ]; then
+    (cd "$ROOT" && cargo build --release)
+  fi
+}
+
+ensure_services() {
+  if [ "${CHAOS_NO_DOCKER:-0}" = "1" ]; then
+    return
+  fi
+  (cd "$ROOT" && docker compose up -d)
+}
+
+ollama_setup() {
+  if ! command -v ollama >/dev/null 2>&1; then
+    cat <<'OLLAMA'
+Ollama is not installed or is not on PATH.
+
+Install Ollama:
+  macOS / Windows: download from https://ollama.com/download
+  Linux:           curl -fsSL https://ollama.com/install.sh | sh
+
+After installing, start Ollama and rerun:
+  scripts/chaos-agent ollama-setup
+OLLAMA
+    return 1
+  fi
+
+  if ! curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1; then
+    cat <<'OLLAMA'
+Ollama CLI is installed, but the local server is not responding on http://localhost:11434.
+
+Start Ollama:
+  macOS / Windows: open the Ollama desktop app
+  Linux:           ollama serve
+
+Then rerun:
+  scripts/chaos-agent ollama-setup
+OLLAMA
+    return 1
+  fi
+
+  ollama pull nomic-embed-text
+  cat <<'OLLAMA'
+Ollama embedding model is ready.
+
+Use the local Ollama config:
+  CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent doctor
+  CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent init /absolute/path/to/project
+OLLAMA
+}
+
+chaos() {
+  "$BIN" --config "$CONFIG" "$@"
+}
+
+need_repo() {
+  if [ "${1:-}" = "" ]; then
+    usage
+    exit 2
+  fi
+}
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+  doctor)
+    ensure_binary
+    ensure_services
+    chaos migrate
+    chaos doctor
+    ;;
+  ollama-setup)
+    ollama_setup
+    ;;
+  init)
+    repo="${1:-}"
+    need_repo "$repo"
+    ensure_binary
+    ensure_services
+    chaos migrate
+    chaos doctor
+    chaos analyze "$repo"
+    chaos refresh "$repo" --all-features
+    ;;
+  update)
+    repo="${1:-}"
+    need_repo "$repo"
+    ensure_binary
+    ensure_services
+    chaos migrate
+    chaos analyze "$repo"
+    chaos refresh "$repo"
+    ;;
+  context)
+    repo="${1:-}"
+    task="${2:-}"
+    need_repo "$repo"
+    if [ "$task" = "" ]; then
+      usage
+      exit 2
+    fi
+    ensure_binary
+    chaos feature-context "$repo" "$task"
+    ;;
+  explain)
+    repo="${1:-}"
+    task="${2:-}"
+    need_repo "$repo"
+    if [ "$task" = "" ]; then
+      usage
+      exit 2
+    fi
+    ensure_binary
+    slug="$(slugify "$task")"
+    if [ "$slug" = "" ]; then
+      slug="feature-context"
+    fi
+    output="$repo/docs/features_memory/$slug-explanation.html"
+    chaos feature-context "$repo" "$task" --output-html "$output"
+    printf '\nWrote %s\n' "$output"
+    ;;
+  mcp)
+    ensure_binary
+    exec "$BIN" --config "$CONFIG" mcp
+    ;;
+  ""|-h|--help|help)
+    usage
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

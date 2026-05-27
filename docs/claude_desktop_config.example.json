@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "chaos-substrate": {
+      "command": "/Users/vladimirdemidov/development/chaos-substrate/target/release/chaos",
+      "args": [
+        "--config",
+        "/Users/vladimirdemidov/development/chaos-substrate/chaos-substrate.toml",
+        "mcp"
+      ],
+      "env": {
+        "DATABASE_URL": "postgres://chaos:chaos@localhost:54329/chaos_substrate"
+      }
+    }
+  }
+}

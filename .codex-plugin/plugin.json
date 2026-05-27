@@ -1,0 +1,22 @@
+{
+  "name": "chaos-substrate",
+  "version": "0.1.0",
+  "description": "Agent guidance and wrappers for using Chaos Substrate code knowledge memory in Rust, TypeScript, and JavaScript projects.",
+  "author": {
+    "name": "Chaos Substrate"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Chaos Substrate",
+    "shortDescription": "Index projects and generate feature memory.",
+    "longDescription": "Agent workflow and helper commands for initializing, updating, querying, and generating feature-memory websites with the Rust-only Chaos Substrate code knowledge memory.",
+    "developerName": "Chaos Substrate",
+    "category": "Productivity",
+    "capabilities": ["Write"],
+    "defaultPrompt": [
+      "Index this project with Chaos Substrate.",
+      "Update the Chaos Substrate index.",
+      "Generate a feature explanation website."
+    ]
+  }
+}

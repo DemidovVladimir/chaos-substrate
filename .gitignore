@@ -1,0 +1,12 @@
+/target/
+
+# Local runtime/config state
+.env
+.env.*
+chaos-substrate.toml
+*.dump
+
+# OS/editor noise
+.DS_Store
+*.swp
+*.swo
