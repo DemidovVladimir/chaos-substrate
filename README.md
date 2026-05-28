@@ -40,24 +40,35 @@ skills/chaos-substrate/SKILL.md
 bin/chaos-agent
 ```
 
-Install or load the plugin once per agent, then use the wrapper instead of raw Cargo commands:
+Install or load the plugin once per agent, then ask the agent to use Chaos Substrate from the target
+project:
+
+```text
+Use Chaos Substrate on this project and create an index plus explanation.
+Update the Chaos Substrate index.
+Generate a feature explanation website for authorization and RBAC.
+Find implementation context for authorization and RBAC.
+```
+
+The plugin skill maps those requests to the wrapper commands. Use the CLI directly only for
+debugging or agentless operation:
 
 ```bash
 scripts/chaos-agent bootstrap
 export PATH="$HOME/.local/bin:$PATH"
 chaos-agent onboard /absolute/path/to/project
-chaos-agent update /absolute/path/to/project
-chaos-agent context /absolute/path/to/project "authorization and RBAC"
 chaos-agent explain /absolute/path/to/project "authorization and RBAC"
-chaos-agent claude-code-add project /absolute/path/to/project
 ```
 
 Natural language mapping for agents:
 
-- "Set up Chaos here" -> `chaos-agent onboard <repo>`
-- "Go through the project and create sufficient index and explanation" -> `chaos-agent onboard <repo>`
-- "Update index" -> `chaos-agent update <repo>`
-- "Generate explanation for X feature" -> `chaos-agent explain <repo> "X"`
+- "Set up Chaos here" -> plugin intent: onboard this project.
+- "Go through the project and create sufficient index and explanation" -> plugin intent: create or refresh the project memory.
+- "Update index" -> plugin intent: refresh the existing memory.
+- "Generate explanation for X feature" -> plugin intent: create a focused feature-memory website.
+
+The corresponding implementation commands are `chaos-agent onboard`, `update`, `context`, and
+`explain`; users should not need to memorize them when the plugin is enabled.
 
 The wrapper builds the release binary if needed, starts the local Postgres container unless
 `CHAOS_NO_DOCKER=1` is set, runs migrations, analyzes the repository, refreshes the Obsidian vault,
@@ -83,8 +94,10 @@ Fast Ollama path:
 ```bash
 CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent bootstrap
 export PATH="$HOME/.local/bin:$PATH"
-CHAOS_CONFIG=chaos-substrate.local.toml chaos-agent onboard /absolute/path/to/project
 ```
+
+After bootstrap, use the plugin from the target project with natural requests such as "Use Chaos
+Substrate on this project and create an index plus explanation."
 
 See [docs/OLLAMA_SETUP.md](docs/OLLAMA_SETUP.md) for install, model pull, and troubleshooting steps.
 

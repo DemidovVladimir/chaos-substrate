@@ -34,19 +34,28 @@ export PATH="$HOME/.local/bin:$PATH"
 `bootstrap` calls `ollama-setup` automatically when the active config uses Ollama. It tries to start
 the local server and pull `nomic-embed-text` when Ollama is installed.
 
-## Per-Project Use
+## Project-Level Use
 
-From any Rust, TypeScript, or JavaScript project:
+From any Rust, TypeScript, or JavaScript project, talk to the agent after the plugin is enabled:
+
+```text
+Use Chaos Substrate on this project and create an index plus explanation.
+Update the Chaos Substrate index for this project.
+Generate a feature explanation website for authorization and RBAC.
+Find the implementation context I need before changing authorization and RBAC.
+```
+
+The plugin skill decides when to call `chaos-agent onboard`, `update`, `context`, or `explain`.
+Those commands are implementation details, not the normal human interface.
+
+Use the CLI directly only when you want to debug or run the workflow without an agent:
 
 ```bash
 chaos-agent onboard "$PWD"
-chaos-agent context "$PWD" "authorization and RBAC"
 chaos-agent explain "$PWD" "authorization and RBAC"
-chaos-agent update "$PWD"
 ```
 
-`onboard` writes portable `AGENTS.md` and `CLAUDE.md` sections, indexes the project, refreshes the
-Obsidian vault, and keeps generated feature pages under `docs/features_memory`.
+Generated project artifacts stay under `chaos-obsidian-vault/` and `docs/features_memory/`.
 
 ## Codex Plugin
 

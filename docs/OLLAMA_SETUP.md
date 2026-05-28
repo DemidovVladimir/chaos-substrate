@@ -85,8 +85,13 @@ For normal agent use, prefer the wrapper:
 ```bash
 CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent bootstrap
 export PATH="$HOME/.local/bin:$PATH"
-CHAOS_CONFIG=chaos-substrate.local.toml chaos-agent onboard /absolute/path/to/project
-CHAOS_CONFIG=chaos-substrate.local.toml chaos-agent explain /absolute/path/to/project "authorization and RBAC"
+```
+
+After bootstrap, use the plugin from the target project with natural requests such as:
+
+```text
+Use Chaos Substrate on this project and create an index plus explanation.
+Generate a feature explanation website for authorization and RBAC.
 ```
 
 `bootstrap`, `doctor`, `onboard`, `init`, and `update` all enforce Ollama readiness when the active

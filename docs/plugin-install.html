@@ -130,12 +130,11 @@ export PATH="$HOME/.local/bin:$PATH"</code></pre>
       </section>
 
       <section>
-        <h2>Per-Project Use</h2>
-        <pre><code>chaos-agent onboard "$PWD"
-chaos-agent context "$PWD" "authorization and RBAC"
-chaos-agent explain "$PWD" "authorization and RBAC"
-chaos-agent update "$PWD"</code></pre>
-        <p>Run these from the project you want to index. Generated websites stay under <code>docs/features_memory</code>.</p>
+        <h2>Project-Level Use</h2>
+        <pre><code>Use Chaos Substrate on this project and create an index plus explanation.
+Generate a feature explanation website for authorization and RBAC.
+Find implementation context for authorization and RBAC.</code></pre>
+        <p>Ask the agent naturally after the plugin is enabled. The plugin skill chooses the wrapper command; direct CLI use is for debugging.</p>
       </section>
 
       <section class="wide">

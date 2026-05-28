@@ -36,7 +36,7 @@ The plugin wrapper can start this repository's Docker Compose stack and can try 
 pull the configured model. It cannot install Docker, install the Ollama app, or create OpenAI
 credentials.
 
-## Agent Commands
+## Agent Workflow
 
 From the Chaos Substrate plugin checkout, bootstrap once:
 
@@ -45,14 +45,21 @@ scripts/chaos-agent bootstrap
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Then use the same command from any target project:
+Then, from a target project, use natural agent requests:
+
+```text
+Use Chaos Substrate on this project and create an index plus explanation.
+Update the Chaos Substrate index.
+Find implementation context for authorization and RBAC.
+Generate a feature explanation website for authorization and RBAC.
+```
+
+The plugin skill chooses the underlying wrapper command. Direct CLI use is for debugging or
+agentless operation:
 
 ```bash
-chaos-agent onboard /absolute/path/to/project
-chaos-agent update /absolute/path/to/project
-chaos-agent context /absolute/path/to/project "authorization and RBAC"
-chaos-agent explain /absolute/path/to/project "authorization and RBAC"
-chaos-agent claude-code-add local /absolute/path/to/project
+chaos-agent onboard "$PWD"
+chaos-agent explain "$PWD" "authorization and RBAC"
 ```
 
 For local Ollama embeddings:
@@ -60,21 +67,23 @@ For local Ollama embeddings:
 ```bash
 CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent bootstrap
 export PATH="$HOME/.local/bin:$PATH"
-CHAOS_CONFIG=chaos-substrate.local.toml chaos-agent onboard /absolute/path/to/project
 ```
+
+After that, use the same natural agent requests from the target project. The plugin will run
+`chaos-agent onboard` or related commands with the active config.
 
 See `docs/OLLAMA_SETUP.md` for installation and troubleshooting.
 
 ## Natural Language Mapping
 
 - "Go through the project and create sufficient index and explanation"
-  - Run `chaos-agent onboard <repo-path>` for first setup.
+  - Plugin intent: create or refresh the project memory. Implementation command: `chaos-agent onboard <repo-path>` for first setup.
 - "Update index"
-  - Run `chaos-agent update <repo-path>`.
+  - Plugin intent: refresh the existing memory. Implementation command: `chaos-agent update <repo-path>`.
 - "Generate explanation for X feature"
-  - Run `chaos-agent explain <repo-path> "X"`.
+  - Plugin intent: produce a focused feature-memory website. Implementation command: `chaos-agent explain <repo-path> "X"`.
 - "Find context for implementing X"
-  - Run `chaos-agent context <repo-path> "X"`.
+  - Plugin intent: return source-grounded implementation context. Implementation command: `chaos-agent context <repo-path> "X"`.
 - "Use this with Claude Code or Claude Cowork"
   - Run `chaos-agent claude-code-add local <repo-path>` for private setup or `project` for shared
     `.mcp.json`.
