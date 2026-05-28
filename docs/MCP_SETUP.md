@@ -124,3 +124,5 @@ ignores pages without `chaos-feature-manifest`.
 For MCP-driven agent work, use `chaos_feature_context` with `repo` and `task`. For generated feature
 websites, the agent should read that evidence, compose the page and manifest, then call
 `chaos_write_feature_website` to write the static HTML from the host side.
+The writer rejects prose-only pages. HTML must include interactive graph/story/code/evidence markers
+and the manifest must include enough claims, modes, nodes, edges, and story steps to be useful.

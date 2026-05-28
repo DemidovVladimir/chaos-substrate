@@ -153,6 +153,8 @@ Those commands are implementation details, not the normal human interface.
 When MCP is available, the plugin should prefer `chaos_analyze`, `chaos_query`, and
 `chaos_feature_context` over shell commands. For feature websites, the agent should first use
 `chaos_feature_context`, then compose the page and manifest, then call `chaos_write_feature_website`.
+The writer rejects README-like pages; feature pages must include an interactive graph, story flow,
+architecture and flow sections, code context, evidence/uncertainty, and a populated manifest.
 
 Use the CLI directly only when you want to debug or run the workflow without an agent:
 

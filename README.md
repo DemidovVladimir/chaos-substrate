@@ -87,6 +87,8 @@ The corresponding implementation commands are `chaos-agent onboard`, `update`, `
 When MCP is available, agents should prefer `chaos_analyze`, `chaos_query`, and
 `chaos_feature_context`; feature websites should be LLM-composed from that evidence and written with
 `chaos_write_feature_website`. The CLI wrapper is the fallback and setup path.
+The writer rejects README-like pages; feature pages must include interactive graph/story/code
+navigation, architecture/flow sections, evidence, and a populated manifest.
 
 The wrapper builds the release binary if needed, starts the local Postgres container unless
 `CHAOS_NO_DOCKER=1` is set, runs migrations, analyzes the repository, refreshes the Obsidian vault,

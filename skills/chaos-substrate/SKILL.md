@@ -40,6 +40,21 @@ If MCP tools are available, prefer them over shelling out:
    a feature-specific website plus manifest. The LLM must decide the feature story, claims, nodes,
    and flow from evidence; the tool only writes the artifact.
 
+Feature websites must be interactive, not prettified Markdown. Before calling
+`chaos_write_feature_website`, the HTML must include:
+
+- `data-chaos-feature-website` root
+- `data-chaos-graph` graph surface with clickable `data-node-id` nodes
+- `data-chaos-story` with clickable `data-story-step` entries
+- `data-chaos-architecture` section
+- `data-chaos-flow` section
+- `data-chaos-code` source/code context section
+- `data-chaos-evidence` evidence/uncertainty section
+- JavaScript `addEventListener` handlers for graph/story/code navigation
+
+The manifest must include at least three claims, two modes, five nodes, three edges, and three story
+steps. If evidence is too thin for that, do not write a weak page; ask to index/query more first.
+
 Do not tell the user "I only have chaos_query" if `chaos_feature_context` or
 `chaos_write_feature_website` is available. If the MCP server cannot write the website because of
 filesystem permissions, still return the feature context from MCP and say exactly that HTML

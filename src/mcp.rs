@@ -84,7 +84,7 @@ pub async fn run(config: Config) -> Result<()> {
                         },
                         {
                             "name": "chaos_write_feature_website",
-                            "description": "Write an LLM-composed static feature website into docs/features_memory with an embedded chaos-feature-manifest JSON block. Use after chaos_feature_context, not as a substitute for understanding the feature.",
+                            "description": "Write an LLM-composed interactive feature website into docs/features_memory with an embedded chaos-feature-manifest JSON block. Use after chaos_feature_context, not as a substitute for understanding the feature. HTML must include interactive graph, story flow, architecture, code, and evidence sections.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
@@ -273,6 +273,7 @@ fn write_llm_feature_website(
             "html must not include chaos-feature-manifest; pass the manifest argument and the tool will embed it"
         );
     }
+    validate_feature_website_contract(html, manifest)?;
     let page = format!(
         r#"<!doctype html>
 <html lang="en">
@@ -293,6 +294,54 @@ fn write_llm_feature_website(
     );
     fs::write(&output, page)?;
     Ok(output)
+}
+
+fn validate_feature_website_contract(html: &str, manifest: &Value) -> Result<()> {
+    let required_manifest = [
+        ("claims", 3usize),
+        ("modes", 2usize),
+        ("nodes", 5usize),
+        ("edges", 3usize),
+        ("story", 3usize),
+    ];
+    for (field, minimum) in required_manifest {
+        let count = manifest
+            .get(field)
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        if count < minimum {
+            anyhow::bail!(
+                "manifest.{field} must contain at least {minimum} items for an evidence-backed feature website; got {count}"
+            );
+        }
+    }
+
+    let required_html_markers = [
+        "data-chaos-feature-website",
+        "data-chaos-graph",
+        "data-node-id",
+        "data-chaos-story",
+        "data-story-step",
+        "data-chaos-architecture",
+        "data-chaos-flow",
+        "data-chaos-code",
+        "data-chaos-evidence",
+    ];
+    for marker in required_html_markers {
+        if !html.contains(marker) {
+            anyhow::bail!("html is missing required interactive feature website marker `{marker}`");
+        }
+    }
+
+    let lowercase = html.to_ascii_lowercase();
+    if !lowercase.contains("<script") || !html.contains("addEventListener") {
+        anyhow::bail!(
+            "html must include JavaScript interactivity with event listeners for graph/story/code navigation"
+        );
+    }
+
+    Ok(())
 }
 
 fn safe_slug(input: &str) -> String {
@@ -417,4 +466,45 @@ fn write_message(stdout: &mut std::io::Stdout, message: &Value) -> Result<()> {
     stdout.write_all(b"\n")?;
     stdout.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_manifest() -> Value {
+        json!({
+            "claims": [{}, {}, {}],
+            "modes": [{}, {}],
+            "nodes": [{}, {}, {}, {}, {}],
+            "edges": [{}, {}, {}],
+            "story": [{}, {}, {}]
+        })
+    }
+
+    #[test]
+    fn feature_website_contract_rejects_readme_like_html() {
+        let err = validate_feature_website_contract(
+            "<section><h1>Feature</h1></section>",
+            &valid_manifest(),
+        )
+        .expect_err("plain prose should not pass as a feature website");
+        assert!(err.to_string().contains("data-chaos-feature-website"));
+    }
+
+    #[test]
+    fn feature_website_contract_accepts_interactive_surface() {
+        let html = r#"
+          <main data-chaos-feature-website>
+            <section data-chaos-architecture></section>
+            <section data-chaos-flow></section>
+            <svg data-chaos-graph><g data-node-id="a"></g></svg>
+            <ol data-chaos-story><li data-story-step="one"></li></ol>
+            <pre data-chaos-code></pre>
+            <aside data-chaos-evidence></aside>
+          </main>
+          <script>document.querySelector('[data-node-id]').addEventListener('click', () => {});</script>
+        "#;
+        validate_feature_website_contract(html, &valid_manifest()).unwrap();
+    }
 }

@@ -116,6 +116,10 @@ During development, install or load this repository as the `chaos-substrate` plu
 the agent can use the `chaos-substrate` skill and the MCP tools exposed by `chaos-agent mcp`:
 `chaos_analyze`, `chaos_query`, `chaos_feature_context`, and `chaos_write_feature_website`.
 
+`chaos_write_feature_website` enforces the feature-page contract. It rejects prose-only pages that
+do not include an interactive graph, story flow, architecture/flow sections, code context, evidence
+panel, and a sufficiently populated manifest.
+
 ## Claude Code
 
 Claude Code uses `.claude-plugin/plugin.json` and root-level plugin components. Test locally with:
