@@ -12,8 +12,8 @@ scripts/chaos-agent bootstrap
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Use `chaos-substrate.local.toml` for Ollama, and make sure `ollama serve` plus
-`ollama pull nomic-embed-text` have been run.
+Use `chaos-substrate.local.toml` for Ollama. `chaos-agent ollama-setup` tries to start Ollama and
+pull `nomic-embed-text` automatically when Ollama is installed.
 
 ## 2. Add Chaos Substrate To Claude Code
 

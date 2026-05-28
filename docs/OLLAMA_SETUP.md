@@ -29,12 +29,12 @@ https://ollama.com/download
 macOS:
 
 - Download Ollama from `https://ollama.com/download`.
-- Open the app once so the local server starts.
+- The wrapper will try to open the Ollama app automatically when `chaos-agent ollama-setup` runs.
 
 Windows:
 
 - Download Ollama from `https://ollama.com/download`.
-- Open the app once so the local server starts.
+- Open the app once if `chaos-agent ollama-setup` cannot reach the local server.
 
 Linux:
 
@@ -47,6 +47,9 @@ Then start the server if it is not already running:
 ```bash
 ollama serve
 ```
+
+`chaos-agent ollama-setup` will try `systemctl` first and then `ollama serve` in the background on
+Linux, so this manual command is usually only needed when the local install blocks background start.
 
 ## 2. Pull The Embedding Model
 
@@ -91,7 +94,7 @@ CHAOS_CONFIG=chaos-substrate.local.toml chaos-agent explain /absolute/path/to/pr
 
 If `doctor` cannot connect to Ollama:
 
-- Confirm Ollama is running.
+- Run `chaos-agent ollama-setup`; it tries to start Ollama and pull `nomic-embed-text`.
 - Confirm `curl http://localhost:11434/api/tags` returns JSON.
 - Confirm `nomic-embed-text` is installed with `ollama list`.
 - Confirm `chaos-substrate.local.toml` has `provider = "ollama"` and `dimensions = 768`.

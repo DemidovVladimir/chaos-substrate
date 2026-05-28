@@ -30,8 +30,7 @@ Ollama:
 
 ```sh
 cp chaos-substrate.local.toml chaos-substrate.toml
-ollama serve
-ollama pull nomic-embed-text
+chaos-agent ollama-setup
 ```
 
 Do not use fake embeddings. If neither OpenAI nor Ollama is available, indexing should fail.

@@ -32,6 +32,9 @@ CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent bootstrap
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
+`ollama-setup` tries to start the local Ollama server and pull `nomic-embed-text` when Ollama is
+installed.
+
 ## Per-Project Use
 
 From any Rust, TypeScript, or JavaScript project:

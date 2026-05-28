@@ -125,7 +125,7 @@ are refreshable derived artifacts.
 ## Plugin Limits
 
 - The plugin can start this repository's Docker Compose stack, but it cannot install Docker itself.
-- The plugin can pull the configured Ollama model when Ollama is installed and running, but it
-  cannot install the Ollama desktop app.
+- The plugin can try to start Ollama and pull the configured model when the Ollama CLI/app is
+  installed, but it cannot install the Ollama desktop app.
 - The plugin can configure Claude Code MCP with `chaos-agent claude-code-add`, but Claude Code may
   still ask for approval before using project-scoped MCP servers.

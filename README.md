@@ -74,7 +74,7 @@ cargo build --release
 ./target/release/chaos --config chaos-substrate.toml mcp
 ```
 
-For Ollama, edit `chaos-substrate.toml` to use `provider = "ollama"`, set the model and dimensions, then make sure the model is available locally.
+For Ollama, edit `chaos-substrate.toml` to use `provider = "ollama"`, set the model and dimensions, then run `chaos-agent ollama-setup`.
 The Ollama provider calls `/api/embed`, so use an Ollama version/model that supports embedding generation.
 
 Fast Ollama path:

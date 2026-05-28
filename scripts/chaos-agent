@@ -49,6 +49,44 @@ ensure_services() {
   (cd "$ROOT" && docker compose up -d)
 }
 
+wait_for_ollama() {
+  attempts="${1:-30}"
+  while [ "$attempts" -gt 0 ]; do
+    if curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1; then
+      return 0
+    fi
+    attempts=$((attempts - 1))
+    sleep 1
+  done
+  return 1
+}
+
+start_ollama() {
+  if curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1; then
+    return 0
+  fi
+
+  os="$(uname -s 2>/dev/null || printf unknown)"
+  case "$os" in
+    Darwin)
+      if command -v open >/dev/null 2>&1; then
+        open -a Ollama >/dev/null 2>&1 || true
+      fi
+      ;;
+    Linux)
+      if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user start ollama >/dev/null 2>&1 || true
+        systemctl start ollama >/dev/null 2>&1 || true
+      fi
+      if ! curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1; then
+        nohup ollama serve >/tmp/chaos-substrate-ollama.log 2>&1 &
+      fi
+      ;;
+  esac
+
+  wait_for_ollama 30
+}
+
 install_agent() {
   bin_dir="${1:-${CHAOS_AGENT_BIN_DIR:-$HOME/.local/bin}}"
   mkdir -p "$bin_dir"
@@ -119,20 +157,20 @@ OLLAMA
     return 1
   fi
 
-  if ! curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1; then
+  if ! start_ollama; then
     cat <<'OLLAMA'
 Ollama CLI is installed, but the local server is not responding on http://localhost:11434.
 
-Start Ollama:
+The wrapper tried to start Ollama automatically.
+
+If it is still unavailable, start it manually and rerun:
   macOS / Windows: open the Ollama desktop app
   Linux:           ollama serve
-
-Then rerun:
-  chaos-agent ollama-setup
 OLLAMA
     return 1
   fi
 
+  printf 'Ollama server is running on http://localhost:11434\n'
   ollama pull nomic-embed-text
   cat <<'OLLAMA'
 Ollama embedding model is ready.
