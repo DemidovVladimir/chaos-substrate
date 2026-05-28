@@ -59,6 +59,10 @@ Use the Codex command for Codex. Use `claude --plugin-dir` for a Claude Code ses
 zip in Claude Desktop -> Cowork -> Customize -> Plugins. Only after the plugin is installed or
 loaded, from a target project, use natural agent requests:
 
+If Cowork only sees `chaos_analyze` and `chaos_query`, the uploaded package is stale. Rebuild the
+zip with `scripts/package-cowork-plugin` and upload it again; the MCP surface must include
+`chaos_feature_context`.
+
 ```text
 Use Chaos Substrate on this project and create an index plus explanation.
 Update the Chaos Substrate index.

@@ -25,6 +25,7 @@ Environment:
   CHAOS_CONFIG     Path to chaos-substrate.toml. Defaults to this repo's config.
   CHAOS_BIN        Path to chaos binary. Defaults to target/release/chaos.
   CHAOS_AGENT_BIN_DIR  Directory for install-agent. Defaults to ~/.local/bin.
+  CHAOS_FORCE_BUILD  Set to 1 to rebuild the release binary even if it exists.
   DATABASE_URL     Database URL passed to Claude Code MCP. Defaults to local docker compose URL.
   CHAOS_NO_DOCKER  Set to 1 to skip docker compose up -d.
 USAGE
@@ -37,9 +38,16 @@ slugify() {
 }
 
 ensure_binary() {
-  if [ ! -x "$BIN" ]; then
-    (cd "$ROOT" && cargo build --release >&2)
+  if [ -x "$BIN" ] && [ "${CHAOS_FORCE_BUILD:-0}" != "1" ]; then
+    changed="$(
+      find "$ROOT/src" "$ROOT/migrations" "$ROOT/Cargo.toml" "$ROOT/Cargo.lock" \
+        -newer "$BIN" -print -quit 2>/dev/null || true
+    )"
+    if [ "$changed" = "" ]; then
+      return
+    fi
   fi
+  (cd "$ROOT" && cargo build --release >&2)
 }
 
 config_value() {

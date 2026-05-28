@@ -26,6 +26,8 @@ scripts/package-cowork-plugin
 ```
 
 If the Claude CLI is installed, this validates the plugin package before creating the zip.
+The package also builds and includes `target/release/chaos`, so Cowork does not depend on a stale
+or missing release binary when exposing MCP tools.
 
 Upload this file in Claude Desktop -> Cowork -> Customize -> Plugins:
 
@@ -135,6 +137,10 @@ Use chaos_feature_context on this repository.
 Task: explain OCL across the project.
 If possible, write output_html to docs/features_memory/ocl-explanation.html.
 ```
+
+If Claude only uses `chaos_query` for a feature explanation, the plugin is stale or MCP is exposing
+the old two-tool surface. Rebuild and re-upload `dist/chaos-substrate-cowork-plugin.zip`, then verify
+the MCP tool list contains `chaos_feature_context`.
 
 Claude Cowork-style sandboxes may not be able to reach host Postgres or write project files
 directly. In that case, the agent should use the host MCP tools instead of claiming only the CLI can

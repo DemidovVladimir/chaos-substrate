@@ -78,6 +78,8 @@ dist/chaos-substrate-cowork-plugin.zip
 
 If the Claude CLI is installed, the package script runs `claude plugin validate` before writing the
 zip.
+The package script also builds and includes `target/release/chaos`, so the uploaded Cowork package
+contains the MCP server binary that exposes `chaos_feature_context`.
 
 In Claude Desktop:
 
