@@ -105,6 +105,9 @@ Find the implementation context I need before changing authorization and RBAC.
 
 The plugin skill decides when to call `chaos-agent onboard`, `update`, `context`, or `explain`.
 Those commands are implementation details, not the normal human interface.
+When MCP is available, the plugin should prefer `chaos_analyze`, `chaos_query`, and
+`chaos_feature_context` over shell commands. `chaos_feature_context` can also write the static HTML
+feature page when `output_html` is provided and the MCP server has filesystem access.
 
 Use the CLI directly only when you want to debug or run the workflow without an agent:
 

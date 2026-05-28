@@ -89,9 +89,9 @@ See `docs/OLLAMA_SETUP.md` for installation and troubleshooting.
 - "Update index"
   - Plugin intent: refresh the existing memory. Implementation command: `chaos-agent update <repo-path>`.
 - "Generate explanation for X feature"
-  - Plugin intent: produce a focused feature-memory website. Implementation command: `chaos-agent explain <repo-path> "X"`.
+  - Plugin intent: produce focused feature context and, when requested, a feature-memory website. MCP tool: `chaos_feature_context`. CLI fallback: `chaos-agent explain <repo-path> "X"`.
 - "Find context for implementing X"
-  - Plugin intent: return source-grounded implementation context. Implementation command: `chaos-agent context <repo-path> "X"`.
+  - Plugin intent: return source-grounded implementation context. MCP tool: `chaos_feature_context`. CLI fallback: `chaos-agent context <repo-path> "X"`.
 - "Use this with Claude Code or Claude Cowork"
   - Run `chaos-agent claude-code-add local <repo-path>` for private setup or `project` for shared
     `.mcp.json`.
@@ -104,7 +104,8 @@ Codex uses `.codex-plugin/plugin.json`. The manifest points to:
 - `mcpServers`: `./.mcp.json`
 
 During development, install or load this repository as the `chaos-substrate` plugin. Once enabled,
-the agent can use the `chaos-substrate` skill and the MCP tools exposed by `chaos-agent mcp`.
+the agent can use the `chaos-substrate` skill and the MCP tools exposed by `chaos-agent mcp`:
+`chaos_analyze`, `chaos_query`, and `chaos_feature_context`.
 
 ## Claude Code
 

@@ -77,6 +77,8 @@ Natural language mapping for agents:
 
 The corresponding implementation commands are `chaos-agent onboard`, `update`, `context`, and
 `explain`; users should not need to memorize them when the plugin is enabled.
+When MCP is available, agents should prefer `chaos_analyze`, `chaos_query`, and
+`chaos_feature_context`; the CLI wrapper is the fallback and setup path.
 
 The wrapper builds the release binary if needed, starts the local Postgres container unless
 `CHAOS_NO_DOCKER=1` is set, runs migrations, analyzes the repository, refreshes the Obsidian vault,
@@ -267,6 +269,7 @@ Tool:
 ```text
 chaos_analyze(repo_path)
 chaos_query(repo, question, limit)
+chaos_feature_context(repo, task, limit, feature_limit, nodes_per_feature, features_dir, output_html)
 ```
 
 See [docs/MCP_SETUP.md](docs/MCP_SETUP.md) and [docs/AGENT_VALIDATION.md](docs/AGENT_VALIDATION.md).

@@ -107,6 +107,19 @@ Or:
 Use chaos_query on this repository. Question: where is request authorization enforced?
 ```
 
+For feature explanations and website generation, prefer the MCP feature-context tool:
+
+```text
+Use chaos_feature_context on this repository.
+Task: explain OCL across the project.
+If possible, write output_html to docs/features_memory/ocl-explanation.html.
+```
+
+Claude Cowork-style sandboxes may not be able to reach host Postgres or write project files
+directly. In that case, the agent should use the host MCP tools instead of claiming only the CLI can
+do the work. If `output_html` cannot be written, it should still return the feature context and state
+that filesystem writing was blocked.
+
 For large output, Claude Code supports MCP output limit environment variables. If responses are
 truncated, start Claude Code with a higher limit, for example:
 
@@ -118,6 +131,7 @@ MAX_MCP_OUTPUT_TOKENS=50000 claude
 
 - Do not configure Chaos Substrate through `cargo run` in MCP settings; use the release binary.
 - Do not copy the skill into every project; load the Claude plugin or use `chaos-agent onboard`.
+- Do not reduce feature explanation to `chaos_query` only when `chaos_feature_context` is available.
 - Do not expose Chaos Substrate as HTTP just for Claude Code. Keep MCP on stdio.
 - Do not commit personal absolute paths, database dumps, or API keys.
 - Do not bypass embedder failures with fake vectors.

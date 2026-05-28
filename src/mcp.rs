@@ -1,6 +1,7 @@
 use crate::{
     embedding::{build_embedder, Embedder},
     extractor::{current_commit, RustRepositoryExtractor},
+    feature_context::{load_feature_matches, write_feature_context_html, FeatureContextResponse},
     query::query_repo,
     storage::Storage,
     Config,
@@ -9,7 +10,7 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::{
     io::{BufRead, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 pub async fn run(config: Config) -> Result<()> {
@@ -61,6 +62,23 @@ pub async fn run(config: Config) -> Result<()> {
                                     "limit": {"type": "integer", "default": 10}
                                 },
                                 "required": ["repo", "question"]
+                            }
+                        },
+                        {
+                            "name": "chaos_feature_context",
+                            "description": "Build focused implementation context for a feature or task. Reads Postgres retrieval plus generated feature-memory manifests, and can optionally write the static HTML explanation page.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo": {"type": "string"},
+                                    "task": {"type": "string"},
+                                    "limit": {"type": "integer", "default": 10},
+                                    "feature_limit": {"type": "integer", "default": 3},
+                                    "nodes_per_feature": {"type": "integer", "default": 8},
+                                    "features_dir": {"type": "string"},
+                                    "output_html": {"type": "string"}
+                                },
+                                "required": ["repo", "task"]
                             }
                         }
                     ]
@@ -132,6 +150,52 @@ async fn handle_tool_call(
                 .context("repository is not indexed")?;
             let answer = query_repo(storage, repo.id, embedder, question, limit).await?;
             Ok(tool_text(serde_json::to_string_pretty(&answer)?))
+        }
+        "chaos_feature_context" => {
+            let repo = args
+                .get("repo")
+                .and_then(Value::as_str)
+                .context("repo is required")?;
+            let task = args
+                .get("task")
+                .and_then(Value::as_str)
+                .context("task is required")?;
+            let limit = args.get("limit").and_then(Value::as_i64).unwrap_or(10);
+            let feature_limit = args
+                .get("feature_limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(3) as usize;
+            let nodes_per_feature = args
+                .get("nodes_per_feature")
+                .and_then(Value::as_u64)
+                .unwrap_or(8) as usize;
+            let repo = storage
+                .find_repository(repo)
+                .await?
+                .context("repository is not indexed")?;
+            let repo_root = PathBuf::from(&repo.root_path);
+            let features_dir = args
+                .get("features_dir")
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| repo_root.join("docs/features_memory"));
+            let postgres = query_repo(storage, repo.id, embedder, task, limit).await?;
+            let feature_matches =
+                load_feature_matches(task, &features_dir, feature_limit, nodes_per_feature)?;
+            let response = FeatureContextResponse {
+                task: task.to_string(),
+                postgres,
+                features_dir,
+                feature_matches,
+            };
+            let output_html = args.get("output_html").and_then(Value::as_str);
+            if let Some(output_html) = output_html {
+                write_feature_context_html(Path::new(output_html), &response)?;
+            }
+            Ok(tool_text(serde_json::to_string_pretty(&json!({
+                "wrote_html": output_html,
+                "context": response
+            }))?))
         }
         _ => anyhow::bail!("unknown tool: {name}"),
     }

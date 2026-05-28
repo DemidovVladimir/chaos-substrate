@@ -238,6 +238,8 @@ Use these surfaces together:
 - `docs/CLAUDE_VALIDATION_BRIEF.md` for validation and PRD review.
 - MCP `chaos_query` for live access to the persisted knowledge base.
 - MCP `chaos_analyze` for indexing/reindexing repositories.
+- MCP `chaos_feature_context` for feature explanations, implementation context, and optional HTML
+  feature-page generation.
 
 Codex-specific plugin files remain available:
 
