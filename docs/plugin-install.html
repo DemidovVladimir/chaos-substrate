@@ -124,9 +124,9 @@
     <div class="grid">
       <section>
         <h2>One-Time Setup</h2>
-        <pre><code>scripts/chaos-agent bootstrap
+        <pre><code>CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent bootstrap
 export PATH="$HOME/.local/bin:$PATH"</code></pre>
-        <p>Use this from the Chaos Substrate checkout. It installs the wrapper, builds the binary, starts Postgres, runs migrations, and checks the system.</p>
+        <p>Use this from the Chaos Substrate checkout. It installs the wrapper, starts Ollama when configured, builds the binary, starts Postgres, runs migrations, and checks the system.</p>
       </section>
 
       <section>

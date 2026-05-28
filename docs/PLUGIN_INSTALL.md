@@ -27,13 +27,12 @@ export PATH="$HOME/.local/bin:$PATH"
 For local embeddings:
 
 ```bash
-scripts/chaos-agent ollama-setup
 CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent bootstrap
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-`ollama-setup` tries to start the local Ollama server and pull `nomic-embed-text` when Ollama is
-installed.
+`bootstrap` calls `ollama-setup` automatically when the active config uses Ollama. It tries to start
+the local server and pull `nomic-embed-text` when Ollama is installed.
 
 ## Per-Project Use
 
@@ -104,6 +103,6 @@ Use `project` instead of `local` when the `.mcp.json` should be shared with team
 
 - Docker, if using the bundled Postgres/pgvector compose stack.
 - Ollama or OpenAI embeddings.
-- A pulled embedding model when using Ollama.
+- A reachable embedder; `bootstrap` pulls the local model when the active config uses Ollama.
 
 The plugin removes repeated manual wiring; it does not replace the database or embedding provider.

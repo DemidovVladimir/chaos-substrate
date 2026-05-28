@@ -42,6 +42,27 @@ ensure_binary() {
   fi
 }
 
+config_value() {
+  section="$1"
+  key="$2"
+  awk -v section="$section" -v key="$key" '
+    $0 ~ "^[[:space:]]*\\[" section "\\][[:space:]]*$" { in_section = 1; next }
+    $0 ~ "^[[:space:]]*\\[" { in_section = 0 }
+    in_section && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+      sub(/#.*/, "", $0)
+      sub(/^[^=]*=[[:space:]]*/, "", $0)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0)
+      gsub(/^"|"$/, "", $0)
+      print
+      exit
+    }
+  ' "$CONFIG" 2>/dev/null || true
+}
+
+embedding_provider() {
+  config_value embedding provider
+}
+
 ensure_services() {
   if [ "${CHAOS_NO_DOCKER:-0}" = "1" ]; then
     return
@@ -71,6 +92,9 @@ start_ollama() {
     Darwin)
       if command -v open >/dev/null 2>&1; then
         open -a Ollama >/dev/null 2>&1 || true
+      fi
+      if ! curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1; then
+        nohup ollama serve >/tmp/chaos-substrate-ollama.log 2>&1 &
       fi
       ;;
     Linux)
@@ -181,6 +205,25 @@ Use the local Ollama config:
 OLLAMA
 }
 
+ensure_embedder_ready() {
+  provider="$(embedding_provider)"
+  case "$provider" in
+    ollama)
+      ollama_setup
+      ;;
+    open_ai|openai)
+      if [ "${OPENAI_API_KEY:-}" = "" ]; then
+        cat <<'OPENAI' >&2
+OpenAI embeddings are configured, but OPENAI_API_KEY is not set.
+
+Set OPENAI_API_KEY or switch CHAOS_CONFIG to an Ollama config.
+OPENAI
+        return 1
+      fi
+      ;;
+  esac
+}
+
 chaos() {
   "$BIN" --config "$CONFIG" "$@"
 }
@@ -199,6 +242,7 @@ case "$cmd" in
   bootstrap)
     install_agent "${1:-${CHAOS_AGENT_BIN_DIR:-$HOME/.local/bin}}"
     ensure_binary
+    ensure_embedder_ready
     ensure_services
     chaos migrate
     chaos doctor
@@ -208,6 +252,7 @@ case "$cmd" in
     ;;
   doctor)
     ensure_binary
+    ensure_embedder_ready
     ensure_services
     chaos migrate
     chaos doctor
@@ -225,6 +270,7 @@ case "$cmd" in
     install_agent "${CHAOS_AGENT_BIN_DIR:-$HOME/.local/bin}"
     write_project_instructions "$repo"
     ensure_binary
+    ensure_embedder_ready
     ensure_services
     chaos migrate
     chaos doctor
@@ -235,6 +281,7 @@ case "$cmd" in
     repo="${1:-}"
     need_repo "$repo"
     ensure_binary
+    ensure_embedder_ready
     ensure_services
     chaos migrate
     chaos doctor
@@ -245,6 +292,7 @@ case "$cmd" in
     repo="${1:-}"
     need_repo "$repo"
     ensure_binary
+    ensure_embedder_ready
     ensure_services
     chaos migrate
     chaos analyze "$repo"

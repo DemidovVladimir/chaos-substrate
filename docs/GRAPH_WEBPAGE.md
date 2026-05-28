@@ -25,11 +25,10 @@ Ollama:
 
 ```sh
 cp chaos-substrate.local.toml chaos-substrate.toml
-ollama serve
-ollama pull nomic-embed-text
 ```
 
-See `docs/OLLAMA_SETUP.md` if Ollama is not installed or the model is missing.
+See `docs/OLLAMA_SETUP.md` if Ollama is not installed or the model is missing. For agent use,
+`chaos-agent bootstrap` performs the Ollama readiness step automatically.
 
 ## 3. Prepare The Database
 

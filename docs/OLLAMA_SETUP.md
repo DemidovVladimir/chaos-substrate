@@ -83,12 +83,15 @@ cargo build --release
 For normal agent use, prefer the wrapper:
 
 ```bash
-scripts/chaos-agent ollama-setup
 CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent bootstrap
 export PATH="$HOME/.local/bin:$PATH"
 CHAOS_CONFIG=chaos-substrate.local.toml chaos-agent onboard /absolute/path/to/project
 CHAOS_CONFIG=chaos-substrate.local.toml chaos-agent explain /absolute/path/to/project "authorization and RBAC"
 ```
+
+`bootstrap`, `doctor`, `onboard`, `init`, and `update` all enforce Ollama readiness when the active
+config uses `provider = "ollama"`. `doctor` also performs a real embedding probe, so it fails before
+printing success if the Ollama server cannot answer.
 
 ## Troubleshooting
 

@@ -52,7 +52,7 @@ Natural language mapping:
 - "What context do I need for X?" -> `$CHAOS_AGENT context <repo-path> "X"`
 - "Generate explanation for X feature" -> `$CHAOS_AGENT explain <repo-path> "X"`
 - "Add this to Claude Code" or "use with Claude Cowork" -> `$CHAOS_AGENT claude-code-add local <project-path>` or `$CHAOS_AGENT claude-code-add project <project-path>`. The path is the target Claude Code project where config should be applied.
-- "Use Ollama" or "set up local embeddings" -> `$CHAOS_AGENT ollama-setup`, then rerun with `CHAOS_CONFIG=/absolute/path/to/chaos-substrate/chaos-substrate.local.toml`
+- "Use Ollama" or "set up local embeddings" -> run with `CHAOS_CONFIG=/absolute/path/to/chaos-substrate/chaos-substrate.local.toml`; `$CHAOS_AGENT bootstrap`, `doctor`, `onboard`, `init`, and `update` enforce Ollama readiness.
 - "Run MCP" -> `$CHAOS_AGENT mcp`
 
 The wrapper can install itself onto `PATH` with `bootstrap` or `install-agent`. It will build the
@@ -126,9 +126,11 @@ For Ollama:
 export CHAOS_SUBSTRATE_HOME=/absolute/path/to/chaos-substrate
 export CHAOS_AGENT="$CHAOS_SUBSTRATE_HOME/bin/chaos-agent"
 
-"$CHAOS_AGENT" ollama-setup
 CHAOS_CONFIG="$CHAOS_SUBSTRATE_HOME/chaos-substrate.local.toml" "$CHAOS_AGENT" init "$PWD"
 ```
+
+`bootstrap`, `doctor`, `onboard`, `init`, and `update` call the Ollama readiness check
+automatically when the active config uses Ollama.
 
 If Ollama is missing, tell the user to install it from `https://ollama.com/download`. On Linux the
 official install command is usually `curl -fsSL https://ollama.com/install.sh | sh`. The default

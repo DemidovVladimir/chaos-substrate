@@ -74,13 +74,13 @@ cargo build --release
 ./target/release/chaos --config chaos-substrate.toml mcp
 ```
 
-For Ollama, edit `chaos-substrate.toml` to use `provider = "ollama"`, set the model and dimensions, then run `chaos-agent ollama-setup`.
+For Ollama, use `chaos-substrate.local.toml` or edit `chaos-substrate.toml` to use `provider = "ollama"`.
+`bootstrap` will run the Ollama readiness step before `doctor` or indexing.
 The Ollama provider calls `/api/embed`, so use an Ollama version/model that supports embedding generation.
 
 Fast Ollama path:
 
 ```bash
-scripts/chaos-agent ollama-setup
 CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent bootstrap
 export PATH="$HOME/.local/bin:$PATH"
 CHAOS_CONFIG=chaos-substrate.local.toml chaos-agent onboard /absolute/path/to/project
@@ -101,6 +101,8 @@ chaos obsidian <repo-or-path> --output chaos-obsidian-vault
 chaos refresh <repo-or-path>
 chaos mcp
 ```
+
+`doctor` checks Postgres and performs a real embedding probe against the configured provider.
 
 `analyze` extracts:
 

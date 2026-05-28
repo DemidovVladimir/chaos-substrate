@@ -30,10 +30,11 @@ chaos-substrate/
 Users still need local infrastructure:
 
 - Postgres with pgvector, normally via `docker compose up -d`
-- a real embedder, either OpenAI credentials or a reachable Ollama embedding model
+- a real embedder, either OpenAI credentials or Ollama installed locally
 
-The plugin wrapper can start this repository's Docker Compose stack. It cannot install Docker,
-download Ollama models, or create OpenAI credentials.
+The plugin wrapper can start this repository's Docker Compose stack and can try to start Ollama plus
+pull the configured model. It cannot install Docker, install the Ollama app, or create OpenAI
+credentials.
 
 ## Agent Commands
 
@@ -57,7 +58,6 @@ chaos-agent claude-code-add local /absolute/path/to/project
 For local Ollama embeddings:
 
 ```bash
-scripts/chaos-agent ollama-setup
 CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent bootstrap
 export PATH="$HOME/.local/bin:$PATH"
 CHAOS_CONFIG=chaos-substrate.local.toml chaos-agent onboard /absolute/path/to/project

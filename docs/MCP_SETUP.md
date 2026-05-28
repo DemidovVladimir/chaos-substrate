@@ -95,6 +95,8 @@ cargo run -- mcp
 ```
 
 The MCP process should remain attached to stdio. Do not wrap it in an HTTP server.
+`cargo run -- doctor` performs a real embedder probe; it should fail when the configured embedding
+provider is unreachable.
 
 ## Graph Export
 

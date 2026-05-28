@@ -108,6 +108,7 @@ async fn main() -> Result<()> {
             let storage = Storage::connect(&config.storage.database_url).await?;
             let health = storage.health().await?;
             let embedder = build_embedder(&config.embedding)?;
+            let probe = embedder.embed("chaos substrate doctor probe").await?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&json!({
@@ -115,7 +116,8 @@ async fn main() -> Result<()> {
                     "embedder": {
                         "provider": embedder.provider(),
                         "model": embedder.model_id(),
-                        "dimensions": embedder.dimensions()
+                        "dimensions": embedder.dimensions(),
+                        "probe_dimensions": probe.len()
                     }
                 }))?
             );
