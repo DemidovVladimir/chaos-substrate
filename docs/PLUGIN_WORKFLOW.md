@@ -51,10 +51,13 @@ Then install or load the plugin in the agent:
 ```bash
 codex plugin marketplace add /absolute/path/to/chaos-substrate
 claude --plugin-dir /absolute/path/to/chaos-substrate
+scripts/package-cowork-plugin
 ```
 
-Use the Codex command for Codex. Use the Claude command for a Claude Code session. Only after that,
-from a target project, use natural agent requests:
+Use the Codex command for Codex. Use `claude --plugin-dir` for a Claude Code session. Use
+`scripts/package-cowork-plugin` to create `dist/chaos-substrate-cowork-plugin.zip`, then upload that
+zip in Claude Desktop -> Cowork -> Customize -> Plugins. Only after the plugin is installed or
+loaded, from a target project, use natural agent requests:
 
 ```text
 Use Chaos Substrate on this project and create an index plus explanation.

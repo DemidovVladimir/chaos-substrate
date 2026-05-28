@@ -15,7 +15,28 @@ export PATH="$HOME/.local/bin:$PATH"
 Use `chaos-substrate.local.toml` for Ollama. `chaos-agent ollama-setup` tries to start Ollama and
 pull `nomic-embed-text` automatically when Ollama is installed.
 
-## 2. Add Chaos Substrate To Claude Code
+## 2. Install Chaos Substrate In Claude Cowork
+
+Cowork installs custom plugins from a file upload in the Claude Desktop UI.
+
+From the Chaos Substrate checkout:
+
+```sh
+scripts/package-cowork-plugin
+```
+
+If the Claude CLI is installed, this validates the plugin package before creating the zip.
+
+Upload this file in Claude Desktop -> Cowork -> Customize -> Plugins:
+
+```text
+dist/chaos-substrate-cowork-plugin.zip
+```
+
+After installation, type `/` or use the `+` button in Cowork and verify the Chaos Substrate skill is
+available.
+
+## 3. Add Chaos Substrate To Claude Code
 
 Chaos Substrate can be loaded as a Claude Code plugin:
 
@@ -60,7 +81,7 @@ omit it, the wrapper uses the current working directory.
 
 Claude Code will ask for approval before using project-scoped MCP servers from `.mcp.json`.
 
-## 3. Manual `.mcp.json`
+## 4. Manual `.mcp.json`
 
 If you prefer to manage the file directly, copy `docs/claude_code_mcp.example.json` into the target
 project as `.mcp.json` and replace the fallback paths.
@@ -74,7 +95,7 @@ export CHAOS_CONFIG=/absolute/path/to/chaos-substrate/chaos-substrate.toml
 export DATABASE_URL=postgres://chaos:chaos@localhost:54329/chaos_substrate
 ```
 
-## 4. Add Project Instructions
+## 5. Add Project Instructions
 
 Claude Code and Cowork-style agents should read project instructions from `CLAUDE.md`. In the target
 project, add a short section like this:
@@ -93,7 +114,7 @@ Use Chaos Substrate before non-trivial architecture, security, or feature work.
   graph expansion.
 ```
 
-## 5. Use From Claude
+## 6. Use From Claude
 
 After configuring MCP, ask Claude Code:
 
@@ -127,7 +148,7 @@ truncated, start Claude Code with a higher limit, for example:
 MAX_MCP_OUTPUT_TOKENS=50000 claude
 ```
 
-## 6. What Not To Do
+## 7. What Not To Do
 
 - Do not configure Chaos Substrate through `cargo run` in MCP settings; use the release binary.
 - Do not copy the skill into every project; load the Claude plugin or use `chaos-agent onboard`.

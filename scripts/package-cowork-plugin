@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DIST="$ROOT/dist"
+OUT="$DIST/chaos-substrate-cowork-plugin.zip"
+
+mkdir -p "$DIST"
+rm -f "$OUT"
+
+cd "$ROOT"
+
+if command -v claude >/dev/null 2>&1; then
+  claude plugin validate "$ROOT"
+fi
+
+zip -qr "$OUT" \
+  .claude-plugin \
+  .mcp.json \
+  bin \
+  skills \
+  scripts/chaos-agent \
+  scripts/package-cowork-plugin \
+  src \
+  migrations \
+  Cargo.toml \
+  Cargo.lock \
+  README.md \
+  docker-compose.yml \
+  chaos-substrate.example.toml \
+  chaos-substrate.local.toml \
+  docs/PLUGIN_INSTALL.md \
+  docs/PLUGIN_WORKFLOW.md \
+  docs/CLAUDE_CODE_COWORK.md \
+  docs/MCP_SETUP.md \
+  docs/OLLAMA_SETUP.md \
+  docs/FEATURE_CONTEXT.md \
+  docs/GRAPH_WEBPAGE.md
+
+printf 'Wrote %s\n' "$OUT"

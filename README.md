@@ -48,10 +48,13 @@ project:
 ```bash
 codex plugin marketplace add /absolute/path/to/chaos-substrate
 claude --plugin-dir /absolute/path/to/chaos-substrate
+scripts/package-cowork-plugin
 ```
 
-Use the Codex command to add the local Codex marketplace. Use the Claude command to load the plugin
-for a Claude Code session. After the plugin is installed or loaded, prompts like these become valid:
+Use the Codex command to add the local Codex marketplace. Use `claude --plugin-dir` to load the
+plugin for a Claude Code session. For Claude Cowork, run `scripts/package-cowork-plugin` and upload
+`dist/chaos-substrate-cowork-plugin.zip` from Claude Desktop -> Cowork -> Customize -> Plugins.
+After the plugin is installed or loaded, prompts like these become valid:
 
 ```text
 Use Chaos Substrate on this project and create an index plus explanation.

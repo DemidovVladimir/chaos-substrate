@@ -59,7 +59,41 @@ skills/chaos-substrate/SKILL.md
 .mcp.json
 ```
 
-## 4. Install Or Enable In Claude Code
+## 4. Install In Claude Cowork
+
+Cowork does not use `claude --plugin-dir`. For Cowork, build a plugin zip and upload it through the
+Claude Desktop UI.
+
+From the Chaos Substrate checkout:
+
+```bash
+scripts/package-cowork-plugin
+```
+
+This writes:
+
+```text
+dist/chaos-substrate-cowork-plugin.zip
+```
+
+If the Claude CLI is installed, the package script runs `claude plugin validate` before writing the
+zip.
+
+In Claude Desktop:
+
+1. Open the **Cowork** tab.
+2. Open **Customize** in the sidebar.
+3. Open **Plugins**.
+4. Use the upload option on the Plugins page.
+5. Select `dist/chaos-substrate-cowork-plugin.zip`.
+6. After installation, type `/` or use the `+` button and verify the Chaos Substrate skill is
+   available.
+
+Cowork custom plugin upload is the path for a local file package. Claude's public docs state that
+Cowork can install plugins from a file upload, and Claude Code docs state that zip archives are a
+supported plugin package form for local plugin testing.
+
+## 5. Install Or Enable In Claude Code
 
 For local testing, start Claude Code with the plugin directory:
 
@@ -99,7 +133,7 @@ chaos_query
 chaos_feature_context
 ```
 
-## 5. Use From A Project
+## 6. Use From A Project
 
 Only after the plugin is installed or loaded, open a Rust, TypeScript, or JavaScript project and ask
 the agent:

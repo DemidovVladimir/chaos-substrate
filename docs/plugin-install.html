@@ -138,8 +138,8 @@ codex plugin marketplace list</code></pre>
 
       <section>
         <h2>3. Load In Claude</h2>
-        <pre><code>claude --plugin-dir /absolute/path/to/chaos-substrate</code></pre>
-        <p>Verify the skill with <code>/chaos-substrate:chaos-substrate</code>. For marketplace install, use the repository's <code>.claude-plugin/marketplace.json</code>.</p>
+        <pre><code>scripts/package-cowork-plugin</code></pre>
+        <p>For Cowork, upload <code>dist/chaos-substrate-cowork-plugin.zip</code> in Claude Desktop -&gt; Cowork -&gt; Customize -&gt; Plugins. Claude Code can still use <code>claude --plugin-dir /absolute/path/to/chaos-substrate</code>.</p>
       </section>
 
       <section>
@@ -178,7 +178,7 @@ Find implementation context for authorization and RBAC.</code></pre>
       <section>
         <h2>Claude Code</h2>
         <pre><code>claude --plugin-dir /absolute/path/to/chaos-substrate</code></pre>
-        <p>The skill is available as <code>/chaos-substrate:chaos-substrate</code> after Claude loads the plugin. For explicit project MCP setup:</p>
+        <p>Claude Cowork uses the uploaded zip. Claude Code can use <code>--plugin-dir</code>. The skill is available as <code>/chaos-substrate:chaos-substrate</code> after Claude loads the plugin. For explicit project MCP setup:</p>
         <pre><code>chaos-agent claude-code-add local "$PWD"</code></pre>
       </section>
 

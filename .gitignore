@@ -1,4 +1,5 @@
 /target/
+/dist/*.zip
 
 # Local runtime/config state
 .env
