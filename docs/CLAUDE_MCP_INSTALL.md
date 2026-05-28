@@ -164,13 +164,13 @@ Restart Claude Desktop after editing the config.
 For Claude Code, use the wrapper:
 
 ```sh
-scripts/chaos-agent claude-code-add local
+chaos-agent claude-code-add local /absolute/path/to/typescript-repo
 ```
 
 Use `project` instead of `local` when you want a team-shared `.mcp.json` in the target repository:
 
 ```sh
-scripts/chaos-agent claude-code-add project /absolute/path/to/typescript-repo
+chaos-agent claude-code-add project /absolute/path/to/typescript-repo
 ```
 
 The path argument is the Claude Code project where `.mcp.json` should be written. If omitted, the

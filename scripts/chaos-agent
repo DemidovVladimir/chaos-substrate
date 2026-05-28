@@ -8,8 +8,12 @@ BIN="${CHAOS_BIN:-$ROOT/target/release/chaos}"
 usage() {
   cat <<'USAGE'
 Usage:
+  scripts/chaos-agent bootstrap
+  scripts/chaos-agent install-agent [bin-dir]
   scripts/chaos-agent doctor
   scripts/chaos-agent ollama-setup
+  scripts/chaos-agent onboard <repo-path>
+  scripts/chaos-agent project-instructions <repo-path>
   scripts/chaos-agent init <repo-path>
   scripts/chaos-agent update <repo-path>
   scripts/chaos-agent context <repo-path> <task>
@@ -20,6 +24,7 @@ Usage:
 Environment:
   CHAOS_CONFIG     Path to chaos-substrate.toml. Defaults to this repo's config.
   CHAOS_BIN        Path to chaos binary. Defaults to target/release/chaos.
+  CHAOS_AGENT_BIN_DIR  Directory for install-agent. Defaults to ~/.local/bin.
   DATABASE_URL     Database URL passed to Claude Code MCP. Defaults to local docker compose URL.
   CHAOS_NO_DOCKER  Set to 1 to skip docker compose up -d.
 USAGE
@@ -42,6 +47,61 @@ ensure_services() {
     return
   fi
   (cd "$ROOT" && docker compose up -d)
+}
+
+install_agent() {
+  bin_dir="${1:-${CHAOS_AGENT_BIN_DIR:-$HOME/.local/bin}}"
+  mkdir -p "$bin_dir"
+  ln -sf "$ROOT/scripts/chaos-agent" "$bin_dir/chaos-agent"
+  cat <<INSTALL
+Installed chaos-agent:
+  $bin_dir/chaos-agent -> $ROOT/scripts/chaos-agent
+
+If this directory is not on PATH, add:
+  export PATH="$bin_dir:\$PATH"
+INSTALL
+}
+
+append_managed_section() {
+  file="$1"
+  title="$2"
+  if [ -f "$file" ] && grep -q '<!-- chaos-substrate:start -->' "$file"; then
+    printf 'Chaos Substrate section already exists in %s\n' "$file"
+    return
+  fi
+  if [ -f "$file" ] && [ -s "$file" ]; then
+    printf '\n' >> "$file"
+  fi
+  cat >> "$file" <<EOF
+<!-- chaos-substrate:start -->
+## Chaos Substrate
+
+Use Chaos Substrate before non-trivial architecture, security, feature, or refactor work.
+
+- Prefer \`chaos-agent update "\$PWD"\` after code changes or before deep investigation.
+- Use \`chaos-agent context "\$PWD" "<task>"\` before implementation work.
+- Use \`chaos-agent explain "\$PWD" "<feature>"\` to generate a focused static feature page.
+- If MCP tools are available, use \`chaos_analyze\` to index and \`chaos_query\` for focused questions.
+- Treat source code as higher priority than docs if they disagree.
+- Read generated feature manifests in \`docs/features_memory/*.html\`; do not scan the whole docs tree.
+- Feature-map story steps must use explicit \`node_ids\` and optional \`edge_ids\`, not graph expansion.
+
+This section is intentionally portable. It assumes \`chaos-agent\` is on PATH.
+<!-- chaos-substrate:end -->
+EOF
+  printf 'Wrote Chaos Substrate section to %s (%s)\n' "$file" "$title"
+}
+
+write_project_instructions() {
+  repo="${1:-}"
+  need_repo "$repo"
+  if [ ! -d "$repo" ]; then
+    printf 'Project directory does not exist: %s\n' "$repo" >&2
+    exit 2
+  fi
+  repo="$(cd "$repo" && pwd)"
+  append_managed_section "$repo/AGENTS.md" "generic agents"
+  append_managed_section "$repo/CLAUDE.md" "Claude Code / Cowork"
 }
 
 ollama_setup() {
@@ -98,6 +158,16 @@ cmd="${1:-}"
 shift || true
 
 case "$cmd" in
+  bootstrap)
+    install_agent "${1:-${CHAOS_AGENT_BIN_DIR:-$HOME/.local/bin}}"
+    ensure_binary
+    ensure_services
+    chaos migrate
+    chaos doctor
+    ;;
+  install-agent)
+    install_agent "${1:-${CHAOS_AGENT_BIN_DIR:-$HOME/.local/bin}}"
+    ;;
   doctor)
     ensure_binary
     ensure_services
@@ -106,6 +176,22 @@ case "$cmd" in
     ;;
   ollama-setup)
     ollama_setup
+    ;;
+  project-instructions)
+    repo="${1:-}"
+    write_project_instructions "$repo"
+    ;;
+  onboard)
+    repo="${1:-}"
+    need_repo "$repo"
+    install_agent "${CHAOS_AGENT_BIN_DIR:-$HOME/.local/bin}"
+    write_project_instructions "$repo"
+    ensure_binary
+    ensure_services
+    chaos migrate
+    chaos doctor
+    chaos analyze "$repo"
+    chaos refresh "$repo"
     ;;
   init)
     repo="${1:-}"

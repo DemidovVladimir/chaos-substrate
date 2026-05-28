@@ -33,22 +33,26 @@ cargo run -- refresh /path/to/repo
 For normal agent use, prefer the plugin wrapper instead of raw Cargo commands:
 
 ```bash
-scripts/chaos-agent init /absolute/path/to/project
-scripts/chaos-agent update /absolute/path/to/project
-scripts/chaos-agent context /absolute/path/to/project "authorization and RBAC"
-scripts/chaos-agent explain /absolute/path/to/project "authorization and RBAC"
-scripts/chaos-agent claude-code-add project /absolute/path/to/project
+scripts/chaos-agent bootstrap
+export PATH="$HOME/.local/bin:$PATH"
+chaos-agent onboard /absolute/path/to/project
+chaos-agent update /absolute/path/to/project
+chaos-agent context /absolute/path/to/project "authorization and RBAC"
+chaos-agent explain /absolute/path/to/project "authorization and RBAC"
+chaos-agent claude-code-add project /absolute/path/to/project
 ```
 
 Natural language mapping for agents:
 
-- "Go through the project and create sufficient index and explanation" -> `scripts/chaos-agent init <repo>`
-- "Update index" -> `scripts/chaos-agent update <repo>`
-- "Generate explanation for X feature" -> `scripts/chaos-agent explain <repo> "X"`
+- "Set up Chaos here" -> `chaos-agent onboard <repo>`
+- "Go through the project and create sufficient index and explanation" -> `chaos-agent onboard <repo>`
+- "Update index" -> `chaos-agent update <repo>`
+- "Generate explanation for X feature" -> `chaos-agent explain <repo> "X"`
 
 The wrapper builds the release binary if needed, starts the local Postgres container unless
-`CHAOS_NO_DOCKER=1` is set, runs migrations, analyzes the repository, refreshes
-`docs/features_memory`, and can write a dark standalone feature-context explanation website.
+`CHAOS_NO_DOCKER=1` is set, runs migrations, analyzes the repository, refreshes the Obsidian vault,
+can write portable `AGENTS.md` / `CLAUDE.md` sections, and can write dark standalone
+feature-context explanation websites.
 
 For Claude MCP, build and launch the binary directly instead of using `cargo run`:
 
@@ -64,8 +68,9 @@ Fast Ollama path:
 
 ```bash
 scripts/chaos-agent ollama-setup
-CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent doctor
-CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent init /absolute/path/to/project
+CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent bootstrap
+export PATH="$HOME/.local/bin:$PATH"
+CHAOS_CONFIG=chaos-substrate.local.toml chaos-agent onboard /absolute/path/to/project
 ```
 
 See [docs/OLLAMA_SETUP.md](docs/OLLAMA_SETUP.md) for install, model pull, and troubleshooting steps.

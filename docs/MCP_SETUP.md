@@ -61,15 +61,14 @@ Use the exact subcommand exposed by the current CLI if it differs from `mcp`.
 For Claude Code, prefer:
 
 ```sh
-scripts/chaos-agent claude-code-add local
+chaos-agent claude-code-add local /absolute/path/to/repo
 ```
 
-Use `scripts/chaos-agent claude-code-add project` to create a project-scoped `.mcp.json` that can
-be shared with a team. Pass the target project path to avoid relying on the current working
-directory:
+Use `chaos-agent claude-code-add project` to create a project-scoped `.mcp.json` that can be shared
+with a team. Pass the target project path to avoid relying on the current working directory:
 
 ```sh
-scripts/chaos-agent claude-code-add project /absolute/path/to/repo
+chaos-agent claude-code-add project /absolute/path/to/repo
 ```
 
 See `docs/CLAUDE_CODE_COWORK.md`.

@@ -81,9 +81,10 @@ For normal agent use, prefer the wrapper:
 
 ```bash
 scripts/chaos-agent ollama-setup
-CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent doctor
-CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent init /absolute/path/to/project
-CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent explain /absolute/path/to/project "authorization and RBAC"
+CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent bootstrap
+export PATH="$HOME/.local/bin:$PATH"
+CHAOS_CONFIG=chaos-substrate.local.toml chaos-agent onboard /absolute/path/to/project
+CHAOS_CONFIG=chaos-substrate.local.toml chaos-agent explain /absolute/path/to/project "authorization and RBAC"
 ```
 
 ## Troubleshooting

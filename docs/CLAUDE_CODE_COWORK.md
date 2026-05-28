@@ -8,10 +8,8 @@ agent workflow.
 From the Chaos Substrate checkout:
 
 ```sh
-docker compose up -d
-cargo build --release
-./target/release/chaos --config chaos-substrate.toml migrate
-./target/release/chaos --config chaos-substrate.toml doctor
+scripts/chaos-agent bootstrap
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 Use `chaos-substrate.local.toml` for Ollama, and make sure `ollama serve` plus
@@ -23,7 +21,7 @@ Claude Code supports local stdio MCP servers through `claude mcp add`. The wrapp
 server for you:
 
 ```sh
-scripts/chaos-agent claude-code-add local
+chaos-agent claude-code-add local /absolute/path/to/target-repo
 ```
 
 Scopes:
@@ -35,13 +33,13 @@ Scopes:
 For a team-shared project config, run:
 
 ```sh
-scripts/chaos-agent claude-code-add project /absolute/path/to/target-repo
+chaos-agent claude-code-add project /absolute/path/to/target-repo
 ```
 
 For example:
 
 ```sh
-scripts/chaos-agent claude-code-add project /absolute/path/to/infra-repo
+chaos-agent claude-code-add project /absolute/path/to/infra-repo
 ```
 
 The second argument is the Claude Code project directory where `.mcp.json` should be written. If you
@@ -75,7 +73,7 @@ Use Chaos Substrate before non-trivial architecture, security, or feature work.
 
 - Index/update: ask for `chaos_analyze` on this repository.
 - Query: use `chaos_query` with a focused question before editing.
-- Feature context: prefer `scripts/chaos-agent context <repo> "<task>"` or generated
+- Feature context: prefer `chaos-agent context <repo> "<task>"` or generated
   `docs/features_memory/*.html` manifests when available.
 - Do not treat generated docs as source of truth when source code disagrees.
 - Feature-map story steps must use explicit `node_ids`/`edge_ids`; do not infer step scope by

@@ -20,11 +20,13 @@ Use the wrapper from the Chaos Substrate plugin/repo root:
 ```bash
 scripts/chaos-agent doctor
 scripts/chaos-agent ollama-setup
-scripts/chaos-agent init /absolute/path/to/project
-scripts/chaos-agent update /absolute/path/to/project
-scripts/chaos-agent context /absolute/path/to/project "authorization and RBAC"
-scripts/chaos-agent explain /absolute/path/to/project "authorization and RBAC"
-scripts/chaos-agent claude-code-add local /absolute/path/to/project
+scripts/chaos-agent bootstrap
+export PATH="$HOME/.local/bin:$PATH"
+chaos-agent onboard /absolute/path/to/project
+chaos-agent update /absolute/path/to/project
+chaos-agent context /absolute/path/to/project "authorization and RBAC"
+chaos-agent explain /absolute/path/to/project "authorization and RBAC"
+chaos-agent claude-code-add local /absolute/path/to/project
 scripts/chaos-agent mcp
 ```
 
@@ -32,7 +34,9 @@ For local Ollama embeddings:
 
 ```bash
 scripts/chaos-agent ollama-setup
-CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent init /absolute/path/to/project
+CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent bootstrap
+export PATH="$HOME/.local/bin:$PATH"
+CHAOS_CONFIG=chaos-substrate.local.toml chaos-agent onboard /absolute/path/to/project
 ```
 
 See `docs/OLLAMA_SETUP.md` for installation and troubleshooting.
@@ -40,16 +44,16 @@ See `docs/OLLAMA_SETUP.md` for installation and troubleshooting.
 ## Natural Language Mapping
 
 - "Go through the project and create sufficient index and explanation"
-  - Run `scripts/chaos-agent init <repo-path>`.
+  - Run `chaos-agent onboard <repo-path>` for first setup.
 - "Update index"
-  - Run `scripts/chaos-agent update <repo-path>`.
+  - Run `chaos-agent update <repo-path>`.
 - "Generate explanation for X feature"
-  - Run `scripts/chaos-agent explain <repo-path> "X"`.
+  - Run `chaos-agent explain <repo-path> "X"`.
 - "Find context for implementing X"
-  - Run `scripts/chaos-agent context <repo-path> "X"`.
+  - Run `chaos-agent context <repo-path> "X"`.
 - "Use this with Claude Code or Claude Cowork"
-  - Run `scripts/chaos-agent claude-code-add local <repo-path>` for private setup or `project` for
-    shared `.mcp.json`.
+  - Run `chaos-agent claude-code-add local <repo-path>` for private setup or `project` for shared
+    `.mcp.json`.
 
 ## Outputs
 
