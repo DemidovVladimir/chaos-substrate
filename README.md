@@ -2,7 +2,7 @@
 
 Persistent code knowledge memory for agents.
 
-The implementation is Rust-only code. It analyzes Rust, TypeScript, and JavaScript repositories, stores a source-grounded knowledge graph in Postgres, stores real embedding vectors in pgvector, and exposes hybrid query results through a CLI and stdio MCP server. It can also export a standalone `graph.html` page or an Obsidian vault for visual validation of the persisted graph.
+The implementation is Rust-only code. It analyzes Rust, Solidity, TypeScript, JavaScript, Markdown/MDX, JSON config, and text PDFs, stores a source-grounded knowledge graph in Postgres, stores real embedding vectors in pgvector, and exposes hybrid query results through a CLI and stdio MCP server. It can also export a standalone `graph.html` page or an Obsidian vault for visual validation of the persisted graph.
 
 ## Guarantees
 
@@ -142,8 +142,9 @@ chaos mcp
 `analyze` extracts:
 
 - Rust files and Cargo dependencies
+- Solidity contracts, interfaces, libraries, functions, constructors, events, modifiers, imports, and inheritance edges
 - TypeScript/JavaScript files, package.json dependencies/scripts, tsconfig/jsconfig files, AWS CDK apps/stacks/resources
-- Markdown/MDX docs as supplemental context with lower retrieval and graph weight than source code
+- Markdown/MDX docs and extractable text PDFs as supplemental context with lower retrieval and graph weight than source code
 - files, functions, classes, interfaces, type aliases, enums, structs, traits, impls, modules, tests
 - source line ranges where available
 - contains/imports/depends-on/calls graph edges
@@ -245,7 +246,7 @@ Generated feature websites include a `<script type="application/json" id="chaos-
 block specifically for agents. The visual DOM stays for humans; the manifest is the stable machine
 contract. The command only scans direct `*.html` files in `docs/features_memory` by default and
 ignores pages without this manifest, so it does not load the whole `docs/` tree.
-Markdown/MDX docs indexed from the repository are shown separately as supplemental documentation
+Markdown/MDX docs and extracted PDF text indexed from the repository are shown separately as supplemental documentation
 evidence when they match the task.
 
 See [docs/FEATURE_CONTEXT.md](docs/FEATURE_CONTEXT.md) for the agent workflow.

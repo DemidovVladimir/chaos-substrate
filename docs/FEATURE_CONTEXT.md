@@ -39,9 +39,9 @@ cargo run -- feature-context /absolute/path/to/repo "authorization and RBAC" \
   --output-html /absolute/path/to/repo/docs/features_memory/authorization-rbac-explanation.html
 ```
 
-The generated website separates code hits from supplemental documentation evidence. Markdown/MDX
-docs remain lower priority than source code, but matching docs are kept visible when they appear in
-the retrieval candidates.
+The generated website separates code hits from supplemental documentation evidence. Markdown/MDX and
+text PDF docs remain lower priority than source code, but matching docs are kept visible when they
+appear in the retrieval candidates.
 
 ## Output
 
@@ -49,7 +49,7 @@ The JSON response contains:
 
 - `postgres.hits`: semantic and keyword retrieval results
 - `postgres.context_paths`: graph paths between matched nodes
-- `postgres.hits[].metadata.source_priority`: `supplemental` for Markdown/MDX documentation hits
+- `postgres.hits[].metadata.source_priority`: `supplemental` for Markdown/MDX and PDF documentation hits
 - `feature_matches`: relevant generated feature pages
 - `feature_matches[].feature`: generic feature metadata such as id, title, domain, and summary
 - `feature_matches[].claims`: important claims with confidence and related nodes

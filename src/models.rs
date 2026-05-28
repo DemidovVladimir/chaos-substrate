@@ -11,6 +11,8 @@ pub enum Language {
     JavaScript,
     Json,
     Markdown,
+    Pdf,
+    Solidity,
 }
 
 impl Language {
@@ -21,6 +23,8 @@ impl Language {
             Self::JavaScript => "javascript",
             Self::Json => "json",
             Self::Markdown => "markdown",
+            Self::Pdf => "pdf",
+            Self::Solidity => "solidity",
         }
     }
 }

@@ -88,6 +88,29 @@ impl RustRepositoryExtractor {
                 )?;
                 continue;
             }
+            if solidity_language(&path).is_some() {
+                self.extract_solidity_file(
+                    root,
+                    &path,
+                    repo_id,
+                    commit_sha.clone(),
+                    repo_node.id,
+                    &mut symbol_names,
+                    &mut result,
+                )?;
+                continue;
+            }
+            if pdf_language(&path).is_some() {
+                self.extract_pdf_file(
+                    root,
+                    &path,
+                    repo_id,
+                    commit_sha.clone(),
+                    repo_node.id,
+                    &mut result,
+                )?;
+                continue;
+            }
             if path.extension().and_then(|s| s.to_str()) == Some("rs") {
                 self.extract_rust_file(
                     root,
@@ -140,6 +163,8 @@ impl RustRepositoryExtractor {
                     || path.file_name().and_then(|s| s.to_str()) == Some("jsconfig.json")
                     || path.extension().and_then(|s| s.to_str()) == Some("rs")
                     || markdown_language(path).is_some()
+                    || solidity_language(path).is_some()
+                    || pdf_language(path).is_some()
                     || js_ts_language(path).is_some()
             })
             .collect()
@@ -197,6 +222,66 @@ impl RustRepositoryExtractor {
                 "guidance": "Documentation can add context but source code should be prioritized when they disagree."
             }),
         ));
+        result.nodes.push(file_node);
+        Ok(())
+    }
+
+    fn extract_pdf_file(
+        &self,
+        root: &Path,
+        path: &Path,
+        repo_id: Uuid,
+        commit_sha: Option<String>,
+        repo_node_id: Uuid,
+        result: &mut ExtractionResult,
+    ) -> Result<()> {
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string();
+        let content = pdf_extract::extract_text(path).unwrap_or_default();
+        let line_count = content.lines().count().max(1) as i32;
+        let file = SourceFile {
+            id: Uuid::new_v4(),
+            repo_id,
+            commit_sha,
+            path: rel.clone(),
+            language: Language::Pdf,
+            content: content.clone(),
+            content_hash: hash(&content),
+            line_count,
+        };
+        result.files.push(file.clone());
+
+        let file_node = file_node(repo_id, &file, &rel);
+        result.edges.push(edge(
+            repo_id,
+            repo_node_id,
+            file_node.id,
+            EdgeKind::Contains,
+            0.55,
+            0.75,
+            json!({"source_priority": "supplemental", "extractor": "pdf_text"}),
+        ));
+        if !content.trim().is_empty() {
+            result.chunks.push(chunk_for_node(
+                repo_id,
+                Some(file.id),
+                Some(file_node.id),
+                "pdf_documentation",
+                &format!("PDF document: {rel}\n\n{content}"),
+                Some(1),
+                Some(line_count),
+                json!({
+                    "kind": "documentation",
+                    "file": rel,
+                    "source_priority": "supplemental",
+                    "format": "pdf",
+                    "guidance": "PDF text can add context but source code should be prioritized when they disagree."
+                }),
+            ));
+        }
         result.nodes.push(file_node);
         Ok(())
     }
@@ -725,6 +810,252 @@ impl RustRepositoryExtractor {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn extract_solidity_file(
+        &self,
+        root: &Path,
+        path: &Path,
+        repo_id: Uuid,
+        commit_sha: Option<String>,
+        repo_node_id: Uuid,
+        symbol_names: &mut HashMap<String, Uuid>,
+        result: &mut ExtractionResult,
+    ) -> Result<()> {
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string();
+        let file = SourceFile {
+            id: Uuid::new_v4(),
+            repo_id,
+            commit_sha,
+            path: rel.clone(),
+            language: Language::Solidity,
+            content: content.clone(),
+            content_hash: hash(&content),
+            line_count: content.lines().count() as i32,
+        };
+        result.files.push(file.clone());
+
+        let file_node = file_node(repo_id, &file, &rel);
+        result.edges.push(edge(
+            repo_id,
+            repo_node_id,
+            file_node.id,
+            EdgeKind::Contains,
+            0.1,
+            1.0,
+            json!({}),
+        ));
+        result.nodes.push(file_node.clone());
+
+        self.extract_solidity_imports(repo_id, &file, file_node.id, &content, result)?;
+        self.extract_solidity_symbols(
+            repo_id,
+            &file,
+            file_node.id,
+            &content,
+            symbol_names,
+            result,
+        )?;
+        Ok(())
+    }
+
+    fn extract_solidity_imports(
+        &self,
+        repo_id: Uuid,
+        file: &SourceFile,
+        file_node_id: Uuid,
+        content: &str,
+        result: &mut ExtractionResult,
+    ) -> Result<()> {
+        let import_re = Regex::new(r#"(?m)^\s*import\s+(?:[^'"]+\s+from\s+)?['"]([^'"]+)['"]"#)?;
+        for captures in import_re.captures_iter(content) {
+            let Some(module) = captures.get(1).map(|v| v.as_str()) else {
+                continue;
+            };
+            let line = find_line(content, module).map(|v| v as i32);
+            let is_bare = is_bare_module_specifier(module);
+            let node = KnowledgeNode {
+                id: Uuid::new_v4(),
+                repo_id,
+                file_id: if is_bare { None } else { Some(file.id) },
+                kind: NodeKind::Dependency,
+                stable_id: import_stable_id(file, module, is_bare),
+                name: module.to_string(),
+                line_start: if is_bare { None } else { line },
+                line_end: if is_bare { None } else { line },
+                metadata: json!({
+                    "module": module,
+                    "language": "solidity",
+                    "scope": if is_bare { "bare" } else { "relative" }
+                }),
+            };
+            result.edges.push(edge(
+                repo_id,
+                file_node_id,
+                node.id,
+                EdgeKind::Imports,
+                0.3,
+                0.9,
+                json!({"file": file.path, "module": module, "line": line}),
+            ));
+            result.nodes.push(node);
+        }
+        Ok(())
+    }
+
+    fn extract_solidity_symbols(
+        &self,
+        repo_id: Uuid,
+        file: &SourceFile,
+        file_node_id: Uuid,
+        content: &str,
+        symbol_names: &mut HashMap<String, Uuid>,
+        result: &mut ExtractionResult,
+    ) -> Result<()> {
+        let type_re = Regex::new(
+            r"(?m)^\s*(?:abstract\s+)?(contract|interface|library)\s+([A-Za-z_][A-Za-z0-9_]*)\s*([^{;]*)",
+        )?;
+        for captures in type_re.captures_iter(content) {
+            let kind_text = captures.get(1).map(|v| v.as_str()).unwrap_or("contract");
+            let Some(name) = captures.get(2).map(|v| v.as_str()) else {
+                continue;
+            };
+            let suffix = captures.get(3).map(|v| v.as_str()).unwrap_or_default();
+            let line = find_line(content, name).unwrap_or(1);
+            let end = find_block_end(content, line).unwrap_or(line);
+            let code = slice_lines(content, line, end);
+            let node_kind = match kind_text {
+                "interface" => NodeKind::Trait,
+                "library" => NodeKind::Module,
+                _ => NodeKind::Struct,
+            };
+            let node = KnowledgeNode {
+                id: Uuid::new_v4(),
+                repo_id,
+                file_id: Some(file.id),
+                kind: node_kind.clone(),
+                stable_id: format!("{}:solidity:{}:{}", file.path, kind_text, name),
+                name: name.to_string(),
+                line_start: Some(line as i32),
+                line_end: Some(end as i32),
+                metadata: json!({
+                    "language": "solidity",
+                    "file": file.path,
+                    "solidity_kind": kind_text
+                }),
+            };
+            symbol_names.entry(name.to_string()).or_insert(node.id);
+            result.edges.push(edge(
+                repo_id,
+                file_node_id,
+                node.id,
+                EdgeKind::Defines,
+                0.08,
+                1.0,
+                json!({"language": "solidity", "kind": kind_text}),
+            ));
+            result.chunks.push(chunk_for_node(
+                repo_id,
+                Some(file.id),
+                Some(node.id),
+                node_kind.as_str(),
+                &format!(
+                    "Language: solidity\nFile: {}\nSymbol: {}\nSolidity kind: {}\nLines: {}-{}\n\n{}",
+                    file.path, name, kind_text, line, end, code
+                ),
+                Some(line as i32),
+                Some(end as i32),
+                json!({"symbol": name, "kind": node_kind.as_str(), "solidity_kind": kind_text, "file": file.path}),
+            ));
+            add_solidity_inheritance_edges(repo_id, node.id, suffix, result);
+            result.nodes.push(node);
+        }
+
+        let member_patterns = [
+            (
+                NodeKind::Function,
+                "function",
+                Regex::new(r"(?m)^\s*function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")?,
+            ),
+            (
+                NodeKind::Function,
+                "constructor",
+                Regex::new(r"(?m)^\s*(constructor)\s*\(")?,
+            ),
+            (
+                NodeKind::Function,
+                "fallback",
+                Regex::new(r"(?m)^\s*(fallback|receive)\s*\(")?,
+            ),
+            (
+                NodeKind::Concept,
+                "event",
+                Regex::new(r"(?m)^\s*event\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")?,
+            ),
+            (
+                NodeKind::Concept,
+                "modifier",
+                Regex::new(r"(?m)^\s*modifier\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")?,
+            ),
+        ];
+
+        for (kind, solidity_kind, pattern) in member_patterns {
+            for captures in pattern.captures_iter(content) {
+                let Some(name) = captures.get(1).map(|v| v.as_str()) else {
+                    continue;
+                };
+                let line = find_line(content, name).unwrap_or(1);
+                let end = find_block_end(content, line).unwrap_or(line);
+                let code = slice_lines(content, line, end);
+                let node = KnowledgeNode {
+                    id: Uuid::new_v4(),
+                    repo_id,
+                    file_id: Some(file.id),
+                    kind: kind.clone(),
+                    stable_id: format!("{}:solidity:{}:{}", file.path, solidity_kind, name),
+                    name: name.to_string(),
+                    line_start: Some(line as i32),
+                    line_end: Some(end as i32),
+                    metadata: json!({
+                        "language": "solidity",
+                        "file": file.path,
+                        "solidity_kind": solidity_kind
+                    }),
+                };
+                symbol_names.entry(name.to_string()).or_insert(node.id);
+                result.edges.push(edge(
+                    repo_id,
+                    file_node_id,
+                    node.id,
+                    EdgeKind::Contains,
+                    0.1,
+                    0.95,
+                    json!({"language": "solidity", "kind": solidity_kind}),
+                ));
+                result.chunks.push(chunk_for_node(
+                    repo_id,
+                    Some(file.id),
+                    Some(node.id),
+                    kind.as_str(),
+                    &format!(
+                        "Language: solidity\nFile: {}\nSymbol: {}\nSolidity kind: {}\nLines: {}-{}\n\n{}",
+                        file.path, name, solidity_kind, line, end, code
+                    ),
+                    Some(line as i32),
+                    Some(end as i32),
+                    json!({"symbol": name, "kind": kind.as_str(), "solidity_kind": solidity_kind, "file": file.path}),
+                ));
+                result.nodes.push(node);
+            }
+        }
+        Ok(())
+    }
+
     fn extract_js_ts_imports(
         &self,
         repo_id: Uuid,
@@ -1123,6 +1454,49 @@ fn add_call_edges(result: &mut ExtractionResult, symbols: &HashMap<String, Uuid>
     }
 }
 
+fn add_solidity_inheritance_edges(
+    repo_id: Uuid,
+    contract_node_id: Uuid,
+    suffix: &str,
+    result: &mut ExtractionResult,
+) {
+    let suffix = suffix.trim();
+    let Some(inherits) = suffix
+        .strip_prefix("is ")
+        .map(|rest| rest.trim().trim_end_matches(';'))
+    else {
+        return;
+    };
+
+    for base in inherits.split(',') {
+        let base = base.split_whitespace().next().unwrap_or_default().trim();
+        if base.is_empty() {
+            continue;
+        }
+        let node = KnowledgeNode {
+            id: Uuid::new_v4(),
+            repo_id,
+            file_id: None,
+            kind: NodeKind::Concept,
+            stable_id: format!("solidity:inheritance:{base}"),
+            name: base.to_string(),
+            line_start: None,
+            line_end: None,
+            metadata: json!({"language": "solidity", "relationship": "inheritance"}),
+        };
+        result.edges.push(edge(
+            repo_id,
+            contract_node_id,
+            node.id,
+            EdgeKind::Implements,
+            0.2,
+            0.75,
+            json!({"language": "solidity", "base": base}),
+        ));
+        result.nodes.push(node);
+    }
+}
+
 fn file_node(repo_id: Uuid, file: &SourceFile, rel: &str) -> KnowledgeNode {
     KnowledgeNode {
         id: Uuid::new_v4(),
@@ -1152,6 +1526,20 @@ fn js_ts_language(path: &Path) -> Option<Language> {
 fn markdown_language(path: &Path) -> Option<Language> {
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "md" | "mdx" => Some(Language::Markdown),
+        _ => None,
+    }
+}
+
+fn solidity_language(path: &Path) -> Option<Language> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "sol" => Some(Language::Solidity),
+        _ => None,
+    }
+}
+
+fn pdf_language(path: &Path) -> Option<Language> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "pdf" => Some(Language::Pdf),
         _ => None,
     }
 }
@@ -1517,7 +1905,66 @@ fn slice_lines(content: &str, start: usize, end: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lopdf::{dictionary, Document, Object, Stream};
     use std::fs;
+    use std::path::Path;
+
+    fn write_minimal_pdf(path: &Path) {
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let page_id = doc.new_object_id();
+        let font_id = doc.new_object_id();
+        let content_id = doc.new_object_id();
+        let catalog_id = doc.new_object_id();
+
+        doc.objects.insert(
+            font_id,
+            dictionary! {
+                "Type" => "Font",
+                "Subtype" => "Type1",
+                "BaseFont" => "Helvetica",
+            }
+            .into(),
+        );
+        doc.objects.insert(
+            content_id,
+            Stream::new(
+                dictionary! {},
+                b"BT /F1 24 Tf 72 720 Td (OnChainLab PDF evidence) Tj ET".to_vec(),
+            )
+            .into(),
+        );
+        doc.objects.insert(
+            page_id,
+            dictionary! {
+                "Type" => "Page",
+                "Parent" => pages_id,
+                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+                "Resources" => dictionary! {"Font" => dictionary! {"F1" => font_id}},
+                "Contents" => content_id,
+            }
+            .into(),
+        );
+        doc.objects.insert(
+            pages_id,
+            dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![Object::Reference(page_id)],
+                "Count" => 1,
+            }
+            .into(),
+        );
+        doc.objects.insert(
+            catalog_id,
+            dictionary! {
+                "Type" => "Catalog",
+                "Pages" => pages_id,
+            }
+            .into(),
+        );
+        doc.trailer.set("Root", catalog_id);
+        doc.save(path).unwrap();
+    }
 
     #[test]
     fn extracts_typescript_symbols_and_package_metadata() {
@@ -1692,6 +2139,92 @@ mod tests {
             edge.kind == EdgeKind::Contains
                 && edge.cost > 0.1
                 && edge
+                    .metadata
+                    .get("source_priority")
+                    .and_then(|v| v.as_str())
+                    == Some("supplemental")
+        }));
+    }
+
+    #[test]
+    fn extracts_solidity_contracts_members_imports_and_inheritance() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("OnChainLab.sol"),
+            r#"
+pragma solidity ^0.8.24;
+
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import "./RootValidator.sol";
+
+interface IValidator {
+    event Validated(address indexed account);
+}
+
+contract OnChainLab is Ownable, IValidator {
+    event AccountProvisioned(uint256 indexed tokenId, address account);
+    modifier onlyEntryPoint() { _; }
+
+    constructor(address owner) {}
+
+    function execute(address target) external onlyEntryPoint {
+        target.call("");
+    }
+}
+"#,
+        )
+        .unwrap();
+
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor
+            .extract(dir.path(), Uuid::new_v4(), Some("test".into()))
+            .unwrap();
+
+        assert!(result
+            .files
+            .iter()
+            .any(|file| { file.path == "OnChainLab.sol" && file.language == Language::Solidity }));
+        assert!(result.nodes.iter().any(|node| {
+            node.name == "OnChainLab"
+                && node.kind == NodeKind::Struct
+                && node.metadata.get("solidity_kind").and_then(|v| v.as_str()) == Some("contract")
+        }));
+        assert!(result
+            .nodes
+            .iter()
+            .any(|node| { node.name == "execute" && node.kind == NodeKind::Function }));
+        assert!(result
+            .nodes
+            .iter()
+            .any(|node| { node.name == "AccountProvisioned" && node.kind == NodeKind::Concept }));
+        assert!(result
+            .nodes
+            .iter()
+            .any(|node| { node.name == "@openzeppelin/contracts/access/Ownable.sol" }));
+        assert!(result
+            .edges
+            .iter()
+            .any(|edge| edge.kind == EdgeKind::Implements));
+    }
+
+    #[test]
+    fn indexes_pdf_files_as_supplemental_documents() {
+        let dir = tempfile::tempdir().unwrap();
+        write_minimal_pdf(&dir.path().join("paper.pdf"));
+
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor
+            .extract(dir.path(), Uuid::new_v4(), Some("test".into()))
+            .unwrap();
+
+        assert!(result
+            .files
+            .iter()
+            .any(|file| file.path == "paper.pdf" && file.language == Language::Pdf));
+        assert!(result.chunks.iter().any(|chunk| {
+            chunk.chunk_type == "pdf_documentation"
+                && chunk.content.contains("OnChainLab PDF evidence")
+                && chunk
                     .metadata
                     .get("source_priority")
                     .and_then(|v| v.as_str())

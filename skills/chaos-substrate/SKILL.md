@@ -1,6 +1,6 @@
 ---
 name: chaos-substrate
-description: Use when installing, initializing, updating, querying, or operating Chaos Substrate in any Rust, TypeScript, or JavaScript repository; includes Postgres+pgvector persistence, real OpenAI/Ollama embedders, CLI, MCP stdio, generated feature-memory websites, and agent implementation context.
+description: Use when installing, initializing, updating, querying, or operating Chaos Substrate in any Rust, Solidity, TypeScript, or JavaScript repository; includes Markdown/MDX and PDF context, Postgres+pgvector persistence, real OpenAI/Ollama embedders, CLI, MCP stdio, generated feature-memory websites, and agent implementation context.
 ---
 
 # Chaos Substrate
@@ -9,14 +9,14 @@ Use this skill when working on or operating Chaos Substrate, a Rust-only code kn
 
 ## Product Shape
 
-- Rust, TypeScript, JavaScript, Markdown, and MDX extraction.
+- Rust, Solidity, TypeScript, JavaScript, Markdown, MDX, JSON config, and text PDF extraction.
 - Persistent Postgres plus pgvector memory.
 - Real OpenAI and Ollama embedders only.
 - Agent surfaces are Codex plugin, Claude Code plugin, CLI, the `chaos-agent` wrapper, static
   graph/Obsidian exports, generated feature-context websites, feature-memory manifests, and MCP over
   stdio.
-- Source code is prioritized over docs during code-repository queries. Markdown/MDX docs are indexed
-  as supplemental context, not ignored.
+- Source code is prioritized over docs during code-repository queries. Markdown/MDX docs and
+  extractable text PDFs are indexed as supplemental context, not ignored.
 
 ## Hard Boundaries
 

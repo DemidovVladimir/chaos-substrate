@@ -40,7 +40,9 @@ Supported extracted knowledge:
 - source files
 - functions
 - Rust structs/enums/traits/impls/modules/tests
+- Solidity contracts/interfaces/libraries/functions/events/modifiers/imports/inheritance
 - TypeScript/JavaScript functions, arrow functions, classes, interfaces, enums, type aliases
+- Markdown/MDX and extractable PDF documentation as supplemental context
 - imports/re-exports/CommonJS `require`
 - Cargo dependencies
 - npm dependencies and scripts
@@ -117,7 +119,7 @@ Do not replace this with fake embeddings.
 
 ## Functional Smoke Test
 
-Use a small real repository containing Rust, TypeScript, or JavaScript.
+Use a small real repository containing Rust, Solidity, TypeScript, or JavaScript.
 
 ```sh
 docker compose up -d
@@ -198,6 +200,7 @@ Chaos Substrate should become a modular code-to-knowledge memory system:
 ## Current Known Limits
 
 - TypeScript/JavaScript extraction is pattern-based, not a full TypeScript compiler frontend.
+- Solidity extraction is pattern-based, not a full Solidity compiler frontend.
 - Rust extraction uses `syn` plus heuristics; it is not rust-analyzer/MIR-level semantic analysis.
 - No Go/Python/Kubernetes/Terraform adapter yet.
 - No full integration test with a real embedder was run unless the validator provides OpenAI or Ollama.

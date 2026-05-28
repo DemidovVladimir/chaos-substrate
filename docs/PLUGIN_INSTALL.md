@@ -138,7 +138,7 @@ chaos_write_feature_website
 
 ## 6. Use From A Project
 
-Only after the plugin is installed or loaded, open a Rust, TypeScript, or JavaScript project and ask
+Only after the plugin is installed or loaded, open a Rust, Solidity, TypeScript, or JavaScript project and ask
 the agent:
 
 ```text

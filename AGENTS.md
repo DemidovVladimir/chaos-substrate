@@ -2,7 +2,7 @@
 
 Chaos Substrate is a Rust-only code knowledge memory for agents.
 
-Use it to create and query a persistent knowledge base for Rust, TypeScript, and JavaScript repositories. The memory is stored in Postgres + pgvector and survives process restarts.
+Use it to create and query a persistent knowledge base for Rust, Solidity, TypeScript, and JavaScript repositories, with Markdown/MDX and PDF context. The memory is stored in Postgres + pgvector and survives process restarts.
 
 ## Hard Rules
 
@@ -10,7 +10,7 @@ Use it to create and query a persistent knowledge base for Rust, TypeScript, and
 - Do not replace Postgres/pgvector persistence with in-memory storage.
 - Keep MCP on stdio with newline-delimited JSON-RPC.
 - Keep runtime implementation in Rust.
-- TypeScript/JavaScript support must remain Rust-side extraction, not a Node service.
+- TypeScript/JavaScript and Solidity support must remain Rust-side extraction, not a Node service.
 
 ## Common Commands
 
