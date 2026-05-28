@@ -210,18 +210,37 @@ Tool input:
 }
 ```
 
-## 11. Skills / Instructions
+## 11. Claude Plugin, Skills, And Instructions
 
-Claude does not consume Codex `.codex-plugin` skills directly.
+Claude Code does not consume Codex `.codex-plugin` metadata directly. Chaos Substrate also ships a
+Claude plugin manifest:
 
-Use these instead:
+```text
+.claude-plugin/plugin.json
+```
 
-- `CLAUDE.md` for Claude Code / Claude Cowork project instructions.
+For local plugin testing:
+
+```sh
+claude --plugin-dir /absolute/path/to/chaos-substrate
+```
+
+The skill is then available as:
+
+```text
+/chaos-substrate:chaos-substrate
+```
+
+Use these surfaces together:
+
+- `.claude-plugin/plugin.json` for reusable Claude plugin packaging.
+- `.mcp.json` and `bin/chaos-agent` for plugin-level MCP.
+- `CLAUDE.md` for target-project instructions written by `chaos-agent onboard`.
 - `docs/CLAUDE_VALIDATION_BRIEF.md` for validation and PRD review.
 - MCP `chaos_query` for live access to the persisted knowledge base.
 - MCP `chaos_analyze` for indexing/reindexing repositories.
 
-Codex-specific plugin/skill files remain available:
+Codex-specific plugin files remain available:
 
 - `.codex-plugin/plugin.json`
 - `skills/chaos-substrate/SKILL.md`

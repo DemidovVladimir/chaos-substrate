@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chaos Substrate Plugin Setup</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #07080d;
+      --panel: #10131d;
+      --panel-2: #151a27;
+      --line: #273044;
+      --text: #f6f7fb;
+      --muted: #9aa7bc;
+      --cyan: #4ee7ff;
+      --amber: #ffb84d;
+      --rose: #ff4f7b;
+      --green: #67f7b1;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        linear-gradient(90deg, rgba(78,231,255,.08) 1px, transparent 1px),
+        linear-gradient(rgba(255,79,123,.07) 1px, transparent 1px),
+        radial-gradient(circle at 72% 18%, rgba(255,184,77,.16), transparent 28rem),
+        radial-gradient(circle at 18% 28%, rgba(78,231,255,.16), transparent 22rem),
+        var(--bg);
+      background-size: 44px 44px, 44px 44px, auto, auto, auto;
+      color: var(--text);
+    }
+    main { max-width: 1180px; margin: 0 auto; padding: 48px 24px 72px; }
+    header { display: grid; gap: 18px; margin-bottom: 38px; }
+    h1 { margin: 0; font-size: clamp(42px, 7vw, 82px); line-height: .9; letter-spacing: 0; }
+    h2 { margin: 0 0 16px; font-size: 24px; }
+    p { color: var(--muted); font-size: 17px; line-height: 1.6; max-width: 820px; }
+    .tagline { color: var(--cyan); font-weight: 700; text-transform: uppercase; letter-spacing: .14em; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    .wide { grid-column: 1 / -1; }
+    section {
+      background: linear-gradient(180deg, rgba(21,26,39,.94), rgba(9,11,18,.94));
+      border: 1px solid var(--line);
+      box-shadow: 0 0 34px rgba(78,231,255,.08), inset 0 1px 0 rgba(255,255,255,.04);
+      border-radius: 8px;
+      padding: 22px;
+    }
+    code, pre { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+    pre {
+      margin: 12px 0 0;
+      padding: 16px;
+      overflow: auto;
+      background: #080a11;
+      border: 1px solid #232b3e;
+      border-radius: 8px;
+      color: #d9faff;
+      line-height: 1.55;
+    }
+    .steps { display: grid; gap: 12px; }
+    .step {
+      display: grid;
+      grid-template-columns: 42px 1fr;
+      gap: 14px;
+      align-items: start;
+      padding: 14px;
+      border: 1px solid #273044;
+      border-radius: 8px;
+      background: rgba(8,10,17,.76);
+    }
+    .num {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--cyan);
+      color: var(--cyan);
+      border-radius: 50%;
+      font-weight: 800;
+      box-shadow: 0 0 18px rgba(78,231,255,.28);
+    }
+    .step strong { display: block; margin-bottom: 4px; }
+    .step span { color: var(--muted); line-height: 1.5; }
+    .map {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(120px, 1fr));
+      gap: 10px;
+      align-items: center;
+      margin-top: 16px;
+    }
+    .node {
+      min-height: 86px;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      padding: 12px;
+      border: 1px solid var(--cyan);
+      border-radius: 8px;
+      background: rgba(78,231,255,.07);
+      color: var(--text);
+      font-weight: 800;
+      box-shadow: 0 0 18px rgba(78,231,255,.12);
+    }
+    .node.alt { border-color: var(--amber); background: rgba(255,184,77,.08); }
+    .node.good { border-color: var(--green); background: rgba(103,247,177,.08); }
+    .arrow { color: var(--rose); text-align: center; font-weight: 900; }
+    ul { color: var(--muted); line-height: 1.7; padding-left: 20px; }
+    a { color: var(--cyan); }
+    @media (max-width: 860px) {
+      .grid { grid-template-columns: 1fr; }
+      .map { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="tagline">Codex + Claude plugin package</div>
+      <h1>Chaos Substrate</h1>
+      <p>Install the plugin once, bootstrap the local services once, then let your agent index, query, and generate feature-memory websites from any Rust, TypeScript, or JavaScript project.</p>
+    </header>
+
+    <div class="grid">
+      <section>
+        <h2>One-Time Setup</h2>
+        <pre><code>scripts/chaos-agent bootstrap
+export PATH="$HOME/.local/bin:$PATH"</code></pre>
+        <p>Use this from the Chaos Substrate checkout. It installs the wrapper, builds the binary, starts Postgres, runs migrations, and checks the system.</p>
+      </section>
+
+      <section>
+        <h2>Per-Project Use</h2>
+        <pre><code>chaos-agent onboard "$PWD"
+chaos-agent context "$PWD" "authorization and RBAC"
+chaos-agent explain "$PWD" "authorization and RBAC"
+chaos-agent update "$PWD"</code></pre>
+        <p>Run these from the project you want to index. Generated websites stay under <code>docs/features_memory</code>.</p>
+      </section>
+
+      <section class="wide">
+        <h2>Plugin Anatomy</h2>
+        <div class="map">
+          <div class="node">.codex-plugin<br>plugin.json</div>
+          <div class="arrow">-></div>
+          <div class="node alt">shared skill<br>SKILL.md</div>
+          <div class="arrow">-></div>
+          <div class="node good">chaos-agent<br>MCP + CLI</div>
+          <div class="node">.claude-plugin<br>plugin.json</div>
+          <div class="arrow">-></div>
+          <div class="node alt">.mcp.json</div>
+          <div class="arrow">-></div>
+          <div class="node good">Postgres<br>pgvector</div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Codex</h2>
+        <div class="steps">
+          <div class="step"><div class="num">1</div><div><strong>Load the plugin</strong><span>Codex reads <code>.codex-plugin/plugin.json</code>, the bundled skill, and the MCP config.</span></div></div>
+          <div class="step"><div class="num">2</div><div><strong>Ask naturally</strong><span>Use prompts like “Go through this project and create sufficient index and explanation.”</span></div></div>
+          <div class="step"><div class="num">3</div><div><strong>Inspect outputs</strong><span>Open graph exports, Obsidian vaults, and feature-memory pages.</span></div></div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Claude Code</h2>
+        <pre><code>claude --plugin-dir /absolute/path/to/chaos-substrate</code></pre>
+        <p>The skill is available as <code>/chaos-substrate:chaos-substrate</code>. For explicit project MCP setup:</p>
+        <pre><code>chaos-agent claude-code-add local "$PWD"</code></pre>
+      </section>
+
+      <section class="wide">
+        <h2>What Still Exists Outside The Plugin</h2>
+        <ul>
+          <li>Docker or another Postgres/pgvector endpoint.</li>
+          <li>Ollama or OpenAI embeddings.</li>
+          <li>A pulled embedding model when using Ollama.</li>
+        </ul>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

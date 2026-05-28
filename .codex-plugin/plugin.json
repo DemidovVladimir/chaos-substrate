@@ -1,11 +1,16 @@
 {
   "name": "chaos-substrate",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Agent guidance and wrappers for using Chaos Substrate code knowledge memory in Rust, TypeScript, and JavaScript projects.",
   "author": {
     "name": "Chaos Substrate"
   },
+  "homepage": "https://github.com/chaos-substrate/chaos-substrate",
+  "repository": "https://github.com/chaos-substrate/chaos-substrate",
+  "license": "MIT",
+  "keywords": ["code-memory", "knowledge-graph", "mcp", "rust", "typescript", "javascript"],
   "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Chaos Substrate",
     "shortDescription": "Index projects and generate feature memory.",

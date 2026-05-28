@@ -1,7 +1,29 @@
 # Plugin Workflow
 
-The Chaos Substrate plugin should let an agent operate the memory system without asking users to
-remember every command.
+The Chaos Substrate plugin lets Codex and Claude Code operate the memory system without asking users
+to copy skills into every project or remember every raw Cargo command.
+
+## Plugin Package
+
+The repository root is the plugin package:
+
+```text
+chaos-substrate/
+├── .codex-plugin/plugin.json
+├── .claude-plugin/plugin.json
+├── .mcp.json
+├── bin/chaos-agent
+├── skills/chaos-substrate/SKILL.md
+├── scripts/chaos-agent
+├── docs/
+└── src/
+```
+
+- Codex reads `.codex-plugin/plugin.json`.
+- Claude Code reads `.claude-plugin/plugin.json`.
+- Both share the root `.mcp.json`, `skills/`, and `bin/chaos-agent`.
+- `bin/chaos-agent` delegates to `scripts/chaos-agent`, which owns setup, indexing, querying, and
+  feature-page generation.
 
 ## What Still Requires User Setup
 
@@ -15,19 +37,21 @@ download Ollama models, or create OpenAI credentials.
 
 ## Agent Commands
 
-Use the wrapper from the Chaos Substrate plugin/repo root:
+From the Chaos Substrate plugin checkout, bootstrap once:
 
 ```bash
-scripts/chaos-agent doctor
-scripts/chaos-agent ollama-setup
 scripts/chaos-agent bootstrap
 export PATH="$HOME/.local/bin:$PATH"
+```
+
+Then use the same command from any target project:
+
+```bash
 chaos-agent onboard /absolute/path/to/project
 chaos-agent update /absolute/path/to/project
 chaos-agent context /absolute/path/to/project "authorization and RBAC"
 chaos-agent explain /absolute/path/to/project "authorization and RBAC"
 chaos-agent claude-code-add local /absolute/path/to/project
-scripts/chaos-agent mcp
 ```
 
 For local Ollama embeddings:
@@ -55,6 +79,32 @@ See `docs/OLLAMA_SETUP.md` for installation and troubleshooting.
   - Run `chaos-agent claude-code-add local <repo-path>` for private setup or `project` for shared
     `.mcp.json`.
 
+## Codex
+
+Codex uses `.codex-plugin/plugin.json`. The manifest points to:
+
+- `skills`: `./skills/`
+- `mcpServers`: `./.mcp.json`
+
+During development, install or load this repository as the `chaos-substrate` plugin. Once enabled,
+the agent can use the `chaos-substrate` skill and the MCP tools exposed by `chaos-agent mcp`.
+
+## Claude Code
+
+Claude Code uses `.claude-plugin/plugin.json` and root-level plugin components. Test locally with:
+
+```bash
+claude --plugin-dir /absolute/path/to/chaos-substrate
+```
+
+Then in Claude Code:
+
+```text
+/chaos-substrate:chaos-substrate
+```
+
+The plugin also exposes `bin/chaos-agent` to Claude's shell environment while enabled.
+
 ## Outputs
 
 Target project outputs:
@@ -72,8 +122,10 @@ are refreshable derived artifacts.
 - `CHAOS_BIN`: override binary path.
 - `CHAOS_NO_DOCKER=1`: skip `docker compose up -d`.
 
-## Future Plugin Improvements
+## Plugin Limits
 
-- Add a one-command installer that copies the plugin into the user's personal Codex plugin folder.
-- Add an MCP server config template once plugin-relative binary paths are stable in the target app.
-- Add query-generated feature maps, not only feature-context explanation pages.
+- The plugin can start this repository's Docker Compose stack, but it cannot install Docker itself.
+- The plugin can pull the configured Ollama model when Ollama is installed and running, but it
+  cannot install the Ollama desktop app.
+- The plugin can configure Claude Code MCP with `chaos-agent claude-code-add`, but Claude Code may
+  still ask for approval before using project-scoped MCP servers.

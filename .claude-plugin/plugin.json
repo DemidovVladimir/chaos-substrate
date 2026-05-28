@@ -1,0 +1,19 @@
+{
+  "name": "chaos-substrate",
+  "description": "Persistent code knowledge memory for Rust, TypeScript, and JavaScript projects.",
+  "version": "0.2.0",
+  "author": {
+    "name": "Chaos Substrate"
+  },
+  "homepage": "https://github.com/chaos-substrate/chaos-substrate",
+  "repository": "https://github.com/chaos-substrate/chaos-substrate",
+  "license": "MIT",
+  "keywords": [
+    "code-memory",
+    "knowledge-graph",
+    "mcp",
+    "rust",
+    "typescript",
+    "javascript"
+  ]
+}

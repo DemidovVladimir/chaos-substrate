@@ -17,6 +17,19 @@ Use `chaos-substrate.local.toml` for Ollama, and make sure `ollama serve` plus
 
 ## 2. Add Chaos Substrate To Claude Code
 
+Chaos Substrate can be loaded as a Claude Code plugin:
+
+```sh
+claude --plugin-dir /absolute/path/to/chaos-substrate
+```
+
+The plugin exposes the namespaced skill:
+
+```text
+/chaos-substrate:chaos-substrate
+```
+
+The plugin also includes root `.mcp.json` and `bin/chaos-agent`. For an explicit project MCP entry,
 Claude Code supports local stdio MCP servers through `claude mcp add`. The wrapper can register the
 server for you:
 
@@ -104,6 +117,7 @@ MAX_MCP_OUTPUT_TOKENS=50000 claude
 ## 6. What Not To Do
 
 - Do not configure Chaos Substrate through `cargo run` in MCP settings; use the release binary.
+- Do not copy the skill into every project; load the Claude plugin or use `chaos-agent onboard`.
 - Do not expose Chaos Substrate as HTTP just for Claude Code. Keep MCP on stdio.
 - Do not commit personal absolute paths, database dumps, or API keys.
 - Do not bypass embedder failures with fake vectors.

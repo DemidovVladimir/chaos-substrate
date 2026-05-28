@@ -35,7 +35,21 @@ cargo build
 
 ## Agent Configuration
 
-Configure the MCP client to launch the Chaos Substrate binary over stdio.
+When using the Codex or Claude plugin package, prefer the bundled root `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "chaos-substrate": {
+      "command": "./bin/chaos-agent",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+For manual non-plugin setups, configure the MCP client to launch the Chaos Substrate binary over
+stdio.
 The server uses MCP stdio newline-delimited JSON-RPC. Do not wrap it with LSP-style `Content-Length` framing.
 
 Example shape:

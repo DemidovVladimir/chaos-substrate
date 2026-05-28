@@ -30,7 +30,17 @@ cargo run -- refresh /path/to/repo
 
 ## Agent Plugin Workflow
 
-For normal agent use, prefer the plugin wrapper instead of raw Cargo commands:
+Chaos Substrate is packaged as both a Codex plugin and a Claude Code plugin:
+
+```text
+.codex-plugin/plugin.json
+.claude-plugin/plugin.json
+skills/chaos-substrate/SKILL.md
+.mcp.json
+bin/chaos-agent
+```
+
+Install or load the plugin once per agent, then use the wrapper instead of raw Cargo commands:
 
 ```bash
 scripts/chaos-agent bootstrap
@@ -53,6 +63,9 @@ The wrapper builds the release binary if needed, starts the local Postgres conta
 `CHAOS_NO_DOCKER=1` is set, runs migrations, analyzes the repository, refreshes the Obsidian vault,
 can write portable `AGENTS.md` / `CLAUDE.md` sections, and can write dark standalone
 feature-context explanation websites.
+
+Codex consumes `.codex-plugin/plugin.json`. Claude Code consumes `.claude-plugin/plugin.json`.
+Both share the same `skills/`, `.mcp.json`, and `bin/chaos-agent` entrypoint.
 
 For Claude MCP, build and launch the binary directly instead of using `cargo run`:
 
@@ -200,6 +213,8 @@ evidence when they match the task.
 
 See [docs/FEATURE_CONTEXT.md](docs/FEATURE_CONTEXT.md) for the agent workflow.
 See [docs/PLUGIN_WORKFLOW.md](docs/PLUGIN_WORKFLOW.md) for the plugin wrapper workflow.
+See [docs/PLUGIN_INSTALL.md](docs/PLUGIN_INSTALL.md) for Codex and Claude plugin installation.
+Open [docs/plugin-install.html](docs/plugin-install.html) for the dark visual tutorial.
 See [docs/CLAUDE_CODE_COWORK.md](docs/CLAUDE_CODE_COWORK.md) for Claude Code and Cowork setup.
 
 ## Storage

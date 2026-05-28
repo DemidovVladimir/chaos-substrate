@@ -12,8 +12,9 @@ Use this skill when working on or operating Chaos Substrate, a Rust-only code kn
 - Rust, TypeScript, JavaScript, Markdown, and MDX extraction.
 - Persistent Postgres plus pgvector memory.
 - Real OpenAI and Ollama embedders only.
-- Agent surfaces are CLI, the `chaos-agent` wrapper, static graph/Obsidian exports, generated
-  feature-context websites, feature-memory manifests, and MCP over stdio.
+- Agent surfaces are Codex plugin, Claude Code plugin, CLI, the `chaos-agent` wrapper, static
+  graph/Obsidian exports, generated feature-context websites, feature-memory manifests, and MCP over
+  stdio.
 - Source code is prioritized over docs during code-repository queries. Markdown/MDX docs are indexed
   as supplemental context, not ignored.
 
@@ -33,9 +34,9 @@ Never assume the current working directory is the Chaos Substrate checkout. The 
 standing in the target project. Resolve the wrapper with this order:
 
 1. If `chaos-agent` is on `PATH`, use `chaos-agent`.
-2. Else if `CHAOS_SUBSTRATE_HOME` is set, use `$CHAOS_SUBSTRATE_HOME/scripts/chaos-agent`.
+2. Else if `CHAOS_SUBSTRATE_HOME` is set, use `$CHAOS_SUBSTRATE_HOME/bin/chaos-agent`.
 3. Else if the user gave an absolute Chaos Substrate checkout path, use
-   `/absolute/path/to/chaos-substrate/scripts/chaos-agent`.
+   `/absolute/path/to/chaos-substrate/bin/chaos-agent`.
 4. Else ask for the absolute Chaos Substrate checkout path.
 
 In command examples, call this resolved wrapper as `$CHAOS_AGENT`. If `chaos-agent` is already on
@@ -75,11 +76,21 @@ For code changes inside Chaos Substrate itself:
 
 ## End-User Commands
 
+Plugin package layout:
+
+```text
+.codex-plugin/plugin.json
+.claude-plugin/plugin.json
+.mcp.json
+bin/chaos-agent
+skills/chaos-substrate/SKILL.md
+```
+
 Portable setup from any target project:
 
 ```sh
 export CHAOS_SUBSTRATE_HOME=/absolute/path/to/chaos-substrate
-export CHAOS_AGENT="$CHAOS_SUBSTRATE_HOME/scripts/chaos-agent"
+export CHAOS_AGENT="$CHAOS_SUBSTRATE_HOME/bin/chaos-agent"
 
 "$CHAOS_AGENT" bootstrap
 "$CHAOS_AGENT" onboard "$PWD"
@@ -113,7 +124,7 @@ For Ollama:
 
 ```sh
 export CHAOS_SUBSTRATE_HOME=/absolute/path/to/chaos-substrate
-export CHAOS_AGENT="$CHAOS_SUBSTRATE_HOME/scripts/chaos-agent"
+export CHAOS_AGENT="$CHAOS_SUBSTRATE_HOME/bin/chaos-agent"
 
 "$CHAOS_AGENT" ollama-setup
 CHAOS_CONFIG="$CHAOS_SUBSTRATE_HOME/chaos-substrate.local.toml" "$CHAOS_AGENT" init "$PWD"

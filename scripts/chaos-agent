@@ -8,18 +8,18 @@ BIN="${CHAOS_BIN:-$ROOT/target/release/chaos}"
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/chaos-agent bootstrap
-  scripts/chaos-agent install-agent [bin-dir]
-  scripts/chaos-agent doctor
-  scripts/chaos-agent ollama-setup
-  scripts/chaos-agent onboard <repo-path>
-  scripts/chaos-agent project-instructions <repo-path>
-  scripts/chaos-agent init <repo-path>
-  scripts/chaos-agent update <repo-path>
-  scripts/chaos-agent context <repo-path> <task>
-  scripts/chaos-agent explain <repo-path> <feature-or-task>
-  scripts/chaos-agent claude-code-add [local|project|user] [claude-project-dir]
-  scripts/chaos-agent mcp
+  chaos-agent bootstrap
+  chaos-agent install-agent [bin-dir]
+  chaos-agent doctor
+  chaos-agent ollama-setup
+  chaos-agent onboard <repo-path>
+  chaos-agent project-instructions <repo-path>
+  chaos-agent init <repo-path>
+  chaos-agent update <repo-path>
+  chaos-agent context <repo-path> <task>
+  chaos-agent explain <repo-path> <feature-or-task>
+  chaos-agent claude-code-add [local|project|user] [claude-project-dir]
+  chaos-agent mcp
 
 Environment:
   CHAOS_CONFIG     Path to chaos-substrate.toml. Defaults to this repo's config.
@@ -38,7 +38,7 @@ slugify() {
 
 ensure_binary() {
   if [ ! -x "$BIN" ]; then
-    (cd "$ROOT" && cargo build --release)
+    (cd "$ROOT" && cargo build --release >&2)
   fi
 }
 
@@ -52,10 +52,10 @@ ensure_services() {
 install_agent() {
   bin_dir="${1:-${CHAOS_AGENT_BIN_DIR:-$HOME/.local/bin}}"
   mkdir -p "$bin_dir"
-  ln -sf "$ROOT/scripts/chaos-agent" "$bin_dir/chaos-agent"
+  ln -sf "$ROOT/bin/chaos-agent" "$bin_dir/chaos-agent"
   cat <<INSTALL
 Installed chaos-agent:
-  $bin_dir/chaos-agent -> $ROOT/scripts/chaos-agent
+  $bin_dir/chaos-agent -> $ROOT/bin/chaos-agent
 
 If this directory is not on PATH, add:
   export PATH="$bin_dir:\$PATH"
@@ -114,7 +114,7 @@ Install Ollama:
   Linux:           curl -fsSL https://ollama.com/install.sh | sh
 
 After installing, start Ollama and rerun:
-  scripts/chaos-agent ollama-setup
+  chaos-agent ollama-setup
 OLLAMA
     return 1
   fi
@@ -128,7 +128,7 @@ Start Ollama:
   Linux:           ollama serve
 
 Then rerun:
-  scripts/chaos-agent ollama-setup
+  chaos-agent ollama-setup
 OLLAMA
     return 1
   fi
@@ -138,8 +138,8 @@ OLLAMA
 Ollama embedding model is ready.
 
 Use the local Ollama config:
-  CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent doctor
-  CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent init /absolute/path/to/project
+  CHAOS_CONFIG=chaos-substrate.local.toml chaos-agent doctor
+  CHAOS_CONFIG=chaos-substrate.local.toml chaos-agent init /absolute/path/to/project
 OLLAMA
 }
 
@@ -259,7 +259,7 @@ case "$cmd" in
 Claude Code CLI is not installed or is not on PATH.
 
 Install Claude Code first, then rerun:
-  scripts/chaos-agent claude-code-add local
+  chaos-agent claude-code-add local
 CLAUDE
       exit 1
     fi
