@@ -22,6 +22,7 @@ chaos-substrate/
 - Codex reads `.codex-plugin/plugin.json`.
 - Claude Code reads `.claude-plugin/plugin.json`.
 - Both share the root `.mcp.json`, `skills/`, and `bin/chaos-agent`.
+- The shared MCP server exposes `chaos_analyze`, `chaos_query`, and `chaos_feature_context`.
 - `bin/chaos-agent` delegates to `scripts/chaos-agent`, which owns setup, indexing, querying, and
   feature-page generation.
 

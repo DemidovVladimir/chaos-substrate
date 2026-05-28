@@ -1,7 +1,7 @@
 {
   "name": "chaos-substrate",
-  "version": "0.2.0",
-  "description": "Agent guidance and wrappers for using Chaos Substrate code knowledge memory in Rust, TypeScript, and JavaScript projects.",
+  "version": "0.3.0",
+  "description": "Agent guidance, MCP tools, and wrappers for indexing projects, querying code memory, and generating feature-context explanations.",
   "author": {
     "name": "Chaos Substrate"
   },
@@ -13,15 +13,15 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Chaos Substrate",
-    "shortDescription": "Index projects and generate feature memory.",
-    "longDescription": "Agent workflow and helper commands for initializing, updating, querying, and generating feature-memory websites with the Rust-only Chaos Substrate code knowledge memory.",
+    "shortDescription": "Index projects, query code memory, and explain features.",
+    "longDescription": "Agent workflow, MCP tools, and helper commands for initializing, updating, querying, building feature context, and generating feature-memory websites with the Rust-only Chaos Substrate code knowledge memory.",
     "developerName": "Chaos Substrate",
     "category": "Productivity",
     "capabilities": ["Write"],
     "defaultPrompt": [
       "Index this project with Chaos Substrate.",
-      "Update the Chaos Substrate index.",
-      "Generate a feature explanation website."
+      "Explain this feature with Chaos Substrate.",
+      "Find implementation context for this feature."
     ]
   }
 }

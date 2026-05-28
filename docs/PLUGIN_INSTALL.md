@@ -91,6 +91,14 @@ skills/chaos-substrate/SKILL.md
 bin/chaos-agent
 ```
 
+The shared MCP server exposes:
+
+```text
+chaos_analyze
+chaos_query
+chaos_feature_context
+```
+
 ## 5. Use From A Project
 
 Only after the plugin is installed or loaded, open a Rust, TypeScript, or JavaScript project and ask

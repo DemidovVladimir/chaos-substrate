@@ -40,6 +40,8 @@ skills/chaos-substrate/SKILL.md
 bin/chaos-agent
 ```
 
+The plugin MCP server exposes `chaos_analyze`, `chaos_query`, and `chaos_feature_context`.
+
 Install or load the plugin once per agent, then ask the agent to use Chaos Substrate from the target
 project:
 
