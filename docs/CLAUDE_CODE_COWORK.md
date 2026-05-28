@@ -130,17 +130,19 @@ Or:
 Use chaos_query on this repository. Question: where is request authorization enforced?
 ```
 
-For feature explanations and website generation, prefer the MCP feature-context tool:
+For feature explanations and website generation, use the MCP two-step workflow:
 
 ```text
-Use chaos_feature_context on this repository.
-Task: explain OCL across the project.
-If possible, write output_html to docs/features_memory/ocl-explanation.html.
+1. Use chaos_feature_context on this repository.
+   Task: explain OCL across the project.
+2. Read the returned evidence.
+3. Compose the feature-specific website and chaos-feature-manifest.
+4. Use chaos_write_feature_website to write docs/features_memory/ocl-explanation.html.
 ```
 
 If Claude only uses `chaos_query` for a feature explanation, the plugin is stale or MCP is exposing
-the old two-tool surface. Rebuild and re-upload `dist/chaos-substrate-cowork-plugin.zip`, then verify
-the MCP tool list contains `chaos_feature_context`.
+the old tool surface. Rebuild and re-upload `dist/chaos-substrate-cowork-plugin.zip`, then verify the
+MCP tool list contains `chaos_feature_context` and `chaos_write_feature_website`.
 
 Claude Cowork-style sandboxes may not be able to reach host Postgres or write project files
 directly. In that case, the agent should use the host MCP tools instead of claiming only the CLI can
@@ -159,6 +161,8 @@ MAX_MCP_OUTPUT_TOKENS=50000 claude
 - Do not configure Chaos Substrate through `cargo run` in MCP settings; use the release binary.
 - Do not copy the skill into every project; load the Claude plugin or use `chaos-agent onboard`.
 - Do not reduce feature explanation to `chaos_query` only when `chaos_feature_context` is available.
+- Do not use a static script as a substitute for feature understanding; compose the feature website
+  after reading evidence, then write it with `chaos_write_feature_website`.
 - Do not expose Chaos Substrate as HTTP just for Claude Code. Keep MCP on stdio.
 - Do not commit personal absolute paths, database dumps, or API keys.
 - Do not bypass embedder failures with fake vectors.

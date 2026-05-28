@@ -22,7 +22,8 @@ chaos-substrate/
 - Codex reads `.codex-plugin/plugin.json`.
 - Claude Code reads `.claude-plugin/plugin.json`.
 - Both share the root `.mcp.json`, `skills/`, and `bin/chaos-agent`.
-- The shared MCP server exposes `chaos_analyze`, `chaos_query`, and `chaos_feature_context`.
+- The shared MCP server exposes `chaos_analyze`, `chaos_query`, `chaos_feature_context`, and
+  `chaos_write_feature_website`.
 - `bin/chaos-agent` delegates to `scripts/chaos-agent`, which owns setup, indexing, querying, and
   feature-page generation.
 
@@ -61,7 +62,7 @@ loaded, from a target project, use natural agent requests:
 
 If Cowork only sees `chaos_analyze` and `chaos_query`, the uploaded package is stale. Rebuild the
 zip with `scripts/package-cowork-plugin` and upload it again; the MCP surface must include
-`chaos_feature_context`.
+`chaos_feature_context` and `chaos_write_feature_website`.
 
 ```text
 Use Chaos Substrate on this project and create an index plus explanation.
@@ -97,7 +98,7 @@ See `docs/OLLAMA_SETUP.md` for installation and troubleshooting.
 - "Update index"
   - Plugin intent: refresh the existing memory. Implementation command: `chaos-agent update <repo-path>`.
 - "Generate explanation for X feature"
-  - Plugin intent: produce focused feature context and, when requested, a feature-memory website. MCP tool: `chaos_feature_context`. CLI fallback: `chaos-agent explain <repo-path> "X"`.
+  - Plugin intent: produce focused feature context and a feature-memory website. MCP flow: `chaos_feature_context`, then LLM-composed HTML/manifest via `chaos_write_feature_website`. CLI fallback: `chaos-agent explain <repo-path> "X"`.
 - "Find context for implementing X"
   - Plugin intent: return source-grounded implementation context. MCP tool: `chaos_feature_context`. CLI fallback: `chaos-agent context <repo-path> "X"`.
 - "Use this with Claude Code or Claude Cowork"
@@ -113,7 +114,7 @@ Codex uses `.codex-plugin/plugin.json`. The manifest points to:
 
 During development, install or load this repository as the `chaos-substrate` plugin. Once enabled,
 the agent can use the `chaos-substrate` skill and the MCP tools exposed by `chaos-agent mcp`:
-`chaos_analyze`, `chaos_query`, and `chaos_feature_context`.
+`chaos_analyze`, `chaos_query`, `chaos_feature_context`, and `chaos_write_feature_website`.
 
 ## Claude Code
 

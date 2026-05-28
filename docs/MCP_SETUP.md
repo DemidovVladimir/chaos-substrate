@@ -121,5 +121,6 @@ This reads Postgres retrieval results and generated feature manifests from
 `/absolute/path/to/repo/docs/features_memory`. It scans only direct HTML files in that directory and
 ignores pages without `chaos-feature-manifest`.
 
-For MCP-driven agent work, use `chaos_feature_context` with `repo` and `task`. Pass `output_html`
-when the MCP server should write a static feature explanation page from the host side.
+For MCP-driven agent work, use `chaos_feature_context` with `repo` and `task`. For generated feature
+websites, the agent should read that evidence, compose the page and manifest, then call
+`chaos_write_feature_website` to write the static HTML from the host side.

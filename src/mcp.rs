@@ -9,6 +9,7 @@ use crate::{
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::{
+    fs,
     io::{BufRead, Write},
     path::{Path, PathBuf},
 };
@@ -66,7 +67,7 @@ pub async fn run(config: Config) -> Result<()> {
                         },
                         {
                             "name": "chaos_feature_context",
-                            "description": "Build focused implementation context for a feature or task. Reads Postgres retrieval plus generated feature-memory manifests, and can optionally write the static HTML explanation page.",
+                            "description": "Build focused implementation context for a feature or task. Reads Postgres retrieval plus generated feature-memory manifests. Use this before composing any feature website.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
@@ -79,6 +80,21 @@ pub async fn run(config: Config) -> Result<()> {
                                     "output_html": {"type": "string"}
                                 },
                                 "required": ["repo", "task"]
+                            }
+                        },
+                        {
+                            "name": "chaos_write_feature_website",
+                            "description": "Write an LLM-composed static feature website into docs/features_memory with an embedded chaos-feature-manifest JSON block. Use after chaos_feature_context, not as a substitute for understanding the feature.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo": {"type": "string"},
+                                    "slug": {"type": "string"},
+                                    "title": {"type": "string"},
+                                    "html": {"type": "string"},
+                                    "manifest": {"type": "object"}
+                                },
+                                "required": ["repo", "slug", "title", "html", "manifest"]
                             }
                         }
                     ]
@@ -197,8 +213,121 @@ async fn handle_tool_call(
                 "context": response
             }))?))
         }
+        "chaos_write_feature_website" => {
+            let repo = args
+                .get("repo")
+                .and_then(Value::as_str)
+                .context("repo is required")?;
+            let slug = args
+                .get("slug")
+                .and_then(Value::as_str)
+                .context("slug is required")?;
+            let title = args
+                .get("title")
+                .and_then(Value::as_str)
+                .context("title is required")?;
+            let html = args
+                .get("html")
+                .and_then(Value::as_str)
+                .context("html is required")?;
+            let manifest = args.get("manifest").context("manifest is required")?;
+            let repo = storage
+                .find_repository(repo)
+                .await?
+                .context("repository is not indexed")?;
+            let path = write_llm_feature_website(&repo.root_path, slug, title, html, manifest)?;
+            Ok(tool_text(serde_json::to_string_pretty(&json!({
+                "output_html": path,
+                "manifest_embedded": true
+            }))?))
+        }
         _ => anyhow::bail!("unknown tool: {name}"),
     }
+}
+
+fn write_llm_feature_website(
+    repo_root: &str,
+    slug: &str,
+    title: &str,
+    html: &str,
+    manifest: &Value,
+) -> Result<PathBuf> {
+    let slug = safe_slug(slug);
+    let output = Path::new(repo_root)
+        .join("docs/features_memory")
+        .join(format!("{slug}-explanation.html"));
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let manifest_json = serde_json::to_string_pretty(manifest)?;
+    let manifest_block = format!(
+        r#"<script type="application/json" id="chaos-feature-manifest">
+{}
+</script>"#,
+        escape_script_json_for_html(&manifest_json)
+    );
+    if html.contains("id=\"chaos-feature-manifest\"")
+        || html.contains("id='chaos-feature-manifest'")
+    {
+        anyhow::bail!(
+            "html must not include chaos-feature-manifest; pass the manifest argument and the tool will embed it"
+        );
+    }
+    let page = format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{}</title>
+</head>
+<body>
+{}
+{}
+</body>
+</html>
+"#,
+        escape_html(title),
+        html,
+        manifest_block
+    );
+    fs::write(&output, page)?;
+    Ok(output)
+}
+
+fn safe_slug(input: &str) -> String {
+    let slug = input
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if slug.is_empty() {
+        "feature-context".to_string()
+    } else {
+        slug
+    }
+}
+
+fn escape_script_json_for_html(json: &str) -> String {
+    json.replace("</script", "<\\/script")
+}
+
+fn escape_html(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 async fn analyze_repo(

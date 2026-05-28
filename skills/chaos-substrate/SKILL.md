@@ -35,12 +35,15 @@ If MCP tools are available, prefer them over shelling out:
 1. Use `chaos_analyze` to index or refresh a repository.
 2. Use `chaos_query` for focused questions.
 3. Use `chaos_feature_context` when the user asks to explain a feature, prepare implementation
-   context, or generate a feature explanation. Pass `output_html` when the user explicitly wants the
-   static website and the MCP server can write to the target project.
+   context, or generate a feature explanation.
+4. Use `chaos_write_feature_website` only after reading `chaos_feature_context` output and composing
+   a feature-specific website plus manifest. The LLM must decide the feature story, claims, nodes,
+   and flow from evidence; the tool only writes the artifact.
 
-Do not tell the user "I only have chaos_query" if `chaos_feature_context` is available. If the MCP
-server cannot write `output_html` because of filesystem permissions, still return the feature
-context from MCP and say exactly that HTML generation was blocked by filesystem access.
+Do not tell the user "I only have chaos_query" if `chaos_feature_context` or
+`chaos_write_feature_website` is available. If the MCP server cannot write the website because of
+filesystem permissions, still return the feature context from MCP and say exactly that HTML
+generation was blocked by filesystem access.
 
 Never assume the current working directory is the Chaos Substrate checkout. The agent is usually
 standing in the target project. Resolve the wrapper with this order:
@@ -62,7 +65,7 @@ Natural language mapping:
 - "Update index" or "refresh memory" -> `$CHAOS_AGENT update <repo-path>`
 - "Add Chaos instructions to this project" -> `$CHAOS_AGENT project-instructions <repo-path>`
 - "What context do I need for X?" -> MCP `chaos_feature_context` when available; otherwise `$CHAOS_AGENT context <repo-path> "X"`
-- "Generate explanation for X feature" -> MCP `chaos_feature_context` with `output_html` when available; otherwise `$CHAOS_AGENT explain <repo-path> "X"`
+- "Generate explanation for X feature" -> MCP `chaos_feature_context`, then compose the website and call `chaos_write_feature_website`; otherwise `$CHAOS_AGENT explain <repo-path> "X"`
 - "Add this to Claude Code" or "use with Claude Cowork" -> `$CHAOS_AGENT claude-code-add local <project-path>` or `$CHAOS_AGENT claude-code-add project <project-path>`. The path is the target Claude Code project where config should be applied.
 - "Use Ollama" or "set up local embeddings" -> run with `CHAOS_CONFIG=/absolute/path/to/chaos-substrate/chaos-substrate.local.toml`; `$CHAOS_AGENT bootstrap`, `doctor`, `onboard`, `init`, and `update` enforce Ollama readiness.
 - "Run MCP" -> `$CHAOS_AGENT mcp`
@@ -183,6 +186,8 @@ Use a real Postgres database with pgvector for persistence tests. Use real OpenA
 - MCP transport is stdio.
 - The process should be launched directly by the agent client.
 - Keep stdout protocol-clean; diagnostics should go to stderr or structured logging that does not corrupt MCP messages.
-- MCP tools are `chaos_analyze`, `chaos_query`, and `chaos_feature_context`.
-- `chaos_feature_context` is the MCP equivalent of `chaos-agent context`; with `output_html`, it is
-  also the MCP-safe path for generated feature explanation pages.
+- MCP tools are `chaos_analyze`, `chaos_query`, `chaos_feature_context`, and
+  `chaos_write_feature_website`.
+- `chaos_feature_context` is the MCP equivalent of `chaos-agent context`.
+- `chaos_write_feature_website` is the MCP-safe write path for LLM-composed feature explanation
+  pages with embedded `chaos-feature-manifest` JSON.
