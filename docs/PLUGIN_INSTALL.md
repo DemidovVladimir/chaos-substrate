@@ -3,40 +3,98 @@
 Chaos Substrate ships as one repository that can be loaded as both a Codex plugin and a Claude Code
 plugin. Do not copy `SKILL.md` into every target project.
 
-## Package Layout
+## 1. Get The Plugin Package
+
+Clone or update the Chaos Substrate repository:
+
+```bash
+git clone <chaos-substrate-repo-url>
+cd chaos-substrate
+```
+
+The repository root is the plugin package:
 
 ```text
 chaos-substrate/
 ├── .codex-plugin/plugin.json
 ├── .claude-plugin/plugin.json
+├── .agents/plugins/marketplace.json
+├── .claude-plugin/marketplace.json
 ├── .mcp.json
 ├── bin/chaos-agent
 ├── skills/chaos-substrate/SKILL.md
 └── scripts/chaos-agent
 ```
 
-## One-Time Local Setup
+## 2. Bootstrap Local Services
 
 From the Chaos Substrate checkout:
-
-```bash
-scripts/chaos-agent bootstrap
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-For local embeddings:
 
 ```bash
 CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent bootstrap
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-`bootstrap` calls `ollama-setup` automatically when the active config uses Ollama. It tries to start
-the local server and pull `nomic-embed-text` when Ollama is installed.
+`bootstrap` installs `chaos-agent`, starts Postgres, runs migrations, verifies the configured
+embedder, and starts/pulls Ollama resources when the active config uses Ollama.
 
-## Project-Level Use
+## 3. Install Or Enable In Codex
 
-From any Rust, TypeScript, or JavaScript project, talk to the agent after the plugin is enabled:
+Add this repository as a Codex plugin marketplace:
+
+```bash
+codex plugin marketplace add /absolute/path/to/chaos-substrate
+codex plugin marketplace list
+```
+
+Then restart Codex and install or enable `chaos-substrate` from the plugin UI if it is not enabled
+automatically.
+
+Codex reads:
+
+```text
+.agents/plugins/marketplace.json
+.codex-plugin/plugin.json
+skills/chaos-substrate/SKILL.md
+.mcp.json
+```
+
+## 4. Install Or Enable In Claude Code
+
+For local testing, start Claude Code with the plugin directory:
+
+```bash
+claude --plugin-dir /absolute/path/to/chaos-substrate
+```
+
+Inside Claude Code, verify the skill is visible:
+
+```text
+/chaos-substrate:chaos-substrate
+```
+
+For a real marketplace install, add a marketplace that contains
+`.claude-plugin/marketplace.json`, then install the plugin from Claude Code's `/plugin` UI. This
+repository includes a local marketplace file at:
+
+```text
+.claude-plugin/marketplace.json
+```
+
+Claude Code reads:
+
+```text
+.claude-plugin/plugin.json
+.claude-plugin/marketplace.json
+skills/chaos-substrate/SKILL.md
+.mcp.json
+bin/chaos-agent
+```
+
+## 5. Use From A Project
+
+Only after the plugin is installed or loaded, open a Rust, TypeScript, or JavaScript project and ask
+the agent:
 
 ```text
 Use Chaos Substrate on this project and create an index plus explanation.
@@ -56,57 +114,6 @@ chaos-agent explain "$PWD" "authorization and RBAC"
 ```
 
 Generated project artifacts stay under `chaos-obsidian-vault/` and `docs/features_memory/`.
-
-## Codex Plugin
-
-Codex reads:
-
-```text
-.codex-plugin/plugin.json
-```
-
-The manifest points to the bundled skill directory and MCP config:
-
-```text
-skills/chaos-substrate/SKILL.md
-.mcp.json
-```
-
-Use the plugin to let Codex choose Chaos Substrate for requests like:
-
-```text
-Go through this project and create sufficient index and explanation.
-Generate an explanation website for the authorization feature.
-Update the index before implementing this feature.
-```
-
-## Claude Code Plugin
-
-Claude Code reads:
-
-```text
-.claude-plugin/plugin.json
-```
-
-For local development:
-
-```bash
-claude --plugin-dir /absolute/path/to/chaos-substrate
-```
-
-The plugin skill is namespaced:
-
-```text
-/chaos-substrate:chaos-substrate
-```
-
-To add the MCP server to a Claude Code project explicitly:
-
-```bash
-chaos-agent claude-code-add local "$PWD"
-```
-
-Use `project` instead of `local` when the `.mcp.json` should be shared with teammates.
 
 ## What Still Has To Exist
 

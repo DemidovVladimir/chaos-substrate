@@ -43,6 +43,14 @@ bin/chaos-agent
 Install or load the plugin once per agent, then ask the agent to use Chaos Substrate from the target
 project:
 
+```bash
+codex plugin marketplace add /absolute/path/to/chaos-substrate
+claude --plugin-dir /absolute/path/to/chaos-substrate
+```
+
+Use the Codex command to add the local Codex marketplace. Use the Claude command to load the plugin
+for a Claude Code session. After the plugin is installed or loaded, prompts like these become valid:
+
 ```text
 Use Chaos Substrate on this project and create an index plus explanation.
 Update the Chaos Substrate index.

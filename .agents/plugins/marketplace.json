@@ -1,0 +1,20 @@
+{
+  "name": "chaos-substrate-local",
+  "interface": {
+    "displayName": "Chaos Substrate Local"
+  },
+  "plugins": [
+    {
+      "name": "chaos-substrate",
+      "source": {
+        "source": "local",
+        "path": "."
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

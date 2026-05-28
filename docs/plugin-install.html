@@ -118,23 +118,36 @@
     <header>
       <div class="tagline">Codex + Claude plugin package</div>
       <h1>Chaos Substrate</h1>
-      <p>Install the plugin once, bootstrap the local services once, then let your agent index, query, and generate feature-memory websites from any Rust, TypeScript, or JavaScript project.</p>
+      <p>Install or load the plugin in Codex or Claude first, bootstrap local services once, then let your agent index, query, and generate feature-memory websites from any Rust, TypeScript, or JavaScript project.</p>
     </header>
 
     <div class="grid">
       <section>
-        <h2>One-Time Setup</h2>
+        <h2>1. Bootstrap Services</h2>
         <pre><code>CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent bootstrap
 export PATH="$HOME/.local/bin:$PATH"</code></pre>
         <p>Use this from the Chaos Substrate checkout. It installs the wrapper, starts Ollama when configured, builds the binary, starts Postgres, runs migrations, and checks the system.</p>
       </section>
 
       <section>
-        <h2>Project-Level Use</h2>
+        <h2>2. Install In Codex</h2>
+        <pre><code>codex plugin marketplace add /absolute/path/to/chaos-substrate
+codex plugin marketplace list</code></pre>
+        <p>Restart Codex, then install or enable <code>chaos-substrate</code> from the plugin UI if it is not enabled automatically.</p>
+      </section>
+
+      <section>
+        <h2>3. Load In Claude</h2>
+        <pre><code>claude --plugin-dir /absolute/path/to/chaos-substrate</code></pre>
+        <p>Verify the skill with <code>/chaos-substrate:chaos-substrate</code>. For marketplace install, use the repository's <code>.claude-plugin/marketplace.json</code>.</p>
+      </section>
+
+      <section>
+        <h2>4. Use From A Project</h2>
         <pre><code>Use Chaos Substrate on this project and create an index plus explanation.
 Generate a feature explanation website for authorization and RBAC.
 Find implementation context for authorization and RBAC.</code></pre>
-        <p>Ask the agent naturally after the plugin is enabled. The plugin skill chooses the wrapper command; direct CLI use is for debugging.</p>
+        <p>Ask naturally only after the plugin is enabled in that agent. The plugin skill chooses the wrapper command; direct CLI use is for debugging.</p>
       </section>
 
       <section class="wide">
@@ -156,16 +169,16 @@ Find implementation context for authorization and RBAC.</code></pre>
       <section>
         <h2>Codex</h2>
         <div class="steps">
-          <div class="step"><div class="num">1</div><div><strong>Load the plugin</strong><span>Codex reads <code>.codex-plugin/plugin.json</code>, the bundled skill, and the MCP config.</span></div></div>
-          <div class="step"><div class="num">2</div><div><strong>Ask naturally</strong><span>Use prompts like “Go through this project and create sufficient index and explanation.”</span></div></div>
-          <div class="step"><div class="num">3</div><div><strong>Inspect outputs</strong><span>Open graph exports, Obsidian vaults, and feature-memory pages.</span></div></div>
+          <div class="step"><div class="num">1</div><div><strong>Add marketplace</strong><span>Codex reads <code>.agents/plugins/marketplace.json</code> and <code>.codex-plugin/plugin.json</code>.</span></div></div>
+          <div class="step"><div class="num">2</div><div><strong>Enable plugin</strong><span>Install or enable <code>chaos-substrate</code> in Codex before prompting.</span></div></div>
+          <div class="step"><div class="num">3</div><div><strong>Ask naturally</strong><span>Use prompts like “Go through this project and create sufficient index and explanation.”</span></div></div>
         </div>
       </section>
 
       <section>
         <h2>Claude Code</h2>
         <pre><code>claude --plugin-dir /absolute/path/to/chaos-substrate</code></pre>
-        <p>The skill is available as <code>/chaos-substrate:chaos-substrate</code>. For explicit project MCP setup:</p>
+        <p>The skill is available as <code>/chaos-substrate:chaos-substrate</code> after Claude loads the plugin. For explicit project MCP setup:</p>
         <pre><code>chaos-agent claude-code-add local "$PWD"</code></pre>
       </section>
 

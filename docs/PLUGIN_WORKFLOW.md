@@ -45,7 +45,15 @@ scripts/chaos-agent bootstrap
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Then, from a target project, use natural agent requests:
+Then install or load the plugin in the agent:
+
+```bash
+codex plugin marketplace add /absolute/path/to/chaos-substrate
+claude --plugin-dir /absolute/path/to/chaos-substrate
+```
+
+Use the Codex command for Codex. Use the Claude command for a Claude Code session. Only after that,
+from a target project, use natural agent requests:
 
 ```text
 Use Chaos Substrate on this project and create an index plus explanation.

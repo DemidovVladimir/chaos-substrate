@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "chaos-substrate-local",
+  "version": "1.0.0",
+  "description": "Local marketplace for the Chaos Substrate Claude Code plugin.",
+  "owner": {
+    "name": "Chaos Substrate"
+  },
+  "plugins": [
+    {
+      "name": "chaos-substrate",
+      "description": "Persistent code knowledge memory for Rust, TypeScript, and JavaScript projects.",
+      "version": "0.2.0",
+      "author": {
+        "name": "Chaos Substrate"
+      },
+      "source": ".",
+      "category": "productivity"
+    }
+  ]
+}
