@@ -1,7 +1,7 @@
 {
   "name": "chaos-substrate",
   "description": "Persistent code knowledge memory with MCP tools for indexing, querying, feature context, and feature explanation pages.",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "author": {
     "name": "Chaos Substrate"
   },
