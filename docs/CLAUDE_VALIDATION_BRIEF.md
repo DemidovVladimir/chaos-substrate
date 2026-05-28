@@ -201,7 +201,8 @@ Chaos Substrate should become a modular code-to-knowledge memory system:
 - Rust extraction uses `syn` plus heuristics; it is not rust-analyzer/MIR-level semantic analysis.
 - No Go/Python/Kubernetes/Terraform adapter yet.
 - No full integration test with a real embedder was run unless the validator provides OpenAI or Ollama.
-- MCP has a focused tool surface: `chaos_analyze`, `chaos_query`, and `chaos_feature_context`.
+- MCP has a focused tool surface: `chaos_analyze`, `chaos_query`, `chaos_feature_context`, and
+  `chaos_write_feature_website`.
 
 ## Pass Criteria
 

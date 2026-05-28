@@ -277,7 +277,7 @@ Tool:
 ```text
 chaos_analyze(repo_path)
 chaos_query(repo, question, limit)
-chaos_feature_context(repo, task, limit, feature_limit, nodes_per_feature, features_dir, output_html)
+chaos_feature_context(repo, task, limit, feature_limit, nodes_per_feature, features_dir)
 chaos_write_feature_website(repo, slug, title, html, manifest)
 ```
 

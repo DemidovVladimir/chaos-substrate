@@ -109,8 +109,9 @@ Use Chaos Substrate before non-trivial architecture, security, or feature work.
 
 - Index/update: ask for `chaos_analyze` on this repository.
 - Query: use `chaos_query` with a focused question before editing.
-- Feature context: prefer `chaos-agent context <repo> "<task>"` or generated
-  `docs/features_memory/*.html` manifests when available.
+- Feature context: use `chaos_feature_context`.
+- Feature website generation: read `chaos_feature_context`, compose the feature-specific page and
+  manifest, then call `chaos_write_feature_website`.
 - Do not treat generated docs as source of truth when source code disagrees.
 - Feature-map story steps must use explicit `node_ids`/`edge_ids`; do not infer step scope by
   graph expansion.
@@ -146,8 +147,8 @@ MCP tool list contains `chaos_feature_context` and `chaos_write_feature_website`
 
 Claude Cowork-style sandboxes may not be able to reach host Postgres or write project files
 directly. In that case, the agent should use the host MCP tools instead of claiming only the CLI can
-do the work. If `output_html` cannot be written, it should still return the feature context and state
-that filesystem writing was blocked.
+do the work. If `chaos_write_feature_website` cannot write the file, it should still return the
+feature context and state that filesystem writing was blocked.
 
 For large output, Claude Code supports MCP output limit environment variables. If responses are
 truncated, start Claude Code with a higher limit, for example:

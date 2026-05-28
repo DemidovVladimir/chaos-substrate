@@ -24,6 +24,18 @@ cargo run -- feature-context /path/to/repo "task"
 cargo run -- mcp
 ```
 
+## MCP Tool Surface
+
+Agents should prefer MCP tools when available:
+
+- `chaos_analyze`: index or refresh a repository.
+- `chaos_query`: answer focused source-grounded questions.
+- `chaos_feature_context`: gather evidence for feature understanding.
+- `chaos_write_feature_website`: write an LLM-composed feature page with a manifest.
+
+Do not synthesize feature pages from `chaos_query` alone when `chaos_feature_context` and
+`chaos_write_feature_website` are available.
+
 ## Claude Code / Cowork MCP
 
 Prefer the wrapper when registering this repository as an MCP server:

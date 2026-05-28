@@ -119,13 +119,14 @@ query-generated maps should record extractor/query provenance more precisely.
 
 ## Recommended Agent Workflow
 
-1. Run `chaos feature-context` with the user task.
+1. Use MCP `chaos_feature_context` with the user task when MCP is available. Use
+   `chaos feature-context` only for direct CLI debugging.
 2. Read the highest scoring `postgres.hits` and `feature_matches`.
 3. Use feature manifests as the stable machine contract; do not scrape the visual DOM.
 4. Open source files from the returned paths and line ranges before editing.
 5. After implementation, run project tests, then re-run `chaos analyze` and `chaos refresh` to
-   update the index and Obsidian vault. Regenerate focused feature pages with
-   `chaos feature-context --output-html` when the feature explanation should change.
+   update the index and Obsidian vault. For feature pages, compose the page and manifest from
+   `chaos_feature_context` evidence, then write it with `chaos_write_feature_website`.
 
 ## Why Manifests Instead Of DOM Scraping
 

@@ -43,7 +43,10 @@ graph automatically, because that turns a local flow step into an unreadable nei
 
 ## 3. Generate Feature Pages
 
-Generate a focused feature explanation page from the current index:
+For plugin/MCP workflows, generate feature pages by first calling `chaos_feature_context`, then
+having the LLM compose the page and manifest, then calling `chaos_write_feature_website`.
+
+For direct CLI debugging, generate a focused feature explanation page from the current index:
 
 ```bash
 cargo run -- feature-context /absolute/path/to/repo "authorization and RBAC" \

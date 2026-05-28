@@ -182,7 +182,12 @@ See `docs/CLAUDE_CODE_COWORK.md` for the full Claude Code / Cowork workflow.
 
 ## 10. Use From Claude
 
-Ask Claude to use `chaos_analyze` to index and `chaos_query` to search.
+Ask Claude to use the MCP tools directly:
+
+- `chaos_analyze` to index or refresh.
+- `chaos_query` to answer focused questions.
+- `chaos_feature_context` to gather feature evidence.
+- `chaos_write_feature_website` to write an LLM-composed feature page and manifest.
 
 Analyze/index:
 
@@ -238,8 +243,9 @@ Use these surfaces together:
 - `docs/CLAUDE_VALIDATION_BRIEF.md` for validation and PRD review.
 - MCP `chaos_query` for live access to the persisted knowledge base.
 - MCP `chaos_analyze` for indexing/reindexing repositories.
-- MCP `chaos_feature_context` for feature explanations, implementation context, and optional HTML
-  feature-page generation.
+- MCP `chaos_feature_context` for feature explanations and implementation context.
+- MCP `chaos_write_feature_website` for LLM-composed HTML feature-page generation with an embedded
+  manifest.
 
 Codex-specific plugin files remain available:
 
