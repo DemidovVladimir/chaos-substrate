@@ -123,7 +123,9 @@ query-generated maps should record extractor/query provenance more precisely.
 2. Read the highest scoring `postgres.hits` and `feature_matches`.
 3. Use feature manifests as the stable machine contract; do not scrape the visual DOM.
 4. Open source files from the returned paths and line ranges before editing.
-5. After implementation, run project tests and then `chaos refresh` to update the feature memory.
+5. After implementation, run project tests, then re-run `chaos analyze` and `chaos refresh` to
+   update the index and Obsidian vault. Regenerate focused feature pages with
+   `chaos feature-context --output-html` when the feature explanation should change.
 
 ## Why Manifests Instead Of DOM Scraping
 

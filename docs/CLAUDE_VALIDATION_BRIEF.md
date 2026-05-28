@@ -133,9 +133,10 @@ Expected behavior:
 - `feature-context` returns Postgres hits plus any matching generated feature manifests from
   `docs/features_memory`.
 - `graph` writes a standalone interactive webpage that shows persisted nodes and edges.
-- `refresh` writes an Obsidian vault and generated feature-memory pages with
+- `refresh` writes an Obsidian vault from persisted graph data.
+- `feature-context --output-html` writes generated feature-memory pages with
   `chaos-feature-manifest` JSON. Manifests include `schema_version`, `feature`, `claims`, `modes`,
-  `nodes`, `edges`, evidence, and confidence.
+  `nodes`, `edges`, story-step scopes, evidence, and confidence.
 - Re-running `query` after restarting the process still uses persisted data.
 - If the embedder is unavailable, analyze/query should fail rather than produce fake vectors.
 
@@ -185,8 +186,9 @@ Chaos Substrate should become a modular code-to-knowledge memory system:
 6. Persist everything in Postgres + pgvector.
 7. Query using semantic search, keyword search, and graph context routing.
 8. Export a standalone graph webpage for human validation of the persisted graph.
-9. Refresh feature-memory websites and Obsidian vaults from persisted knowledge.
-10. Build focused implementation context from Postgres retrieval plus generated feature manifests.
+9. Refresh Obsidian vaults from persisted knowledge.
+10. Build focused implementation context and feature-memory websites from Postgres retrieval plus
+    generated feature manifests.
 11. Expose access through CLI and MCP for coding agents.
 12. Keep architecture modular for future Go, Python, AWS CDK, Kubernetes, Terraform, and framework-specific extractors.
 
