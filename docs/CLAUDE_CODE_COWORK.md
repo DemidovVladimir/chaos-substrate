@@ -136,10 +136,15 @@ For feature explanations and website generation, use the MCP two-step workflow:
 ```text
 1. Use chaos_feature_context on this repository.
    Task: explain OCL across the project.
-2. Read the returned evidence.
+2. Read the returned evidence and warnings.
 3. Compose the feature-specific website and chaos-feature-manifest.
 4. Use chaos_write_feature_website to write docs/features_memory/ocl-explanation.html.
 ```
+
+If `chaos_feature_context.warnings` says that a subtree exists on disk but is not represented in
+Postgres hits, or that docs exist but no documentation hits were returned, stop before writing the
+website. Refresh the index with `chaos_analyze` or run a more targeted `chaos_feature_context` call
+that names the missing path/docs. A page written while warnings are present is incomplete by design.
 
 The website must be interactive, not a styled README. The HTML passed to
 `chaos_write_feature_website` must contain a root `data-chaos-feature-website`, clickable graph

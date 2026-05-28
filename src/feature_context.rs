@@ -15,6 +15,7 @@ pub struct FeatureContextResponse {
     pub task: String,
     pub postgres: QueryResponse,
     pub features_dir: PathBuf,
+    pub warnings: Vec<String>,
     pub feature_matches: Vec<FeatureMatch>,
 }
 
@@ -172,7 +173,7 @@ pub fn load_feature_matches(
         if path.extension().and_then(|ext| ext.to_str()) != Some("html") {
             continue;
         }
-        let Some(manifest) = read_feature_manifest(&path)? else {
+        let Some(manifest) = read_feature_manifest(&path).unwrap_or(None) else {
             continue;
         };
         let scored = score_manifest(path, manifest, &tokens, nodes_per_feature);
@@ -184,6 +185,50 @@ pub fn load_feature_matches(
     matches.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.title.cmp(&b.title)));
     matches.truncate(feature_limit);
     Ok(matches)
+}
+
+pub fn build_feature_context_warnings(
+    task: &str,
+    repo_root: &Path,
+    postgres: &QueryResponse,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for token in tokenize(task) {
+        if token.len() < 4 || !repo_root.join(&token).exists() {
+            continue;
+        }
+        let token_in_hits = postgres.hits.iter().any(|hit| {
+            hit.file_path
+                .as_deref()
+                .is_some_and(|path| path.to_ascii_lowercase().contains(&token))
+        });
+        if !token_in_hits {
+            warnings.push(format!(
+                "filesystem path `{token}` exists under the repo, but no Postgres hits referenced it; the index may be stale or the feature context limit is too low"
+            ));
+        }
+    }
+
+    if repo_root.join("docs").exists() && !postgres.hits.iter().any(is_documentation_hit) {
+        warnings.push(
+            "repo has a docs directory, but this feature-context result contains no documentation hits; generated websites should re-query with stronger docs terms or re-index if docs were added recently"
+                .to_string(),
+        );
+    }
+
+    warnings
+}
+
+fn is_documentation_hit(hit: &crate::models::SearchHit) -> bool {
+    hit.metadata
+        .get("source_priority")
+        .and_then(|v| v.as_str())
+        .is_some_and(|priority| priority == "supplemental")
+        || hit
+            .metadata
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .is_some_and(|kind| kind == "documentation")
 }
 
 pub fn write_feature_context_html(path: &Path, response: &FeatureContextResponse) -> Result<()> {
@@ -376,6 +421,7 @@ main{padding:18px;display:grid;gap:18px}.grid{display:grid;grid-template-columns
 <div class="panel"><h2>Feature Matches</h2><div id="features"></div></div>
 <div class="panel"><h2>Matched Source</h2><div id="nodes"></div></div>
 </section>
+<section class="panel"><h2>Warnings</h2><div id="warnings"></div></section>
 <section class="panel"><h2>Documentation Evidence</h2><div id="docs"></div></section>
 <section class="panel"><h2>Postgres Retrieval</h2><div id="hits"></div></section>
 </main>
@@ -391,6 +437,9 @@ data.feature_matches.forEach(f=>{const el=document.createElement("div");el.class
 const nodes=document.getElementById("nodes");
 data.feature_matches.flatMap(f=>f.matched_nodes||[]).forEach(n=>{const el=document.createElement("div");el.className="item";el.innerHTML=`<strong>${esc(n.label)}</strong><div>${esc(n.role)}</div><div class="meta">${esc(n.file)} | lines ${esc(n.lines)} | confidence ${Math.round((n.confidence||0)*100)}%</div><pre><code>${esc(n.code)}</code></pre>`;nodes.appendChild(el)});
 if(!nodes.children.length){nodes.innerHTML='<div class="meta">No feature-manifest nodes matched.</div>'}
+const warnings=document.getElementById("warnings");
+(data.warnings||[]).forEach(w=>{const el=document.createElement("div");el.className="item doc";el.innerHTML=`<strong>Context warning</strong><div>${esc(w)}</div>`;warnings.appendChild(el)});
+if(!warnings.children.length){warnings.innerHTML='<div class="meta">No stale-index or missing-doc warnings detected.</div>'}
 const docs=document.getElementById("docs");
 (data.postgres?.hits||[]).filter(isDoc).forEach(h=>{const el=document.createElement("div");el.className="item doc";el.innerHTML=`<strong>${esc(h.file_path||"documentation")}</strong><div class="meta">${sourceTag(h)}lines ${esc(h.line_start)}-${esc(h.line_end)} | score ${(h.score||0).toFixed(3)}</div><pre><code>${esc(h.content)}</code></pre>`;docs.appendChild(el)});
 if(!docs.children.length){docs.innerHTML='<div class="meta">No matching docs were returned for this query. Re-index after adding Markdown/MDX docs, or raise --limit if the task is very code-specific.</div>'}
@@ -402,8 +451,9 @@ const hits=document.getElementById("hits");
 
 #[cfg(test)]
 mod tests {
-    use super::{tokenize, FeatureManifest};
+    use super::{load_feature_matches, tokenize, FeatureManifest, MANIFEST_START};
     use serde_json::json;
+    use std::fs;
 
     #[test]
     fn tokenizes_task_text() {
@@ -451,5 +501,19 @@ mod tests {
             vec!["uploader", "generate-dek", "kms-key"]
         );
         assert_eq!(manifest.story[0].edge_ids, vec!["uploader->generate-dek"]);
+    }
+
+    #[test]
+    fn skips_malformed_feature_manifests() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("broken.html"),
+            format!("{MANIFEST_START}\n{{\"nodes\":[]}}\n</script>"),
+        )
+        .unwrap();
+
+        let matches = load_feature_matches("OCL", dir.path(), 3, 8).unwrap();
+
+        assert!(matches.is_empty());
     }
 }

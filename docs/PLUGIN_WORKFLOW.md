@@ -120,6 +120,12 @@ the agent can use the `chaos-substrate` skill and the MCP tools exposed by `chao
 do not include an interactive graph, story flow, architecture/flow sections, code context, evidence
 panel, and a sufficiently populated manifest.
 
+`chaos_feature_context` may return `warnings`. Agents must treat these as blockers for website
+generation. Typical warnings mean a target subtree exists on disk but is missing from Postgres hits,
+or that repository docs exist but no documentation evidence was retrieved. In that state the agent
+should refresh the index or run a more targeted context query before calling
+`chaos_write_feature_website`.
+
 ## Claude Code
 
 Claude Code uses `.claude-plugin/plugin.json` and root-level plugin components. Test locally with:

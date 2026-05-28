@@ -1,8 +1,11 @@
 use crate::{
     embedding::{build_embedder, Embedder},
     extractor::{current_commit, RustRepositoryExtractor},
-    feature_context::{load_feature_matches, write_feature_context_html, FeatureContextResponse},
-    query::query_repo,
+    feature_context::{
+        build_feature_context_warnings, load_feature_matches, write_feature_context_html,
+        FeatureContextResponse,
+    },
+    query::{query_feature_context_repo, query_repo},
     storage::Storage,
     Config,
 };
@@ -67,7 +70,7 @@ pub async fn run(config: Config) -> Result<()> {
                         },
                         {
                             "name": "chaos_feature_context",
-                            "description": "Build focused implementation context for a feature or task. Reads Postgres retrieval plus generated feature-memory manifests. Use this before composing any feature website.",
+                            "description": "Build focused implementation context for a feature or task. Reads Postgres retrieval plus generated feature-memory manifests and returns warnings when expected paths/docs are missing. Use this before composing any feature website; treat warnings as blockers before writing.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
@@ -195,13 +198,16 @@ async fn handle_tool_call(
                 .and_then(Value::as_str)
                 .map(PathBuf::from)
                 .unwrap_or_else(|| repo_root.join("docs/features_memory"));
-            let postgres = query_repo(storage, repo.id, embedder, task, limit).await?;
+            let postgres =
+                query_feature_context_repo(storage, repo.id, embedder, task, limit).await?;
+            let warnings = build_feature_context_warnings(task, &repo_root, &postgres);
             let feature_matches =
                 load_feature_matches(task, &features_dir, feature_limit, nodes_per_feature)?;
             let response = FeatureContextResponse {
                 task: task.to_string(),
                 postgres,
                 features_dir,
+                warnings,
                 feature_matches,
             };
             let output_html = args.get("output_html").and_then(Value::as_str);

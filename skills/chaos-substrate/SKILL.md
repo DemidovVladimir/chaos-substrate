@@ -40,6 +40,12 @@ If MCP tools are available, prefer them over shelling out:
    a feature-specific website plus manifest. The LLM must decide the feature story, claims, nodes,
    and flow from evidence; the tool only writes the artifact.
 
+Treat `chaos_feature_context.warnings` as blocking for generated feature websites. If it says a
+filesystem path exists but no Postgres hits referenced it, or that docs exist but no docs were
+returned, do not call `chaos_write_feature_website` yet. Run `chaos_analyze`/`update`, or make a
+more targeted `chaos_feature_context` call that names the missing subtree/docs, then compose the
+website only after the missing evidence appears.
+
 Feature websites must be interactive, not prettified Markdown. Before calling
 `chaos_write_feature_website`, the HTML must include:
 
@@ -54,6 +60,8 @@ Feature websites must be interactive, not prettified Markdown. Before calling
 
 The manifest must include at least three claims, two modes, five nodes, three edges, and three story
 steps. If evidence is too thin for that, do not write a weak page; ask to index/query more first.
+If the feature context has warnings, preserve them in your response and resolve them before writing
+the page.
 
 Do not tell the user "I only have chaos_query" if `chaos_feature_context` or
 `chaos_write_feature_website` is available. If the MCP server cannot write the website because of

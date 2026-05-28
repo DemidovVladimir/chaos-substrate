@@ -289,6 +289,37 @@ impl Storage {
         Ok(rows.into_iter().map(row_to_search_hit).collect())
     }
 
+    pub async fn literal_search(
+        &self,
+        repo_id: Uuid,
+        term: &str,
+        limit: i64,
+    ) -> Result<Vec<SearchHit>> {
+        let pattern = format!("%{term}%");
+        let rows = sqlx::query(
+            r#"
+            select c.id as chunk_id, c.node_id, f.path as file_path, c.line_start, c.line_end,
+                   (
+                     case when lower(coalesce(f.path, '')) like lower($2) then 1.5 else 0 end +
+                     case when lower(c.content) like lower($2) then 0.35 else 0 end
+                   )::float8 as score,
+                   c.content, c.metadata
+            from chunks c
+            left join files f on f.id = c.file_id
+            where c.repo_id = $1
+              and (lower(coalesce(f.path, '')) like lower($2) or lower(c.content) like lower($2))
+            order by score desc, c.line_start nulls last
+            limit $3
+            "#,
+        )
+        .bind(repo_id)
+        .bind(pattern)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(row_to_search_hit).collect())
+    }
+
     pub async fn load_edges_for_nodes(
         &self,
         repo_id: Uuid,

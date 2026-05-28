@@ -87,6 +87,8 @@ The corresponding implementation commands are `chaos-agent onboard`, `update`, `
 When MCP is available, agents should prefer `chaos_analyze`, `chaos_query`, and
 `chaos_feature_context`; feature websites should be LLM-composed from that evidence and written with
 `chaos_write_feature_website`. The CLI wrapper is the fallback and setup path.
+If `chaos_feature_context` returns warnings about missing indexed subtrees or missing documentation
+hits, agents must refresh or target the context again before writing a feature website.
 The writer rejects README-like pages; feature pages must include interactive graph/story/code
 navigation, architecture/flow sections, evidence, and a populated manifest.
 

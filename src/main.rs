@@ -18,11 +18,14 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use embedding::build_embedder;
 use extractor::{current_commit, RustRepositoryExtractor};
-use feature_context::{load_feature_matches, write_feature_context_html, FeatureContextResponse};
+use feature_context::{
+    build_feature_context_warnings, load_feature_matches, write_feature_context_html,
+    FeatureContextResponse,
+};
 use feature_export::refresh_project_exports;
 use graph_export::write_graph_html;
 use obsidian_export::write_obsidian_vault;
-use query::query_repo;
+use query::{query_feature_context_repo, query_repo};
 use serde_json::json;
 use std::path::PathBuf;
 use storage::Storage;
@@ -214,13 +217,17 @@ async fn main() -> Result<()> {
             let repo_root = PathBuf::from(&repo.root_path);
             let features_dir =
                 features_dir.unwrap_or_else(|| repo_root.join("docs/features_memory"));
-            let postgres = query_repo(&storage, repo.id, embedder.as_ref(), &task, limit).await?;
+            let postgres =
+                query_feature_context_repo(&storage, repo.id, embedder.as_ref(), &task, limit)
+                    .await?;
+            let warnings = build_feature_context_warnings(&task, &repo_root, &postgres);
             let feature_matches =
                 load_feature_matches(&task, &features_dir, feature_limit, nodes_per_feature)?;
             let response = FeatureContextResponse {
                 task,
                 postgres,
                 features_dir,
+                warnings,
                 feature_matches,
             };
             if let Some(output_html) = output_html {
