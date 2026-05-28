@@ -10,7 +10,7 @@
     {
       "name": "chaos-substrate",
       "description": "Persistent code knowledge memory with MCP feature-context explanations for Rust, TypeScript, and JavaScript projects.",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "author": {
         "name": "Chaos Substrate"
       },
