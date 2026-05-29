@@ -868,147 +868,15 @@ impl RustRepositoryExtractor {
             json!({}),
             result,
         )?;
-        let content = file.content.clone();
-
-        self.extract_python_imports(repo_id, &file, file_node_id, &content, result)?;
-        self.extract_python_symbols(repo_id, &file, file_node_id, &content, symbol_names, result)?;
-        Ok(())
-    }
-
-    fn extract_python_imports(
-        &self,
-        repo_id: Uuid,
-        file: &SourceFile,
-        file_node_id: Uuid,
-        content: &str,
-        result: &mut ExtractionResult,
-    ) -> Result<()> {
-        // Matches `import pkg`, `import pkg.sub`, `from pkg import x`, and the
-        // relative forms `from . import x` / `from .pkg import y`.
-        let import_re = Regex::new(
-            r"(?m)^\s*(?:from\s+(\.*[A-Za-z0-9_.]*)\s+import\b|import\s+([A-Za-z0-9_.]+))",
-        )?;
-        for captures in import_re.captures_iter(content) {
-            let module = captures
-                .get(1)
-                .or_else(|| captures.get(2))
-                .map(|v| v.as_str().trim())
-                .unwrap_or_default();
-            if module.is_empty() {
-                continue;
-            }
-            let line = captures
-                .get(0)
-                .and_then(|m| find_line(content, m.as_str().trim()))
-                .map(|v| v as i32);
-            let is_bare = is_bare_module_specifier(module);
-            let node = KnowledgeNode {
-                id: Uuid::new_v4(),
-                repo_id,
-                file_id: if is_bare { None } else { Some(file.id) },
-                kind: NodeKind::Dependency,
-                stable_id: import_stable_id(file, module, is_bare),
-                name: module.to_string(),
-                line_start: if is_bare { None } else { line },
-                line_end: if is_bare { None } else { line },
-                metadata: json!({
-                    "module": module,
-                    "language": "python",
-                    "scope": if is_bare { "bare" } else { "relative" }
-                }),
-            };
-            result.edges.push(edge(
-                repo_id,
-                file_node_id,
-                node.id,
-                EdgeKind::Imports,
-                weights::IMPORTS_MODULE,
-                json!({"file": file.path, "module": module, "line": line}),
-            ));
-            result.nodes.push(node);
-        }
-        Ok(())
-    }
-
-    fn extract_python_symbols(
-        &self,
-        repo_id: Uuid,
-        file: &SourceFile,
-        file_node_id: Uuid,
-        content: &str,
-        symbol_names: &mut HashMap<String, Uuid>,
-        result: &mut ExtractionResult,
-    ) -> Result<()> {
-        let patterns = [
-            (
-                NodeKind::Function,
-                "function",
-                Regex::new(r"(?m)^[ \t]*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")?,
-            ),
-            (
-                NodeKind::Struct,
-                "class",
-                Regex::new(r"(?m)^[ \t]*class\s+([A-Za-z_][A-Za-z0-9_]*)\b")?,
-            ),
-        ];
-
-        for (kind, python_kind, pattern) in patterns {
-            for captures in pattern.captures_iter(content) {
-                let Some(name) = captures.get(1).map(|v| v.as_str()) else {
-                    continue;
-                };
-                let line = captures
-                    .get(0)
-                    .and_then(|m| find_line(content, m.as_str().trim()))
-                    .or_else(|| find_line(content, name))
-                    .unwrap_or(1);
-                let end = find_python_block_end(content, line).unwrap_or(line);
-                let code = slice_lines(content, line, end);
-                let chunk_kind = if is_python_test_file(&file.path) || is_test_symbol(name) {
-                    NodeKind::Test
-                } else {
-                    kind.clone()
-                };
-                let node = KnowledgeNode {
-                    id: Uuid::new_v4(),
-                    repo_id,
-                    file_id: Some(file.id),
-                    kind: chunk_kind.clone(),
-                    stable_id: format!("{}:{}:{}", file.path, chunk_kind.as_str(), name),
-                    name: name.to_string(),
-                    line_start: Some(line as i32),
-                    line_end: Some(end as i32),
-                    metadata: json!({
-                        "language": "python",
-                        "file": file.path,
-                        "python_kind": python_kind
-                    }),
-                };
-                symbol_names.entry(name.to_string()).or_insert(node.id);
-                result.edges.push(edge(
-                    repo_id,
-                    file_node_id,
-                    node.id,
-                    EdgeKind::Contains,
-                    weights::CONTAINS_CODE,
-                    json!({"language": "python", "kind": python_kind}),
-                ));
-                result.chunks.push(chunk_for_node(
-                    repo_id,
-                    Some(file.id),
-                    Some(node.id),
-                    chunk_kind.as_str(),
-                    &format!(
-                        "Language: python\nFile: {}\nSymbol: {}\nKind: {}\nLines: {}-{}\n\n{}",
-                        file.path, name, python_kind, line, end, code
-                    ),
-                    Some(line as i32),
-                    Some(end as i32),
-                    json!({"symbol": name, "kind": chunk_kind.as_str(), "python_kind": python_kind, "file": file.path}),
-                ));
-                result.nodes.push(node);
-            }
-        }
+        let mut ctx = crate::lang::FileExtraction {
+            repo_id,
+            file: &file,
+            file_node_id,
+            lines: crate::lang::LineIndex::new(&file.content),
+            symbol_names,
+            result,
+        };
+        crate::lang::python::extract(&mut ctx)?;
         Ok(())
     }
 
@@ -2059,35 +1927,6 @@ fn find_block_end(content: &str, start_line: usize) -> Option<usize> {
     Some(start_line)
 }
 
-/// Resolve the last line of a Python block (`def`/`class`) using indentation
-/// instead of braces: the block continues while subsequent non-blank lines are
-/// indented deeper than the header line.
-fn find_python_block_end(content: &str, start_line: usize) -> Option<usize> {
-    let lines = content.lines().collect::<Vec<_>>();
-    if start_line == 0 || start_line > lines.len() {
-        return None;
-    }
-    let header_indent = indent_width(lines[start_line - 1]);
-    let mut end = start_line;
-    for (idx, line) in lines.iter().enumerate().skip(start_line) {
-        if line.trim().is_empty() {
-            continue;
-        }
-        if indent_width(line) <= header_indent {
-            break;
-        }
-        end = idx + 1;
-    }
-    Some(end)
-}
-
-fn indent_width(line: &str) -> usize {
-    line.chars()
-        .take_while(|ch| *ch == ' ' || *ch == '\t')
-        .map(|ch| if ch == '\t' { 4 } else { 1 })
-        .sum()
-}
-
 pub(crate) fn slice_lines(content: &str, start: usize, end: usize) -> String {
     content
         .lines()
@@ -2469,6 +2308,30 @@ def login(user):
             .chunks
             .iter()
             .any(|chunk| chunk.content.contains("Language: python")));
+    }
+
+    #[test]
+    fn python_captures_methods_and_relative_imports() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("svc.py"),
+            "from .util import helper\nclass Service:\n    def run(self):\n        return helper()\n",
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+        assert!(result
+            .nodes
+            .iter()
+            .any(|n| n.name == "Service" && n.kind == NodeKind::Struct));
+        assert!(result
+            .nodes
+            .iter()
+            .any(|n| n.name == "run" && n.kind == NodeKind::Function));
+        assert!(result
+            .nodes
+            .iter()
+            .any(|n| n.kind == NodeKind::Dependency && n.name == ".util"));
     }
 
     #[test]

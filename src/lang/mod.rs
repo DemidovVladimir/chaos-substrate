@@ -14,14 +14,10 @@ pub(crate) mod solidity;
 
 /// Maps a UTF-8 byte offset (as produced by every AST node span) to a 1-based
 /// line number. Built once per file.
-// NOTE: consumed starting in Task 4; allow(dead_code) keeps `clippy -D warnings`
-// green until then.
-#[allow(dead_code)]
 pub(crate) struct LineIndex {
     line_starts: Vec<usize>,
 }
 
-#[allow(dead_code)]
 impl LineIndex {
     pub(crate) fn new(content: &str) -> Self {
         let mut line_starts = vec![0usize];
@@ -34,6 +30,7 @@ impl LineIndex {
     }
 
     /// 1-based line number containing `byte_offset`.
+    /// Offsets past the end of `content` map to the last line + 1.
     pub(crate) fn line(&self, byte_offset: usize) -> usize {
         match self.line_starts.binary_search(&byte_offset) {
             Ok(idx) => idx + 1,
@@ -43,9 +40,6 @@ impl LineIndex {
 }
 
 /// Per-file extraction context shared by the language submodules.
-// NOTE: constructed starting in Task 4; allow(dead_code) keeps `clippy -D warnings`
-// green until then. Remove this attribute in Task 4 when the first consumer lands.
-#[allow(dead_code)]
 pub(crate) struct FileExtraction<'a> {
     pub repo_id: Uuid,
     pub file: &'a SourceFile,
