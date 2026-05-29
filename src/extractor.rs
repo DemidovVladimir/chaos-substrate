@@ -16,7 +16,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::LazyLock,
 };
 use syn::{Item, ItemImpl};
 use uuid::Uuid;
@@ -27,50 +26,13 @@ pub struct RustRepositoryExtractor {
 
 const MAX_CHUNK_CHARS: usize = 2_000;
 
-/// Compile a pattern that is statically known to be valid. Used only for the
-/// `LazyLock` regex tables below, so a malformed literal is a programmer error.
+/// Compile a pattern that is statically known to be valid, so a malformed
+/// literal is a programmer error. Retained for the regex-based extractors
+/// (AWS-CDK detection still uses the regex path; see Task 7).
+#[allow(dead_code)]
 fn regex(pattern: &str) -> Regex {
     Regex::new(pattern).expect("hard-coded extractor regex must compile")
 }
-
-/// Symbol patterns for JavaScript/TypeScript, compiled once and reused for every
-/// indexed file instead of being rebuilt on each call.
-static JS_TS_SYMBOL_PATTERNS: LazyLock<Vec<(NodeKind, Regex)>> = LazyLock::new(|| {
-    vec![
-        (
-            NodeKind::Function,
-            regex(r"(?m)^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\("),
-        ),
-        (
-            NodeKind::Function,
-            regex(
-                r"(?m)^\s*(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\([^=]*\)\s*=>",
-            ),
-        ),
-        (
-            NodeKind::Function,
-            regex(
-                r"(?m)^\s*(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?[A-Za-z_$][\w$]*\s*=>",
-            ),
-        ),
-        (
-            NodeKind::Struct,
-            regex(r"(?m)^\s*(?:export\s+)?class\s+([A-Za-z_$][\w$]*)\b"),
-        ),
-        (
-            NodeKind::Trait,
-            regex(r"(?m)^\s*(?:export\s+)?interface\s+([A-Za-z_$][\w$]*)\b"),
-        ),
-        (
-            NodeKind::Enum,
-            regex(r"(?m)^\s*(?:export\s+)?enum\s+([A-Za-z_$][\w$]*)\b"),
-        ),
-        (
-            NodeKind::TypeAlias,
-            regex(r"(?m)^\s*(?:export\s+)?type\s+([A-Za-z_$][\w$]*)\b"),
-        ),
-    ]
-});
 
 impl RustRepositoryExtractor {
     pub fn new(indexing: IndexingConfig) -> Self {
@@ -804,8 +766,18 @@ impl RustRepositoryExtractor {
         )?;
         let content = file.content.clone();
 
-        self.extract_js_ts_imports(repo_id, &file, file_node_id, &content, result)?;
-        self.extract_js_ts_symbols(repo_id, &file, file_node_id, &content, symbol_names, result)?;
+        {
+            let mut ctx = crate::lang::FileExtraction {
+                repo_id,
+                file: &file,
+                file_node_id,
+                lines: crate::lang::LineIndex::new(&file.content),
+                symbol_names,
+                result,
+            };
+            crate::lang::javascript::extract(&mut ctx)?;
+        }
+
         self.extract_aws_cdk_knowledge(repo_id, &file, file_node_id, &content, result)?;
         Ok(())
     }
@@ -875,118 +847,6 @@ impl RustRepositoryExtractor {
             result,
         };
         crate::lang::python::extract(&mut ctx)?;
-        Ok(())
-    }
-
-    fn extract_js_ts_imports(
-        &self,
-        repo_id: Uuid,
-        file: &SourceFile,
-        file_node_id: Uuid,
-        content: &str,
-        result: &mut ExtractionResult,
-    ) -> Result<()> {
-        let import_re = Regex::new(
-            r#"(?m)^\s*(?:import\s+(?:type\s+)?(?:[^'"]+\s+from\s+)?|export\s+[^'"]+\s+from\s+|const\s+\w+\s*=\s*require\()\s*['"]([^'"]+)['"]"#,
-        )?;
-        for captures in import_re.captures_iter(content) {
-            let Some(module) = captures.get(1).map(|v| v.as_str()) else {
-                continue;
-            };
-            let line = find_line(content, module).map(|v| v as i32);
-            let is_bare = is_bare_module_specifier(module);
-            let node = KnowledgeNode {
-                id: Uuid::new_v4(),
-                repo_id,
-                file_id: if is_bare { None } else { Some(file.id) },
-                kind: NodeKind::Dependency,
-                stable_id: import_stable_id(file, module, is_bare),
-                name: module.to_string(),
-                line_start: if is_bare { None } else { line },
-                line_end: if is_bare { None } else { line },
-                metadata: json!({
-                    "module": module,
-                    "language": file.language.as_str(),
-                    "scope": if is_bare { "bare" } else { "relative" }
-                }),
-            };
-            result.edges.push(edge(
-                repo_id,
-                file_node_id,
-                node.id,
-                EdgeKind::Imports,
-                weights::IMPORTS_MODULE,
-                json!({"file": file.path, "module": module, "line": line}),
-            ));
-            result.nodes.push(node);
-        }
-        Ok(())
-    }
-
-    fn extract_js_ts_symbols(
-        &self,
-        repo_id: Uuid,
-        file: &SourceFile,
-        file_node_id: Uuid,
-        content: &str,
-        symbol_names: &mut HashMap<String, Uuid>,
-        result: &mut ExtractionResult,
-    ) -> Result<()> {
-        for (kind, pattern) in JS_TS_SYMBOL_PATTERNS.iter() {
-            for captures in pattern.captures_iter(content) {
-                let Some(name) = captures.get(1).map(|v| v.as_str()) else {
-                    continue;
-                };
-                let line = find_line(content, name).unwrap_or(1);
-                let end = find_block_end(content, line).unwrap_or(line);
-                let code = slice_lines(content, line, end);
-                let chunk_kind = if is_js_ts_test_file(&file.path) || is_test_symbol(name) {
-                    NodeKind::Test
-                } else {
-                    kind.clone()
-                };
-                let node = KnowledgeNode {
-                    id: Uuid::new_v4(),
-                    repo_id,
-                    file_id: Some(file.id),
-                    kind: chunk_kind.clone(),
-                    stable_id: format!("{}:{}:{}", file.path, chunk_kind.as_str(), name),
-                    name: name.to_string(),
-                    line_start: Some(line as i32),
-                    line_end: Some(end as i32),
-                    metadata: json!({"language": file.language.as_str(), "file": file.path}),
-                };
-                symbol_names.entry(name.to_string()).or_insert(node.id);
-                result.edges.push(edge(
-                    repo_id,
-                    file_node_id,
-                    node.id,
-                    EdgeKind::Contains,
-                    weights::CONTAINS_CODE,
-                    json!({}),
-                ));
-                result.chunks.push(chunk_for_node(
-                    repo_id,
-                    Some(file.id),
-                    Some(node.id),
-                    chunk_kind.as_str(),
-                    &format!(
-                        "Language: {}\nFile: {}\nSymbol: {}\nKind: {}\nLines: {}-{}\n\n{}",
-                        file.language.as_str(),
-                        file.path,
-                        name,
-                        chunk_kind.as_str(),
-                        line,
-                        end,
-                        code
-                    ),
-                    Some(line as i32),
-                    Some(end as i32),
-                    json!({"symbol": name, "kind": chunk_kind.as_str(), "file": file.path}),
-                ));
-                result.nodes.push(node);
-            }
-        }
         Ok(())
     }
 
@@ -2220,6 +2080,34 @@ def login(user):
 
         assert_eq!(react_nodes, 1);
         assert_eq!(helper_nodes, 2);
+    }
+
+    #[test]
+    fn javascript_captures_methods_and_arrow_functions() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("widget.ts"),
+            "import { dep } from \"./dep\";\nexport const make = () => 1;\nexport class Widget {\n  render() { return make(); }\n}\n",
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+        assert!(result
+            .nodes
+            .iter()
+            .any(|n| n.name == "make" && n.kind == NodeKind::Function));
+        assert!(result
+            .nodes
+            .iter()
+            .any(|n| n.name == "Widget" && n.kind == NodeKind::Struct));
+        assert!(result
+            .nodes
+            .iter()
+            .any(|n| n.name == "render" && n.kind == NodeKind::Function));
+        assert!(result
+            .nodes
+            .iter()
+            .any(|n| n.kind == NodeKind::Dependency && n.name == "./dep"));
     }
 
     #[test]
