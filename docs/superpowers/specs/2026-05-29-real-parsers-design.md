@@ -220,3 +220,14 @@ heuristics. Exact target values enumerated in the plan; `cost` values are frozen
   ensures an unsupported construct downgrades that file rather than breaking the run.
 - **Confidence bump altering query rankings.** Mitigation: `cost` frozen (routing
   identical); ranking-sensitive query tests reviewed when values are finalized.
+
+## Correction (2026-05-29, Task 11)
+
+The `regex` crate dependency is **retained**: the Rust (`syn`) extraction path's
+`find_item_line` function uses `regex::Regex::new` + `regex::escape` to locate symbol lines
+within source text (syn spans lack absolute line numbers in non-proc-macro builds). Removing
+this function was out of scope from the start, and the `regex` crate therefore stays in
+`Cargo.toml`. All non-Rust language extraction (JS/TS via oxc, Python via
+rustpython-parser, Solidity via solang-parser) is regex-free; the old per-language regex
+helpers and `JS_TS_SYMBOL_PATTERNS` were deleted as planned. The earlier plan note suggesting
+the `regex` dependency could be fully removed was incorrect.
