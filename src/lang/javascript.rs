@@ -68,6 +68,7 @@ struct JsImport {
 
 #[derive(Default)]
 struct Collector {
+    is_cdk: bool,
     symbols: Vec<JsSymbol>,
     imports: Vec<JsImport>,
     stacks: Vec<(String, u32, u32)>,
@@ -115,11 +116,13 @@ impl<'a> Visit<'a> for Collector {
                 end: it.span.end,
             });
             // CDK stack detection: class X extends <prefix.>Stack
-            if let Some(super_expr) = &it.super_class {
-                if let Some(ct) = callee_text(super_expr) {
-                    let last_segment = ct.split('.').next_back().unwrap_or(&ct);
-                    if last_segment == "Stack" {
-                        self.stacks.push((class_name, it.span.start, it.span.end));
+            if self.is_cdk {
+                if let Some(super_expr) = &it.super_class {
+                    if let Some(ct) = callee_text(super_expr) {
+                        let last_segment = ct.split('.').next_back().unwrap_or(&ct);
+                        if last_segment == "Stack" {
+                            self.stacks.push((class_name, it.span.start, it.span.end));
+                        }
                     }
                 }
             }
@@ -128,6 +131,10 @@ impl<'a> Visit<'a> for Collector {
     }
 
     fn visit_new_expression(&mut self, it: &NewExpression<'a>) {
+        if !self.is_cdk {
+            walk::walk_new_expression(self, it);
+            return;
+        }
         if let Some(construct_type) = callee_text(&it.callee) {
             let last_seg = construct_type
                 .split('.')
@@ -238,7 +245,10 @@ pub(crate) fn extract(ctx: &mut FileExtraction<'_>) -> Result<()> {
         return Ok(());
     }
 
-    let mut collector = Collector::default();
+    let mut collector = Collector {
+        is_cdk: looks_like_cdk_file(&content),
+        ..Default::default()
+    };
     collector.visit_program(&ret.program);
 
     for sym in collector.symbols {
@@ -249,14 +259,13 @@ pub(crate) fn extract(ctx: &mut FileExtraction<'_>) -> Result<()> {
         emit_import(&imp, ctx);
     }
 
-    // CDK detection: gated by looks_like_cdk_file, same as old regex path
-    if looks_like_cdk_file(&content) {
-        for (name, start, end) in collector.stacks {
-            emit_cdk_stack(&name, start, end, ctx);
-        }
-        for (construct_type, logical_id, start, end) in collector.constructs {
-            emit_cdk_construct(&construct_type, &logical_id, start, end, ctx);
-        }
+    // CDK detection: collection was gated on `looks_like_cdk_file` (see
+    // `Collector::is_cdk`), so these vecs are empty for non-CDK files.
+    for (name, start, end) in collector.stacks {
+        emit_cdk_stack(&name, start, end, ctx);
+    }
+    for (construct_type, logical_id, start, end) in collector.constructs {
+        emit_cdk_construct(&construct_type, &logical_id, start, end, ctx);
     }
 
     Ok(())
