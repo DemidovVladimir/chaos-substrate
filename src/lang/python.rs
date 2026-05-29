@@ -63,6 +63,7 @@ impl Visitor for CallCollector {
 
 fn collect_calls(stmts: &[ast::Stmt], ctx: &mut FileExtraction<'_>) {
     let mut cc = CallCollector::default();
+    // rustpython's Visitor::visit_stmt consumes Stmt by value
     for stmt in stmts.iter().cloned() {
         cc.visit_stmt(stmt);
     }

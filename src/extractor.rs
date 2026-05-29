@@ -12,7 +12,7 @@ use regex::Regex;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -995,6 +995,8 @@ fn add_call_edges(
     // Rust-only global map (kept separate so non-rust callees can't shadow the
     // legacy rust heuristic, and vice versa).
     let mut rust_global: HashMap<String, Uuid> = HashMap::new();
+    // Ids of rust symbol nodes, for O(1) "is this chunk a rust source?" lookups.
+    let mut rust_source_ids: HashSet<Uuid> = HashSet::new();
 
     for node in &result.nodes {
         if !is_code_symbol_kind(&node.kind) {
@@ -1015,10 +1017,11 @@ fn add_call_edges(
             .push((node.id, start, end));
         if node.metadata.get("language").and_then(|v| v.as_str()) == Some("rust") {
             rust_global.entry(node.name.clone()).or_insert(node.id);
+            rust_source_ids.insert(node.id);
         }
     }
 
-    let mut seen: std::collections::HashSet<(Uuid, Uuid)> = std::collections::HashSet::new();
+    let mut seen: HashSet<(Uuid, Uuid)> = HashSet::new();
 
     // ----- AST-language edges (precise) -----
     for cs in ast_calls {
@@ -1048,25 +1051,33 @@ fn add_call_edges(
     }
 
     // ----- Rust edges (legacy contains heuristic, now file-scoped) -----
-    let chunks = result.chunks.clone();
-    for chunk in chunks {
-        let Some(source) = chunk.node_id else {
-            continue;
-        };
-        // Only rust symbol chunks participate in the rust heuristic.
-        let source_is_rust = result.nodes.iter().any(|n| {
-            n.id == source && n.metadata.get("language").and_then(|v| v.as_str()) == Some("rust")
-        });
-        if !source_is_rust {
-            continue;
-        }
-        let chunk_file = chunk.metadata.get("file").and_then(|v| v.as_str());
+    // Snapshot just what the rust pass needs so the later mutable edge pushes
+    // don't conflict with the immutable borrow of `result.chunks`.
+    let rust_chunks: Vec<(Uuid, Option<String>, String)> = result
+        .chunks
+        .iter()
+        .filter_map(|chunk| {
+            let source = chunk.node_id?;
+            if !rust_source_ids.contains(&source) {
+                return None;
+            }
+            let file = chunk
+                .metadata
+                .get("file")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            Some((source, file, chunk.content.clone()))
+        })
+        .collect();
+
+    for (source, chunk_file, content) in rust_chunks {
         for (name, global_id) in &rust_global {
-            if !chunk.content.contains(&format!("{name}(")) {
+            if !content.contains(&format!("{name}(")) {
                 continue;
             }
             // Prefer a same-file rust symbol named `name`; else global.
             let target = chunk_file
+                .as_deref()
                 .and_then(|f| by_file_name.get(&(f.to_string(), name.clone())).copied())
                 .unwrap_or(*global_id);
             if target == source {

@@ -13,7 +13,8 @@ use crate::{
 };
 use serde_json::json;
 use solang_parser::pt::{
-    ContractPart, ContractTy, Expression, FunctionTy, Import, ImportPath, SourceUnitPart, Statement,
+    CatchClause, ContractPart, ContractTy, Expression, FunctionTy, Import, ImportPath,
+    SourceUnitPart, Statement,
 };
 use uuid::Uuid;
 
@@ -288,6 +289,42 @@ fn walk_call_stmt(s: &Statement, out: &mut Vec<(String, usize)>) {
             walk_call_stmt(b, out);
         }
         Return(_, Some(e)) => walk_call_expr(e, out),
+        Emit(_, e) => walk_call_expr(e, out),
+        For(_, init, cond, post, body) => {
+            if let Some(s) = init {
+                walk_call_stmt(s, out);
+            }
+            if let Some(e) = cond {
+                walk_call_expr(e, out);
+            }
+            if let Some(e) = post {
+                walk_call_expr(e, out);
+            }
+            if let Some(s) = body {
+                walk_call_stmt(s, out);
+            }
+        }
+        DoWhile(_, body, cond) => {
+            walk_call_stmt(body, out);
+            walk_call_expr(cond, out);
+        }
+        Revert(_, _, args) => {
+            for e in args {
+                walk_call_expr(e, out);
+            }
+        }
+        Try(_, e, returns, catches) => {
+            walk_call_expr(e, out);
+            if let Some((_, body)) = returns {
+                walk_call_stmt(body, out);
+            }
+            for c in catches {
+                match c {
+                    CatchClause::Simple(_, _, body) => walk_call_stmt(body, out),
+                    CatchClause::Named(_, _, _, body) => walk_call_stmt(body, out),
+                }
+            }
+        }
         _ => {}
     }
 }
