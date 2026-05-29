@@ -26,14 +26,6 @@ pub struct RustRepositoryExtractor {
 
 const MAX_CHUNK_CHARS: usize = 2_000;
 
-/// Compile a pattern that is statically known to be valid, so a malformed
-/// literal is a programmer error. Retained for the regex-based extractors
-/// (AWS-CDK detection still uses the regex path; see Task 7).
-#[allow(dead_code)]
-fn regex(pattern: &str) -> Regex {
-    Regex::new(pattern).expect("hard-coded extractor regex must compile")
-}
-
 impl RustRepositoryExtractor {
     pub fn new(indexing: IndexingConfig) -> Self {
         Self { indexing }
@@ -764,21 +756,16 @@ impl RustRepositoryExtractor {
             json!({}),
             result,
         )?;
-        let content = file.content.clone();
+        let mut ctx = crate::lang::FileExtraction {
+            repo_id,
+            file: &file,
+            file_node_id,
+            lines: crate::lang::LineIndex::new(&file.content),
+            symbol_names,
+            result,
+        };
+        crate::lang::javascript::extract(&mut ctx)?;
 
-        {
-            let mut ctx = crate::lang::FileExtraction {
-                repo_id,
-                file: &file,
-                file_node_id,
-                lines: crate::lang::LineIndex::new(&file.content),
-                symbol_names,
-                result,
-            };
-            crate::lang::javascript::extract(&mut ctx)?;
-        }
-
-        self.extract_aws_cdk_knowledge(repo_id, &file, file_node_id, &content, result)?;
         Ok(())
     }
 
@@ -847,131 +834,6 @@ impl RustRepositoryExtractor {
             result,
         };
         crate::lang::python::extract(&mut ctx)?;
-        Ok(())
-    }
-
-    fn extract_aws_cdk_knowledge(
-        &self,
-        repo_id: Uuid,
-        file: &SourceFile,
-        file_node_id: Uuid,
-        content: &str,
-        result: &mut ExtractionResult,
-    ) -> Result<()> {
-        if !looks_like_cdk_file(content) {
-            return Ok(());
-        }
-
-        let stack_re = Regex::new(
-            r"(?m)^\s*(?:export\s+)?class\s+([A-Za-z_$][\w$]*)\s+extends\s+(?:[A-Za-z_$][\w$]*\.)?Stack\b",
-        )?;
-        for captures in stack_re.captures_iter(content) {
-            let Some(name) = captures.get(1).map(|v| v.as_str()) else {
-                continue;
-            };
-            let line = find_line(content, name).unwrap_or(1);
-            let end = find_block_end(content, line).unwrap_or(line);
-            let code = slice_lines(content, line, end);
-            let node = KnowledgeNode {
-                id: Uuid::new_v4(),
-                repo_id,
-                file_id: Some(file.id),
-                kind: NodeKind::DeploymentResource,
-                stable_id: format!("{}:aws-cdk:stack:{name}", file.path),
-                name: name.to_string(),
-                line_start: Some(line as i32),
-                line_end: Some(end as i32),
-                metadata: json!({"technology": "aws_cdk", "resource_kind": "stack", "file": file.path}),
-            };
-            result.edges.push(edge(
-                repo_id,
-                file_node_id,
-                node.id,
-                EdgeKind::Defines,
-                weights::DEFINES_SYMBOL,
-                json!({"technology": "aws_cdk"}),
-            ));
-            result.chunks.push(chunk_for_node(
-                repo_id,
-                Some(file.id),
-                Some(node.id),
-                "aws_cdk_stack",
-                &format!(
-                    "Technology: AWS CDK\nFile: {}\nStack: {}\nLines: {}-{}\n\n{}",
-                    file.path, name, line, end, code
-                ),
-                Some(line as i32),
-                Some(end as i32),
-                json!({"technology": "aws_cdk", "kind": "stack", "symbol": name, "file": file.path}),
-            ));
-            result.nodes.push(node);
-        }
-
-        let construct_re = Regex::new(
-            r#"(?m)\bnew\s+((?:[A-Za-z_$][\w$]*\.)?[A-Z][A-Za-z0-9_$]*)\s*\(\s*this\s*,\s*['"]([^'"]+)['"]"#,
-        )?;
-        for captures in construct_re.captures_iter(content) {
-            let Some(construct_type) = captures.get(1).map(|v| v.as_str()) else {
-                continue;
-            };
-            let Some(logical_id) = captures.get(2).map(|v| v.as_str()) else {
-                continue;
-            };
-            let line = find_line(content, logical_id).unwrap_or(1);
-            let end = find_block_end(content, line).unwrap_or(line);
-            let code = slice_lines(content, line, end);
-            let service = cdk_service(construct_type);
-            let node = KnowledgeNode {
-                id: Uuid::new_v4(),
-                repo_id,
-                file_id: Some(file.id),
-                kind: NodeKind::DeploymentResource,
-                stable_id: format!(
-                    "{}:aws-cdk:resource:{}:{}",
-                    file.path, construct_type, logical_id
-                ),
-                name: format!("{construct_type} {logical_id}"),
-                line_start: Some(line as i32),
-                line_end: Some(end as i32),
-                metadata: json!({
-                    "technology": "aws_cdk",
-                    "resource_kind": "construct",
-                    "construct_type": construct_type,
-                    "logical_id": logical_id,
-                    "service": service,
-                    "file": file.path
-                }),
-            };
-            result.edges.push(edge(
-                repo_id,
-                file_node_id,
-                node.id,
-                EdgeKind::Configures,
-                weights::CONFIGURES,
-                json!({"technology": "aws_cdk", "service": service}),
-            ));
-            result.chunks.push(chunk_for_node(
-                repo_id,
-                Some(file.id),
-                Some(node.id),
-                "aws_cdk_resource",
-                &format!(
-                    "Technology: AWS CDK\nFile: {}\nResource: {}\nLogical ID: {}\nService: {}\nLines: {}-{}\n\n{}",
-                    file.path, construct_type, logical_id, service, line, end, code
-                ),
-                Some(line as i32),
-                Some(end as i32),
-                json!({
-                    "technology": "aws_cdk",
-                    "kind": "resource",
-                    "construct_type": construct_type,
-                    "logical_id": logical_id,
-                    "service": service,
-                    "file": file.path
-                }),
-            ));
-            result.nodes.push(node);
-        }
         Ok(())
     }
 
@@ -1218,7 +1080,7 @@ pub(crate) fn is_python_test_file(path: &str) -> bool {
         || lower.contains("/tests/")
 }
 
-fn looks_like_cdk_file(content: &str) -> bool {
+pub(crate) fn looks_like_cdk_file(content: &str) -> bool {
     content.contains("aws-cdk-lib")
         || content.contains("@aws-cdk/")
         || content.contains("constructs")
@@ -1226,7 +1088,7 @@ fn looks_like_cdk_file(content: &str) -> bool {
         || content.contains("cdk.")
 }
 
-fn cdk_service(construct_type: &str) -> &'static str {
+pub(crate) fn cdk_service(construct_type: &str) -> &'static str {
     let lower = construct_type.to_ascii_lowercase();
     if lower.contains("lambda") || lower.contains("function") {
         "lambda"

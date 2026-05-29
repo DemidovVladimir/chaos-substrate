@@ -8,8 +8,8 @@
 
 use crate::{
     extractor::{
-        chunk_for_node, edge, import_stable_id, is_bare_module_specifier, is_js_ts_test_file,
-        is_test_symbol, slice_lines,
+        cdk_service, chunk_for_node, edge, import_stable_id, is_bare_module_specifier,
+        is_js_ts_test_file, is_test_symbol, looks_like_cdk_file, slice_lines,
     },
     lang::FileExtraction,
     models::{EdgeKind, KnowledgeNode, NodeKind},
@@ -19,7 +19,8 @@ use anyhow::Result;
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     BindingPattern, Class, Expression, Function, ImportDeclaration, MethodDefinition,
-    TSEnumDeclaration, TSInterfaceDeclaration, TSTypeAliasDeclaration, VariableDeclarator,
+    NewExpression, TSEnumDeclaration, TSInterfaceDeclaration, TSTypeAliasDeclaration,
+    VariableDeclarator,
 };
 use oxc_ast_visit::{walk, Visit};
 use oxc_parser::Parser;
@@ -69,6 +70,8 @@ struct JsImport {
 struct Collector {
     symbols: Vec<JsSymbol>,
     imports: Vec<JsImport>,
+    stacks: Vec<(String, u32, u32)>,
+    constructs: Vec<(String, String, u32, u32)>,
 }
 
 impl<'a> Visit<'a> for Collector {
@@ -104,14 +107,48 @@ impl<'a> Visit<'a> for Collector {
 
     fn visit_class(&mut self, it: &Class<'a>) {
         if let Some(id) = &it.id {
+            let class_name = id.name.to_string();
             self.symbols.push(JsSymbol {
-                name: id.name.to_string(),
+                name: class_name.clone(),
                 kind: CollectedNodeKind::Struct,
                 start: it.span.start,
                 end: it.span.end,
             });
+            // CDK stack detection: class X extends <prefix.>Stack
+            if let Some(super_expr) = &it.super_class {
+                if let Some(ct) = callee_text(super_expr) {
+                    let last_segment = ct.split('.').next_back().unwrap_or(&ct);
+                    if last_segment == "Stack" {
+                        self.stacks.push((class_name, it.span.start, it.span.end));
+                    }
+                }
+            }
         }
         walk::walk_class(self, it);
+    }
+
+    fn visit_new_expression(&mut self, it: &NewExpression<'a>) {
+        if let Some(construct_type) = callee_text(&it.callee) {
+            let last_seg = construct_type
+                .split('.')
+                .next_back()
+                .unwrap_or(&construct_type);
+            if last_seg.starts_with(|c: char| c.is_ascii_uppercase()) && it.arguments.len() >= 2 {
+                let arg0_is_this =
+                    matches!(it.arguments[0], oxc_ast::ast::Argument::ThisExpression(_));
+                let logical_id = match &it.arguments[1] {
+                    oxc_ast::ast::Argument::StringLiteral(s) => Some(s.value.to_string()),
+                    _ => None,
+                };
+                if arg0_is_this {
+                    if let Some(lid) = logical_id {
+                        self.constructs
+                            .push((construct_type, lid, it.span.start, it.span.end));
+                    }
+                }
+            }
+        }
+        walk::walk_new_expression(self, it);
     }
 
     fn visit_method_definition(&mut self, it: &MethodDefinition<'a>) {
@@ -166,6 +203,21 @@ impl<'a> Visit<'a> for Collector {
 }
 
 // ---------------------------------------------------------------------------
+// Helper: extract dotted name from an expression (used for callee & superclass)
+// ---------------------------------------------------------------------------
+
+fn callee_text(expr: &Expression) -> Option<String> {
+    match expr {
+        Expression::Identifier(id) => Some(id.name.to_string()),
+        Expression::StaticMemberExpression(m) => {
+            let obj = callee_text(&m.object)?;
+            Some(format!("{}.{}", obj, m.property.name))
+        }
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
@@ -195,6 +247,16 @@ pub(crate) fn extract(ctx: &mut FileExtraction<'_>) -> Result<()> {
 
     for imp in collector.imports {
         emit_import(&imp, ctx);
+    }
+
+    // CDK detection: gated by looks_like_cdk_file, same as old regex path
+    if looks_like_cdk_file(&content) {
+        for (name, start, end) in collector.stacks {
+            emit_cdk_stack(&name, start, end, ctx);
+        }
+        for (construct_type, logical_id, start, end) in collector.constructs {
+            emit_cdk_construct(&construct_type, &logical_id, start, end, ctx);
+        }
     }
 
     Ok(())
@@ -311,6 +373,118 @@ fn emit_import(imp: &JsImport, ctx: &mut FileExtraction<'_>) {
             "file": ctx.file.path,
             "module": module,
             "line": line
+        }),
+    ));
+
+    ctx.result.nodes.push(node);
+}
+
+fn emit_cdk_stack(name: &str, start: u32, end: u32, ctx: &mut FileExtraction<'_>) {
+    let l = ctx.lines.line(start as usize);
+    let e = ctx.lines.line(end as usize);
+    let code = slice_lines(&ctx.file.content, l, e);
+    let path = &ctx.file.path;
+
+    let node = KnowledgeNode {
+        id: Uuid::new_v4(),
+        repo_id: ctx.repo_id,
+        file_id: Some(ctx.file.id),
+        kind: NodeKind::DeploymentResource,
+        stable_id: format!("{}:aws-cdk:stack:{name}", path),
+        name: name.to_string(),
+        line_start: Some(l as i32),
+        line_end: Some(e as i32),
+        metadata: json!({"technology": "aws_cdk", "resource_kind": "stack", "file": path}),
+    };
+
+    ctx.result.edges.push(edge(
+        ctx.repo_id,
+        ctx.file_node_id,
+        node.id,
+        EdgeKind::Defines,
+        weights::DEFINES_SYMBOL,
+        json!({"technology": "aws_cdk"}),
+    ));
+
+    ctx.result.chunks.push(chunk_for_node(
+        ctx.repo_id,
+        Some(ctx.file.id),
+        Some(node.id),
+        "aws_cdk_stack",
+        &format!(
+            "Technology: AWS CDK\nFile: {}\nStack: {}\nLines: {}-{}\n\n{}",
+            path, name, l, e, code
+        ),
+        Some(l as i32),
+        Some(e as i32),
+        json!({"technology": "aws_cdk", "kind": "stack", "symbol": name, "file": path}),
+    ));
+
+    ctx.result.nodes.push(node);
+}
+
+fn emit_cdk_construct(
+    construct_type: &str,
+    logical_id: &str,
+    start: u32,
+    end: u32,
+    ctx: &mut FileExtraction<'_>,
+) {
+    let l = ctx.lines.line(start as usize);
+    let e = ctx.lines.line(end as usize);
+    let code = slice_lines(&ctx.file.content, l, e);
+    let path = &ctx.file.path;
+    let service = cdk_service(construct_type);
+
+    let node = KnowledgeNode {
+        id: Uuid::new_v4(),
+        repo_id: ctx.repo_id,
+        file_id: Some(ctx.file.id),
+        kind: NodeKind::DeploymentResource,
+        stable_id: format!(
+            "{}:aws-cdk:resource:{}:{}",
+            path, construct_type, logical_id
+        ),
+        name: format!("{construct_type} {logical_id}"),
+        line_start: Some(l as i32),
+        line_end: Some(e as i32),
+        metadata: json!({
+            "technology": "aws_cdk",
+            "resource_kind": "construct",
+            "construct_type": construct_type,
+            "logical_id": logical_id,
+            "service": service,
+            "file": path
+        }),
+    };
+
+    ctx.result.edges.push(edge(
+        ctx.repo_id,
+        ctx.file_node_id,
+        node.id,
+        EdgeKind::Configures,
+        weights::CONFIGURES,
+        json!({"technology": "aws_cdk", "service": service}),
+    ));
+
+    ctx.result.chunks.push(chunk_for_node(
+        ctx.repo_id,
+        Some(ctx.file.id),
+        Some(node.id),
+        "aws_cdk_resource",
+        &format!(
+            "Technology: AWS CDK\nFile: {}\nResource: {}\nLogical ID: {}\nService: {}\nLines: {}-{}\n\n{}",
+            path, construct_type, logical_id, service, l, e, code
+        ),
+        Some(l as i32),
+        Some(e as i32),
+        json!({
+            "technology": "aws_cdk",
+            "kind": "resource",
+            "construct_type": construct_type,
+            "logical_id": logical_id,
+            "service": service,
+            "file": path
         }),
     ));
 
