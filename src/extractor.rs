@@ -239,37 +239,24 @@ impl RustRepositoryExtractor {
         repo_node_id: Uuid,
         result: &mut ExtractionResult,
     ) -> Result<()> {
-        let content = fs::read_to_string(path)?;
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string();
-        let file = SourceFile {
-            id: Uuid::new_v4(),
+        let (file, file_node_id) = begin_file(
+            root,
+            path,
             repo_id,
             commit_sha,
-            path: rel.clone(),
-            language: Language::Markdown,
-            content: content.clone(),
-            content_hash: hash(&content),
-            line_count: content.lines().count() as i32,
-        };
-        result.files.push(file.clone());
-
-        let file_node = file_node(repo_id, &file, &rel);
-        result.edges.push(edge(
-            repo_id,
             repo_node_id,
-            file_node.id,
-            EdgeKind::Contains,
+            Language::Markdown,
             weights::CONTAINS_DOC,
             json!({"source_priority": "supplemental"}),
-        ));
+            result,
+        )?;
+        let content = file.content.clone();
+        let rel = file.path.clone();
+
         result.chunks.push(chunk_for_node(
             repo_id,
             Some(file.id),
-            Some(file_node.id),
+            Some(file_node_id),
             "documentation",
             &format!("Documentation file: {rel}\n\n{content}"),
             Some(1),
@@ -281,7 +268,6 @@ impl RustRepositoryExtractor {
                 "guidance": "Documentation can add context but source code should be prioritized when they disagree."
             }),
         ));
-        result.nodes.push(file_node);
         Ok(())
     }
 
@@ -673,35 +659,19 @@ impl RustRepositoryExtractor {
         symbol_names: &mut HashMap<String, Uuid>,
         result: &mut ExtractionResult,
     ) -> Result<()> {
-        let content = fs::read_to_string(path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string();
-        let file = SourceFile {
-            id: Uuid::new_v4(),
+        let (file, file_node_id) = begin_file(
+            root,
+            path,
             repo_id,
             commit_sha,
-            path: rel.clone(),
-            language: Language::Rust,
-            content: content.clone(),
-            content_hash: hash(&content),
-            line_count: content.lines().count() as i32,
-        };
-        result.files.push(file.clone());
-
-        let file_node = file_node(repo_id, &file, &rel);
-        result.edges.push(edge(
-            repo_id,
             repo_node_id,
-            file_node.id,
-            EdgeKind::Contains,
+            Language::Rust,
             weights::CONTAINS_CODE,
             json!({}),
-        ));
-        result.nodes.push(file_node.clone());
+            result,
+        )?;
+        let content = file.content.clone();
+        let rel = file.path.clone();
 
         let syntax = syn::parse_file(&content)
             .with_context(|| format!("failed to parse Rust syntax in {rel}"))?;
@@ -718,7 +688,7 @@ impl RustRepositoryExtractor {
                     self.add_symbol(
                         repo_id,
                         &file,
-                        file_node.id,
+                        file_node_id,
                         kind,
                         &name,
                         "fn",
@@ -730,7 +700,7 @@ impl RustRepositoryExtractor {
                 Item::Struct(item) => self.add_symbol(
                     repo_id,
                     &file,
-                    file_node.id,
+                    file_node_id,
                     NodeKind::Struct,
                     &item.ident.to_string(),
                     "struct",
@@ -741,7 +711,7 @@ impl RustRepositoryExtractor {
                 Item::Enum(item) => self.add_symbol(
                     repo_id,
                     &file,
-                    file_node.id,
+                    file_node_id,
                     NodeKind::Enum,
                     &item.ident.to_string(),
                     "enum",
@@ -752,7 +722,7 @@ impl RustRepositoryExtractor {
                 Item::Trait(item) => self.add_symbol(
                     repo_id,
                     &file,
-                    file_node.id,
+                    file_node_id,
                     NodeKind::Trait,
                     &item.ident.to_string(),
                     "trait",
@@ -763,7 +733,7 @@ impl RustRepositoryExtractor {
                 Item::Mod(item) => self.add_symbol(
                     repo_id,
                     &file,
-                    file_node.id,
+                    file_node_id,
                     NodeKind::Module,
                     &item.ident.to_string(),
                     "mod",
@@ -774,7 +744,7 @@ impl RustRepositoryExtractor {
                 Item::Impl(item) => self.add_impl(
                     repo_id,
                     &file,
-                    file_node.id,
+                    file_node_id,
                     &item,
                     &content,
                     symbol_names,
@@ -795,7 +765,7 @@ impl RustRepositoryExtractor {
                     };
                     result.edges.push(edge(
                         repo_id,
-                        file_node.id,
+                        file_node_id,
                         node.id,
                         EdgeKind::Imports,
                         weights::IMPORTS_RUST,
@@ -821,39 +791,22 @@ impl RustRepositoryExtractor {
         symbol_names: &mut HashMap<String, Uuid>,
         result: &mut ExtractionResult,
     ) -> Result<()> {
-        let content = fs::read_to_string(path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string();
-        let file = SourceFile {
-            id: Uuid::new_v4(),
+        let (file, file_node_id) = begin_file(
+            root,
+            path,
             repo_id,
             commit_sha,
-            path: rel.clone(),
-            language,
-            content: content.clone(),
-            content_hash: hash(&content),
-            line_count: content.lines().count() as i32,
-        };
-        result.files.push(file.clone());
-
-        let file_node = file_node(repo_id, &file, &rel);
-        result.edges.push(edge(
-            repo_id,
             repo_node_id,
-            file_node.id,
-            EdgeKind::Contains,
+            language,
             weights::CONTAINS_CODE,
             json!({}),
-        ));
-        result.nodes.push(file_node.clone());
+            result,
+        )?;
+        let content = file.content.clone();
 
-        self.extract_js_ts_imports(repo_id, &file, file_node.id, &content, result)?;
-        self.extract_js_ts_symbols(repo_id, &file, file_node.id, &content, symbol_names, result)?;
-        self.extract_aws_cdk_knowledge(repo_id, &file, file_node.id, &content, result)?;
+        self.extract_js_ts_imports(repo_id, &file, file_node_id, &content, result)?;
+        self.extract_js_ts_symbols(repo_id, &file, file_node_id, &content, symbol_names, result)?;
+        self.extract_aws_cdk_knowledge(repo_id, &file, file_node_id, &content, result)?;
         Ok(())
     }
 
@@ -868,41 +821,24 @@ impl RustRepositoryExtractor {
         symbol_names: &mut HashMap<String, Uuid>,
         result: &mut ExtractionResult,
     ) -> Result<()> {
-        let content = fs::read_to_string(path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string();
-        let file = SourceFile {
-            id: Uuid::new_v4(),
+        let (file, file_node_id) = begin_file(
+            root,
+            path,
             repo_id,
             commit_sha,
-            path: rel.clone(),
-            language: Language::Solidity,
-            content: content.clone(),
-            content_hash: hash(&content),
-            line_count: content.lines().count() as i32,
-        };
-        result.files.push(file.clone());
-
-        let file_node = file_node(repo_id, &file, &rel);
-        result.edges.push(edge(
-            repo_id,
             repo_node_id,
-            file_node.id,
-            EdgeKind::Contains,
+            Language::Solidity,
             weights::CONTAINS_CODE,
             json!({}),
-        ));
-        result.nodes.push(file_node.clone());
+            result,
+        )?;
+        let content = file.content.clone();
 
-        self.extract_solidity_imports(repo_id, &file, file_node.id, &content, result)?;
+        self.extract_solidity_imports(repo_id, &file, file_node_id, &content, result)?;
         self.extract_solidity_symbols(
             repo_id,
             &file,
-            file_node.id,
+            file_node_id,
             &content,
             symbol_names,
             result,
@@ -921,38 +857,21 @@ impl RustRepositoryExtractor {
         symbol_names: &mut HashMap<String, Uuid>,
         result: &mut ExtractionResult,
     ) -> Result<()> {
-        let content = fs::read_to_string(path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string();
-        let file = SourceFile {
-            id: Uuid::new_v4(),
+        let (file, file_node_id) = begin_file(
+            root,
+            path,
             repo_id,
             commit_sha,
-            path: rel.clone(),
-            language: Language::Python,
-            content: content.clone(),
-            content_hash: hash(&content),
-            line_count: content.lines().count() as i32,
-        };
-        result.files.push(file.clone());
-
-        let file_node = file_node(repo_id, &file, &rel);
-        result.edges.push(edge(
-            repo_id,
             repo_node_id,
-            file_node.id,
-            EdgeKind::Contains,
+            Language::Python,
             weights::CONTAINS_CODE,
             json!({}),
-        ));
-        result.nodes.push(file_node.clone());
+            result,
+        )?;
+        let content = file.content.clone();
 
-        self.extract_python_imports(repo_id, &file, file_node.id, &content, result)?;
-        self.extract_python_symbols(repo_id, &file, file_node.id, &content, symbol_names, result)?;
+        self.extract_python_imports(repo_id, &file, file_node_id, &content, result)?;
+        self.extract_python_symbols(repo_id, &file, file_node_id, &content, symbol_names, result)?;
         Ok(())
     }
 
@@ -1677,6 +1596,54 @@ fn add_solidity_inheritance_edges(
         ));
         result.nodes.push(node);
     }
+}
+
+/// Read a source file, register it, and emit its `File` node + `Contains`
+/// edge. Returns the `SourceFile` and the file node's id so callers can attach
+/// symbols. Centralizes the prelude every language extractor used to repeat.
+#[allow(clippy::too_many_arguments)]
+fn begin_file(
+    root: &Path,
+    path: &Path,
+    repo_id: Uuid,
+    commit_sha: Option<String>,
+    repo_node_id: Uuid,
+    language: Language,
+    contains: EdgeWeight,
+    contains_meta: serde_json::Value,
+    result: &mut ExtractionResult,
+) -> Result<(SourceFile, Uuid)> {
+    let content =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let rel = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .to_string();
+    let file = SourceFile {
+        id: Uuid::new_v4(),
+        repo_id,
+        commit_sha,
+        path: rel.clone(),
+        language,
+        content: content.clone(),
+        content_hash: hash(&content),
+        line_count: content.lines().count() as i32,
+    };
+    result.files.push(file.clone());
+
+    let file_node = file_node(repo_id, &file, &rel);
+    let file_node_id = file_node.id;
+    result.edges.push(edge(
+        repo_id,
+        repo_node_id,
+        file_node_id,
+        EdgeKind::Contains,
+        contains,
+        contains_meta,
+    ));
+    result.nodes.push(file_node);
+    Ok((file, file_node_id))
 }
 
 fn file_node(repo_id: Uuid, file: &SourceFile, rel: &str) -> KnowledgeNode {
