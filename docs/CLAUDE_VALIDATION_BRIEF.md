@@ -28,6 +28,8 @@ The system must survive laptop/process restarts. Indexed knowledge must be reusa
 Implemented language/project support:
 
 - Rust
+- Solidity: contracts, interfaces, libraries, functions, constructors, events, modifiers, imports, and inheritance
+- Python: functions, classes, and imports (def/class/import, indentation-aware)
 - TypeScript
 - JavaScript
 - `Cargo.toml`

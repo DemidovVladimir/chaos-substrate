@@ -8,11 +8,7 @@ TypeScript, JavaScript, Python, and Solidity are analysis targets only; they are
 
 ## Hard Rules
 
-- Do not add mock embedders, fake vectors, or random vectors.
-- Do not replace Postgres/pgvector persistence with in-memory storage.
-- Keep MCP on stdio with newline-delimited JSON-RPC.
-- Keep runtime implementation in Rust.
-- TypeScript/JavaScript and Solidity support must remain Rust-side extraction, not a Node service.
+See **Hard Rules** in `CLAUDE.md`.
 
 ## Common Commands
 
