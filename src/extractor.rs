@@ -832,17 +832,15 @@ impl RustRepositoryExtractor {
             json!({}),
             result,
         )?;
-        let content = file.content.clone();
-
-        self.extract_solidity_imports(repo_id, &file, file_node_id, &content, result)?;
-        self.extract_solidity_symbols(
+        let mut ctx = crate::lang::FileExtraction {
             repo_id,
-            &file,
+            file: &file,
             file_node_id,
-            &content,
+            lines: crate::lang::LineIndex::new(&file.content),
             symbol_names,
             result,
-        )?;
+        };
+        crate::lang::solidity::extract(&mut ctx)?;
         Ok(())
     }
 
@@ -877,195 +875,6 @@ impl RustRepositoryExtractor {
             result,
         };
         crate::lang::python::extract(&mut ctx)?;
-        Ok(())
-    }
-
-    fn extract_solidity_imports(
-        &self,
-        repo_id: Uuid,
-        file: &SourceFile,
-        file_node_id: Uuid,
-        content: &str,
-        result: &mut ExtractionResult,
-    ) -> Result<()> {
-        let import_re = Regex::new(r#"(?m)^\s*import\s+(?:[^'"]+\s+from\s+)?['"]([^'"]+)['"]"#)?;
-        for captures in import_re.captures_iter(content) {
-            let Some(module) = captures.get(1).map(|v| v.as_str()) else {
-                continue;
-            };
-            let line = find_line(content, module).map(|v| v as i32);
-            let is_bare = is_bare_module_specifier(module);
-            let node = KnowledgeNode {
-                id: Uuid::new_v4(),
-                repo_id,
-                file_id: if is_bare { None } else { Some(file.id) },
-                kind: NodeKind::Dependency,
-                stable_id: import_stable_id(file, module, is_bare),
-                name: module.to_string(),
-                line_start: if is_bare { None } else { line },
-                line_end: if is_bare { None } else { line },
-                metadata: json!({
-                    "module": module,
-                    "language": "solidity",
-                    "scope": if is_bare { "bare" } else { "relative" }
-                }),
-            };
-            result.edges.push(edge(
-                repo_id,
-                file_node_id,
-                node.id,
-                EdgeKind::Imports,
-                weights::IMPORTS_SOLIDITY,
-                json!({"file": file.path, "module": module, "line": line}),
-            ));
-            result.nodes.push(node);
-        }
-        Ok(())
-    }
-
-    fn extract_solidity_symbols(
-        &self,
-        repo_id: Uuid,
-        file: &SourceFile,
-        file_node_id: Uuid,
-        content: &str,
-        symbol_names: &mut HashMap<String, Uuid>,
-        result: &mut ExtractionResult,
-    ) -> Result<()> {
-        let type_re = Regex::new(
-            r"(?m)^\s*(?:abstract\s+)?(contract|interface|library)\s+([A-Za-z_][A-Za-z0-9_]*)\s*([^{;]*)",
-        )?;
-        for captures in type_re.captures_iter(content) {
-            let kind_text = captures.get(1).map(|v| v.as_str()).unwrap_or("contract");
-            let Some(name) = captures.get(2).map(|v| v.as_str()) else {
-                continue;
-            };
-            let suffix = captures.get(3).map(|v| v.as_str()).unwrap_or_default();
-            let line = find_line(content, name).unwrap_or(1);
-            let end = find_block_end(content, line).unwrap_or(line);
-            let code = slice_lines(content, line, end);
-            let node_kind = match kind_text {
-                "interface" => NodeKind::Trait,
-                "library" => NodeKind::Module,
-                _ => NodeKind::Struct,
-            };
-            let node = KnowledgeNode {
-                id: Uuid::new_v4(),
-                repo_id,
-                file_id: Some(file.id),
-                kind: node_kind.clone(),
-                stable_id: format!("{}:solidity:{}:{}", file.path, kind_text, name),
-                name: name.to_string(),
-                line_start: Some(line as i32),
-                line_end: Some(end as i32),
-                metadata: json!({
-                    "language": "solidity",
-                    "file": file.path,
-                    "solidity_kind": kind_text
-                }),
-            };
-            symbol_names.entry(name.to_string()).or_insert(node.id);
-            result.edges.push(edge(
-                repo_id,
-                file_node_id,
-                node.id,
-                EdgeKind::Defines,
-                weights::DEFINES_SYMBOL,
-                json!({"language": "solidity", "kind": kind_text}),
-            ));
-            result.chunks.push(chunk_for_node(
-                repo_id,
-                Some(file.id),
-                Some(node.id),
-                node_kind.as_str(),
-                &format!(
-                    "Language: solidity\nFile: {}\nSymbol: {}\nSolidity kind: {}\nLines: {}-{}\n\n{}",
-                    file.path, name, kind_text, line, end, code
-                ),
-                Some(line as i32),
-                Some(end as i32),
-                json!({"symbol": name, "kind": node_kind.as_str(), "solidity_kind": kind_text, "file": file.path}),
-            ));
-            add_solidity_inheritance_edges(repo_id, node.id, suffix, result);
-            result.nodes.push(node);
-        }
-
-        let member_patterns = [
-            (
-                NodeKind::Function,
-                "function",
-                Regex::new(r"(?m)^\s*function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")?,
-            ),
-            (
-                NodeKind::Function,
-                "constructor",
-                Regex::new(r"(?m)^\s*(constructor)\s*\(")?,
-            ),
-            (
-                NodeKind::Function,
-                "fallback",
-                Regex::new(r"(?m)^\s*(fallback|receive)\s*\(")?,
-            ),
-            (
-                NodeKind::Concept,
-                "event",
-                Regex::new(r"(?m)^\s*event\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")?,
-            ),
-            (
-                NodeKind::Concept,
-                "modifier",
-                Regex::new(r"(?m)^\s*modifier\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")?,
-            ),
-        ];
-
-        for (kind, solidity_kind, pattern) in member_patterns {
-            for captures in pattern.captures_iter(content) {
-                let Some(name) = captures.get(1).map(|v| v.as_str()) else {
-                    continue;
-                };
-                let line = find_line(content, name).unwrap_or(1);
-                let end = find_block_end(content, line).unwrap_or(line);
-                let code = slice_lines(content, line, end);
-                let node = KnowledgeNode {
-                    id: Uuid::new_v4(),
-                    repo_id,
-                    file_id: Some(file.id),
-                    kind: kind.clone(),
-                    stable_id: format!("{}:solidity:{}:{}", file.path, solidity_kind, name),
-                    name: name.to_string(),
-                    line_start: Some(line as i32),
-                    line_end: Some(end as i32),
-                    metadata: json!({
-                        "language": "solidity",
-                        "file": file.path,
-                        "solidity_kind": solidity_kind
-                    }),
-                };
-                symbol_names.entry(name.to_string()).or_insert(node.id);
-                result.edges.push(edge(
-                    repo_id,
-                    file_node_id,
-                    node.id,
-                    EdgeKind::Contains,
-                    weights::CONTAINS_MEMBER,
-                    json!({"language": "solidity", "kind": solidity_kind}),
-                ));
-                result.chunks.push(chunk_for_node(
-                    repo_id,
-                    Some(file.id),
-                    Some(node.id),
-                    kind.as_str(),
-                    &format!(
-                        "Language: solidity\nFile: {}\nSymbol: {}\nSolidity kind: {}\nLines: {}-{}\n\n{}",
-                        file.path, name, solidity_kind, line, end, code
-                    ),
-                    Some(line as i32),
-                    Some(end as i32),
-                    json!({"symbol": name, "kind": kind.as_str(), "solidity_kind": solidity_kind, "file": file.path}),
-                ));
-                result.nodes.push(node);
-            }
-        }
         Ok(())
     }
 
@@ -1421,48 +1230,6 @@ fn add_call_edges(result: &mut ExtractionResult, symbols: &HashMap<String, Uuid>
                 ));
             }
         }
-    }
-}
-
-fn add_solidity_inheritance_edges(
-    repo_id: Uuid,
-    contract_node_id: Uuid,
-    suffix: &str,
-    result: &mut ExtractionResult,
-) {
-    let suffix = suffix.trim();
-    let Some(inherits) = suffix
-        .strip_prefix("is ")
-        .map(|rest| rest.trim().trim_end_matches(';'))
-    else {
-        return;
-    };
-
-    for base in inherits.split(',') {
-        let base = base.split_whitespace().next().unwrap_or_default().trim();
-        if base.is_empty() {
-            continue;
-        }
-        let node = KnowledgeNode {
-            id: Uuid::new_v4(),
-            repo_id,
-            file_id: None,
-            kind: NodeKind::Concept,
-            stable_id: format!("solidity:inheritance:{base}"),
-            name: base.to_string(),
-            line_start: None,
-            line_end: None,
-            metadata: json!({"language": "solidity", "relationship": "inheritance"}),
-        };
-        result.edges.push(edge(
-            repo_id,
-            contract_node_id,
-            node.id,
-            EdgeKind::Implements,
-            weights::IMPLEMENTS,
-            json!({"language": "solidity", "base": base}),
-        ));
-        result.nodes.push(node);
     }
 }
 
@@ -2390,6 +2157,35 @@ def login(user):
             .nodes
             .iter()
             .any(|node| node.name == "npm script build" && node.kind == NodeKind::Script));
+    }
+
+    #[test]
+    fn solidity_members_resolve_within_contract() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("Vault.sol"),
+            "interface IVault { function deposit() external; }\ncontract Vault is IVault, Pausable {\n    function deposit() public {}\n}\n",
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+        assert!(result
+            .nodes
+            .iter()
+            .any(|n| n.name == "Vault" && n.kind == NodeKind::Struct));
+        assert!(result
+            .nodes
+            .iter()
+            .any(|n| n.name == "IVault" && n.kind == NodeKind::Trait));
+        let bases: Vec<&str> = result
+            .nodes
+            .iter()
+            .filter(|n| {
+                n.metadata.get("relationship").and_then(|v| v.as_str()) == Some("inheritance")
+            })
+            .map(|n| n.name.as_str())
+            .collect();
+        assert!(bases.contains(&"IVault") && bases.contains(&"Pausable"));
     }
 
     #[test]
