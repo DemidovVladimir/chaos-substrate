@@ -12,7 +12,9 @@ use crate::{
     weights,
 };
 use serde_json::json;
-use solang_parser::pt::{ContractPart, ContractTy, FunctionTy, Import, ImportPath, SourceUnitPart};
+use solang_parser::pt::{
+    ContractPart, ContractTy, Expression, FunctionTy, Import, ImportPath, SourceUnitPart, Statement,
+};
 use uuid::Uuid;
 
 /// Entry point called from `extractor.rs` after `begin_file` has run.
@@ -172,6 +174,8 @@ fn emit_member_function(f: &solang_parser::pt::FunctionDefinition, ctx: &mut Fil
         f.loc.end(),
         ctx,
     );
+
+    collect_function_calls(f, ctx);
 }
 
 fn emit_free_function(f: &solang_parser::pt::FunctionDefinition, ctx: &mut FileExtraction<'_>) {
@@ -188,6 +192,104 @@ fn emit_free_function(f: &solang_parser::pt::FunctionDefinition, ctx: &mut FileE
         f.loc.end(),
         ctx,
     );
+
+    collect_function_calls(f, ctx);
+}
+
+// ---------------------------------------------------------------------------
+// Call sites
+// ---------------------------------------------------------------------------
+
+/// Walk a function body for call sites and push them to `ctx.calls` for later
+/// resolution. Operating on the parsed AST means comments and strings cannot
+/// produce false-positive call edges.
+fn collect_function_calls(f: &solang_parser::pt::FunctionDefinition, ctx: &mut FileExtraction<'_>) {
+    let Some(body) = &f.body else { return };
+    let mut out: Vec<(String, usize)> = Vec::new();
+    walk_call_stmt(body, &mut out);
+    for (callee, off) in out {
+        ctx.calls.push(crate::lang::CallSite {
+            file: ctx.file.path.clone(),
+            callee,
+            line: ctx.lines.line(off) as i32,
+        });
+    }
+}
+
+fn callee_name(e: &Expression) -> Option<String> {
+    match e {
+        Expression::Variable(id) => Some(id.name.clone()),
+        Expression::MemberAccess(_, _, id) => Some(id.name.clone()),
+        _ => None,
+    }
+}
+
+fn walk_call_expr(e: &Expression, out: &mut Vec<(String, usize)>) {
+    use Expression::*;
+    match e {
+        FunctionCall(loc, func, args) => {
+            if let Some(n) = callee_name(func) {
+                out.push((n, loc.start()));
+            }
+            walk_call_expr(func, out);
+            for a in args {
+                walk_call_expr(a, out);
+            }
+        }
+        FunctionCallBlock(_, func, _) => walk_call_expr(func, out),
+        NamedFunctionCall(loc, func, args) => {
+            if let Some(n) = callee_name(func) {
+                out.push((n, loc.start()));
+            }
+            for a in args {
+                walk_call_expr(&a.expr, out);
+            }
+        }
+        MemberAccess(_, base, _) => walk_call_expr(base, out),
+        Assign(_, l, r)
+        | Add(_, l, r)
+        | Subtract(_, l, r)
+        | Multiply(_, l, r)
+        | Divide(_, l, r)
+        | Equal(_, l, r)
+        | More(_, l, r)
+        | Less(_, l, r)
+        | And(_, l, r)
+        | Or(_, l, r) => {
+            walk_call_expr(l, out);
+            walk_call_expr(r, out);
+        }
+        ArraySubscript(_, b, idx) => {
+            walk_call_expr(b, out);
+            if let Some(i) = idx {
+                walk_call_expr(i, out);
+            }
+        }
+        Parenthesis(_, inner) | Not(_, inner) | Negate(_, inner) => walk_call_expr(inner, out),
+        _ => {}
+    }
+}
+
+fn walk_call_stmt(s: &Statement, out: &mut Vec<(String, usize)>) {
+    use Statement::*;
+    match s {
+        Block { statements, .. } => statements.iter().for_each(|s| walk_call_stmt(s, out)),
+        Expression(_, e) => walk_call_expr(e, out),
+        VariableDefinition(_, _, Some(e)) => walk_call_expr(e, out),
+        If(_, c, t, els) => {
+            walk_call_expr(c, out);
+            walk_call_stmt(t, out);
+            if let Some(e) = els {
+                walk_call_stmt(e, out);
+            }
+        }
+        While(_, c, b) => {
+            walk_call_expr(c, out);
+            walk_call_stmt(b, out);
+        }
+        Return(_, Some(e)) => walk_call_expr(e, out),
+        _ => {}
+    }
 }
 
 fn emit_event(e_def: &solang_parser::pt::EventDefinition, ctx: &mut FileExtraction<'_>) {

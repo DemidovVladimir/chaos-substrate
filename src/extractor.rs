@@ -56,6 +56,7 @@ impl RustRepositoryExtractor {
         result.nodes.push(repo_node.clone());
 
         let mut symbol_names: HashMap<String, Uuid> = HashMap::new();
+        let mut calls: Vec<crate::lang::CallSite> = Vec::new();
         for path in self.source_paths(root) {
             let rel = path
                 .strip_prefix(root)
@@ -97,6 +98,7 @@ impl RustRepositoryExtractor {
                     commit_sha.clone(),
                     repo_node.id,
                     &mut symbol_names,
+                    &mut calls,
                     &mut result,
                 )?;
                 continue;
@@ -120,6 +122,7 @@ impl RustRepositoryExtractor {
                     commit_sha.clone(),
                     repo_node.id,
                     &mut symbol_names,
+                    &mut calls,
                     &mut result,
                 )?;
                 continue;
@@ -144,12 +147,13 @@ impl RustRepositoryExtractor {
                     repo_node.id,
                     language,
                     &mut symbol_names,
+                    &mut calls,
                     &mut result,
                 )?;
             }
         }
 
-        add_call_edges(&mut result, &symbol_names);
+        add_call_edges(repo_id, &mut result, &calls, &symbol_names);
         deduplicate_nodes(&mut result);
         split_large_chunks(&mut result);
         Ok(result)
@@ -743,6 +747,7 @@ impl RustRepositoryExtractor {
         repo_node_id: Uuid,
         language: Language,
         symbol_names: &mut HashMap<String, Uuid>,
+        calls: &mut Vec<crate::lang::CallSite>,
         result: &mut ExtractionResult,
     ) -> Result<()> {
         let (file, file_node_id) = begin_file(
@@ -763,6 +768,7 @@ impl RustRepositoryExtractor {
             lines: crate::lang::LineIndex::new(&file.content),
             symbol_names,
             result,
+            calls,
         };
         crate::lang::javascript::extract(&mut ctx)?;
 
@@ -778,6 +784,7 @@ impl RustRepositoryExtractor {
         commit_sha: Option<String>,
         repo_node_id: Uuid,
         symbol_names: &mut HashMap<String, Uuid>,
+        calls: &mut Vec<crate::lang::CallSite>,
         result: &mut ExtractionResult,
     ) -> Result<()> {
         let (file, file_node_id) = begin_file(
@@ -798,6 +805,7 @@ impl RustRepositoryExtractor {
             lines: crate::lang::LineIndex::new(&file.content),
             symbol_names,
             result,
+            calls,
         };
         crate::lang::solidity::extract(&mut ctx)?;
         Ok(())
@@ -812,6 +820,7 @@ impl RustRepositoryExtractor {
         commit_sha: Option<String>,
         repo_node_id: Uuid,
         symbol_names: &mut HashMap<String, Uuid>,
+        calls: &mut Vec<crate::lang::CallSite>,
         result: &mut ExtractionResult,
     ) -> Result<()> {
         let (file, file_node_id) = begin_file(
@@ -832,6 +841,7 @@ impl RustRepositoryExtractor {
             lines: crate::lang::LineIndex::new(&file.content),
             symbol_names,
             result,
+            calls,
         };
         crate::lang::python::extract(&mut ctx)?;
         Ok(())
@@ -934,18 +944,139 @@ pub fn current_commit(root: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-fn add_call_edges(result: &mut ExtractionResult, symbols: &HashMap<String, Uuid>) {
+/// Returns the id of the innermost code symbol in `file` whose line range
+/// encloses `line` (smallest span wins). `None` if no symbol encloses the line.
+fn innermost_caller(
+    file_symbols: &HashMap<String, Vec<(Uuid, i32, i32)>>,
+    file: &str,
+    line: i32,
+) -> Option<Uuid> {
+    let symbols = file_symbols.get(file)?;
+    symbols
+        .iter()
+        .filter(|(_, start, end)| *start <= line && line <= *end)
+        .min_by_key(|(_, start, end)| end - start)
+        .map(|(id, _, _)| *id)
+}
+
+/// True for node kinds that name a callable/definable code symbol that a call
+/// edge can target or originate from.
+fn is_code_symbol_kind(kind: &NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Function
+            | NodeKind::Struct
+            | NodeKind::Trait
+            | NodeKind::Enum
+            | NodeKind::TypeAlias
+            | NodeKind::Module
+            | NodeKind::Test
+            | NodeKind::Concept
+    )
+}
+
+/// Resolve discovered call sites to `Calls` edges.
+///
+/// AST languages (Python/Solidity/JS-TS) contribute precise `CallSite`s that
+/// are resolved file-scoped first (prefer a same-file definition of the callee)
+/// then globally. Rust keeps the legacy `content.contains("name(")` heuristic
+/// (its syn spans lack line numbers in normal builds) but now also resolves
+/// callees file-scoped first. A `(source, target)` set dedups across both
+/// passes so at most one `Calls` edge exists per ordered pair.
+fn add_call_edges(
+    repo_id: Uuid,
+    result: &mut ExtractionResult,
+    ast_calls: &[crate::lang::CallSite],
+    global_symbols: &HashMap<String, Uuid>,
+) {
+    // Index code-symbol nodes for resolution.
+    let mut by_file_name: HashMap<(String, String), Uuid> = HashMap::new();
+    let mut file_symbols: HashMap<String, Vec<(Uuid, i32, i32)>> = HashMap::new();
+    // Rust-only global map (kept separate so non-rust callees can't shadow the
+    // legacy rust heuristic, and vice versa).
+    let mut rust_global: HashMap<String, Uuid> = HashMap::new();
+
+    for node in &result.nodes {
+        if !is_code_symbol_kind(&node.kind) {
+            continue;
+        }
+        let Some(file) = node.metadata.get("file").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let (Some(start), Some(end)) = (node.line_start, node.line_end) else {
+            continue;
+        };
+        by_file_name
+            .entry((file.to_string(), node.name.clone()))
+            .or_insert(node.id);
+        file_symbols
+            .entry(file.to_string())
+            .or_default()
+            .push((node.id, start, end));
+        if node.metadata.get("language").and_then(|v| v.as_str()) == Some("rust") {
+            rust_global.entry(node.name.clone()).or_insert(node.id);
+        }
+    }
+
+    let mut seen: std::collections::HashSet<(Uuid, Uuid)> = std::collections::HashSet::new();
+
+    // ----- AST-language edges (precise) -----
+    for cs in ast_calls {
+        let Some(caller) = innermost_caller(&file_symbols, &cs.file, cs.line) else {
+            continue;
+        };
+        let Some(target) = by_file_name
+            .get(&(cs.file.clone(), cs.callee.clone()))
+            .copied()
+            .or_else(|| global_symbols.get(&cs.callee).copied())
+        else {
+            continue;
+        };
+        if caller == target {
+            continue;
+        }
+        if seen.insert((caller, target)) {
+            result.edges.push(edge(
+                repo_id,
+                caller,
+                target,
+                EdgeKind::Calls,
+                weights::CALLS_HEURISTIC,
+                json!({"detector": "ast_call_site", "callee": cs.callee}),
+            ));
+        }
+    }
+
+    // ----- Rust edges (legacy contains heuristic, now file-scoped) -----
     let chunks = result.chunks.clone();
     for chunk in chunks {
         let Some(source) = chunk.node_id else {
             continue;
         };
-        for (name, target) in symbols {
-            if source != *target && chunk.content.contains(&format!("{name}(")) {
+        // Only rust symbol chunks participate in the rust heuristic.
+        let source_is_rust = result.nodes.iter().any(|n| {
+            n.id == source && n.metadata.get("language").and_then(|v| v.as_str()) == Some("rust")
+        });
+        if !source_is_rust {
+            continue;
+        }
+        let chunk_file = chunk.metadata.get("file").and_then(|v| v.as_str());
+        for (name, global_id) in &rust_global {
+            if !chunk.content.contains(&format!("{name}(")) {
+                continue;
+            }
+            // Prefer a same-file rust symbol named `name`; else global.
+            let target = chunk_file
+                .and_then(|f| by_file_name.get(&(f.to_string(), name.clone())).copied())
+                .unwrap_or(*global_id);
+            if target == source {
+                continue;
+            }
+            if seen.insert((source, target)) {
                 result.edges.push(edge(
-                    chunk.repo_id,
+                    repo_id,
                     source,
-                    *target,
+                    target,
                     EdgeKind::Calls,
                     weights::CALLS_HEURISTIC,
                     json!({"detector": "name_call_heuristic", "callee": name}),
@@ -1970,6 +2101,48 @@ def login(user):
             .nodes
             .iter()
             .any(|n| n.kind == NodeKind::Dependency && n.name == "./dep"));
+    }
+
+    #[test]
+    fn call_edges_resolve_to_local_definition() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("a.py"),
+            "def helper():\n    return 1\ndef run():\n    return helper()\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("b.py"), "def helper():\n    return 2\n").unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+        let a_helper = result
+            .nodes
+            .iter()
+            .find(|n| {
+                n.name == "helper"
+                    && n.metadata.get("file").and_then(|v| v.as_str()) == Some("a.py")
+            })
+            .unwrap();
+        let run = result.nodes.iter().find(|n| n.name == "run").unwrap();
+        assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Calls
+            && e.source_node_id == run.id
+            && e.target_node_id == a_helper.id));
+    }
+
+    #[test]
+    fn call_edges_ignore_names_only_in_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("c.py"),
+            "def helper():\n    return 1\ndef run():\n    # helper() in a comment\n    return 2\n",
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+        let run = result.nodes.iter().find(|n| n.name == "run").unwrap();
+        let helper = result.nodes.iter().find(|n| n.name == "helper").unwrap();
+        assert!(!result.edges.iter().any(|e| e.kind == EdgeKind::Calls
+            && e.source_node_id == run.id
+            && e.target_node_id == helper.id));
     }
 
     #[test]

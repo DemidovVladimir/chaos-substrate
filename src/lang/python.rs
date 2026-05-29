@@ -14,6 +14,7 @@ use crate::{
     models::{EdgeKind, KnowledgeNode, NodeKind},
     weights,
 };
+use rustpython_ast::{Expr, ExprCall, Visitor};
 use rustpython_parser::{ast, Parse};
 use serde_json::json;
 use uuid::Uuid;
@@ -33,7 +34,45 @@ pub(crate) fn extract(ctx: &mut FileExtraction<'_>) -> anyhow::Result<()> {
     };
 
     walk(&stmts, ctx);
+    collect_calls(&stmts, ctx);
     Ok(())
+}
+
+/// Collects function/method call sites from the parsed suite. The `Visitor`
+/// recurses into nested expressions, and comments/strings are not part of the
+/// AST so they cannot produce false-positive call edges.
+#[derive(Default)]
+struct CallCollector {
+    calls: Vec<(String, u32)>,
+}
+
+impl Visitor for CallCollector {
+    fn visit_expr_call(&mut self, node: ExprCall) {
+        let name = match node.func.as_ref() {
+            Expr::Name(n) => Some(n.id.to_string()),
+            Expr::Attribute(a) => Some(a.attr.to_string()),
+            _ => None,
+        };
+        if let Some(name) = name {
+            self.calls
+                .push((name, node.range.start().to_usize() as u32));
+        }
+        self.generic_visit_expr_call(node);
+    }
+}
+
+fn collect_calls(stmts: &[ast::Stmt], ctx: &mut FileExtraction<'_>) {
+    let mut cc = CallCollector::default();
+    for stmt in stmts.iter().cloned() {
+        cc.visit_stmt(stmt);
+    }
+    for (callee, off) in cc.calls {
+        ctx.calls.push(crate::lang::CallSite {
+            file: ctx.file.path.clone(),
+            callee,
+            line: ctx.lines.line(off as usize) as i32,
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------

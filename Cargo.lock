@@ -316,6 +316,7 @@ dependencies = [
  "pdf-extract",
  "regex",
  "reqwest",
+ "rustpython-ast",
  "rustpython-parser",
  "serde",
  "serde_json",

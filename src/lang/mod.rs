@@ -39,6 +39,13 @@ impl LineIndex {
     }
 }
 
+/// A function/method call discovered in source, pending resolution to a target symbol.
+pub(crate) struct CallSite {
+    pub file: String,
+    pub callee: String,
+    pub line: i32,
+}
+
 /// Per-file extraction context shared by the language submodules.
 pub(crate) struct FileExtraction<'a> {
     pub repo_id: Uuid,
@@ -47,6 +54,7 @@ pub(crate) struct FileExtraction<'a> {
     pub lines: LineIndex,
     pub symbol_names: &'a mut HashMap<String, Uuid>,
     pub result: &'a mut ExtractionResult,
+    pub calls: &'a mut Vec<CallSite>,
 }
 
 #[cfg(test)]

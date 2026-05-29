@@ -73,6 +73,7 @@ struct Collector {
     imports: Vec<JsImport>,
     stacks: Vec<(String, u32, u32)>,
     constructs: Vec<(String, String, u32, u32)>,
+    calls: Vec<(String, u32)>,
 }
 
 impl<'a> Visit<'a> for Collector {
@@ -207,6 +208,16 @@ impl<'a> Visit<'a> for Collector {
         });
         walk::walk_import_declaration(self, it);
     }
+
+    fn visit_call_expression(&mut self, it: &oxc_ast::ast::CallExpression<'a>) {
+        if let Some(id) = it.callee.get_identifier_reference() {
+            self.calls.push((id.name.to_string(), it.span.start));
+        } else if let oxc_ast::ast::Expression::StaticMemberExpression(m) = &it.callee {
+            self.calls
+                .push((m.property.name.to_string(), it.span.start));
+        }
+        walk::walk_call_expression(self, it);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -266,6 +277,14 @@ pub(crate) fn extract(ctx: &mut FileExtraction<'_>) -> Result<()> {
     }
     for (construct_type, logical_id, start, end) in collector.constructs {
         emit_cdk_construct(&construct_type, &logical_id, start, end, ctx);
+    }
+
+    for (callee, off) in collector.calls {
+        ctx.calls.push(crate::lang::CallSite {
+            file: ctx.file.path.clone(),
+            callee,
+            line: ctx.lines.line(off as usize) as i32,
+        });
     }
 
     Ok(())

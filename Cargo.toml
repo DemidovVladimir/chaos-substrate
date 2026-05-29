@@ -30,6 +30,7 @@ oxc_ast_visit = "0.116"
 oxc_parser = "0.116"
 oxc_span = "0.116"
 oxc_syntax = "0.116"
+rustpython-ast = { version = "0.4", features = ["visitor"] }
 rustpython-parser = "0.4"
 solang-parser = "0.3"
 thiserror = "2"
