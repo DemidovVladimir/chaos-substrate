@@ -1700,14 +1700,14 @@ fn python_language(path: &Path) -> Option<Language> {
     }
 }
 
-fn is_js_ts_test_file(path: &str) -> bool {
+pub(crate) fn is_js_ts_test_file(path: &str) -> bool {
     path.contains(".test.")
         || path.contains(".spec.")
         || path.contains("__tests__/")
         || path.contains("__test__/")
 }
 
-fn is_test_symbol(name: &str) -> bool {
+pub(crate) fn is_test_symbol(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower.starts_with("test")
         || lower.ends_with("test")
@@ -1715,7 +1715,7 @@ fn is_test_symbol(name: &str) -> bool {
         || lower.ends_with("spec")
 }
 
-fn is_python_test_file(path: &str) -> bool {
+pub(crate) fn is_python_test_file(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     lower.ends_with("_test.py")
         || lower.contains("/test_")
@@ -1761,7 +1761,7 @@ fn cdk_service(construct_type: &str) -> &'static str {
 /// Build a weighted knowledge edge. The `weight` carries the `cost` and
 /// `confidence` that drive multigraph routing; see [`crate::weights`] for the
 /// rationale behind each value and the named constants used at call sites.
-fn edge(
+pub(crate) fn edge(
     repo_id: Uuid,
     source: Uuid,
     target: Uuid,
@@ -1782,7 +1782,7 @@ fn edge(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn chunk_for_node(
+pub(crate) fn chunk_for_node(
     repo_id: Uuid,
     file_id: Option<Uuid>,
     node_id: Option<Uuid>,
@@ -1806,7 +1806,7 @@ fn chunk_for_node(
     }
 }
 
-pub fn hash(input: &str) -> String {
+pub(crate) fn hash(input: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(input.as_bytes());
     format!("{:x}", hasher.finalize())
@@ -1954,7 +1954,7 @@ fn split_long_line(line: &str, max_chars: usize) -> Vec<String> {
     parts
 }
 
-fn import_stable_id(file: &SourceFile, module: &str, is_bare: bool) -> String {
+pub(crate) fn import_stable_id(file: &SourceFile, module: &str, is_bare: bool) -> String {
     if is_bare {
         format!("import:bare:{module}")
     } else {
@@ -1962,7 +1962,7 @@ fn import_stable_id(file: &SourceFile, module: &str, is_bare: bool) -> String {
     }
 }
 
-fn is_bare_module_specifier(module: &str) -> bool {
+pub(crate) fn is_bare_module_specifier(module: &str) -> bool {
     !module.starts_with('.')
         && !module.starts_with('/')
         && !module.starts_with("~/")
@@ -2088,7 +2088,7 @@ fn indent_width(line: &str) -> usize {
         .sum()
 }
 
-fn slice_lines(content: &str, start: usize, end: usize) -> String {
+pub(crate) fn slice_lines(content: &str, start: usize, end: usize) -> String {
     content
         .lines()
         .skip(start.saturating_sub(1))

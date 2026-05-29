@@ -5,6 +5,7 @@ mod feature_context;
 mod feature_export;
 mod graph;
 mod graph_export;
+mod lang;
 mod mcp;
 mod models;
 mod obsidian_export;
