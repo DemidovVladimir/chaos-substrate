@@ -1,6 +1,6 @@
 # Claude MCP Install: Code Knowledge Base
 
-This guide installs Chaos Substrate as a local MCP server for Claude and uses it to maintain a persistent knowledge base for a Rust, Solidity, TypeScript, or JavaScript repository, with Markdown/MDX and PDF context.
+This guide installs Chaos Substrate as a local MCP server for Claude and uses it to maintain a persistent knowledge base for a Rust, Solidity, TypeScript, JavaScript, or Python repository, with Markdown/MDX and PDF context.
 
 ## 1. Start Persistent Storage
 

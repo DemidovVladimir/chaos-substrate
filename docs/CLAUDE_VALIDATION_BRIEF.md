@@ -119,7 +119,7 @@ Do not replace this with fake embeddings.
 
 ## Functional Smoke Test
 
-Use a small real repository containing Rust, Solidity, TypeScript, or JavaScript.
+Use a small real repository containing Rust, Solidity, TypeScript, JavaScript, or Python.
 
 ```sh
 docker compose up -d
@@ -195,14 +195,15 @@ Chaos Substrate should become a modular code-to-knowledge memory system:
 10. Build focused implementation context and feature-memory websites from Postgres retrieval plus
     generated feature manifests.
 11. Expose access through CLI and MCP for coding agents.
-12. Keep architecture modular for future Go, Python, AWS CDK, Kubernetes, Terraform, and framework-specific extractors.
+12. Keep architecture modular for future Go, Kubernetes, Terraform, and framework-specific extractors.
 
 ## Current Known Limits
 
 - TypeScript/JavaScript extraction is pattern-based, not a full TypeScript compiler frontend.
+- Python extraction is pattern-based (def/class/import with indentation-aware block bounds), not a full Python AST.
 - Solidity extraction is pattern-based, not a full Solidity compiler frontend.
 - Rust extraction uses `syn` plus heuristics; it is not rust-analyzer/MIR-level semantic analysis.
-- No Go/Python/Kubernetes/Terraform adapter yet.
+- No Go/Kubernetes/Terraform adapter yet.
 - No full integration test with a real embedder was run unless the validator provides OpenAI or Ollama.
 - MCP has a focused tool surface: `chaos_analyze`, `chaos_query`, `chaos_feature_context`, and
   `chaos_write_feature_website`.

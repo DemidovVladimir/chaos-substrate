@@ -2,7 +2,7 @@
 
 Persistent code knowledge memory for agents.
 
-The implementation is Rust-only code. It analyzes Rust, Solidity, TypeScript, JavaScript, Markdown/MDX, JSON config, and text PDFs, stores a source-grounded knowledge graph in Postgres, stores real embedding vectors in pgvector, and exposes hybrid query results through a CLI and stdio MCP server. It can also export a standalone `graph.html` page or an Obsidian vault for visual validation of the persisted graph.
+The implementation is Rust-only code. It analyzes Rust, Solidity, TypeScript, JavaScript, Python, Markdown/MDX, JSON config (Cargo.toml, package.json, tsconfig/jsconfig, cdk.json), and text PDFs, stores a source-grounded knowledge graph in Postgres, stores real embedding vectors in pgvector, and exposes hybrid query results through a CLI and stdio MCP server. TypeScript, JavaScript, Python, and Solidity are analysis targets only — they are parsed Rust-side, never run as a separate service. It can also export a standalone `graph.html` page or an Obsidian vault for visual validation of the persisted graph.
 
 ## Guarantees
 

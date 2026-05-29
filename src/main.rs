@@ -11,6 +11,7 @@ mod obsidian_export;
 mod query;
 mod simple_graph_optimizer;
 mod storage;
+mod weights;
 
 pub use config::Config;
 

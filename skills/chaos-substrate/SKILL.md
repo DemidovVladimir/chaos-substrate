@@ -1,6 +1,6 @@
 ---
 name: chaos-substrate
-description: Use when installing, initializing, updating, querying, or operating Chaos Substrate in any Rust, Solidity, TypeScript, or JavaScript repository; includes Markdown/MDX and PDF context, Postgres+pgvector persistence, real OpenAI/Ollama embedders, CLI, MCP stdio, generated feature-memory websites, and agent implementation context.
+description: Use when installing, initializing, updating, querying, or operating Chaos Substrate in any Rust, Solidity, TypeScript, JavaScript, or Python repository; includes Markdown/MDX and PDF context, Postgres+pgvector persistence, real OpenAI/Ollama embedders, CLI, MCP stdio, generated feature-memory websites, and agent implementation context.
 ---
 
 # Chaos Substrate
@@ -9,7 +9,7 @@ Use this skill when working on or operating Chaos Substrate, a Rust-only code kn
 
 ## Product Shape
 
-- Rust, Solidity, TypeScript, JavaScript, Markdown, MDX, JSON config, and text PDF extraction.
+- Rust, Solidity, TypeScript, JavaScript, Python, Markdown, MDX, JSON config, and text PDF extraction.
 - Persistent Postgres plus pgvector memory.
 - Real OpenAI and Ollama embedders only.
 - Agent surfaces are Codex plugin, Claude Code plugin, CLI, the `chaos-agent` wrapper, static
@@ -21,7 +21,7 @@ Use this skill when working on or operating Chaos Substrate, a Rust-only code kn
 ## Hard Boundaries
 
 - Do not edit `Cargo.toml` or `src/` unless the user explicitly asks.
-- Do not add mock embeddings, fake vector stores, in-memory persistence, HTTP APIs, Python services, TypeScript services, or live browser services. A standalone Rust-generated `graph.html` export is allowed for persisted graph validation. TypeScript/JavaScript project support belongs in the Rust extractor.
+- Do not add mock embeddings, fake vector stores, in-memory persistence, HTTP APIs, Python services, TypeScript services, or live browser services. A standalone Rust-generated `graph.html` export is allowed for persisted graph validation. TypeScript, JavaScript, Python, and Solidity are analysis targets only: their extraction belongs in the Rust extractor, never in a sidecar runtime in another language.
 - Do not downgrade persistence guarantees; memory must survive process restarts.
 - Do not replace real embedders with deterministic test-only behavior in production paths.
 

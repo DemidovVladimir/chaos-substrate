@@ -2,7 +2,9 @@
 
 Chaos Substrate is a Rust-only code knowledge memory for agents.
 
-Use it to create and query a persistent knowledge base for Rust, Solidity, TypeScript, and JavaScript repositories, with Markdown/MDX and PDF context. The memory is stored in Postgres + pgvector and survives process restarts.
+Use it to create and query a persistent knowledge base for Rust, Solidity, TypeScript, JavaScript, and Python repositories, with Markdown/MDX and PDF context. The memory is stored in Postgres + pgvector and survives process restarts.
+
+TypeScript, JavaScript, Python, and Solidity are analysis targets only; they are extracted Rust-side and never run as a separate service.
 
 ## Hard Rules
 
@@ -47,5 +49,3 @@ cargo clippy --all-targets --all-features -- -D warnings
 For real repository indexing, configure either OpenAI or Ollama embeddings. If the embedder is unavailable, analysis must fail rather than producing fake vectors.
 
 See `docs/CLAUDE_MCP_INSTALL.md` and `docs/CLAUDE_VALIDATION_BRIEF.md`.
-
-## Imported Claude Cowork project instructions

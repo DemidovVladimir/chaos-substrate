@@ -6,11 +6,11 @@ Chaos Substrate is a Rust-only code knowledge memory service.
 
 - Do not edit `Cargo.toml` or `src/` unless the user explicitly changes scope.
 - Keep implementation assumptions aligned with the MVP:
-  - Rust, Solidity, TypeScript, JavaScript, Markdown/MDX, and text PDF extraction.
+  - Rust, Solidity, TypeScript, JavaScript, Python, Markdown/MDX, and text PDF extraction.
   - Persistent Postgres plus pgvector storage.
   - Real OpenAI or Ollama embedders only.
   - CLI, static graph export, and MCP stdio as the agent interfaces.
-- Do not add mock embedders, in-memory persistence, Python services, HTTP servers, live browser services, or non-Rust runtime paths. TypeScript/JavaScript and Solidity support must be implemented in Rust.
+- Do not add mock embedders, in-memory persistence, Python services, HTTP servers, live browser services, or non-Rust runtime paths. TypeScript/JavaScript, Python, and Solidity support must be implemented in Rust (analysis targets only, not sidecar runtimes).
 
 ## Validation Checklist
 
@@ -29,7 +29,7 @@ If Postgres-backed tests exist, run them with a real database that has pgvector 
 Validate these paths when relevant:
 
 - CLI can ingest a Rust project.
-- CLI can ingest a Rust, Solidity, TypeScript, or JavaScript project with source/docs context.
+- CLI can ingest a Rust, Solidity, TypeScript, JavaScript, or Python project with source/docs context.
 - CLI can query the memory after ingestion.
 - CLI can export `graph.html` for an indexed repository, and the page shows persisted nodes and edges.
 - CLI can run `feature-context` for an implementation task, returning Postgres hits plus generated

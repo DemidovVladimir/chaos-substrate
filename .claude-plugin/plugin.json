@@ -1,7 +1,7 @@
 {
   "name": "chaos-substrate",
   "description": "Persistent code knowledge memory with MCP tools for indexing, querying, feature context, and feature explanation pages.",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "author": {
     "name": "Chaos Substrate"
   },
@@ -14,6 +14,23 @@
     "mcp",
     "rust",
     "typescript",
-    "javascript"
-  ]
+    "javascript",
+    "python",
+    "solidity"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Chaos Substrate",
+    "shortDescription": "Index projects, query code memory, and explain features.",
+    "longDescription": "Agent workflow, MCP tools, and helper commands for initializing, updating, querying, building feature context, and generating feature-memory websites with the Rust-only Chaos Substrate code knowledge memory.",
+    "developerName": "Chaos Substrate",
+    "category": "Productivity",
+    "capabilities": ["Write"],
+    "defaultPrompt": [
+      "Index this project with Chaos Substrate.",
+      "Explain this feature with Chaos Substrate.",
+      "Find implementation context for this feature."
+    ]
+  }
 }

@@ -3,12 +3,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="$ROOT/dist"
-OUT="$DIST/chaos-substrate-cowork-plugin.zip"
+
+cd "$ROOT"
+
+VERSION="$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)"
+VERSION="${VERSION:-0.0.0}"
+OUT="$DIST/chaos-substrate-cowork-plugin-${VERSION}.zip"
 
 mkdir -p "$DIST"
 rm -f "$OUT"
-
-cd "$ROOT"
 
 if command -v claude >/dev/null 2>&1; then
   claude plugin validate "$ROOT"
@@ -18,6 +21,7 @@ cargo build --release >&2
 
 zip -qr "$OUT" \
   .claude-plugin \
+  .codex-plugin \
   .mcp.json \
   bin \
   skills \
@@ -40,4 +44,7 @@ zip -qr "$OUT" \
   docs/FEATURE_CONTEXT.md \
   docs/GRAPH_WEBPAGE.md
 
+cp -f "$OUT" "$DIST/chaos-substrate-cowork-plugin.zip"
+
 printf 'Wrote %s\n' "$OUT"
+printf 'Wrote %s\n' "$DIST/chaos-substrate-cowork-plugin.zip"

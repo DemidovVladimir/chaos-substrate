@@ -4,6 +4,7 @@ use crate::{
         EdgeKind, ExtractionResult, KnowledgeChunk, KnowledgeEdge, KnowledgeNode, Language,
         NodeKind, SourceFile,
     },
+    weights::{self, EdgeWeight},
 };
 use anyhow::{Context, Result};
 use ignore::WalkBuilder;
@@ -15,6 +16,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
+    sync::LazyLock,
 };
 use syn::{Item, ItemImpl};
 use uuid::Uuid;
@@ -24,6 +26,51 @@ pub struct RustRepositoryExtractor {
 }
 
 const MAX_CHUNK_CHARS: usize = 2_000;
+
+/// Compile a pattern that is statically known to be valid. Used only for the
+/// `LazyLock` regex tables below, so a malformed literal is a programmer error.
+fn regex(pattern: &str) -> Regex {
+    Regex::new(pattern).expect("hard-coded extractor regex must compile")
+}
+
+/// Symbol patterns for JavaScript/TypeScript, compiled once and reused for every
+/// indexed file instead of being rebuilt on each call.
+static JS_TS_SYMBOL_PATTERNS: LazyLock<Vec<(NodeKind, Regex)>> = LazyLock::new(|| {
+    vec![
+        (
+            NodeKind::Function,
+            regex(r"(?m)^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\("),
+        ),
+        (
+            NodeKind::Function,
+            regex(
+                r"(?m)^\s*(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\([^=]*\)\s*=>",
+            ),
+        ),
+        (
+            NodeKind::Function,
+            regex(
+                r"(?m)^\s*(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?[A-Za-z_$][\w$]*\s*=>",
+            ),
+        ),
+        (
+            NodeKind::Struct,
+            regex(r"(?m)^\s*(?:export\s+)?class\s+([A-Za-z_$][\w$]*)\b"),
+        ),
+        (
+            NodeKind::Trait,
+            regex(r"(?m)^\s*(?:export\s+)?interface\s+([A-Za-z_$][\w$]*)\b"),
+        ),
+        (
+            NodeKind::Enum,
+            regex(r"(?m)^\s*(?:export\s+)?enum\s+([A-Za-z_$][\w$]*)\b"),
+        ),
+        (
+            NodeKind::TypeAlias,
+            regex(r"(?m)^\s*(?:export\s+)?type\s+([A-Za-z_$][\w$]*)\b"),
+        ),
+    ]
+});
 
 impl RustRepositoryExtractor {
     pub fn new(indexing: IndexingConfig) -> Self {
@@ -111,6 +158,18 @@ impl RustRepositoryExtractor {
                 )?;
                 continue;
             }
+            if python_language(&path).is_some() {
+                self.extract_python_file(
+                    root,
+                    &path,
+                    repo_id,
+                    commit_sha.clone(),
+                    repo_node.id,
+                    &mut symbol_names,
+                    &mut result,
+                )?;
+                continue;
+            }
             if path.extension().and_then(|s| s.to_str()) == Some("rs") {
                 self.extract_rust_file(
                     root,
@@ -166,6 +225,7 @@ impl RustRepositoryExtractor {
                     || solidity_language(path).is_some()
                     || pdf_language(path).is_some()
                     || js_ts_language(path).is_some()
+                    || python_language(path).is_some()
             })
             .collect()
     }
@@ -203,8 +263,7 @@ impl RustRepositoryExtractor {
             repo_node_id,
             file_node.id,
             EdgeKind::Contains,
-            0.45,
-            0.8,
+            weights::CONTAINS_DOC,
             json!({"source_priority": "supplemental"}),
         ));
         result.chunks.push(chunk_for_node(
@@ -260,8 +319,7 @@ impl RustRepositoryExtractor {
             repo_node_id,
             file_node.id,
             EdgeKind::Contains,
-            0.55,
-            0.75,
+            weights::CONTAINS_PDF,
             json!({"source_priority": "supplemental", "extractor": "pdf_text"}),
         ));
         if !content.trim().is_empty() {
@@ -318,8 +376,7 @@ impl RustRepositoryExtractor {
             repo_node_id,
             file_node.id,
             EdgeKind::Contains,
-            0.1,
-            1.0,
+            weights::CONTAINS_CODE,
             json!({}),
         ));
         result.nodes.push(file_node.clone());
@@ -345,8 +402,7 @@ impl RustRepositoryExtractor {
                         file_node.id,
                         node.id,
                         EdgeKind::DependsOn,
-                        0.2,
-                        1.0,
+                        weights::DEPENDS_ON,
                         json!({}),
                     ));
                     result.chunks.push(chunk_for_node(
@@ -398,8 +454,7 @@ impl RustRepositoryExtractor {
             repo_node_id,
             file_node.id,
             EdgeKind::Contains,
-            0.1,
-            1.0,
+            weights::CONTAINS_CODE,
             json!({}),
         ));
         result.nodes.push(file_node.clone());
@@ -429,8 +484,7 @@ impl RustRepositoryExtractor {
                         file_node.id,
                         node.id,
                         EdgeKind::DependsOn,
-                        0.2,
-                        1.0,
+                        weights::DEPENDS_ON,
                         json!({}),
                     ));
                     result.chunks.push(chunk_for_node(
@@ -468,8 +522,7 @@ impl RustRepositoryExtractor {
                     file_node.id,
                     node.id,
                     EdgeKind::Defines,
-                    0.25,
-                    1.0,
+                    weights::DEFINES_SCRIPT,
                     json!({}),
                 ));
                 result.chunks.push(chunk_for_node(
@@ -520,8 +573,7 @@ impl RustRepositoryExtractor {
             repo_node_id,
             file_node.id,
             EdgeKind::Contains,
-            0.1,
-            1.0,
+            weights::CONTAINS_CODE,
             json!({}),
         ));
         result.chunks.push(chunk_for_node(
@@ -570,8 +622,7 @@ impl RustRepositoryExtractor {
             repo_node_id,
             file_node.id,
             EdgeKind::Contains,
-            0.1,
-            1.0,
+            weights::CONTAINS_CODE,
             json!({}),
         ));
         result.nodes.push(file_node.clone());
@@ -594,8 +645,7 @@ impl RustRepositoryExtractor {
             file_node.id,
             node.id,
             EdgeKind::Configures,
-            0.15,
-            1.0,
+            weights::CONFIGURES_APP,
             json!({"technology": "aws_cdk"}),
         ));
         result.chunks.push(chunk_for_node(
@@ -648,8 +698,7 @@ impl RustRepositoryExtractor {
             repo_node_id,
             file_node.id,
             EdgeKind::Contains,
-            0.1,
-            1.0,
+            weights::CONTAINS_CODE,
             json!({}),
         ));
         result.nodes.push(file_node.clone());
@@ -749,8 +798,7 @@ impl RustRepositoryExtractor {
                         file_node.id,
                         node.id,
                         EdgeKind::Imports,
-                        0.4,
-                        0.8,
+                        weights::IMPORTS_RUST,
                         json!({}),
                     ));
                     result.nodes.push(node);
@@ -798,8 +846,7 @@ impl RustRepositoryExtractor {
             repo_node_id,
             file_node.id,
             EdgeKind::Contains,
-            0.1,
-            1.0,
+            weights::CONTAINS_CODE,
             json!({}),
         ));
         result.nodes.push(file_node.clone());
@@ -846,8 +893,7 @@ impl RustRepositoryExtractor {
             repo_node_id,
             file_node.id,
             EdgeKind::Contains,
-            0.1,
-            1.0,
+            weights::CONTAINS_CODE,
             json!({}),
         ));
         result.nodes.push(file_node.clone());
@@ -861,6 +907,189 @@ impl RustRepositoryExtractor {
             symbol_names,
             result,
         )?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn extract_python_file(
+        &self,
+        root: &Path,
+        path: &Path,
+        repo_id: Uuid,
+        commit_sha: Option<String>,
+        repo_node_id: Uuid,
+        symbol_names: &mut HashMap<String, Uuid>,
+        result: &mut ExtractionResult,
+    ) -> Result<()> {
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string();
+        let file = SourceFile {
+            id: Uuid::new_v4(),
+            repo_id,
+            commit_sha,
+            path: rel.clone(),
+            language: Language::Python,
+            content: content.clone(),
+            content_hash: hash(&content),
+            line_count: content.lines().count() as i32,
+        };
+        result.files.push(file.clone());
+
+        let file_node = file_node(repo_id, &file, &rel);
+        result.edges.push(edge(
+            repo_id,
+            repo_node_id,
+            file_node.id,
+            EdgeKind::Contains,
+            weights::CONTAINS_CODE,
+            json!({}),
+        ));
+        result.nodes.push(file_node.clone());
+
+        self.extract_python_imports(repo_id, &file, file_node.id, &content, result)?;
+        self.extract_python_symbols(repo_id, &file, file_node.id, &content, symbol_names, result)?;
+        Ok(())
+    }
+
+    fn extract_python_imports(
+        &self,
+        repo_id: Uuid,
+        file: &SourceFile,
+        file_node_id: Uuid,
+        content: &str,
+        result: &mut ExtractionResult,
+    ) -> Result<()> {
+        // Matches `import pkg`, `import pkg.sub`, `from pkg import x`, and the
+        // relative forms `from . import x` / `from .pkg import y`.
+        let import_re = Regex::new(
+            r"(?m)^\s*(?:from\s+(\.*[A-Za-z0-9_.]*)\s+import\b|import\s+([A-Za-z0-9_.]+))",
+        )?;
+        for captures in import_re.captures_iter(content) {
+            let module = captures
+                .get(1)
+                .or_else(|| captures.get(2))
+                .map(|v| v.as_str().trim())
+                .unwrap_or_default();
+            if module.is_empty() {
+                continue;
+            }
+            let line = captures
+                .get(0)
+                .and_then(|m| find_line(content, m.as_str().trim()))
+                .map(|v| v as i32);
+            let is_bare = is_bare_module_specifier(module);
+            let node = KnowledgeNode {
+                id: Uuid::new_v4(),
+                repo_id,
+                file_id: if is_bare { None } else { Some(file.id) },
+                kind: NodeKind::Dependency,
+                stable_id: import_stable_id(file, module, is_bare),
+                name: module.to_string(),
+                line_start: if is_bare { None } else { line },
+                line_end: if is_bare { None } else { line },
+                metadata: json!({
+                    "module": module,
+                    "language": "python",
+                    "scope": if is_bare { "bare" } else { "relative" }
+                }),
+            };
+            result.edges.push(edge(
+                repo_id,
+                file_node_id,
+                node.id,
+                EdgeKind::Imports,
+                weights::IMPORTS_MODULE,
+                json!({"file": file.path, "module": module, "line": line}),
+            ));
+            result.nodes.push(node);
+        }
+        Ok(())
+    }
+
+    fn extract_python_symbols(
+        &self,
+        repo_id: Uuid,
+        file: &SourceFile,
+        file_node_id: Uuid,
+        content: &str,
+        symbol_names: &mut HashMap<String, Uuid>,
+        result: &mut ExtractionResult,
+    ) -> Result<()> {
+        let patterns = [
+            (
+                NodeKind::Function,
+                "function",
+                Regex::new(r"(?m)^[ \t]*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")?,
+            ),
+            (
+                NodeKind::Struct,
+                "class",
+                Regex::new(r"(?m)^[ \t]*class\s+([A-Za-z_][A-Za-z0-9_]*)\b")?,
+            ),
+        ];
+
+        for (kind, python_kind, pattern) in patterns {
+            for captures in pattern.captures_iter(content) {
+                let Some(name) = captures.get(1).map(|v| v.as_str()) else {
+                    continue;
+                };
+                let line = captures
+                    .get(0)
+                    .and_then(|m| find_line(content, m.as_str().trim()))
+                    .or_else(|| find_line(content, name))
+                    .unwrap_or(1);
+                let end = find_python_block_end(content, line).unwrap_or(line);
+                let code = slice_lines(content, line, end);
+                let chunk_kind = if is_python_test_file(&file.path) || is_test_symbol(name) {
+                    NodeKind::Test
+                } else {
+                    kind.clone()
+                };
+                let node = KnowledgeNode {
+                    id: Uuid::new_v4(),
+                    repo_id,
+                    file_id: Some(file.id),
+                    kind: chunk_kind.clone(),
+                    stable_id: format!("{}:{}:{}", file.path, chunk_kind.as_str(), name),
+                    name: name.to_string(),
+                    line_start: Some(line as i32),
+                    line_end: Some(end as i32),
+                    metadata: json!({
+                        "language": "python",
+                        "file": file.path,
+                        "python_kind": python_kind
+                    }),
+                };
+                symbol_names.entry(name.to_string()).or_insert(node.id);
+                result.edges.push(edge(
+                    repo_id,
+                    file_node_id,
+                    node.id,
+                    EdgeKind::Contains,
+                    weights::CONTAINS_CODE,
+                    json!({"language": "python", "kind": python_kind}),
+                ));
+                result.chunks.push(chunk_for_node(
+                    repo_id,
+                    Some(file.id),
+                    Some(node.id),
+                    chunk_kind.as_str(),
+                    &format!(
+                        "Language: python\nFile: {}\nSymbol: {}\nKind: {}\nLines: {}-{}\n\n{}",
+                        file.path, name, python_kind, line, end, code
+                    ),
+                    Some(line as i32),
+                    Some(end as i32),
+                    json!({"symbol": name, "kind": chunk_kind.as_str(), "python_kind": python_kind, "file": file.path}),
+                ));
+                result.nodes.push(node);
+            }
+        }
         Ok(())
     }
 
@@ -899,8 +1128,7 @@ impl RustRepositoryExtractor {
                 file_node_id,
                 node.id,
                 EdgeKind::Imports,
-                0.3,
-                0.9,
+                weights::IMPORTS_SOLIDITY,
                 json!({"file": file.path, "module": module, "line": line}),
             ));
             result.nodes.push(node);
@@ -955,8 +1183,7 @@ impl RustRepositoryExtractor {
                 file_node_id,
                 node.id,
                 EdgeKind::Defines,
-                0.08,
-                1.0,
+                weights::DEFINES_SYMBOL,
                 json!({"language": "solidity", "kind": kind_text}),
             ));
             result.chunks.push(chunk_for_node(
@@ -1033,8 +1260,7 @@ impl RustRepositoryExtractor {
                     file_node_id,
                     node.id,
                     EdgeKind::Contains,
-                    0.1,
-                    0.95,
+                    weights::CONTAINS_MEMBER,
                     json!({"language": "solidity", "kind": solidity_kind}),
                 ));
                 result.chunks.push(chunk_for_node(
@@ -1093,8 +1319,7 @@ impl RustRepositoryExtractor {
                 file_node_id,
                 node.id,
                 EdgeKind::Imports,
-                0.35,
-                0.9,
+                weights::IMPORTS_MODULE,
                 json!({"file": file.path, "module": module, "line": line}),
             ));
             result.nodes.push(node);
@@ -1111,44 +1336,7 @@ impl RustRepositoryExtractor {
         symbol_names: &mut HashMap<String, Uuid>,
         result: &mut ExtractionResult,
     ) -> Result<()> {
-        let patterns = [
-            (
-                NodeKind::Function,
-                Regex::new(
-                    r"(?m)^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(",
-                )?,
-            ),
-            (
-                NodeKind::Function,
-                Regex::new(
-                    r"(?m)^\s*(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\([^=]*\)\s*=>",
-                )?,
-            ),
-            (
-                NodeKind::Function,
-                Regex::new(
-                    r"(?m)^\s*(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?[A-Za-z_$][\w$]*\s*=>",
-                )?,
-            ),
-            (
-                NodeKind::Struct,
-                Regex::new(r"(?m)^\s*(?:export\s+)?class\s+([A-Za-z_$][\w$]*)\b")?,
-            ),
-            (
-                NodeKind::Trait,
-                Regex::new(r"(?m)^\s*(?:export\s+)?interface\s+([A-Za-z_$][\w$]*)\b")?,
-            ),
-            (
-                NodeKind::Enum,
-                Regex::new(r"(?m)^\s*(?:export\s+)?enum\s+([A-Za-z_$][\w$]*)\b")?,
-            ),
-            (
-                NodeKind::TypeAlias,
-                Regex::new(r"(?m)^\s*(?:export\s+)?type\s+([A-Za-z_$][\w$]*)\b")?,
-            ),
-        ];
-
-        for (kind, pattern) in patterns {
+        for (kind, pattern) in JS_TS_SYMBOL_PATTERNS.iter() {
             for captures in pattern.captures_iter(content) {
                 let Some(name) = captures.get(1).map(|v| v.as_str()) else {
                     continue;
@@ -1178,8 +1366,7 @@ impl RustRepositoryExtractor {
                     file_node_id,
                     node.id,
                     EdgeKind::Contains,
-                    0.1,
-                    1.0,
+                    weights::CONTAINS_CODE,
                     json!({}),
                 ));
                 result.chunks.push(chunk_for_node(
@@ -1245,8 +1432,7 @@ impl RustRepositoryExtractor {
                 file_node_id,
                 node.id,
                 EdgeKind::Defines,
-                0.08,
-                1.0,
+                weights::DEFINES_SYMBOL,
                 json!({"technology": "aws_cdk"}),
             ));
             result.chunks.push(chunk_for_node(
@@ -1305,8 +1491,7 @@ impl RustRepositoryExtractor {
                 file_node_id,
                 node.id,
                 EdgeKind::Configures,
-                0.12,
-                0.95,
+                weights::CONFIGURES,
                 json!({"technology": "aws_cdk", "service": service}),
             ));
             result.chunks.push(chunk_for_node(
@@ -1392,8 +1577,7 @@ impl RustRepositoryExtractor {
             file_node_id,
             node.id,
             EdgeKind::Contains,
-            0.1,
-            1.0,
+            weights::CONTAINS_CODE,
             json!({}),
         ));
         result.chunks.push(chunk_for_node(
@@ -1445,8 +1629,7 @@ fn add_call_edges(result: &mut ExtractionResult, symbols: &HashMap<String, Uuid>
                     source,
                     *target,
                     EdgeKind::Calls,
-                    0.35,
-                    0.55,
+                    weights::CALLS_HEURISTIC,
                     json!({"detector": "name_call_heuristic", "callee": name}),
                 ));
             }
@@ -1489,8 +1672,7 @@ fn add_solidity_inheritance_edges(
             contract_node_id,
             node.id,
             EdgeKind::Implements,
-            0.2,
-            0.75,
+            weights::IMPLEMENTS,
             json!({"language": "solidity", "base": base}),
         ));
         result.nodes.push(node);
@@ -1544,6 +1726,13 @@ fn pdf_language(path: &Path) -> Option<Language> {
     }
 }
 
+fn python_language(path: &Path) -> Option<Language> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "py" | "pyi" => Some(Language::Python),
+        _ => None,
+    }
+}
+
 fn is_js_ts_test_file(path: &str) -> bool {
     path.contains(".test.")
         || path.contains(".spec.")
@@ -1557,6 +1746,14 @@ fn is_test_symbol(name: &str) -> bool {
         || lower.ends_with("test")
         || lower.starts_with("spec")
         || lower.ends_with("spec")
+}
+
+fn is_python_test_file(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with("_test.py")
+        || lower.contains("/test_")
+        || lower.starts_with("test_")
+        || lower.contains("/tests/")
 }
 
 fn looks_like_cdk_file(content: &str) -> bool {
@@ -1594,13 +1791,15 @@ fn cdk_service(construct_type: &str) -> &'static str {
     }
 }
 
+/// Build a weighted knowledge edge. The `weight` carries the `cost` and
+/// `confidence` that drive multigraph routing; see [`crate::weights`] for the
+/// rationale behind each value and the named constants used at call sites.
 fn edge(
     repo_id: Uuid,
     source: Uuid,
     target: Uuid,
     kind: EdgeKind,
-    cost: f64,
-    confidence: f64,
+    weight: EdgeWeight,
     metadata: serde_json::Value,
 ) -> KnowledgeEdge {
     KnowledgeEdge {
@@ -1609,8 +1808,8 @@ fn edge(
         source_node_id: source,
         target_node_id: target,
         kind,
-        cost,
-        confidence,
+        cost: weight.cost,
+        confidence: weight.confidence,
         metadata,
     }
 }
@@ -1891,6 +2090,35 @@ fn find_block_end(content: &str, start_line: usize) -> Option<usize> {
         }
     }
     Some(start_line)
+}
+
+/// Resolve the last line of a Python block (`def`/`class`) using indentation
+/// instead of braces: the block continues while subsequent non-blank lines are
+/// indented deeper than the header line.
+fn find_python_block_end(content: &str, start_line: usize) -> Option<usize> {
+    let lines = content.lines().collect::<Vec<_>>();
+    if start_line == 0 || start_line > lines.len() {
+        return None;
+    }
+    let header_indent = indent_width(lines[start_line - 1]);
+    let mut end = start_line;
+    for (idx, line) in lines.iter().enumerate().skip(start_line) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if indent_width(line) <= header_indent {
+            break;
+        }
+        end = idx + 1;
+    }
+    Some(end)
+}
+
+fn indent_width(line: &str) -> usize {
+    line.chars()
+        .take_while(|ch| *ch == ' ' || *ch == '\t')
+        .map(|ch| if ch == '\t' { 4 } else { 1 })
+        .sum()
 }
 
 fn slice_lines(content: &str, start: usize, end: usize) -> String {
@@ -2205,6 +2433,75 @@ contract OnChainLab is Ownable, IValidator {
             .edges
             .iter()
             .any(|edge| edge.kind == EdgeKind::Implements));
+    }
+
+    #[test]
+    fn detects_python_extensions() {
+        assert_eq!(
+            python_language(Path::new("service.py")),
+            Some(Language::Python)
+        );
+        assert_eq!(
+            python_language(Path::new("stubs.pyi")),
+            Some(Language::Python)
+        );
+        assert_eq!(python_language(Path::new("main.rs")), None);
+    }
+
+    #[test]
+    fn extracts_python_functions_classes_and_imports() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("service.py"),
+            r#"
+import os
+from typing import List
+from .helpers import build
+
+
+class AuthService:
+    def authenticate(self, token: str) -> bool:
+        return build(token)
+
+
+def login(user):
+    svc = AuthService()
+    return svc.authenticate(user)
+"#,
+        )
+        .unwrap();
+
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor
+            .extract(dir.path(), Uuid::new_v4(), Some("test".into()))
+            .unwrap();
+
+        assert!(result
+            .files
+            .iter()
+            .any(|file| file.path == "service.py" && file.language == Language::Python));
+        assert!(result
+            .nodes
+            .iter()
+            .any(|node| node.name == "AuthService" && node.kind == NodeKind::Struct));
+        assert!(result
+            .nodes
+            .iter()
+            .any(|node| node.name == "authenticate" && node.kind == NodeKind::Function));
+        assert!(result
+            .nodes
+            .iter()
+            .any(|node| node.name == "login" && node.kind == NodeKind::Function));
+        assert!(result
+            .nodes
+            .iter()
+            .any(|node| node.kind == NodeKind::Dependency && node.name == "os"));
+        assert!(result.nodes.iter().any(|node| node.name == "typing"));
+        assert!(result.edges.iter().any(|edge| edge.kind == EdgeKind::Calls));
+        assert!(result
+            .chunks
+            .iter()
+            .any(|chunk| chunk.content.contains("Language: python")));
     }
 
     #[test]
