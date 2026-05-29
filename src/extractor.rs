@@ -2157,6 +2157,38 @@ def login(user):
     }
 
     #[test]
+    fn invalid_source_file_degrades_to_file_node_without_aborting() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("ok.py"), "def fine():\n    return 1\n").unwrap();
+        fs::write(
+            dir.path().join("broken.py"),
+            "def (:\n    this is not python\n",
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        // Must NOT return Err — one bad file cannot abort the whole run.
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+        // The good file's symbol is present.
+        assert!(result
+            .nodes
+            .iter()
+            .any(|n| n.name == "fine" && n.kind == NodeKind::Function));
+        // The broken file still produced a File node (degrade, not drop).
+        assert!(result
+            .nodes
+            .iter()
+            .any(|n| n.kind == NodeKind::File && n.name == "broken.py"));
+        // No symbols were fabricated from the broken file.
+        assert!(!result
+            .nodes
+            .iter()
+            .any(
+                |n| n.metadata.get("file").and_then(|v| v.as_str()) == Some("broken.py")
+                    && n.kind == NodeKind::Function
+            ));
+    }
+
+    #[test]
     fn splits_large_chunks_before_embedding() {
         let mut result = ExtractionResult::empty();
         let content = "a".repeat(MAX_CHUNK_CHARS + 100);

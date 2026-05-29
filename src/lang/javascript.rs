@@ -248,11 +248,7 @@ pub(crate) fn extract(ctx: &mut FileExtraction<'_>) -> Result<()> {
 
     // Graceful degrade: if parse produced no usable AST
     if !ret.errors.is_empty() && ret.program.body.is_empty() {
-        eprintln!(
-            "[chaos-substrate] {}: js/ts parse failed ({} errors)",
-            ctx.file.path,
-            ret.errors.len()
-        );
+        crate::lang::warn_parse_failure(&ctx.file.path, &format!("{} errors", ret.errors.len()));
         return Ok(());
     }
 

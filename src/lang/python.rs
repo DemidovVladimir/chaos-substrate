@@ -25,10 +25,7 @@ pub(crate) fn extract(ctx: &mut FileExtraction<'_>) -> anyhow::Result<()> {
     let stmts = match ast::Suite::parse(source, &ctx.file.path) {
         Ok(s) => s,
         Err(err) => {
-            eprintln!(
-                "[chaos-substrate] {}: python parse failed: {err}",
-                ctx.file.path
-            );
+            crate::lang::warn_parse_failure(&ctx.file.path, &format!("{err}"));
             return Ok(());
         }
     };

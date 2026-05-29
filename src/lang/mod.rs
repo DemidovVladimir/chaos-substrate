@@ -12,6 +12,13 @@ pub(crate) mod javascript;
 pub(crate) mod python;
 pub(crate) mod solidity;
 
+/// Emit a consistent warning when a file fails to parse. The file node is still
+/// recorded by `begin_file`, so extraction degrades to file-level context
+/// instead of aborting the run or fabricating symbols.
+pub(crate) fn warn_parse_failure(path: &str, detail: &str) {
+    eprintln!("[chaos-substrate] {path}: parse failed ({detail}); indexing file without symbols");
+}
+
 /// Maps a UTF-8 byte offset (as produced by every AST node span) to a 1-based
 /// line number. Built once per file.
 pub(crate) struct LineIndex {

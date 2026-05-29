@@ -24,10 +24,9 @@ pub(crate) fn extract(ctx: &mut FileExtraction<'_>) -> anyhow::Result<()> {
     let (unit, _comments) = match solang_parser::parse(source, 0) {
         Ok(result) => result,
         Err(diags) => {
-            eprintln!(
-                "[chaos-substrate] {}: solidity parse failed ({} diagnostics)",
-                ctx.file.path,
-                diags.len()
+            crate::lang::warn_parse_failure(
+                &ctx.file.path,
+                &format!("{} diagnostics", diags.len()),
             );
             return Ok(());
         }
