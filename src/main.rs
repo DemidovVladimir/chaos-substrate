@@ -11,6 +11,7 @@ mod mcp;
 mod models;
 mod obsidian_export;
 mod query;
+mod setup;
 mod simple_graph_optimizer;
 mod storage;
 mod weights;
@@ -102,6 +103,15 @@ enum Commands {
     },
     /// Run the stdio MCP server.
     Mcp,
+    /// Auto-detect AI coding editors and register chaos-substrate as an MCP server in each.
+    Setup {
+        /// Print what would be written/run without making any changes.
+        #[arg(long)]
+        dry_run: bool,
+        /// Scope passed to `claude mcp add` (user | local | project). Defaults to "user".
+        #[arg(long)]
+        scope: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -333,6 +343,9 @@ async fn main() -> Result<()> {
         }
         Commands::Mcp => {
             mcp::run(config).await?;
+        }
+        Commands::Setup { dry_run, scope } => {
+            setup::run(cli.config.as_deref(), dry_run, scope)?;
         }
     }
 
