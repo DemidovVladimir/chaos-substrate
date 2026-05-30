@@ -15,7 +15,7 @@ Chaos Substrate supports TypeScript and JavaScript repositories through Rust cod
 - npm dependencies from `dependencies`, `devDependencies`, `peerDependencies`, and `optionalDependencies`
 - npm scripts
 - imports, re-exports, and CommonJS `require(...)`
-- functions and arrow-function exports
+- functions, arrow/const-function exports, and class methods
 - classes
 - interfaces
 - enums
@@ -25,8 +25,12 @@ Chaos Substrate supports TypeScript and JavaScript repositories through Rust cod
 - AWS CDK stack classes
 - AWS CDK construct/resource declarations such as Lambda functions, DynamoDB tables, queues, buckets, and API resources
 
+## How Extraction Works
+
+Extraction is performed with the [oxc](https://github.com/oxc-project/oxc) AST parser, a real TypeScript/JavaScript parser. It builds a full syntax tree rather than matching source patterns, so it captures class methods, arrow/const-function exports, and accurate line spans for every symbol.
+
 ## Current Limits
 
-The extractor is syntax-aware by source patterns, not a full TypeScript compiler frontend. It does not run `tsc`, resolve path aliases, infer types, or evaluate framework conventions yet.
+The parser is a syntactic frontend, not a full TypeScript compiler. It does not run `tsc`, resolve path aliases, or infer types, and it does not evaluate framework conventions yet. Cross-file call resolution is name-based.
 
 Future adapters should keep the same persisted graph contract and improve resolution with TypeScript compiler metadata, framework detectors, deeper AWS CDK construct/property extraction, and Kubernetes manifest extraction.

@@ -3,6 +3,11 @@
 The Chaos Substrate plugin lets Codex and Claude Code operate the memory system without asking users
 to copy skills into every project or remember every raw Cargo command.
 
+> One-command alternative: `target/release/chaos setup` auto-detects installed editors
+> (Claude Code / Codex / Cursor / Windsurf / OpenCode) and registers the MCP server in each
+> (merge-not-clobber; `--dry-run` to preview). For per-editor MCP registration and the tool-use
+> hooks, see [docs/EDITOR_SETUP.md](EDITOR_SETUP.md).
+
 ## Plugin Package
 
 The repository root is the plugin package:
@@ -11,6 +16,8 @@ The repository root is the plugin package:
 chaos-substrate/
 ├── .codex-plugin/plugin.json
 ├── .claude-plugin/plugin.json
+├── .claude-plugin/hooks/hooks.json
+├── .cursor/hooks.json
 ├── .mcp.json
 ├── bin/chaos-agent
 ├── skills/chaos-substrate/SKILL.md
@@ -20,19 +27,21 @@ chaos-substrate/
 ```
 
 - Codex reads `.codex-plugin/plugin.json`.
-- Claude Code reads `.claude-plugin/plugin.json`.
+- Claude Code reads `.claude-plugin/plugin.json` and `.claude-plugin/hooks/hooks.json`.
 - Both share the root `.mcp.json`, `skills/`, and `bin/chaos-agent`.
-- The shared MCP server exposes `chaos_analyze`, `chaos_query`, `chaos_feature_context`, and
-  `chaos_write_feature_website`.
+- The shared MCP server exposes four tools; see the [MCP Tools](../README.md#mcp-tools) section of the
+  README for the reference.
+- The tool-use hooks (`.claude-plugin/hooks/hooks.json`, `.cursor/hooks.json`) run `chaos hook` to
+  inject code-memory context on `Grep`, `Glob`, and `Bash`. The hook always exits 0, is a safe
+  no-op when the DB/index is unavailable, and has no embedder dependency.
 - `bin/chaos-agent` delegates to `scripts/chaos-agent`, which owns setup, indexing, querying, and
   feature-page generation.
 
 ## What Still Requires User Setup
 
-Users still need local infrastructure:
-
-- Postgres with pgvector, normally via `docker compose up -d`
-- a real embedder, either OpenAI credentials or Ollama installed locally
+Users still need local infrastructure (Postgres + pgvector and a real embedder). See the
+[Quick Start](../README.md#quick-start) section of the README for the bootstrap sequence and
+[docs/EDITOR_SETUP.md](EDITOR_SETUP.md#prerequisites) for prerequisites.
 
 The plugin wrapper can start this repository's Docker Compose stack and can try to start Ollama plus
 pull the configured model. It cannot install Docker, install the Ollama app, or create OpenAI
@@ -103,7 +112,10 @@ See `docs/OLLAMA_SETUP.md` for installation and troubleshooting.
   - Plugin intent: return source-grounded implementation context. MCP tool: `chaos_feature_context`. CLI fallback: `chaos-agent context <repo-path> "X"`.
 - "Use this with Claude Code or Claude Cowork"
   - Run `chaos-agent claude-code-add local <repo-path>` for private setup or `project` for shared
-    `.mcp.json`.
+    `.mcp.json`. See [docs/EDITOR_SETUP.md](EDITOR_SETUP.md) for all editors.
+- "Set this up in my editor(s)"
+  - Run `target/release/chaos setup` to register the MCP server in every detected editor, or
+    `--dry-run` to preview. See [docs/EDITOR_SETUP.md](EDITOR_SETUP.md).
 
 ## Codex
 
@@ -113,8 +125,8 @@ Codex uses `.codex-plugin/plugin.json`. The manifest points to:
 - `mcpServers`: `./.mcp.json`
 
 During development, install or load this repository as the `chaos-substrate` plugin. Once enabled,
-the agent can use the `chaos-substrate` skill and the MCP tools exposed by `chaos-agent mcp`:
-`chaos_analyze`, `chaos_query`, `chaos_feature_context`, and `chaos_write_feature_website`.
+the agent can use the `chaos-substrate` skill and the MCP tools exposed by `chaos-agent mcp` (see
+the [MCP Tools](../README.md#mcp-tools) section of the README for the four-tool reference).
 
 `chaos_write_feature_website` enforces the feature-page contract. It rejects prose-only pages that
 do not include an interactive graph, story flow, architecture/flow sections, code context, evidence

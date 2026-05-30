@@ -1,289 +1,237 @@
 # Chaos Substrate
 
-Persistent code knowledge memory for agents.
+**A portable, persistent code-knowledge memory for AI agents that survives process restarts.**
 
-The implementation is Rust-only code. It analyzes Rust, Solidity, TypeScript, JavaScript, Python, Markdown/MDX, JSON config (Cargo.toml, package.json, tsconfig/jsconfig, cdk.json), and text PDFs, stores a source-grounded knowledge graph in Postgres, stores real embedding vectors in pgvector, and exposes hybrid query results through a CLI and stdio MCP server. TypeScript, JavaScript, Python, and Solidity are analysis targets only — they are parsed Rust-side, never run as a separate service. It can also export a standalone `graph.html` page or an Obsidian vault for visual validation of the persisted graph.
+Chaos Substrate indexes a repository into a source-grounded knowledge graph plus real embedding
+vectors stored in **Postgres + pgvector**, so agents stop re-reading the whole repo on every task
+and instead get fast, source-grounded answers from durable memory. It is a single Rust binary
+(`chaos`) that exposes that memory through a CLI and a stdio MCP server.
 
-## Guarantees
+The implementation is Rust-only. It analyzes Rust, TypeScript, JavaScript, Python, and Solidity with
+**real AST parsers**, treats Markdown/MDX and text PDFs as supplemental document context, and reads a
+small set of JSON config manifests. Non-Rust languages are analysis targets only — they are parsed
+Rust-side, never run as a separate Node or Python service. It can also export a standalone
+`graph.html` page or an Obsidian vault for visual validation of the persisted graph.
 
-- Runtime code has no mock embedder and no random vectors.
-- Indexed graph, chunks, and embeddings are persisted in Postgres/pgvector.
-- Queries after restart use disk-backed memory.
-- Chunks are symbol-aware retrieval projections, not the source of truth.
-- Graph nodes and edges remain canonical for source grounding and context routing.
+## Why it exists
+
+- **Persistent memory.** The graph, chunks, and embeddings live in your Postgres/pgvector and
+  survive process restarts — queries after a restart use disk-backed memory, not a re-scan.
+- **Source-grounded answers.** Graph nodes and edges stay canonical for source grounding and context
+  routing; chunks are symbol-aware retrieval projections, not the source of truth.
+- **Fail-closed.** Runtime code has no mock embedder and no random vectors. If no real embedder is
+  configured, analysis fails rather than producing fake vectors.
+
+## Two ways to use
+
+| Mode | What | For | How to start |
+| --- | --- | --- | --- |
+| **Agent via MCP** | A stdio MCP server with 4 tools (`chaos_analyze`, `chaos_query`, `chaos_feature_context`, `chaos_write_feature_website`). | Coding agents (Claude Code, Codex, Cursor, Windsurf, OpenCode) that should query durable code memory instead of re-reading files. | `chaos setup` to register the server, then ask the agent to analyze and query. See [docs/EDITOR_SETUP.md](docs/EDITOR_SETUP.md). |
+| **Raw CLI** | The `chaos` binary: `analyze`, `query`, `feature-context`, `graph`, `obsidian`, `refresh`. | Humans and scripts doing setup, debugging, one-off indexing, or agentless operation. | `chaos analyze <repo>` then `chaos query <repo> "<question>"`. See [Quick Start](#quick-start). |
+| **Generated static feature-website** | A self-contained dark HTML feature page with interactive graph/story/code navigation plus a machine-readable manifest. | Sharing or reviewing how a feature works, and seeding future agent context from the embedded manifest. | `chaos feature-context <repo> "<task>" --output-html page.html`, or the `chaos_write_feature_website` MCP tool. |
 
 ## Quick Start
 
-```bash
-cp chaos-substrate.example.toml chaos-substrate.toml
-docker compose up -d
-export OPENAI_API_KEY=...
-cargo run -- migrate
-cargo run -- doctor
-cargo run -- analyze /path/to/repo
-cargo run -- query /path/to/repo "where is the request handler validated?"
-cargo run -- feature-context /path/to/repo "implement secure upload icon"
-cargo run -- graph /path/to/repo --output graph.html
-cargo run -- obsidian /path/to/repo --output chaos-obsidian-vault
-cargo run -- refresh /path/to/repo
-```
-
-## Agent Plugin Workflow
-
-Chaos Substrate is packaged as both a Codex plugin and a Claude Code plugin:
-
-```text
-.codex-plugin/plugin.json
-.claude-plugin/plugin.json
-skills/chaos-substrate/SKILL.md
-.mcp.json
-bin/chaos-agent
-```
-
-The plugin MCP server exposes `chaos_analyze`, `chaos_query`, `chaos_feature_context`, and
-`chaos_write_feature_website`.
-
-Install or load the plugin once per agent, then ask the agent to use Chaos Substrate from the target
-project:
+This is the canonical bootstrap. Bundled Postgres uses `pgvector/pgvector:pg16` on host port `54329`.
 
 ```bash
-codex plugin marketplace add /absolute/path/to/chaos-substrate
-claude --plugin-dir /absolute/path/to/chaos-substrate
-scripts/package-cowork-plugin
+cp chaos-substrate.example.toml chaos-substrate.toml   # committed config defaults to Ollama
+docker compose up -d                                   # pgvector on localhost:54329
+export OPENAI_API_KEY=...                               # or run Ollama; see below
+chaos migrate                                           # create schema (sqlx migrations)
+chaos doctor                                            # check Postgres + real embedding probe
+chaos analyze /path/to/repo                             # index the repository
+chaos query /path/to/repo "where is the request handler validated?"
 ```
 
-Use the Codex command to add the local Codex marketplace. Use `claude --plugin-dir` to load the
-plugin for a Claude Code session. For Claude Cowork, run `scripts/package-cowork-plugin` and upload
-`dist/chaos-substrate-cowork-plugin.zip` from Claude Desktop -> Cowork -> Customize -> Plugins.
-The Cowork zip includes the release MCP binary; rebuild and re-upload it after plugin changes.
-After the plugin is installed or loaded, prompts like these become valid:
+The default `DATABASE_URL` for the bundled container is
+`postgres://chaos:chaos@localhost:54329/chaos_substrate`.
 
-```text
-Use Chaos Substrate on this project and create an index plus explanation.
-Update the Chaos Substrate index.
-Generate a feature explanation website for authorization and RBAC.
-Find implementation context for authorization and RBAC.
-```
+For Ollama, edit `chaos-substrate.toml` to use `provider = "ollama"` (base URL
+`http://localhost:11434`, model `nomic-embed-text`, 768 dims). The committed config already defaults
+to Ollama. See [docs/OLLAMA_SETUP.md](docs/OLLAMA_SETUP.md) for install, model pull, and
+troubleshooting. OpenAI uses `text-embedding-3-small` (1536 dims, needs `OPENAI_API_KEY`).
 
-The plugin skill maps those requests to the wrapper commands. Use the CLI directly only for
-debugging or agentless operation:
+> The CLI examples above use the installed `chaos` binary. During development you can substitute
+> `cargo run --` for any one-off CLI command (for example `cargo run -- analyze /path/to/repo`).
+> Do **not** use `cargo run` in MCP/plugin configuration — launch the release binary directly.
+
+## Install for your editor
+
+Register Chaos Substrate as an MCP server with one command:
 
 ```bash
-scripts/chaos-agent bootstrap
-export PATH="$HOME/.local/bin:$PATH"
-chaos-agent onboard /absolute/path/to/project
-chaos-agent explain /absolute/path/to/project "authorization and RBAC"
+chaos setup                 # auto-detect Claude Code / Codex / Cursor / Windsurf / OpenCode
+chaos setup --dry-run       # show planned changes without writing
+chaos setup --scope project # write a shareable project-scoped config
 ```
 
-Natural language mapping for agents:
+`chaos setup` merges (does not clobber) existing MCP configuration in each detected editor and points
+it at the release binary over stdio. There is also `chaos hook`, a Claude Code / Cursor plugin hook
+that reads a `PreToolUse`/`PostToolUse` event on stdin and injects code-memory context for
+`Grep`/`Glob`/`Bash`; it always exits 0 and is a safe no-op when the DB or index is unavailable (no
+embedder dependency). The plugin ships `.claude-plugin/hooks/hooks.json` and `.cursor/hooks.json`.
 
-- "Set up Chaos here" -> plugin intent: onboard this project.
-- "Go through the project and create sufficient index and explanation" -> plugin intent: create or refresh the project memory.
-- "Update index" -> plugin intent: refresh the existing memory.
-- "Generate explanation for X feature" -> plugin intent: create a focused feature-memory website.
+Per-editor instructions (Claude Code, Codex, Cursor, Windsurf, OpenCode) live in
+**[docs/EDITOR_SETUP.md](docs/EDITOR_SETUP.md)**.
 
-The corresponding implementation commands are `chaos-agent onboard`, `update`, `context`, and
-`explain`; users should not need to memorize them when the plugin is enabled.
-When MCP is available, agents should prefer `chaos_analyze`, `chaos_query`, and
-`chaos_feature_context`; feature websites should be LLM-composed from that evidence and written with
-`chaos_write_feature_website`. The CLI wrapper is the fallback and setup path.
-If `chaos_feature_context` returns warnings about missing indexed subtrees or missing documentation
-hits, agents must refresh or target the context again before writing a feature website.
-The writer rejects README-like pages; feature pages must include interactive graph/story/code
-navigation, architecture/flow sections, evidence, and a populated manifest.
-
-The wrapper builds the release binary if needed, starts the local Postgres container unless
-`CHAOS_NO_DOCKER=1` is set, runs migrations, analyzes the repository, refreshes the Obsidian vault,
-can write portable `AGENTS.md` / `CLAUDE.md` sections, and can write dark standalone
-feature-context explanation websites.
-
-Codex consumes `.codex-plugin/plugin.json`. Claude Code consumes `.claude-plugin/plugin.json`.
-Both share the same `skills/`, `.mcp.json`, and `bin/chaos-agent` entrypoint.
-
-For Claude MCP, build and launch the binary directly instead of using `cargo run`:
+MCP/plugin config must launch the release binary directly over stdio:
 
 ```bash
 cargo build --release
 ./target/release/chaos --config chaos-substrate.toml mcp
 ```
 
-For Ollama, use `chaos-substrate.local.toml` or edit `chaos-substrate.toml` to use `provider = "ollama"`.
-`bootstrap` will run the Ollama readiness step before `doctor` or indexing.
-The Ollama provider calls `/api/embed`, so use an Ollama version/model that supports embedding generation.
+## MCP Tools
 
-Fast Ollama path:
+The stdio MCP server speaks newline-delimited JSON-RPC (no `Content-Length` framing) and exposes
+exactly four tools. **This is the canonical tool reference.**
 
-```bash
-CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent bootstrap
-export PATH="$HOME/.local/bin:$PATH"
-```
+| Tool | What it does | Key params | When to use |
+| --- | --- | --- | --- |
+| `chaos_analyze` | Indexes or refreshes a repository into the persistent graph + embeddings. | `repo_path` | First, to build or update memory for a repo before querying. |
+| `chaos_query` | Answers a focused, source-grounded question via hybrid (semantic + keyword) retrieval. | `repo`, `question`, `limit` (default 10) | To get a grounded answer about specific code without re-reading files. |
+| `chaos_feature_context` | Gathers evidence for understanding a feature: semantic/keyword hits, graph context, feature-page manifests. | `repo`, `task`, `limit` (10), `feature_limit` (3), `nodes_per_feature` (8), `features_dir`, `output_html` | Before implementing or explaining a feature, to assemble an implementation brief. Pass `output_html` to also write the feature page. |
+| `chaos_write_feature_website` | Writes an LLM-composed feature page plus its machine-readable manifest. | `repo`, `slug`, `title`, `html`, `manifest` | To persist a reviewed feature explanation as a shareable static page. |
 
-After bootstrap, use the plugin from the target project with natural requests such as "Use Chaos
-Substrate on this project and create an index plus explanation."
+Agents should prefer MCP tools when available, and should not synthesize feature pages from
+`chaos_query` alone when `chaos_feature_context` and `chaos_write_feature_website` are available. The
+writer rejects README-like pages: feature pages must include interactive graph/story/code
+navigation, architecture/flow sections, evidence, and a populated manifest. If
+`chaos_feature_context` returns warnings about missing indexed subtrees or missing documentation
+hits, refresh or re-target the context before writing a feature website.
 
-See [docs/OLLAMA_SETUP.md](docs/OLLAMA_SETUP.md) for install, model pull, and troubleshooting steps.
+## Supported languages
+
+All non-Rust extraction uses **real AST parsers**, not regex or pattern matching. Each captures
+functions, classes/structs, interfaces/traits, enums, type aliases, class methods, imports,
+inheritance, and (heuristic, file-scoped) call edges.
+
+| Language | Parser | Functions | Classes/Structs | Methods | Imports | Inheritance | Calls |
+| --- | --- | :---: | :---: | :---: | :---: | :---: | :---: |
+| Rust | `syn` | ✅ | ✅ | ✅ | ✅ | ✅ (traits/impls) | ✅ |
+| TypeScript / JavaScript | `oxc` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Python | `rustpython-parser` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Solidity | `solang-parser` | ✅ | ✅ (contracts/libraries) | ✅ | ✅ | ✅ | ✅ |
+
+Supplemental context:
+
+- **Markdown / MDX** and **text PDF** are indexed as document context at lower retrieval and graph
+  weight than source code.
+- **JSON** is limited to config manifests: `package.json`, `cdk.json`, `tsconfig.json`,
+  `jsconfig.json` (plus `Cargo.toml`, parsed for dependency nodes). AWS CDK apps/stacks/resources are
+  extracted from CDK config.
+
+Honest residual limits: no `tsc`/type inference, no path-alias resolution, and cross-file call
+resolution is name-based.
+
+## Security & data
+
+- **Your data stays in your database.** The graph, chunks, and embeddings live in *your* Postgres +
+  pgvector instance (bundled `docker-compose.yml` runs `pgvector/pgvector:pg16` locally on port
+  `54329`). Nothing is sent to a third party beyond your chosen embedding provider.
+- **Embeddings require a real provider.** OpenAI (`text-embedding-3-small`, 1536 dims) or Ollama
+  (`nomic-embed-text`, 768 dims). Only chunk text is sent to the embedder.
+- **Fail-closed by design.** There are no mock embedders and no random vectors. If no real embedder
+  is available, analysis fails rather than fabricating data. A dimension check prevents incompatible
+  vectors from being stored.
+- **Rust-side extraction only.** TypeScript/JavaScript, Python, and Solidity are parsed in-process by
+  the Rust binary. No Node or Python runtime service is spawned.
+
+## Storage
+
+Postgres tables: `repositories`, `analysis_runs`, `files`, `nodes`, `edges`, `chunks`, `embeddings`.
+Migrations run via `sqlx::migrate!` and are tracked in `_sqlx_migrations`. The `embeddings` table
+stores provider, model, dimensions, content hash, and pgvector data.
 
 ## CLI
 
 ```bash
-chaos migrate
-chaos doctor
-chaos analyze <repo-path>
-chaos query <repo-or-path> "<question>"
-chaos feature-context <repo-or-path> "<task>"
-chaos graph <repo-or-path> --output graph.html
-chaos obsidian <repo-or-path> --output chaos-obsidian-vault
-chaos refresh <repo-or-path>
-chaos mcp
+chaos migrate                                          # create/update schema
+chaos doctor                                           # check Postgres + embedding provider
+chaos analyze <repo>                                   # index a repository
+chaos query <repo> "<question>" [--limit N]            # source-grounded answer
+chaos feature-context <repo> "<task>" [--output-html page.html]
+chaos graph <repo> [-o graph.html]                     # export interactive graph page
+chaos obsidian <repo> [-o vault]                       # export Obsidian vault
+chaos refresh <repo> [--all-features]                  # regenerate project-local artifacts
+chaos setup [--dry-run] [--scope user|local|project]   # register MCP server in editors
+chaos hook --event <PreToolUse|PostToolUse> [--format claude|cursor]
+chaos mcp                                              # run the stdio MCP server
 ```
+
+Global flag: `--config <PATH>` (default `chaos-substrate.toml`). `DATABASE_URL` overrides the config.
+Diagnostics go to stderr (tracing); program results go to stdout.
 
 `doctor` checks Postgres and performs a real embedding probe against the configured provider.
 
-`analyze` extracts:
+`analyze` extracts files, functions, classes, interfaces, type aliases, enums, structs, traits,
+impls, modules, tests, source line ranges, `contains`/`imports`/`depends_on`/`calls` graph edges,
+symbol-aware chunks linked back to graph nodes, and real embeddings for every chunk. It also pulls
+Cargo dependencies, `package.json` dependencies/scripts, tsconfig/jsconfig files, and AWS CDK
+apps/stacks/resources, and indexes Markdown/MDX docs and extractable text PDFs as supplemental
+context.
 
-- Rust files and Cargo dependencies
-- Solidity contracts, interfaces, libraries, functions, constructors, events, modifiers, imports, and inheritance edges
-- TypeScript/JavaScript files, package.json dependencies/scripts, tsconfig/jsconfig files, AWS CDK apps/stacks/resources
-- Markdown/MDX docs and extractable text PDFs as supplemental context with lower retrieval and graph weight than source code
-- files, functions, classes, interfaces, type aliases, enums, structs, traits, impls, modules, tests
-- source line ranges where available
-- contains/imports/depends-on/calls graph edges
-- symbol-aware chunks linked back to graph nodes
-- real embeddings for every chunk
+`graph` exports a self-contained `graph.html` for visual validation of the persisted nodes and edges
+— pan, zoom, filter by node kind, search, and click nodes for source metadata. It does not run a web
+server, require Node.js, or call an embedding provider.
 
-`graph` exports a standalone `graph.html` file for visual validation of the persisted nodes and
-edges. Open it in a browser to pan, zoom, filter by node kind, search, and click nodes for source
-metadata.
+`obsidian` exports the persisted graph as a local Obsidian vault (`Topics/`, `Nodes/`, `Edges.md`,
+`README.md`, `.obsidian/`). It only reads the persisted graph.
 
-`obsidian` exports the same persisted graph as a local Obsidian vault. Open the output folder in
-Obsidian to browse topic notes, node notes, backlinks, outgoing/incoming edges, and the generated
-graph view.
+`refresh` is the after-reindex command for project-local generated artifacts; it reads the persisted
+graph and regenerates the repository Obsidian vault (and, with `--all-features`, feature pages).
 
-`refresh` is the after-reindex command for project-local generated artifacts. It reads the current
-persisted graph from Postgres and regenerates the repository Obsidian vault. Feature explanation
-websites are generated from focused queries with `feature-context --output-html`.
+`feature-context` builds an implementation brief: semantic and keyword hits from Postgres, graph
+context paths, relevant generated feature pages, and feature metadata (claims, graph modes, nodes,
+edges, story-step scopes, evidence, confidence). Generated feature websites embed a
+`<script type="application/json" id="chaos-feature-manifest">` block as the stable machine contract;
+`feature-context` scans direct `*.html` files in `docs/features_memory` by default and ignores pages
+without this manifest.
 
-`feature-context` builds an implementation brief for an agent. It combines live Postgres retrieval
-with machine-readable manifests embedded in generated feature websites. Use it before implementing a
-subfeature so related feature flows, code snippets, and page-backed relationships are included in the
-agent context. Feature manifests are generic: they include feature metadata, claims, graph modes,
-nodes, edges, story-step scopes, evidence, and confidence fields. Story steps should use explicit
-`node_ids` and optional `edge_ids`; broad graph highlights belong in modes.
+## Development / Docs index
 
-## Graph Webpage
+| Doc | Purpose |
+| --- | --- |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | System design: extraction, storage, retrieval, and the MCP surface. |
+| [RUNBOOK.md](RUNBOOK.md) | Canonical ops command reference for running, indexing, and maintaining. |
+| [llms.txt](llms.txt) | Machine-readable project summary for LLMs. |
+| [docs/EDITOR_SETUP.md](docs/EDITOR_SETUP.md) | Canonical per-editor install (Claude Code / Codex / Cursor / Windsurf / OpenCode). |
+| [docs/MCP_SETUP.md](docs/MCP_SETUP.md) | Generic stdio MCP server setup and JSON-RPC details. |
+| [docs/CLAUDE_MCP_INSTALL.md](docs/CLAUDE_MCP_INSTALL.md) | Registering the server with Claude Code / Claude Desktop. |
+| [docs/CLAUDE_CODE_COWORK.md](docs/CLAUDE_CODE_COWORK.md) | Claude Code and Cowork plugin setup. |
+| [docs/PLUGIN_INSTALL.md](docs/PLUGIN_INSTALL.md) | Codex and Claude plugin installation. |
+| [docs/plugin-install.html](docs/plugin-install.html) | Dark visual plugin-install tutorial. |
+| [docs/PLUGIN_WORKFLOW.md](docs/PLUGIN_WORKFLOW.md) | Plugin wrapper workflow and natural-language intents. |
+| [docs/FEATURE_CONTEXT.md](docs/FEATURE_CONTEXT.md) | Feature-context agent workflow and manifest contract. |
+| [docs/GRAPH_WEBPAGE.md](docs/GRAPH_WEBPAGE.md) | `graph.html` export setup and validation tutorial. |
+| [docs/OBSIDIAN_EXPORT.md](docs/OBSIDIAN_EXPORT.md) | Obsidian vault export workflow. |
+| [docs/REFRESH_EXPORTS.md](docs/REFRESH_EXPORTS.md) | `refresh` command reference for generated artifacts. |
+| [docs/OLLAMA_SETUP.md](docs/OLLAMA_SETUP.md) | Ollama install, model pull, and embedding troubleshooting. |
+| [docs/TYPESCRIPT_JAVASCRIPT_SUPPORT.md](docs/TYPESCRIPT_JAVASCRIPT_SUPPORT.md) | TypeScript/JavaScript extraction details and limits. |
+| [docs/RUST_EXTRACTOR_NOTES.md](docs/RUST_EXTRACTOR_NOTES.md) | Rust (`syn`) extractor implementation notes. |
+| [docs/STORAGE_SCHEMA_REVIEW.md](docs/STORAGE_SCHEMA_REVIEW.md) | Postgres schema review and rationale. |
+| [docs/AGENT_VALIDATION.md](docs/AGENT_VALIDATION.md) | Agent-facing validation checklist. |
+| [docs/CLAUDE_VALIDATION_BRIEF.md](docs/CLAUDE_VALIDATION_BRIEF.md) | Claude validation brief. |
 
-Generate the page after indexing a repository:
-
-```bash
-cargo run -- graph /path/to/repo --output graph.html
-```
-
-The exporter reads persisted `nodes`, `edges`, `files`, and chunk counts from Postgres. It does not
-run a web server, require Node.js, or call an embedding provider. The generated file is self-contained
-and can be opened directly in a browser.
-
-Use the webpage to validate:
-
-- node coverage by type, file path, and source line range
-- edge coverage for `contains`, `imports`, `depends_on`, `calls`, `defines`, and deployment links
-- whether chunks are linked back to source graph nodes
-- whether re-indexing changed the graph shape as expected
-
-Interactive controls:
-
-- search filters visible nodes by name, stable ID, kind, or file path
-- kind checkboxes isolate files, symbols, dependencies, resources, and repository nodes
-- mouse wheel zooms, dragging empty space pans, and dragging a node pins it
-- clicking a node opens its metadata, source path, line range, chunk count, and stable ID
-
-See [docs/GRAPH_WEBPAGE.md](docs/GRAPH_WEBPAGE.md) for the full setup and validation tutorial.
-
-## Obsidian Vault
-
-Generate a vault after indexing:
+### Validation
 
 ```bash
-cargo run -- obsidian /path/to/repo --output chaos-obsidian-vault
+cargo fmt --check
+cargo test
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-The export writes `Topics/`, `Nodes/`, `Edges.md`, `README.md`, and `.obsidian/` settings. It does
-not re-index the repository or call an embedding provider; it only reads the persisted graph from
-Postgres.
+For real repository indexing, configure either OpenAI or Ollama embeddings. If the embedder is
+unavailable, analysis must fail rather than producing fake vectors.
 
-See [docs/OBSIDIAN_EXPORT.md](docs/OBSIDIAN_EXPORT.md) for the Obsidian workflow.
+### Key source files
 
-## Refresh Generated Artifacts
-
-After re-indexing a repository, refresh the generated project views:
-
-```bash
-cargo run -- refresh /absolute/path/to/repo
-```
-
-By default this writes:
-
-- `/absolute/path/to/repo/chaos-obsidian-vault`
-
-See [docs/REFRESH_EXPORTS.md](docs/REFRESH_EXPORTS.md) for the command reference.
-
-## Feature Context
-
-Before implementing a related task, ask Chaos Substrate for focused context:
-
-```bash
-cargo run -- feature-context /absolute/path/to/repo "implement secure upload icon"
-```
-
-The command returns:
-
-- semantic and keyword hits from Postgres
-- graph context paths around those hits
-- relevant generated feature pages
-- generic feature metadata, claims, graph modes, evidence, and confidence
-- matched feature nodes, source snippets, and related edges from page manifests
-
-Generated feature websites include a `<script type="application/json" id="chaos-feature-manifest">`
-block specifically for agents. The visual DOM stays for humans; the manifest is the stable machine
-contract. The command only scans direct `*.html` files in `docs/features_memory` by default and
-ignores pages without this manifest, so it does not load the whole `docs/` tree.
-Markdown/MDX docs and extracted PDF text indexed from the repository are shown separately as supplemental documentation
-evidence when they match the task.
-
-See [docs/FEATURE_CONTEXT.md](docs/FEATURE_CONTEXT.md) for the agent workflow.
-See [docs/PLUGIN_WORKFLOW.md](docs/PLUGIN_WORKFLOW.md) for the plugin wrapper workflow.
-See [docs/PLUGIN_INSTALL.md](docs/PLUGIN_INSTALL.md) for Codex and Claude plugin installation.
-Open [docs/plugin-install.html](docs/plugin-install.html) for the dark visual tutorial.
-See [docs/CLAUDE_CODE_COWORK.md](docs/CLAUDE_CODE_COWORK.md) for Claude Code and Cowork setup.
-
-## Storage
-
-Postgres tables:
-
-- `repositories`
-- `analysis_runs`
-- `files`
-- `nodes`
-- `edges`
-- `chunks`
-- `embeddings`
-
-The `embeddings` table stores provider, model, dimensions, content hash, and pgvector data. A dimension check prevents incompatible vectors from being stored.
-
-## MCP
-
-Run:
-
-```bash
-cargo run -- mcp
-```
-
-Tool:
-
-```text
-chaos_analyze(repo_path)
-chaos_query(repo, question, limit)
-chaos_feature_context(repo, task, limit, feature_limit, nodes_per_feature, features_dir)
-chaos_write_feature_website(repo, slug, title, html, manifest)
-```
-
-See [docs/MCP_SETUP.md](docs/MCP_SETUP.md) and [docs/AGENT_VALIDATION.md](docs/AGENT_VALIDATION.md).
+`src/main.rs` (clap CLI), `src/mcp.rs` (MCP server, 4 tools), `src/config.rs` (toml+env config),
+`src/storage.rs` (Postgres, sqlx), `src/embedding.rs` (OpenAI/Ollama embedders), `src/extractor.rs`
+(orchestration + Rust/Cargo/Markdown/PDF/JSON/AWS-CDK extraction + call edges),
+`src/lang/{mod,javascript,python,solidity}.rs` (oxc/rustpython/solang AST extraction),
+`src/weights.rs` (edge cost/confidence), `src/query.rs` (hybrid retrieval),
+`src/feature_context.rs` + `src/feature_export.rs` (feature pages), `src/graph_export.rs`,
+`src/obsidian_export.rs`, `src/setup.rs`, `src/hook.rs`, `src/export_util.rs`, and
+`migrations/001_init.sql`.

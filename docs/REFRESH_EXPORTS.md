@@ -67,6 +67,18 @@ cargo run -- refresh /absolute/path/to/repo \
   --features-dir /absolute/path/to/repo/docs/features_memory
 ```
 
+`refresh` flags:
+
+- `--obsidian-output <path>` overrides the regenerated Obsidian vault location.
+- `--features-dir <path>` overrides the directory scanned for generated feature pages.
+- `--all-features` also regenerates every feature website already present in the features directory,
+  not just the Obsidian vault. Use this after re-indexing when existing feature pages should be
+  refreshed in bulk from the current Postgres index.
+
+```bash
+cargo run -- refresh /absolute/path/to/repo --all-features
+```
+
 ## 5. Suggested Workflow
 
 ```bash

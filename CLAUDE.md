@@ -18,11 +18,17 @@ Use it to create and query a persistent knowledge base for Rust, Solidity, TypeS
 cargo run -- migrate
 cargo run -- doctor
 cargo run -- analyze /path/to/repo
+cargo run -- refresh /path/to/repo --all-features
 cargo run -- query /path/to/repo "question"
-cargo run -- graph /path/to/repo --output graph.html
-cargo run -- feature-context /path/to/repo "task"
+cargo run -- feature-context /path/to/repo "task" --output-html out.html
+cargo run -- graph /path/to/repo -o graph.html
+cargo run -- obsidian /path/to/repo -o vault
+cargo run -- setup --dry-run
+cargo run -- hook --event PreToolUse
 cargo run -- mcp
 ```
+
+Full ops reference: see RUNBOOK.md.
 
 ## MCP Tool Surface
 

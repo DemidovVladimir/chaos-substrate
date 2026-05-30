@@ -1,0 +1,29 @@
+Chaos Substrate — a portable, persistent code-knowledge memory for AI agents (Rust binary + Postgres/pgvector), queried via CLI and a stdio MCP server, indexing Rust, Solidity, TypeScript/JavaScript, Python, Markdown/MDX, and PDF.
+
+# Core docs (read first — the agent contract & rules)
+CLAUDE.md — agent operating contract, hard rules, common commands, and MCP tool surface.
+AGENTS.md — self-contained agent playbook for working in this repo.
+
+# Operational (read when running commands or debugging)
+RUNBOOK.md — canonical ops command reference for setup, migrate, doctor, analyze, and recovery.
+docs/MCP_SETUP.md — register the release binary as a stdio MCP server.
+docs/EDITOR_SETUP.md — per-editor install for Claude Code, Codex, Cursor, Windsurf, and OpenCode.
+docs/OLLAMA_SETUP.md — configure the local Ollama embedder (nomic-embed-text, 768 dims).
+docs/CLAUDE_MCP_INSTALL.md — Claude Code / Cowork MCP registration walkthrough.
+
+# Architecture (read for design/data-flow context)
+ARCHITECTURE.md — end-to-end design: extraction, embeddings, storage, and retrieval data flow.
+docs/STORAGE_SCHEMA_REVIEW.md — Postgres + pgvector schema (repositories, files, nodes, edges, chunks, embeddings).
+docs/RUST_EXTRACTOR_NOTES.md — AST extraction notes (syn/oxc/rustpython/solang) and residual limits.
+
+# Feature/usage guides
+docs/FEATURE_CONTEXT.md — gather feature evidence and compose feature pages.
+docs/GRAPH_WEBPAGE.md — export an interactive code graph to graph.html.
+docs/OBSIDIAN_EXPORT.md — export the knowledge base to an Obsidian vault.
+
+# Key directories
+src/ — Rust runtime (extractor.rs, lang/, models.rs, weights.rs, mcp.rs, main.rs).
+migrations/ — sqlx SQL migrations (001_init.sql) for the Postgres schema.
+skills/ — self-contained agent skill contract (chaos-substrate/SKILL.md).
+docs/ — operational, architecture, and feature guides.
+.claude-plugin/ + .codex-plugin/ — plugin manifests and hooks that launch the release binary over stdio.

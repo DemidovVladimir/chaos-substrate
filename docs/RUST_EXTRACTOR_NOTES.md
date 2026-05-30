@@ -1,5 +1,13 @@
 # Rust Extractor MVP Notes
 
+> **Status: aspirational design notes, not all implemented.** This document records the
+> intended capture scope and graph mapping for the Rust extractor. Several items below
+> (byte offsets, visibility/generics/where-clause signatures, and the
+> `method_of` / `uses_macro` / `returns` / `accepts` / `references_type` edges) describe a
+> richer model than the code currently emits. For what the extractor actually produces today,
+> see [Actually Emitted Today](#actually-emitted-today) at the bottom of this file. The Rust
+> extractor uses the `syn` AST parser.
+
 ## MVP Capture Scope
 
 - Crate identity: package name, crate root, edition when available, and source file paths.
@@ -26,3 +34,21 @@ Defer full type inference, borrow semantics, control-flow graphs, MIR-level fact
 - Use source spans as edge provenance so graph queries can jump back to the exact chunk that produced a relationship.
 
 Node IDs should be deterministic across runs when paths and item signatures are unchanged. If parsing cannot resolve a name, emit an unresolved reference node rather than dropping the relationship.
+
+## Actually Emitted Today
+
+The notes above are aspirational. What the extractor (`src/extractor.rs`, parsing with `syn`)
+emits today is narrower:
+
+- **Nodes** carry only `line_start` and `line_end` (see `KnowledgeNode` in `src/models.rs`).
+  There are **no byte offsets** and **no visibility / generics / where-clause / signature**
+  fields on the node itself; any extra detail lives in the free-form `metadata` JSON.
+- **Node kinds** (`NodeKind`): `Repository`, `File`, `Module`, `Function`, `Struct`, `Enum`,
+  `Trait`, `Impl`, `Method`, `Test`, `Dependency`, `Concept`, `Script`, `TypeAlias`,
+  `DeploymentResource`. There is no dedicated union / constant / static / field / variant node.
+- **Edge kinds** (`EdgeKind`): `Contains`, `Imports`, `Calls`, `UsesType`, `Implements`,
+  `Defines`, `Tests`, `Documents`, `Mentions`, `DependsOn`, `Configures`, `Deploys`,
+  `SimilarTo`, `PrerequisiteFor`. The aspirational `method_of`, `uses_macro`, `returns`,
+  `accepts`, and `references_type` edges are **not** emitted (method-on-type relationships are
+  represented with `Contains`; type usage uses `UsesType`).
+- Call edges are heuristic and file-scoped; cross-file call resolution is name-based.

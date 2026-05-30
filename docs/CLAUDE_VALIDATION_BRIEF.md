@@ -27,11 +27,11 @@ The system must survive laptop/process restarts. Indexed knowledge must be reusa
 
 Implemented language/project support:
 
-- Rust
-- Solidity: contracts, interfaces, libraries, functions, constructors, events, modifiers, imports, and inheritance
-- Python: functions, classes, and imports (def/class/import, indentation-aware)
-- TypeScript
-- JavaScript
+- Rust (`syn`)
+- Solidity (`solang-parser` AST): contracts, interfaces, libraries, functions, constructors, events, modifiers, imports, and inheritance
+- Python (`rustpython-parser` AST): functions, classes, class methods, imports, and file-scoped call edges
+- TypeScript (`oxc` AST)
+- JavaScript (`oxc` AST)
 - `Cargo.toml`
 - `package.json`
 - `tsconfig.json`
@@ -43,7 +43,8 @@ Supported extracted knowledge:
 - functions
 - Rust structs/enums/traits/impls/modules/tests
 - Solidity contracts/interfaces/libraries/functions/events/modifiers/imports/inheritance
-- TypeScript/JavaScript functions, arrow functions, classes, interfaces, enums, type aliases
+- TypeScript/JavaScript functions, arrow functions, classes, class methods, interfaces, enums, type aliases
+- Python functions, classes, class methods, and imports
 - Markdown/MDX and extractable PDF documentation as supplemental context
 - imports/re-exports/CommonJS `require`
 - Cargo dependencies
@@ -62,13 +63,19 @@ Supported extracted knowledge:
 - `Cargo.toml` - Rust package and dependencies
 - `src/main.rs` - CLI entrypoint
 - `src/models.rs` - persisted data model
-- `src/extractor.rs` - Rust/TS/JS extraction
+- `src/extractor.rs` - extraction orchestration plus Rust/Cargo/Markdown/PDF/JSON/AWS-CDK extraction and call edges
+- `src/lang/javascript.rs` - TypeScript/JavaScript AST extraction (`oxc`)
+- `src/lang/python.rs` - Python AST extraction (`rustpython-parser`)
+- `src/lang/solidity.rs` - Solidity AST extraction (`solang-parser`)
+- `src/weights.rs` - edge cost/confidence weighting
 - `src/storage.rs` - Postgres persistence
 - `src/embedding.rs` - OpenAI/Ollama real embedders
 - `src/query.rs` - hybrid query flow
 - `src/graph.rs` - context path selection
 - `src/graph_export.rs` - standalone graph webpage export
 - `src/simple_graph_optimizer.rs` - weighted graph path engine
+- `src/setup.rs` - editor MCP auto-registration (`chaos setup`)
+- `src/hook.rs` - Claude Code/Cursor plugin hook (`chaos hook`)
 - `src/mcp.rs` - stdio MCP server
 - `migrations/001_init.sql` - database schema
 - `docker-compose.yml` - local pgvector Postgres
@@ -179,7 +186,8 @@ Check for these risks:
 - Missing source grounding for chunks or nodes.
 - Schema drift between `models.rs`, `storage.rs`, and `migrations/001_init.sql`.
 - Query path using embeddings without validating provider/model/dimensions.
-- Regex-based TS/JS extraction failing common syntax patterns.
+- AST parse failures (oxc/rustpython-parser/solang-parser) not degrading gracefully, e.g. aborting a whole run instead of skipping the unparseable file.
+- Incorrect AST span-to-line mapping (`LineIndex` offsets) producing wrong source line ranges for nodes.
 
 ## PRD Summary
 
@@ -201,10 +209,11 @@ Chaos Substrate should become a modular code-to-knowledge memory system:
 
 ## Current Known Limits
 
-- TypeScript/JavaScript extraction is pattern-based, not a full TypeScript compiler frontend.
-- Python extraction is pattern-based (def/class/import with indentation-aware block bounds), not a full Python AST.
-- Solidity extraction is pattern-based, not a full Solidity compiler frontend.
+- TypeScript/JavaScript extraction uses the `oxc` AST parser, but there is no `tsc`-level type inference or path-alias resolution.
+- Python extraction uses the `rustpython-parser` AST; it captures structure and call sites but does not perform type inference.
+- Solidity extraction uses the `solang-parser` AST; it is not a full compiler frontend with semantic analysis.
 - Rust extraction uses `syn` plus heuristics; it is not rust-analyzer/MIR-level semantic analysis.
+- Call edges are file-scoped heuristics; cross-file call resolution is name-based, not type-resolved.
 - No Go/Kubernetes/Terraform adapter yet.
 - No full integration test with a real embedder was run unless the validator provides OpenAI or Ollama.
 - MCP has a focused tool surface: `chaos_analyze`, `chaos_query`, `chaos_feature_context`, and

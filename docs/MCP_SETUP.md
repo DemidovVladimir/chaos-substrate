@@ -29,8 +29,11 @@ See `docs/OLLAMA_SETUP.md`.
 
 ## Build
 
+Build the release binary once and point MCP clients at it directly. Do not use `cargo run` in MCP
+config.
+
 ```sh
-cargo build
+cargo build --release
 ```
 
 ## Agent Configuration
@@ -48,19 +51,21 @@ When using the Codex or Claude plugin package, prefer the bundled root `.mcp.jso
 }
 ```
 
-For manual non-plugin setups, configure the MCP client to launch the Chaos Substrate binary over
-stdio.
+For manual non-plugin setups, configure the MCP client to launch the release binary over stdio.
 The server uses MCP stdio newline-delimited JSON-RPC. Do not wrap it with LSP-style `Content-Length` framing.
 
-Example shape:
+Example shape (launch the release binary directly, never `cargo run`):
 
 ```json
 {
   "mcpServers": {
     "chaos-substrate": {
-      "command": "cargo",
-      "args": ["run", "--", "mcp"],
-      "cwd": "/absolute/path/to/chaos-substrate",
+      "command": "/absolute/path/to/chaos-substrate/target/release/chaos",
+      "args": [
+        "--config",
+        "/absolute/path/to/chaos-substrate/chaos-substrate.toml",
+        "mcp"
+      ],
       "env": {
         "DATABASE_URL": "postgres://USER:PASSWORD@HOST:PORT/DB",
         "OPENAI_API_KEY": "..."
@@ -69,8 +74,6 @@ Example shape:
   }
 }
 ```
-
-Use the exact subcommand exposed by the current CLI if it differs from `mcp`.
 
 For Claude Code, prefer:
 
@@ -91,12 +94,12 @@ See `docs/CLAUDE_CODE_COWORK.md`.
 
 ```sh
 cargo test
-cargo run -- mcp
+./target/release/chaos --config chaos-substrate.toml mcp
 ```
 
 The MCP process should remain attached to stdio. Do not wrap it in an HTTP server.
-`cargo run -- doctor` performs a real embedder probe; it should fail when the configured embedding
-provider is unreachable.
+`./target/release/chaos --config chaos-substrate.toml doctor` performs a real embedder probe; it
+should fail when the configured embedding provider is unreachable.
 
 ## Graph Export
 
@@ -126,3 +129,6 @@ websites, the agent should read that evidence, compose the page and manifest, th
 `chaos_write_feature_website` to write the static HTML from the host side.
 The writer rejects prose-only pages. HTML must include interactive graph/story/code/evidence markers
 and the manifest must include enough claims, modes, nodes, edges, and story steps to be useful.
+
+For the full MCP tool surface, see README → MCP Tools. For first-time bootstrap (docker compose,
+migrate, doctor, analyze), see README → Quick Start.

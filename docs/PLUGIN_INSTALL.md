@@ -3,6 +3,12 @@
 Chaos Substrate ships as one repository that can be loaded as both a Codex plugin and a Claude Code
 plugin. Do not copy `SKILL.md` into every target project.
 
+> For the fastest path, run `target/release/chaos setup` to auto-register the MCP server in every
+> detected editor (Claude Code / Codex / Cursor / Windsurf / OpenCode), or
+> `target/release/chaos setup --dry-run` to preview. This tutorial covers the **plugin package**
+> (skills + hooks via marketplace/zip). For per-editor MCP-server registration details, see
+> [docs/EDITOR_SETUP.md](EDITOR_SETUP.md).
+
 ## 1. Get The Plugin Package
 
 Clone or update the Chaos Substrate repository:
@@ -18,8 +24,10 @@ The repository root is the plugin package:
 chaos-substrate/
 ├── .codex-plugin/plugin.json
 ├── .claude-plugin/plugin.json
-├── .agents/plugins/marketplace.json
-├── .claude-plugin/marketplace.json
+├── .claude-plugin/hooks/hooks.json     # Claude Code tool-use hooks (chaos hook)
+├── .cursor/hooks.json                  # Cursor tool-use hooks (chaos hook)
+├── .agents/plugins/marketplace.json    # marketplace Codex reads
+├── .claude-plugin/marketplace.json     # marketplace Claude Code reads
 ├── .mcp.json
 ├── bin/chaos-agent
 ├── skills/chaos-substrate/SKILL.md
@@ -50,7 +58,7 @@ codex plugin marketplace list
 Then restart Codex and install or enable `chaos-substrate` from the plugin UI if it is not enabled
 automatically.
 
-Codex reads:
+Codex reads the **`.agents/plugins/marketplace.json`** marketplace file, plus:
 
 ```text
 .agents/plugins/marketplace.json
@@ -58,6 +66,9 @@ Codex reads:
 skills/chaos-substrate/SKILL.md
 .mcp.json
 ```
+
+To register only the MCP server (no plugin), see the Codex block in
+[docs/EDITOR_SETUP.md](EDITOR_SETUP.md).
 
 ## 4. Install In Claude Cowork
 
@@ -109,9 +120,10 @@ Inside Claude Code, verify the skill is visible:
 /chaos-substrate:chaos-substrate
 ```
 
-For a real marketplace install, add a marketplace that contains
-`.claude-plugin/marketplace.json`, then install the plugin from Claude Code's `/plugin` UI. This
-repository includes a local marketplace file at:
+For a real marketplace install, add a marketplace that contains the **`.claude-plugin/marketplace.json`**
+file (this is the marketplace Claude Code reads, distinct from the `.agents/plugins/marketplace.json`
+that Codex reads), then install the plugin from Claude Code's `/plugin` UI. This repository includes a
+local marketplace file at:
 
 ```text
 .claude-plugin/marketplace.json
@@ -122,19 +134,17 @@ Claude Code reads:
 ```text
 .claude-plugin/plugin.json
 .claude-plugin/marketplace.json
+.claude-plugin/hooks/hooks.json
 skills/chaos-substrate/SKILL.md
 .mcp.json
 bin/chaos-agent
 ```
 
-The shared MCP server exposes:
-
-```text
-chaos_analyze
-chaos_query
-chaos_feature_context
-chaos_write_feature_website
-```
+To register only the MCP server (no plugin), or for the `scripts/chaos-agent claude-code-add` and
+`claude mcp add` commands, see [docs/EDITOR_SETUP.md](EDITOR_SETUP.md). The shared MCP server exposes
+four tools (`chaos_analyze`, `chaos_query`, `chaos_feature_context`,
+`chaos_write_feature_website`); see the [MCP Tools](../README.md#mcp-tools) section of the README for the
+tool reference.
 
 ## 6. Use From A Project
 
@@ -164,6 +174,13 @@ chaos-agent explain "$PWD" "authorization and RBAC"
 ```
 
 Generated project artifacts stay under `chaos-obsidian-vault/` and `docs/features_memory/`.
+
+## Hooks
+
+The Claude Code plugin (`.claude-plugin/hooks/hooks.json`) and Cursor (`.cursor/hooks.json`) wire
+the `chaos hook` subcommand to inject code-memory context on `Grep`, `Glob`, and `Bash` tool calls.
+The hook always exits 0, is a safe no-op when the database or index is unavailable, and has no
+embedder dependency. See [docs/EDITOR_SETUP.md](EDITOR_SETUP.md#hooks) for details.
 
 ## What Still Has To Exist
 

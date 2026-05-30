@@ -2,51 +2,17 @@
 
 This guide installs Chaos Substrate as a local MCP server for Claude and uses it to maintain a persistent knowledge base for a Rust, Solidity, TypeScript, JavaScript, or Python repository, with Markdown/MDX and PDF context.
 
-## 1. Start Persistent Storage
+## 1. Bootstrap Storage And Embeddings
 
-From Chaos Substrate:
+Start the persistent Postgres container, copy an embeddings config, run migrations, and verify with
+`doctor`. The full sequence (docker compose, config copy, migrate, doctor) is in README → Quick Start.
+The default local database is `postgres://chaos:chaos@localhost:54329/chaos_substrate`.
 
-```sh
-cd /absolute/path/to/chaos-substrate
-docker compose up -d
-```
+Do not use fake embeddings. If neither OpenAI nor Ollama is available, indexing should fail. For the
+OpenAI vs. Ollama config choice, see docs/EDITOR_SETUP.md; for the fuller Ollama walkthrough with
+install commands and dimension checks, see `docs/OLLAMA_SETUP.md`.
 
-The default local database is:
-
-```text
-postgres://chaos:chaos@localhost:54329/chaos_substrate
-```
-
-## 2. Configure Embeddings
-
-OpenAI:
-
-```sh
-cp chaos-substrate.example.toml chaos-substrate.toml
-export OPENAI_API_KEY="..."
-```
-
-Ollama:
-
-```sh
-cp chaos-substrate.local.toml chaos-substrate.toml
-chaos-agent ollama-setup
-```
-
-Do not use fake embeddings. If neither OpenAI nor Ollama is available, indexing should fail.
-For a fuller Ollama walkthrough, including install commands and dimension checks, see
-`docs/OLLAMA_SETUP.md`.
-
-## 3. Prepare The Database
-
-```sh
-cargo run -- migrate
-cargo run -- doctor
-```
-
-`doctor` should report Postgres, pgvector, provider, model, and dimensions.
-
-## 3.1 Build The Stable MCP Binary
+## 2. Build The Stable MCP Binary
 
 Build once and point Claude at the binary directly. Do not use `cargo run` in Claude MCP config.
 
@@ -55,7 +21,9 @@ cargo build --release
 ./target/release/chaos --config chaos-substrate.toml doctor
 ```
 
-## 4. Index A TypeScript Repository
+`doctor` should report Postgres, pgvector, provider, model, and dimensions.
+
+## 3. Index A TypeScript Repository
 
 ```sh
 cargo run -- analyze /absolute/path/to/typescript-repo
@@ -69,7 +37,7 @@ cargo run -- analyze /absolute/path/to/typescript-repo
 
 Current behavior replaces the stored index for that repository and reuses the same persisted database. The durable memory remains on disk in Postgres.
 
-## 5. Test Query Locally
+## 4. Test Query Locally
 
 ```sh
 cargo run -- query /absolute/path/to/typescript-repo "where is request validation handled?"
@@ -77,7 +45,7 @@ cargo run -- query /absolute/path/to/typescript-repo "where is request validatio
 
 Expected output includes relevant chunks with file paths, line ranges, scores, and graph context paths.
 
-## 6. Export The Graph Webpage
+## 5. Export The Graph Webpage
 
 Generate a standalone interactive graph page from the persisted index:
 
@@ -95,7 +63,7 @@ a web server or call the embedding provider.
 
 For a full walkthrough, see `docs/GRAPH_WEBPAGE.md`.
 
-## 7. Refresh Generated Views
+## 6. Refresh Generated Views
 
 Regenerate the project-local Obsidian vault from the persisted index:
 
@@ -117,7 +85,7 @@ cargo run -- feature-context /absolute/path/to/typescript-repo "implement secure
 The command combines Postgres retrieval with matching feature manifests. It scans only direct HTML
 files in `docs/features_memory`, not the whole documentation tree.
 
-## 8. Add MCP To Claude Desktop
+## 7. Add MCP To Claude Desktop
 
 Add this server to Claude Desktop MCP config.
 
@@ -158,18 +126,27 @@ docs/claude_desktop_config.example.json
 
 Restart Claude Desktop after editing the config.
 
-## 9. Add MCP To Claude Code Or Cowork
+## 8. Add MCP To Claude Code Or Cowork
 
-For Claude Code, use the wrapper:
+The fastest path is the one-command `chaos setup`, which auto-detects Claude Code, Codex, Cursor,
+Windsurf, and OpenCode and registers chaos-substrate as an MCP server in each (merge-not-clobber; use
+`--dry-run` to preview without writing):
 
 ```sh
-chaos-agent claude-code-add local /absolute/path/to/typescript-repo
+./target/release/chaos --config chaos-substrate.toml setup
 ```
 
-Use `project` instead of `local` when you want a team-shared `.mcp.json` in the target repository:
+To register only Claude Code, use the canonical wrapper:
 
 ```sh
-chaos-agent claude-code-add project /absolute/path/to/typescript-repo
+scripts/chaos-agent claude-code-add local /absolute/path/to/typescript-repo
+```
+
+Use `project` instead of `local` for a team-shared `.mcp.json` in the target repository, or `user`
+for a user-scoped registration:
+
+```sh
+scripts/chaos-agent claude-code-add project /absolute/path/to/typescript-repo
 ```
 
 The path argument is the Claude Code project where `.mcp.json` should be written. If omitted, the
@@ -178,16 +155,13 @@ wrapper uses the current working directory.
 For manual setup, copy `docs/claude_code_mcp.example.json` into the target repository as
 `.mcp.json` and set `CHAOS_BIN`, `CHAOS_CONFIG`, and `DATABASE_URL` for each developer machine.
 
-See `docs/CLAUDE_CODE_COWORK.md` for the full Claude Code / Cowork workflow.
+For per-editor registration of other editors (Codex, Cursor, Windsurf, OpenCode), see
+docs/EDITOR_SETUP.md. See `docs/CLAUDE_CODE_COWORK.md` for the full Claude Code / Cowork workflow.
 
-## 10. Use From Claude
+## 9. Use From Claude
 
-Ask Claude to use the MCP tools directly:
-
-- `chaos_analyze` to index or refresh.
-- `chaos_query` to answer focused questions.
-- `chaos_feature_context` to gather feature evidence.
-- `chaos_write_feature_website` to write an LLM-composed feature page and manifest.
+Ask Claude to use the MCP tools directly. For the full tool surface and parameters, see
+README → MCP Tools.
 
 Analyze/index:
 
@@ -214,7 +188,7 @@ Tool input:
 }
 ```
 
-## 11. Claude Plugin, Skills, And Instructions
+## 10. Claude Plugin, Skills, And Instructions
 
 Claude Code does not consume Codex `.codex-plugin` metadata directly. Chaos Substrate also ships a
 Claude plugin manifest:
@@ -241,18 +215,15 @@ Use these surfaces together:
 - `.mcp.json` and `bin/chaos-agent` for plugin-level MCP.
 - `CLAUDE.md` for target-project instructions written by `chaos-agent onboard`.
 - `docs/CLAUDE_VALIDATION_BRIEF.md` for validation and PRD review.
-- MCP `chaos_query` for live access to the persisted knowledge base.
-- MCP `chaos_analyze` for indexing/reindexing repositories.
-- MCP `chaos_feature_context` for feature explanations and implementation context.
-- MCP `chaos_write_feature_website` for LLM-composed HTML feature-page generation with an embedded
-  manifest.
+- The MCP tools (see README → MCP Tools) for live access to the persisted knowledge base,
+  indexing/reindexing, feature evidence, and LLM-composed feature-page generation.
 
 Codex-specific plugin files remain available:
 
 - `.codex-plugin/plugin.json`
 - `skills/chaos-substrate/SKILL.md`
 
-## 12. Validate MCP Framing
+## 11. Validate MCP Framing
 
 Chaos Substrate MCP uses newline-delimited JSON-RPC over stdio. It must not emit `Content-Length` headers.
 
@@ -265,7 +236,7 @@ printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n' \
 
 Expected result: one JSON response line.
 
-## 13. Troubleshooting
+## 12. Troubleshooting
 
 If Claude cannot see the tool:
 
