@@ -10,7 +10,8 @@ use std::time::Duration;
 
 /// Per-request timeout for embedding HTTP calls.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
-/// Maximum number of attempts (1 initial + retries) for transient failures.
+/// Maximum number of retries after the initial attempt for transient failures
+/// (so up to 1 + this many total attempts).
 const MAX_RETRY_TIMES: usize = 3;
 
 /// An error from a single embedding HTTP attempt, tagged with whether it is

@@ -1535,7 +1535,7 @@ fn line_has_keyword_name(line: &str, keyword: &str, name: &str) -> bool {
         let kw_start = search_from + rel;
         let kw_end = kw_start + keyword.len();
         // Word boundary before `keyword`: previous char must not be a word char.
-        let boundary_before = !is_word_boundary_byte(prev_char(line, kw_start));
+        let boundary_before = !is_word_char(prev_char(line, kw_start));
         if boundary_before {
             // Require at least one whitespace char immediately after `keyword`.
             let mut cursor = kw_end;
@@ -1546,7 +1546,7 @@ fn line_has_keyword_name(line: &str, keyword: &str, name: &str) -> bool {
                 if line[cursor..].starts_with(name) {
                     let name_end = cursor + name.len();
                     // Word boundary after `name`: next char must not be a word char.
-                    if !is_word_boundary_byte(next_char(line, name_end)) {
+                    if !is_word_char(next_char(line, name_end)) {
                         return true;
                     }
                 }
@@ -1571,7 +1571,7 @@ fn next_char(line: &str, idx: usize) -> Option<char> {
 /// A `\w` character (alphanumeric or `_`) on either side breaks a word
 /// boundary. `None` (string edge) is treated as a boundary (i.e. not a word
 /// char).
-fn is_word_boundary_byte(ch: Option<char>) -> bool {
+fn is_word_char(ch: Option<char>) -> bool {
     matches!(ch, Some(c) if c.is_alphanumeric() || c == '_')
 }
 
