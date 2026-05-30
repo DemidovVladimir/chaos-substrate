@@ -3,7 +3,25 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Chaos Substrate Plugin Setup</title>
+  <title>Chaos Substrate — portable code-knowledge memory for AI agents</title>
+  <meta name="description" content="Persistent Postgres+pgvector code-knowledge memory for AI agents. Source-grounded answers across Rust, TypeScript, JavaScript, Python, and Solidity via real AST parsers. Single Rust binary with a stdio MCP server.">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Chaos Substrate — portable code-knowledge memory for AI agents">
+  <meta property="og:description" content="Persistent Postgres+pgvector code memory that survives restarts — so agents stop re-reading the repo. Real AST parsers, hybrid retrieval, MCP-native.">
+  <meta property="og:url" content="https://github.com/your-org/chaos-substrate"><!-- TODO: set real URL -->
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Chaos Substrate — portable code-knowledge memory for AI agents">
+  <meta name="twitter:description" content="Persistent Postgres+pgvector code memory that survives restarts. Real AST parsers, hybrid retrieval, MCP-native.">
+
+  <meta name="theme-color" content="#07080d">
+
+  <!-- Inline SVG favicon: neon glyph -->
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2307080d'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%234ee7ff' stroke-width='2.2'/%3E%3Cpath d='M16 7 L16 25 M7 16 L25 16' stroke='%234ee7ff' stroke-width='1.6' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='16' r='3' fill='%234ee7ff'/%3E%3C/svg%3E">
+
   <style>
     :root {
       color-scheme: dark;
@@ -18,7 +36,11 @@
       --rose: #ff4f7b;
       --green: #67f7b1;
     }
+
     * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
     body {
       margin: 0;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -31,22 +53,202 @@
       background-size: 44px 44px, 44px 44px, auto, auto, auto;
       color: var(--text);
     }
-    main { max-width: 1180px; margin: 0 auto; padding: 48px 24px 72px; }
-    header { display: grid; gap: 18px; margin-bottom: 38px; }
-    h1 { margin: 0; font-size: clamp(42px, 7vw, 82px); line-height: .9; letter-spacing: 0; }
-    h2 { margin: 0 0 16px; font-size: 24px; }
-    p { color: var(--muted); font-size: 17px; line-height: 1.6; max-width: 820px; }
-    .tagline { color: var(--cyan); font-weight: 700; text-transform: uppercase; letter-spacing: .14em; }
-    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
-    .wide { grid-column: 1 / -1; }
+
+    /* ── NAV ── */
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(7,8,13,.88);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--line);
+      padding: 0 24px;
+    }
+    .nav-inner {
+      max-width: 1180px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 0;
+      height: 54px;
+      flex-wrap: wrap;
+    }
+    .nav-brand {
+      font-weight: 800;
+      font-size: 15px;
+      color: var(--cyan);
+      text-decoration: none;
+      letter-spacing: .04em;
+      margin-right: 28px;
+      white-space: nowrap;
+    }
+    .nav-links {
+      display: flex;
+      gap: 6px;
+      flex: 1;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .nav-links a {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 13px;
+      padding: 5px 10px;
+      border-radius: 5px;
+      transition: color .15s, background .15s;
+      white-space: nowrap;
+    }
+    .nav-links a:hover { color: var(--text); background: rgba(78,231,255,.08); }
+    .nav-gh {
+      margin-left: auto;
+      padding: 6px 14px !important;
+      border: 1px solid var(--cyan) !important;
+      color: var(--cyan) !important;
+      border-radius: 6px !important;
+      font-weight: 600 !important;
+      font-size: 13px !important;
+    }
+    .nav-gh:hover { background: rgba(78,231,255,.12) !important; }
+
+    /* ── LAYOUT ── */
+    .page { max-width: 1180px; margin: 0 auto; padding: 0 24px 80px; }
+
+    /* ── HERO ── */
+    .hero {
+      padding: 72px 0 64px;
+      display: grid;
+      gap: 28px;
+    }
+    .hero-tagline {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--cyan);
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .14em;
+      font-size: 12px;
+    }
+    .hero-tagline::before {
+      content: '';
+      display: inline-block;
+      width: 28px;
+      height: 2px;
+      background: var(--cyan);
+      box-shadow: 0 0 8px var(--cyan);
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(42px, 7vw, 82px);
+      line-height: .92;
+      letter-spacing: -.01em;
+    }
+    h1 .accent { color: var(--cyan); }
+    .hero-sub {
+      color: var(--muted);
+      font-size: clamp(16px, 2.5vw, 20px);
+      line-height: 1.6;
+      max-width: 680px;
+      margin: 0;
+    }
+    .hero-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 600;
+      border: 1px solid;
+    }
+    .chip-cyan  { border-color: var(--cyan);  color: var(--cyan);  background: rgba(78,231,255,.07);  }
+    .chip-amber { border-color: var(--amber); color: var(--amber); background: rgba(255,184,77,.07); }
+    .chip-rose  { border-color: var(--rose);  color: var(--rose);  background: rgba(255,79,123,.07); }
+    .chip-green { border-color: var(--green); color: var(--green); background: rgba(103,247,177,.07); }
+    .chip-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      display: inline-block; flex-shrink: 0;
+    }
+    .chip-cyan  .chip-dot { background: var(--cyan); }
+    .chip-amber .chip-dot { background: var(--amber); }
+    .chip-rose  .chip-dot { background: var(--rose); }
+    .chip-green .chip-dot { background: var(--green); }
+    .hero-ctas {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 26px;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 700;
+      text-decoration: none;
+      cursor: pointer;
+      border: none;
+      transition: opacity .15s, box-shadow .15s;
+    }
+    .btn-primary {
+      background: var(--cyan);
+      color: #07080d;
+      box-shadow: 0 0 28px rgba(78,231,255,.35);
+    }
+    .btn-primary:hover { opacity: .88; box-shadow: 0 0 40px rgba(78,231,255,.5); }
+    .btn-outline {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+    .btn-outline:hover { border-color: var(--muted); background: rgba(255,255,255,.04); }
+
+    /* ── SECTION CARDS ── */
+    h2 { margin: 0 0 16px; font-size: 22px; }
+    h3 { margin: 0 0 10px; font-size: 17px; font-weight: 700; }
+    p { color: var(--muted); font-size: 16px; line-height: 1.65; max-width: 820px; margin: 0 0 12px; }
+    p:last-child { margin-bottom: 0; }
+    .section-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 18px;
+    }
+
     section {
       background: linear-gradient(180deg, rgba(21,26,39,.94), rgba(9,11,18,.94));
       border: 1px solid var(--line);
-      box-shadow: 0 0 34px rgba(78,231,255,.08), inset 0 1px 0 rgba(255,255,255,.04);
-      border-radius: 8px;
-      padding: 22px;
+      box-shadow: 0 0 34px rgba(78,231,255,.06), inset 0 1px 0 rgba(255,255,255,.04);
+      border-radius: 10px;
+      padding: 26px;
     }
+    section + section { margin-top: 18px; }
+
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+    .wide { grid-column: 1 / -1; }
+
+    /* ── SPACER / ANCHOR TARGETS ── */
+    .anchor { display: block; height: 0; }
+    .section-wrap { margin-top: 56px; }
+
+    /* ── PRE / CODE ── */
     code, pre { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+    code {
+      font-size: 13.5px;
+      color: var(--cyan);
+      background: rgba(78,231,255,.07);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
     pre {
       margin: 12px 0 0;
       padding: 16px;
@@ -55,142 +257,734 @@
       border: 1px solid #232b3e;
       border-radius: 8px;
       color: #d9faff;
-      line-height: 1.55;
+      line-height: 1.58;
+      font-size: 13.5px;
+      position: relative;
     }
+    pre code { background: none; padding: 0; color: inherit; }
+
+    /* ── COPY BUTTON ── */
+    .pre-wrap { position: relative; margin-top: 12px; }
+    .pre-wrap pre { margin-top: 0; padding-right: 56px; }
+    .copy-btn {
+      position: absolute;
+      top: 9px;
+      right: 9px;
+      background: rgba(78,231,255,.1);
+      border: 1px solid rgba(78,231,255,.25);
+      color: var(--cyan);
+      border-radius: 5px;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+      transition: background .15s;
+      line-height: 1.5;
+    }
+    .copy-btn:hover { background: rgba(78,231,255,.2); }
+    .copy-btn.copied { color: var(--green); border-color: rgba(103,247,177,.4); background: rgba(103,247,177,.1); }
+
+    /* ── NUMBERED STEPS ── */
     .steps { display: grid; gap: 12px; }
     .step {
       display: grid;
-      grid-template-columns: 42px 1fr;
+      grid-template-columns: 44px 1fr;
       gap: 14px;
       align-items: start;
-      padding: 14px;
+      padding: 16px;
       border: 1px solid #273044;
       border-radius: 8px;
       background: rgba(8,10,17,.76);
     }
     .num {
-      width: 34px;
-      height: 34px;
+      width: 36px;
+      height: 36px;
       display: grid;
       place-items: center;
       border: 1px solid var(--cyan);
       color: var(--cyan);
       border-radius: 50%;
       font-weight: 800;
+      font-size: 15px;
       box-shadow: 0 0 18px rgba(78,231,255,.28);
+      flex-shrink: 0;
     }
-    .step strong { display: block; margin-bottom: 4px; }
-    .step span { color: var(--muted); line-height: 1.5; }
-    .map {
-      display: grid;
-      grid-template-columns: repeat(5, minmax(120px, 1fr));
-      gap: 10px;
+    .step-body strong { display: block; margin-bottom: 4px; font-size: 15px; }
+    .step-body span, .step-body p { color: var(--muted); font-size: 14px; line-height: 1.55; }
+
+    /* ── FLOW DIAGRAM ── */
+    .flow {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0;
       align-items: center;
-      margin-top: 16px;
+      justify-content: flex-start;
+      margin-top: 20px;
     }
-    .node {
-      min-height: 86px;
-      display: grid;
-      place-items: center;
+    .flow-node {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
       text-align: center;
-      padding: 12px;
+      padding: 14px 16px;
+      min-width: 110px;
+      min-height: 76px;
       border: 1px solid var(--cyan);
       border-radius: 8px;
       background: rgba(78,231,255,.07);
-      color: var(--text);
-      font-weight: 800;
-      box-shadow: 0 0 18px rgba(78,231,255,.12);
+      font-weight: 700;
+      font-size: 13px;
+      line-height: 1.35;
+      box-shadow: 0 0 18px rgba(78,231,255,.1);
     }
-    .node.alt { border-color: var(--amber); background: rgba(255,184,77,.08); }
-    .node.good { border-color: var(--green); background: rgba(103,247,177,.08); }
-    .arrow { color: var(--rose); text-align: center; font-weight: 900; }
-    ul { color: var(--muted); line-height: 1.7; padding-left: 20px; }
+    .flow-node.alt  { border-color: var(--amber); background: rgba(255,184,77,.08);  box-shadow: 0 0 18px rgba(255,184,77,.1); }
+    .flow-node.rose { border-color: var(--rose);  background: rgba(255,79,123,.07); box-shadow: 0 0 18px rgba(255,79,123,.1); }
+    .flow-node.good { border-color: var(--green); background: rgba(103,247,177,.08); box-shadow: 0 0 18px rgba(103,247,177,.1); }
+    .flow-node small { display: block; font-weight: 400; color: var(--muted); font-size: 11px; margin-top: 3px; }
+    .flow-arrow {
+      color: var(--rose);
+      font-size: 20px;
+      font-weight: 900;
+      padding: 0 10px;
+      flex-shrink: 0;
+    }
+
+    /* ── TABLE ── */
+    .tbl-wrap { overflow-x: auto; margin-top: 16px; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    thead th {
+      text-align: left;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      white-space: nowrap;
+    }
+    tbody td {
+      padding: 12px 14px;
+      border-bottom: 1px solid rgba(39,48,68,.6);
+      vertical-align: top;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+    tbody td:first-child { color: var(--text); font-family: "SFMono-Regular", Consolas, monospace; font-size: 13px; }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover td { background: rgba(78,231,255,.03); }
+
+    /* ── LIST ── */
+    ul { color: var(--muted); line-height: 1.75; padding-left: 22px; margin: 0; }
+    li { margin-bottom: 4px; }
+    li code { font-size: 13px; }
+
+    /* ── CALLOUT ── */
+    .callout {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      padding: 14px 16px;
+      border-radius: 8px;
+      border-left: 3px solid;
+      margin-top: 14px;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .callout-warn { border-color: var(--amber); background: rgba(255,184,77,.06); color: var(--muted); }
+    .callout-info { border-color: var(--cyan);  background: rgba(78,231,255,.05);  color: var(--muted); }
+    .callout-icon { font-size: 16px; flex-shrink: 0; margin-top: 1px; }
+
+    /* ── FOOTER ── */
+    footer {
+      border-top: 1px solid var(--line);
+      margin-top: 72px;
+      padding-top: 36px;
+      padding-bottom: 48px;
+    }
+    .footer-inner {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 0 24px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 32px;
+      align-items: flex-start;
+    }
+    .footer-brand {
+      flex: 0 0 220px;
+    }
+    .footer-brand .name {
+      font-size: 18px;
+      font-weight: 800;
+      color: var(--cyan);
+      margin-bottom: 6px;
+    }
+    .footer-brand p {
+      font-size: 13px;
+      color: var(--muted);
+      max-width: none;
+      margin: 0;
+    }
+    .footer-links {
+      flex: 1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 28px;
+    }
+    .footer-links a {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+    .footer-links a:hover { color: var(--cyan); }
+    .footer-copy {
+      width: 100%;
+      color: #4a5568;
+      font-size: 12px;
+      margin-top: 24px;
+    }
+
     a { color: var(--cyan); }
+
+    /* ── RESPONSIVE ── */
     @media (max-width: 860px) {
-      .grid { grid-template-columns: 1fr; }
-      .map { grid-template-columns: 1fr; }
-      .arrow { transform: rotate(90deg); }
+      .grid  { grid-template-columns: 1fr; }
+      .grid-3 { grid-template-columns: 1fr; }
+      .flow  { flex-direction: column; align-items: flex-start; }
+      .flow-arrow { transform: rotate(90deg); padding: 4px 0; }
+      .footer-brand { flex: 0 0 100%; }
+    }
+    @media (max-width: 600px) {
+      .hero { padding: 48px 0 44px; }
+      .hero-ctas { flex-direction: column; }
+      .btn { width: 100%; justify-content: center; }
     }
   </style>
 </head>
 <body>
-  <main>
-    <header>
-      <div class="tagline">Codex + Claude plugin package</div>
-      <h1>Chaos Substrate</h1>
-      <p>Install or load the plugin in Codex or Claude first, bootstrap local services once, then let your agent index, query, and generate feature-memory websites from any Rust, Solidity, TypeScript, JavaScript, or Python project.</p>
-    </header>
+
+<!-- ── STICKY NAV ── -->
+<nav aria-label="Site navigation">
+  <div class="nav-inner">
+    <a class="nav-brand" href="#hero">CHAOS SUBSTRATE</a>
+    <div class="nav-links">
+      <a href="#how-it-works">How it works</a>
+      <a href="#quickstart">Quick start</a>
+      <a href="#editors">Add to editor</a>
+      <a href="#mcp-tools">MCP tools</a>
+      <a href="#example">Example</a>
+      <a href="#troubleshoot">Troubleshoot</a>
+      <!-- TODO: replace with real GitHub URL -->
+      <a class="nav-gh" href="https://github.com/your-org/chaos-substrate" target="_blank" rel="noopener" aria-label="View Chaos Substrate on GitHub">&#10138; GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<div class="page">
+
+  <!-- ── HERO ── -->
+  <a class="anchor" id="hero"></a>
+  <div class="hero">
+    <div class="hero-tagline">Persistent code-knowledge memory for AI agents</div>
+    <h1>Chaos<br><span class="accent">Substrate</span></h1>
+    <p class="hero-sub">
+      Agents stop re-reading the repo on every task. Chaos Substrate indexes any codebase into
+      a <strong>source-grounded knowledge graph + real embeddings</strong> stored in
+      Postgres&nbsp;+&nbsp;pgvector — memory that survives process restarts. A single Rust binary.
+      A stdio MCP server. Four tools.
+    </p>
+
+    <div class="hero-chips">
+      <span class="chip chip-cyan"><span class="chip-dot"></span>Persistent Postgres&nbsp;+&nbsp;pgvector memory</span>
+      <span class="chip chip-amber"><span class="chip-dot"></span>Source-grounded answers</span>
+      <span class="chip chip-rose"><span class="chip-dot"></span>5 languages via real AST parsers</span>
+      <span class="chip chip-green"><span class="chip-dot"></span>MCP-native · 4 tools</span>
+    </div>
+
+    <div class="hero-ctas">
+      <a class="btn btn-primary" href="#quickstart">&#8594; Quick start</a>
+      <a class="btn btn-outline" href="#editors">Add to your editor</a>
+    </div>
+  </div>
+
+  <!-- ── TWO WAYS TO USE ── -->
+  <a class="anchor" id="usage-modes"></a>
+  <div class="section-wrap">
+    <div class="section-label">Two ways to use</div>
+    <div class="grid-3">
+      <section>
+        <h3>&#9678; Agent via MCP</h3>
+        <p>A stdio MCP server with 4 tools. Coding agents (Claude Code, Codex, Cursor, Windsurf, OpenCode) query durable code memory instead of re-reading files on every task.</p>
+        <p>Register once with <code>chaos setup</code>, then ask the agent to analyze and query. Skills + hooks also ship for Claude Code and Cursor.</p>
+      </section>
+      <section>
+        <h3>&#9654; Raw CLI</h3>
+        <p>The <code>chaos</code> binary: <code>analyze</code>, <code>query</code>, <code>feature-context</code>, <code>graph</code>, <code>obsidian</code>, <code>refresh</code>. For humans and scripts doing setup, one-off indexing, debugging, or agentless operation.</p>
+        <div class="pre-wrap">
+          <pre><code>chaos analyze /path/to/repo
+chaos query /path/to/repo "where is auth?"</code></pre>
+          <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
+        </div>
+      </section>
+      <section>
+        <h3>&#9670; Generated feature-website</h3>
+        <p>A self-contained dark HTML feature page with interactive graph/story/code navigation plus a machine-readable manifest — for sharing how a feature works and seeding future agent context from the embedded manifest.</p>
+        <div class="pre-wrap">
+          <pre><code>chaos feature-context /repo "auth flow" \
+  --output-html auth.html</code></pre>
+          <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ── HOW IT WORKS ── -->
+  <a class="anchor" id="how-it-works"></a>
+  <div class="section-wrap">
+    <div class="section-label">How it works</div>
+    <section>
+      <h2>From source to durable memory</h2>
+      <p>Every file in the repository is parsed by a real AST extractor (no regex). The extracted graph and embedding-indexed chunks live in Postgres+pgvector and survive restarts. Queries use hybrid retrieval — semantic + keyword — against that persistent store.</p>
+
+      <div class="flow" role="img" aria-label="Pipeline: repository files to AST extraction to knowledge graph plus embeddings stored in Postgres, then retrieved via hybrid query or exported as graph.html or feature websites">
+        <div class="flow-node"><small>input</small>Repo files<small>Rust · TS · JS<br>Python · Solidity<br>MD/MDX · PDF</small></div>
+        <div class="flow-arrow" aria-hidden="true">&#8594;</div>
+        <div class="flow-node alt"><small>real AST parsers</small>Extraction<small>syn · oxc<br>rustpython<br>solang</small></div>
+        <div class="flow-arrow" aria-hidden="true">&#8594;</div>
+        <div class="flow-node rose"><small>graph + chunks + vectors</small>Postgres<small>+&nbsp;pgvector</small></div>
+        <div class="flow-arrow" aria-hidden="true">&#8594;</div>
+        <div class="flow-node good"><small>hybrid retrieval</small>MCP Tools<small>chaos_query<br>chaos_feature_context</small></div>
+        <div class="flow-arrow" aria-hidden="true">&#8594;</div>
+        <div class="flow-node"><small>outputs</small>Answers<small>graph.html<br>feature pages<br>Obsidian vault</small></div>
+      </div>
+
+      <div class="callout callout-info" style="margin-top:22px;">
+        <span class="callout-icon">&#9432;</span>
+        <span><strong>Fail-closed by design.</strong> There are no mock embedders and no random vectors. If no real embedder is configured (OpenAI or Ollama), analysis fails rather than producing fake data. A dimension check prevents incompatible vectors from being stored.</span>
+      </div>
+    </section>
+  </div>
+
+  <!-- ── PREREQUISITES ── -->
+  <a class="anchor" id="prerequisites"></a>
+  <div class="section-wrap">
+    <div class="section-label">Prerequisites</div>
+    <div class="grid">
+      <section>
+        <h2>Postgres&nbsp;+&nbsp;pgvector</h2>
+        <p>The bundled <code>docker-compose.yml</code> starts <code>pgvector/pgvector:pg16</code> on host port <strong>54329</strong>:</p>
+        <div class="pre-wrap">
+          <pre><code>docker compose up -d</code></pre>
+          <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
+        </div>
+        <p style="margin-top:12px;">Default connection string:</p>
+        <div class="pre-wrap">
+          <pre><code>postgres://chaos:chaos@localhost:54329/chaos_substrate</code></pre>
+          <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
+        </div>
+        <p style="margin-top:12px;">Your data stays in your own database. Nothing is sent to a third party beyond your chosen embedding provider.</p>
+      </section>
+
+      <section>
+        <h2>A real embedder</h2>
+        <p>Choose one — analysis will refuse to run without a working provider:</p>
+        <ul style="margin-top:10px;">
+          <li><strong>OpenAI</strong> — <code>text-embedding-3-small</code>, 1536 dims. Set <code>OPENAI_API_KEY</code>. Only chunk text is sent.</li>
+          <li><strong>Ollama</strong> — <code>nomic-embed-text</code>, 768 dims, <code>http://localhost:11434</code>. The committed <code>chaos-substrate.toml</code> defaults to Ollama. See <a href="OLLAMA_SETUP.md">docs/OLLAMA_SETUP.md</a>.</li>
+        </ul>
+
+        <h2 style="margin-top:22px;">Rust toolchain</h2>
+        <p>Build the release binary once and point all editor/MCP config at it:</p>
+        <div class="pre-wrap">
+          <pre><code>cargo build --release
+# produces: target/release/chaos</code></pre>
+          <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
+        </div>
+        <div class="callout callout-warn" style="margin-top:12px;">
+          <span class="callout-icon">&#9888;</span>
+          <span>Never use <code>cargo run</code> in MCP/editor config. The release binary is the stable, fast entry point. <code>cargo run</code> is fine only for one-off CLI commands during development.</span>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ── QUICK START ── -->
+  <a class="anchor" id="quickstart"></a>
+  <div class="section-wrap">
+    <div class="section-label">Quick start</div>
+    <section class="wide">
+      <h2>Bootstrap in five steps</h2>
+      <div class="steps">
+
+        <div class="step">
+          <div class="num">1</div>
+          <div class="step-body">
+            <strong>Clone and copy config</strong>
+            <p>The committed config defaults to Ollama. Edit it to switch to OpenAI.</p>
+            <div class="pre-wrap">
+              <pre><code>git clone https://github.com/your-org/chaos-substrate   # TODO: real URL
+cd chaos-substrate
+cp chaos-substrate.example.toml chaos-substrate.toml</code></pre>
+              <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="num">2</div>
+          <div class="step-body">
+            <strong>Start Postgres&nbsp;+&nbsp;pgvector</strong>
+            <div class="pre-wrap">
+              <pre><code>docker compose up -d</code></pre>
+              <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
+            </div>
+            <p>Starts <code>pgvector/pgvector:pg16</code> on port 54329. For OpenAI embeddings also export your key:</p>
+            <div class="pre-wrap">
+              <pre><code>export OPENAI_API_KEY=sk-...</code></pre>
+              <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="num">3</div>
+          <div class="step-body">
+            <strong>Build the release binary, run migrations, and verify</strong>
+            <div class="pre-wrap">
+              <pre><code>cargo build --release
+./target/release/chaos --config chaos-substrate.toml migrate
+./target/release/chaos --config chaos-substrate.toml doctor</code></pre>
+              <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
+            </div>
+            <p><code>doctor</code> reports Postgres reachability, pgvector, provider, model name, and embedding dimensions. All five lines must be green before indexing.</p>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="num">4</div>
+          <div class="step-body">
+            <strong>Index a repository</strong>
+            <div class="pre-wrap">
+              <pre><code>./target/release/chaos --config chaos-substrate.toml analyze /path/to/your/repo</code></pre>
+              <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
+            </div>
+            <p>Extracts functions, classes, interfaces, types, structs, traits, imports, call edges, Cargo/npm dependencies, Markdown/MDX docs, and PDF context. Produces real embedding vectors for every chunk. Re-run any time to refresh.</p>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="num">5</div>
+          <div class="step-body">
+            <strong>Query the index</strong>
+            <div class="pre-wrap">
+              <pre><code>./target/release/chaos --config chaos-substrate.toml query /path/to/your/repo \
+  "where is request validation handled?"</code></pre>
+              <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
+            </div>
+            <p>Returns source-grounded chunks with file paths, line ranges, scores, and graph context paths — from durable Postgres memory, not a re-scan of the filesystem.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </div>
+
+  <!-- ── ADD TO EDITOR ── -->
+  <a class="anchor" id="editors"></a>
+  <div class="section-wrap">
+    <div class="section-label">Add to your editor</div>
+
+    <section class="wide" style="margin-bottom:18px;">
+      <h2>One command: <code>chaos setup</code></h2>
+      <p>Auto-detects Claude Code, Codex, Cursor, Windsurf, and OpenCode and registers <code>chaos-substrate</code> as an MCP server in each. Merges into existing config — never clobbers.</p>
+      <div class="grid">
+        <div>
+          <div class="pre-wrap">
+            <pre><code># Preview all planned changes without writing
+./target/release/chaos --config chaos-substrate.toml setup --dry-run
+
+# Apply to all detected editors
+./target/release/chaos --config chaos-substrate.toml setup
+
+# Write only project-scoped config
+./target/release/chaos --config chaos-substrate.toml setup --scope project</code></pre>
+            <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
+          </div>
+        </div>
+        <div>
+          <p>Scopes: <code>user</code> (user-level config), <code>local</code> (machine-local), <code>project</code> (shareable <code>.mcp.json</code> in the target repo). Idempotent — rerunning leaves an already-registered server in place.</p>
+          <p>For Cursor, Windsurf, and OpenCode per-editor JSON paths, and for the full hooks detail, see <a href="EDITOR_SETUP.md">docs/EDITOR_SETUP.md</a>.</p>
+          <div class="callout callout-info">
+            <span class="callout-icon">&#9432;</span>
+            <span><strong>Hook support.</strong> The plugin ships <code>chaos hook</code> — a safe, no-op hook that injects code-memory context on Grep/Glob/Bash tool calls in Claude Code and Cursor. It always exits 0 and requires no running embedder.</span>
+          </div>
+        </div>
+      </div>
+    </section>
 
     <div class="grid">
       <section>
-        <h2>1. Bootstrap Services</h2>
-        <pre><code>CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent bootstrap
-export PATH="$HOME/.local/bin:$PATH"</code></pre>
-        <p>Use this from the Chaos Substrate checkout. It installs the wrapper, starts Ollama when configured, builds the binary, starts Postgres, runs migrations, and checks the system.</p>
-      </section>
+        <h2>Claude Code — manual</h2>
+        <p>Use the wrapper script (builds binary if needed and calls <code>claude mcp add</code>):</p>
+        <div class="pre-wrap">
+          <pre><code># Machine-local (private)
+scripts/chaos-agent claude-code-add local
 
-      <section>
-        <h2>2. Install In Codex</h2>
-        <pre><code>codex plugin marketplace add /absolute/path/to/chaos-substrate
-codex plugin marketplace list</code></pre>
-        <p>Restart Codex, then install or enable <code>chaos-substrate</code> from the plugin UI if it is not enabled automatically.</p>
-      </section>
+# Shareable project .mcp.json
+scripts/chaos-agent claude-code-add project /abs/path/to/target-repo
 
-      <section>
-        <h2>3. Load In Claude</h2>
-        <pre><code>scripts/package-cowork-plugin</code></pre>
-        <p>For Cowork, upload <code>dist/chaos-substrate-cowork-plugin.zip</code> in Claude Desktop -&gt; Cowork -&gt; Customize -&gt; Plugins. Claude Code can still use <code>claude --plugin-dir /absolute/path/to/chaos-substrate</code>.</p>
-      </section>
-
-      <section>
-        <h2>4. Use From A Project</h2>
-        <pre><code>Use Chaos Substrate on this project and create an index plus explanation.
-Generate a feature explanation website for authorization and RBAC.
-Find implementation context for authorization and RBAC.</code></pre>
-        <p>Ask naturally only after the plugin is enabled in that agent. The plugin skill chooses the wrapper command; direct CLI use is for debugging.</p>
-      </section>
-
-      <section class="wide">
-        <h2>Plugin Anatomy</h2>
-        <div class="map">
-          <div class="node">.codex-plugin<br>plugin.json</div>
-          <div class="arrow">-></div>
-          <div class="node alt">shared skill<br>SKILL.md</div>
-          <div class="arrow">-></div>
-          <div class="node good">chaos-agent<br>MCP + CLI</div>
-          <div class="node">.claude-plugin<br>plugin.json</div>
-          <div class="arrow">-></div>
-          <div class="node alt">.mcp.json</div>
-          <div class="arrow">-></div>
-          <div class="node good">Postgres<br>pgvector</div>
+# User-level
+scripts/chaos-agent claude-code-add user</code></pre>
+          <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
         </div>
-      </section>
-
-      <section>
-        <h2>Codex</h2>
-        <div class="steps">
-          <div class="step"><div class="num">1</div><div><strong>Add marketplace</strong><span>Codex reads <code>.agents/plugins/marketplace.json</code> and <code>.codex-plugin/plugin.json</code>.</span></div></div>
-          <div class="step"><div class="num">2</div><div><strong>Enable plugin</strong><span>Install or enable <code>chaos-substrate</code> in Codex before prompting.</span></div></div>
-          <div class="step"><div class="num">3</div><div><strong>Ask naturally</strong><span>Use prompts like “Go through this project and create sufficient index and explanation.”</span></div></div>
+        <p style="margin-top:12px;">Or register directly with the Claude Code CLI:</p>
+        <div class="pre-wrap">
+          <pre><code>claude mcp add chaos-substrate -- \
+  /abs/target/release/chaos \
+  --config /abs/chaos-substrate.toml mcp</code></pre>
+          <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
         </div>
+        <p style="margin-top:12px;">See <a href="CLAUDE_MCP_INSTALL.md">docs/CLAUDE_MCP_INSTALL.md</a> for Claude Desktop JSON config and the plugin/skills/hooks flow.</p>
       </section>
 
       <section>
-        <h2>Claude Code</h2>
-        <pre><code>claude --plugin-dir /absolute/path/to/chaos-substrate</code></pre>
-        <p>Claude Cowork uses the uploaded zip. Claude Code can use <code>--plugin-dir</code>. The skill is available as <code>/chaos-substrate:chaos-substrate</code> after Claude loads the plugin. For explicit project MCP setup:</p>
-        <pre><code>chaos-agent claude-code-add local "$PWD"</code></pre>
+        <h2>Codex — manual</h2>
+        <p>Register with the Codex CLI:</p>
+        <div class="pre-wrap">
+          <pre><code>codex mcp add chaos-substrate -- \
+  /abs/target/release/chaos \
+  --config /abs/chaos-substrate.toml mcp</code></pre>
+          <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
+        </div>
+        <p style="margin-top:12px;">Or add directly to <code>~/.codex/config.toml</code>:</p>
+        <div class="pre-wrap">
+          <pre><code>[mcp_servers.chaos-substrate]
+command = "/abs/target/release/chaos"
+args    = ["--config", "/abs/chaos-substrate.toml", "mcp"]</code></pre>
+          <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
+        </div>
+        <p style="margin-top:12px;">Replace <code>/abs</code> with the absolute path to your Chaos Substrate checkout. See <a href="EDITOR_SETUP.md">docs/EDITOR_SETUP.md</a> for Cursor, Windsurf, and OpenCode JSON config blocks.</p>
+      </section>
+    </div>
+  </div>
+
+  <!-- ── MCP TOOLS ── -->
+  <a class="anchor" id="mcp-tools"></a>
+  <div class="section-wrap">
+    <div class="section-label">MCP tools</div>
+    <section>
+      <h2>4 tools — the canonical tool surface</h2>
+      <p>The stdio MCP server speaks newline-delimited JSON-RPC (no <code>Content-Length</code> framing) and exposes exactly four tools. Agents should prefer these when available; do not synthesize feature pages from <code>chaos_query</code> alone when <code>chaos_feature_context</code> and <code>chaos_write_feature_website</code> are available.</p>
+
+      <div class="tbl-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Tool</th>
+              <th>What it does</th>
+              <th>Key parameters</th>
+              <th>When to use</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>chaos_analyze</td>
+              <td>Indexes or refreshes a repository into the persistent graph&nbsp;+&nbsp;embeddings. Extracts symbols, call edges, imports, dependencies, and document context. Re-running replaces the stored index for that repo.</td>
+              <td><code>repo_path</code></td>
+              <td>First, before any query. Re-run after the repo changes.</td>
+            </tr>
+            <tr>
+              <td>chaos_query</td>
+              <td>Answers a focused, source-grounded question via hybrid (semantic&nbsp;+&nbsp;keyword) retrieval against the persisted chunks and graph paths.</td>
+              <td><code>repo</code>, <code>question</code>, <code>limit</code>&nbsp;(default&nbsp;10)</td>
+              <td>Targeted questions about specific code without re-reading files.</td>
+            </tr>
+            <tr>
+              <td>chaos_feature_context</td>
+              <td>Gathers evidence for understanding a feature: semantic/keyword hits, graph context paths, and feature-page manifests from <code>docs/features_memory</code>. Pass <code>output_html</code> to also write the feature page in the same call.</td>
+              <td><code>repo</code>, <code>task</code>, <code>limit</code>&nbsp;(10), <code>feature_limit</code>&nbsp;(3), <code>nodes_per_feature</code>&nbsp;(8), <code>features_dir</code>, <code>output_html</code></td>
+              <td>Before implementing or explaining a feature, to assemble an implementation brief.</td>
+            </tr>
+            <tr>
+              <td>chaos_write_feature_website</td>
+              <td>Writes an LLM-composed feature page plus its machine-readable manifest block. The page must include interactive graph/story/code navigation, architecture/flow sections, evidence, and a populated manifest — not a README-style summary.</td>
+              <td><code>repo</code>, <code>slug</code>, <code>title</code>, <code>html</code>, <code>manifest</code></td>
+              <td>To persist a reviewed feature explanation as a shareable static page.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <!-- ── EXAMPLE ── -->
+  <a class="anchor" id="example"></a>
+  <div class="section-wrap">
+    <div class="section-label">Example</div>
+    <section>
+      <h2>Illustrative flow</h2>
+      <p>The following shows a typical agent session after setup. Commands use the CLI mirror of the MCP tools; the MCP equivalents accept the same concepts as JSON parameters.</p>
+
+      <h3 style="margin-top:22px; color: var(--muted); font-weight:600; font-size:13px; text-transform:uppercase; letter-spacing:.08em;">Step 1 — index the repo</h3>
+      <div class="pre-wrap">
+        <pre><code># Via CLI
+./target/release/chaos --config chaos-substrate.toml analyze /path/to/my-api
+
+# Via MCP tool (agent call)
+# chaos_analyze({ "repo_path": "/path/to/my-api" })</code></pre>
+        <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
+      </div>
+
+      <h3 style="margin-top:18px; color: var(--muted); font-weight:600; font-size:13px; text-transform:uppercase; letter-spacing:.08em;">Step 2 — query (illustrative output)</h3>
+      <div class="pre-wrap">
+        <pre><code># chaos_query({ "repo": "/path/to/my-api", "question": "where is authentication middleware configured?", "limit": 5 })
+
+# Illustrative grounded response:
+# [1] src/middleware/auth.rs:42-78  score=0.91
+#     fn require_auth(req: &Request) -> Result&lt;Claims&gt; { ... }
+#     → imports: jwt::decode, config::JWT_SECRET
+#     → called by: src/routes/api.rs:UserRouter::new
+#
+# [2] src/config.rs:12-19  score=0.84
+#     JWT_SECRET, TOKEN_EXPIRY, REFRESH_WINDOW
+#     → depends_on: std::env, dotenvy</code></pre>
+        <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
+      </div>
+      <div class="callout callout-info" style="margin-top:10px;">
+        <span class="callout-icon">&#9432;</span>
+        <span>This is an illustrative example — actual output depends on the indexed repository. All answers include file paths and line ranges from the persisted graph, not generated text.</span>
+      </div>
+
+      <h3 style="margin-top:18px; color: var(--muted); font-weight:600; font-size:13px; text-transform:uppercase; letter-spacing:.08em;">Step 3 — gather feature context</h3>
+      <div class="pre-wrap">
+        <pre><code># chaos_feature_context({
+#   "repo": "/path/to/my-api",
+#   "task": "implement OAuth2 refresh-token rotation",
+#   "limit": 10,
+#   "output_html": "docs/features_memory/oauth2-refresh.html"
+# })</code></pre>
+        <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
+      </div>
+      <p>Returns semantic and keyword hits, graph context paths, and any existing feature manifests from <code>docs/features_memory</code>. With <code>output_html</code> set, also writes the interactive feature page in the same call.</p>
+    </section>
+  </div>
+
+  <!-- ── VERIFY & TROUBLESHOOT ── -->
+  <a class="anchor" id="troubleshoot"></a>
+  <div class="section-wrap">
+    <div class="section-label">Verify &amp; troubleshoot</div>
+    <div class="grid">
+      <section>
+        <h2>Verify the setup</h2>
+        <p>After setup — or any time something seems wrong — run <code>doctor</code> first:</p>
+        <div class="pre-wrap">
+          <pre><code>./target/release/chaos --config chaos-substrate.toml doctor</code></pre>
+          <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
+        </div>
+        <p style="margin-top:12px;"><code>doctor</code> probes Postgres reachability, confirms pgvector is installed and the <code>vector</code> extension is enabled, runs a real embedding probe against the configured provider, and reports the provider name, model, and dimensions. All five checks must pass before indexing.</p>
+
+        <p style="margin-top:12px;">After indexing, confirm with a sample query:</p>
+        <div class="pre-wrap">
+          <pre><code>./target/release/chaos --config chaos-substrate.toml query \
+  /path/to/repo "what files are indexed?"</code></pre>
+          <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
+        </div>
+
+        <p style="margin-top:12px;">In the editor, confirm all four MCP tools are listed: <code>chaos_analyze</code>, <code>chaos_query</code>, <code>chaos_feature_context</code>, <code>chaos_write_feature_website</code>.</p>
       </section>
 
-      <section class="wide">
-        <h2>What Still Exists Outside The Plugin</h2>
-        <ul>
-          <li>Docker or another Postgres/pgvector endpoint.</li>
-          <li>Ollama or OpenAI embeddings.</li>
-          <li><code>chaos-agent ollama-setup</code> tries to start Ollama and pull the local model.</li>
+      <section>
+        <h2>Common failures</h2>
+        <ul style="margin-top:4px;">
+          <li>
+            <strong>Embedder not configured → analysis fails by design.</strong>
+            This is correct behavior. Chaos Substrate will not store fake vectors. Set <code>OPENAI_API_KEY</code> or ensure Ollama is running at <code>http://localhost:11434</code> with <code>nomic-embed-text</code> pulled. See <a href="OLLAMA_SETUP.md">docs/OLLAMA_SETUP.md</a>.
+          </li>
+          <li style="margin-top:10px;">
+            <strong>Postgres not reachable.</strong>
+            Run <code>docker compose ps</code> and confirm the container is up. The default port is <strong>54329</strong> (not the standard 5432). Check <code>DATABASE_URL</code> in your config or environment.
+          </li>
+          <li style="margin-top:10px;">
+            <strong><code>chaos</code> not found in PATH.</strong>
+            After <code>cargo build --release</code>, the binary is at <code>target/release/chaos</code>. Use the full absolute path in MCP/editor config, or install it to a directory on your PATH.
+          </li>
+          <li style="margin-top:10px;">
+            <strong>MCP tools not visible in editor.</strong>
+            Restart the editor after modifying MCP config. Run <code>./target/release/chaos --config chaos-substrate.toml mcp</code> manually to confirm the binary starts without errors.
+          </li>
+          <li style="margin-top:10px;">
+            <strong>Dimension mismatch error.</strong>
+            Switching between OpenAI (1536 dims) and Ollama (768 dims) on the same database without re-indexing will be rejected. Re-run <code>analyze</code> after changing providers to rebuild vectors.
+          </li>
+          <li style="margin-top:10px;">
+            <strong><code>graph.html</code> empty or missing nodes.</strong>
+            Confirm <code>analyze</code> completed without errors, check <code>nodes</code>/<code>edges</code> table counts in Postgres, and make sure the <code>repo</code> argument matches the indexed absolute path or repository name.
+          </li>
         </ul>
       </section>
     </div>
-  </main>
+  </div>
+
+</div><!-- .page -->
+
+<!-- ── FOOTER ── -->
+<footer>
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <div class="name">CHAOS SUBSTRATE</div>
+      <p>Portable, persistent code-knowledge memory for AI agents. Postgres&nbsp;+&nbsp;pgvector. Single Rust binary.</p>
+    </div>
+    <div class="footer-links">
+      <!-- TODO: replace GitHub URL with real repo URL -->
+      <a href="https://github.com/your-org/chaos-substrate" target="_blank" rel="noopener">GitHub</a>
+      <a href="../README.md">README</a>
+      <a href="../ARCHITECTURE.md">ARCHITECTURE.md</a>
+      <a href="../RUNBOOK.md">RUNBOOK.md</a>
+      <a href="EDITOR_SETUP.md">EDITOR_SETUP.md</a>
+      <a href="CLAUDE_MCP_INSTALL.md">CLAUDE_MCP_INSTALL.md</a>
+      <a href="../llms.txt">llms.txt</a>
+    </div>
+    <div class="footer-copy">
+      Chaos Substrate — portable code-knowledge memory for AI agents.
+      Zero telemetry. Your data stays in your database.
+    </div>
+  </div>
+</footer>
+
+<!-- ── INLINE JS: copy-to-clipboard ── -->
+<script>
+  function copyPre(btn) {
+    var pre = btn.closest('.pre-wrap').querySelector('pre');
+    var text = pre.innerText || pre.textContent;
+    // Strip leading comment lines that start with #  (illustrative annotation lines)
+    // for code blocks that are purely illustrative — but copy as-is for real commands
+    navigator.clipboard.writeText(text).then(function () {
+      var orig = btn.textContent;
+      btn.textContent = 'Copied!';
+      btn.classList.add('copied');
+      setTimeout(function () {
+        btn.textContent = orig;
+        btn.classList.remove('copied');
+      }, 1800);
+    }, function () {
+      // Fallback: select text
+      var range = document.createRange();
+      range.selectNodeContents(pre);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    });
+  }
+</script>
+
 </body>
 </html>
