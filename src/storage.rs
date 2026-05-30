@@ -28,13 +28,13 @@ impl Storage {
     }
 
     pub async fn migrate(&self) -> Result<()> {
-        let sql = include_str!("../migrations/001_init.sql");
-        for statement in sql.split(";").map(str::trim).filter(|s| !s.is_empty()) {
-            sqlx::query(statement)
-                .execute(&self.pool)
-                .await
-                .with_context(|| format!("migration statement failed: {statement}"))?;
-        }
+        // The migrations directory is embedded at compile time and each file is
+        // executed whole (no fragile ';' splitting); applied versions are tracked
+        // in the `_sqlx_migrations` table.
+        sqlx::migrate!("./migrations")
+            .run(&self.pool)
+            .await
+            .context("failed to run database migrations")?;
         Ok(())
     }
 

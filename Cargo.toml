@@ -11,18 +11,18 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
+backon = "1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"
 futures = "0.3"
 ignore = "0.4"
 pdf-extract = "0.10"
-regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }
 syn = { version = "2", features = ["full", "visit"] }
 oxc_allocator = "0.116"
 oxc_ast = "0.116"
@@ -30,11 +30,18 @@ oxc_ast_visit = "0.116"
 oxc_parser = "0.116"
 oxc_span = "0.116"
 oxc_syntax = "0.116"
+# Parser pins (intentional, for stability):
+#   rustpython-parser/-ast 0.4 is old but stable for our Python extraction;
+#   future work may migrate to ruff_python_parser.
 rustpython-ast = { version = "0.4", features = ["visitor"] }
 rustpython-parser = "0.4"
+# solang-parser 0.3.5 is effectively unmaintained and drags in thiserror 1.x;
+# pinned for stability, future work may migrate to solar/slang.
 solang-parser = "0.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util"] }
 toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]

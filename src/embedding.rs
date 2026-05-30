@@ -1,10 +1,55 @@
 use crate::config::{EmbeddingConfig, EmbeddingProvider};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use backon::{ExponentialBuilder, Retryable};
 use reqwest::Client;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::time::Duration;
+
+/// Per-request timeout for embedding HTTP calls.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
+/// Maximum number of attempts (1 initial + retries) for transient failures.
+const MAX_RETRY_TIMES: usize = 3;
+
+/// An error from a single embedding HTTP attempt, tagged with whether it is
+/// worth retrying. Only connection/timeout errors, HTTP 429, and 5xx responses
+/// are transient; 4xx (other than 429) — e.g. a bad API key — fail fast.
+struct EmbedAttemptError {
+    error: anyhow::Error,
+    transient: bool,
+}
+
+impl EmbedAttemptError {
+    fn transient(error: anyhow::Error) -> Self {
+        Self {
+            error,
+            transient: true,
+        }
+    }
+
+    fn permanent(error: anyhow::Error) -> Self {
+        Self {
+            error,
+            transient: false,
+        }
+    }
+}
+
+/// Backoff policy shared by both embedders: exponential with jitter, capped at
+/// [`MAX_RETRY_TIMES`] retries.
+fn retry_policy() -> ExponentialBuilder {
+    ExponentialBuilder::default()
+        .with_jitter()
+        .with_max_times(MAX_RETRY_TIMES)
+}
+
+/// Classify a reqwest transport error: connect/timeout/request errors are
+/// transient and worth retrying.
+fn transport_error_is_transient(err: &reqwest::Error) -> bool {
+    err.is_timeout() || err.is_connect() || err.is_request()
+}
 
 #[async_trait]
 pub trait Embedder: Send + Sync {
@@ -17,7 +62,7 @@ pub trait Embedder: Send + Sync {
 pub fn build_embedder(cfg: &EmbeddingConfig) -> Result<Box<dyn Embedder>> {
     match cfg.provider {
         EmbeddingProvider::OpenAi => Ok(Box::new(OpenAiEmbedder::new(cfg)?)),
-        EmbeddingProvider::Ollama => Ok(Box::new(OllamaEmbedder::new(cfg))),
+        EmbeddingProvider::Ollama => Ok(Box::new(OllamaEmbedder::new(cfg)?)),
     }
 }
 
@@ -47,8 +92,12 @@ impl OpenAiEmbedder {
     fn new(cfg: &EmbeddingConfig) -> Result<Self> {
         let api_key = env::var("OPENAI_API_KEY")
             .context("OPENAI_API_KEY is required for the OpenAI embedder")?;
+        let client = Client::builder()
+            .timeout(HTTP_TIMEOUT)
+            .build()
+            .context("failed to build OpenAI HTTP client")?;
         Ok(Self {
-            client: Client::new(),
+            client,
             api_key,
             model: cfg.model.clone(),
             dimensions: cfg.dimensions,
@@ -88,20 +137,39 @@ impl Embedder for OpenAiEmbedder {
     }
 
     async fn embed(&self, input: &str) -> Result<Vec<f32>> {
-        let response = self
-            .client
-            .post("https://api.openai.com/v1/embeddings")
-            .bearer_auth(&self.api_key)
-            .json(&OpenAiEmbeddingRequest {
-                model: &self.model,
-                input,
-                dimensions: self.dimensions,
-            })
-            .send()
-            .await
-            .context("failed to call OpenAI embeddings API")?;
-        let response = ensure_success(response.status(), response.text().await?, "OpenAI").await?;
-        let response = serde_json::from_str::<OpenAiEmbeddingResponse>(&response)
+        let body = (|| async {
+            let response = self
+                .client
+                .post("https://api.openai.com/v1/embeddings")
+                .bearer_auth(&self.api_key)
+                .json(&OpenAiEmbeddingRequest {
+                    model: &self.model,
+                    input,
+                    dimensions: self.dimensions,
+                })
+                .send()
+                .await
+                .map_err(|e| {
+                    let transient = transport_error_is_transient(&e);
+                    let err = anyhow::Error::new(e).context("failed to call OpenAI embeddings API");
+                    EmbedAttemptError {
+                        error: err,
+                        transient,
+                    }
+                })?;
+            let status = response.status();
+            let text = response
+                .text()
+                .await
+                .map_err(|e| EmbedAttemptError::transient(anyhow::Error::new(e)))?;
+            ensure_success(status, text, "OpenAI")
+        })
+        .retry(retry_policy())
+        .when(|e: &EmbedAttemptError| e.transient)
+        .await
+        .map_err(|e| e.error)?;
+
+        let response = serde_json::from_str::<OpenAiEmbeddingResponse>(&body)
             .context("failed to decode OpenAI embeddings response")?;
 
         let embedding = response
@@ -123,16 +191,20 @@ struct OllamaEmbedder {
 }
 
 impl OllamaEmbedder {
-    fn new(cfg: &EmbeddingConfig) -> Self {
-        Self {
-            client: Client::new(),
+    fn new(cfg: &EmbeddingConfig) -> Result<Self> {
+        let client = Client::builder()
+            .timeout(HTTP_TIMEOUT)
+            .build()
+            .context("failed to build Ollama HTTP client")?;
+        Ok(Self {
+            client,
             base_url: cfg
                 .base_url
                 .clone()
                 .unwrap_or_else(|| "http://localhost:11434".into()),
             model: cfg.model.clone(),
             dimensions: cfg.dimensions,
-        }
+        })
     }
 }
 
@@ -163,18 +235,37 @@ impl Embedder for OllamaEmbedder {
 
     async fn embed(&self, input: &str) -> Result<Vec<f32>> {
         let url = format!("{}/api/embed", self.base_url.trim_end_matches('/'));
-        let response = self
-            .client
-            .post(url)
-            .json(&OllamaEmbeddingRequest {
-                model: &self.model,
-                input,
-            })
-            .send()
-            .await
-            .context("failed to call Ollama embeddings API")?;
-        let response = ensure_success(response.status(), response.text().await?, "Ollama").await?;
-        let response = serde_json::from_str::<OllamaEmbeddingResponse>(&response)
+        let body = (|| async {
+            let response = self
+                .client
+                .post(&url)
+                .json(&OllamaEmbeddingRequest {
+                    model: &self.model,
+                    input,
+                })
+                .send()
+                .await
+                .map_err(|e| {
+                    let transient = transport_error_is_transient(&e);
+                    let err = anyhow::Error::new(e).context("failed to call Ollama embeddings API");
+                    EmbedAttemptError {
+                        error: err,
+                        transient,
+                    }
+                })?;
+            let status = response.status();
+            let text = response
+                .text()
+                .await
+                .map_err(|e| EmbedAttemptError::transient(anyhow::Error::new(e)))?;
+            ensure_success(status, text, "Ollama")
+        })
+        .retry(retry_policy())
+        .when(|e: &EmbedAttemptError| e.transient)
+        .await
+        .map_err(|e| e.error)?;
+
+        let response = serde_json::from_str::<OllamaEmbeddingResponse>(&body)
             .context("failed to decode Ollama embeddings response")?;
         let embedding = response
             .embeddings
@@ -197,7 +288,11 @@ fn validate_dimensions(embedding: &[f32], expected: usize) -> Result<()> {
     Ok(())
 }
 
-async fn ensure_success(status: StatusCode, body: String, provider: &str) -> Result<String> {
+fn ensure_success(
+    status: StatusCode,
+    body: String,
+    provider: &str,
+) -> Result<String, EmbedAttemptError> {
     if status.is_success() {
         return Ok(body);
     }
@@ -211,5 +306,12 @@ async fn ensure_success(status: StatusCode, body: String, provider: &str) -> Res
                 .and_then(|v| v.as_str().map(str::to_string))
         })
         .unwrap_or_else(|| body.chars().take(500).collect());
-    anyhow::bail!("{provider} embeddings API returned {status}: {detail}");
+    let err = anyhow::anyhow!("{provider} embeddings API returned {status}: {detail}");
+    // Retry only on 429 (rate limit) and 5xx (server errors); other 4xx — e.g.
+    // a bad API key — must fail fast.
+    if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+        Err(EmbedAttemptError::transient(err))
+    } else {
+        Err(EmbedAttemptError::permanent(err))
+    }
 }

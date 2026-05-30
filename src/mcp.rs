@@ -10,6 +10,7 @@ use crate::{
     Config,
 };
 use anyhow::{Context, Result};
+use futures::{StreamExt, TryStreamExt};
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -408,7 +409,7 @@ async fn analyze_repo(
                 embedder.dimensions(),
             )
             .await?;
-        for chunk in &missing {
+        futures::stream::iter(missing.iter().map(|chunk| async move {
             let embedding = embedder.embed(&chunk.content).await?;
             storage
                 .insert_embedding(
@@ -419,7 +420,11 @@ async fn analyze_repo(
                     &embedding,
                 )
                 .await?;
-        }
+            Result::<_, anyhow::Error>::Ok(())
+        }))
+        .buffer_unordered(crate::EMBED_CONCURRENCY)
+        .try_collect::<()>()
+        .await?;
         Result::<_, anyhow::Error>::Ok(json!({
             "repo_id": repo.id,
             "files": result.files.len(),

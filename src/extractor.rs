@@ -8,7 +8,6 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use ignore::WalkBuilder;
-use regex::Regex;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
@@ -1509,18 +1508,80 @@ fn impl_name(item: &ItemImpl) -> String {
     }
 }
 
+/// Find the 1-based line where `keyword` is followed (across whitespace) by
+/// `name`, with word boundaries on both ends — the equivalent of the regex
+/// `\b{keyword}\s+{name}\b` but without compiling a regex per call.
+///
+/// Falls back to the first line merely containing `name` when no
+/// keyword+name pair is found, matching the previous behavior.
 fn find_item_line(content: &str, keyword: &str, name: &str) -> Option<usize> {
-    let pattern = Regex::new(&format!(
-        r"\b{}\s+{}\b",
-        regex::escape(keyword),
-        regex::escape(name)
-    ))
-    .ok()?;
     content
         .lines()
-        .position(|line| pattern.is_match(line))
+        .position(|line| line_has_keyword_name(line, keyword, name))
         .map(|idx| idx + 1)
         .or_else(|| find_line(content, name))
+}
+
+/// True when `line` contains `keyword` followed by `name` separated only by
+/// ASCII whitespace, both flanked by word boundaries (Unicode-aware, matching
+/// the regex engine's `\b` over `\w`).
+fn line_has_keyword_name(line: &str, keyword: &str, name: &str) -> bool {
+    if keyword.is_empty() || name.is_empty() {
+        return false;
+    }
+    let bytes = line.as_bytes();
+    let mut search_from = 0;
+    while let Some(rel) = line[search_from..].find(keyword) {
+        let kw_start = search_from + rel;
+        let kw_end = kw_start + keyword.len();
+        // Word boundary before `keyword`: previous char must not be a word char.
+        let boundary_before = !is_word_boundary_byte(prev_char(line, kw_start));
+        if boundary_before {
+            // Require at least one whitespace char immediately after `keyword`.
+            let mut cursor = kw_end;
+            let ws_end = skip_whitespace(bytes, cursor);
+            if ws_end > cursor {
+                cursor = ws_end;
+                // `name` must appear immediately after the whitespace run.
+                if line[cursor..].starts_with(name) {
+                    let name_end = cursor + name.len();
+                    // Word boundary after `name`: next char must not be a word char.
+                    if !is_word_boundary_byte(next_char(line, name_end)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        // Advance past this occurrence to find later matches on the same line.
+        search_from = kw_start + 1;
+    }
+    false
+}
+
+/// The character immediately before `idx`, if any.
+fn prev_char(line: &str, idx: usize) -> Option<char> {
+    line[..idx].chars().next_back()
+}
+
+/// The character at or after `idx`, if any.
+fn next_char(line: &str, idx: usize) -> Option<char> {
+    line[idx..].chars().next()
+}
+
+/// A `\w` character (alphanumeric or `_`) on either side breaks a word
+/// boundary. `None` (string edge) is treated as a boundary (i.e. not a word
+/// char).
+fn is_word_boundary_byte(ch: Option<char>) -> bool {
+    matches!(ch, Some(c) if c.is_alphanumeric() || c == '_')
+}
+
+/// Index of the first non-whitespace byte at or after `from`.
+fn skip_whitespace(bytes: &[u8], from: usize) -> usize {
+    let mut i = from;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i
 }
 
 fn find_line(content: &str, needle: &str) -> Option<usize> {
@@ -1573,6 +1634,32 @@ mod tests {
     use lopdf::{dictionary, Document, Object, Stream};
     use std::fs;
     use std::path::Path;
+
+    #[test]
+    fn find_item_line_matches_keyword_then_name_with_word_boundaries() {
+        let src = "use foo;\npub fn handler() {}\nstruct Other;\n";
+        // `fn handler` on line 2 (1-based).
+        assert_eq!(find_item_line(src, "fn", "handler"), Some(2));
+        // `struct Other` on line 3.
+        assert_eq!(find_item_line(src, "struct", "Other"), Some(3));
+    }
+
+    #[test]
+    fn find_item_line_respects_word_boundaries() {
+        // `function` must not match keyword `fn`; `handler2` must not match
+        // name `handler`. Falls back to the first line merely containing `name`.
+        let src = "function handler2() {}\nfn handler() {}\n";
+        assert_eq!(find_item_line(src, "fn", "handler"), Some(2));
+        // No `fn` + `nope` pair anywhere; falls back to find_line (None here).
+        assert_eq!(find_item_line(src, "fn", "nope"), None);
+    }
+
+    #[test]
+    fn find_item_line_requires_whitespace_between_keyword_and_name() {
+        // Adjacent without whitespace must not match the keyword+name form.
+        let src = "fnhandler\nfn handler\n";
+        assert_eq!(find_item_line(src, "fn", "handler"), Some(2));
+    }
 
     fn write_minimal_pdf(path: &Path) {
         let mut doc = Document::with_version("1.5");

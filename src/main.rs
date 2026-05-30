@@ -26,12 +26,17 @@ use feature_context::{
     FeatureContextResponse,
 };
 use feature_export::refresh_project_exports;
+use futures::{StreamExt, TryStreamExt};
 use graph_export::write_graph_html;
 use obsidian_export::write_obsidian_vault;
 use query::{query_feature_context_repo, query_repo};
 use serde_json::json;
 use std::path::PathBuf;
 use storage::Storage;
+use tracing_subscriber::EnvFilter;
+
+/// Maximum number of embedding requests in flight at once.
+pub(crate) const EMBED_CONCURRENCY: usize = 8;
 
 #[derive(Parser)]
 #[command(name = "chaos")]
@@ -101,6 +106,16 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Diagnostics go to stderr only. The `mcp` subcommand speaks
+    // newline-delimited JSON-RPC on stdout, so any log on stdout would corrupt
+    // the protocol — keep the writer pinned to stderr.
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+
     let cli = Cli::parse();
     let config = Config::load(cli.config.as_deref())?;
 
@@ -148,18 +163,24 @@ async fn main() -> Result<()> {
                         embedder.dimensions(),
                     )
                     .await?;
-                for chunk in &missing {
-                    let embedding = embedder.embed(&chunk.content).await?;
-                    storage
+                let embedder_ref = embedder.as_ref();
+                let storage_ref = &storage;
+                futures::stream::iter(missing.iter().map(|chunk| async move {
+                    let embedding = embedder_ref.embed(&chunk.content).await?;
+                    storage_ref
                         .insert_embedding(
                             chunk,
-                            embedder.provider(),
-                            embedder.model_id(),
-                            embedder.dimensions(),
+                            embedder_ref.provider(),
+                            embedder_ref.model_id(),
+                            embedder_ref.dimensions(),
                             &embedding,
                         )
                         .await?;
-                }
+                    Result::<_, anyhow::Error>::Ok(())
+                }))
+                .buffer_unordered(EMBED_CONCURRENCY)
+                .try_collect::<()>()
+                .await?;
                 Result::<_, anyhow::Error>::Ok((result, missing.len()))
             }
             .await;
