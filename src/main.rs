@@ -35,6 +35,7 @@ use query::{query_feature_context_repo, query_repo};
 use serde_json::json;
 use std::path::PathBuf;
 use storage::Storage;
+use tracing::warn;
 use tracing_subscriber::EnvFilter;
 
 /// Maximum number of embedding requests in flight at once.
@@ -138,6 +139,34 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    // For the Hook subcommand the robustness contract demands exit 0 on *any*
+    // problem — including a missing or malformed config file.  Detect this early:
+    // if config loading fails and the subcommand is Hook, skip the config
+    // (hook.rs reads DATABASE_URL directly from env) and proceed to the hook
+    // branch rather than propagating an Err that would exit non-zero.
+    if let Commands::Hook {
+        ref event,
+        ref format,
+    } = cli.command
+    {
+        match Config::load(cli.config.as_deref()) {
+            Ok(cfg) => {
+                if std::env::var("DATABASE_URL").is_err() {
+                    std::env::set_var("DATABASE_URL", &cfg.storage.database_url);
+                }
+            }
+            Err(e) => {
+                // Config unavailable — hook.rs will use DATABASE_URL from env or
+                // fall back to the hardcoded default URL.  Log to stderr only.
+                warn!("chaos hook: config load failed ({e:#}), proceeding with env defaults");
+            }
+        }
+        hook::run(event, format.as_deref()).await;
+        // Always exit 0 — the hook must never break the host tool call.
+        std::process::exit(0);
+    }
+
     let config = Config::load(cli.config.as_deref())?;
 
     match cli.command {
@@ -358,17 +387,9 @@ async fn main() -> Result<()> {
         Commands::Setup { dry_run, scope } => {
             setup::run(cli.config.as_deref(), dry_run, scope)?;
         }
-        Commands::Hook { event, format } => {
-            // Set DATABASE_URL from the loaded config so hook.rs can pick it up.
-            // (hook.rs reads it from env to avoid needing to thread Config through
-            // the tokio runtime boundary when connecting with a short timeout.)
-            if std::env::var("DATABASE_URL").is_err() {
-                std::env::set_var("DATABASE_URL", &config.storage.database_url);
-            }
-            hook::run(&event, format.as_deref()).await;
-            // Always exit 0 — the hook must never break the host tool call.
-            std::process::exit(0);
-        }
+        // Hook is handled before this match — see the early-exit block above.
+        // This arm satisfies exhaustiveness and is never reached at runtime.
+        Commands::Hook { .. } => unreachable!("Hook handled by early-exit block"),
     }
 
     Ok(())
