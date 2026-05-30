@@ -6,6 +6,7 @@ mod feature_context;
 mod feature_export;
 mod graph;
 mod graph_export;
+mod hook;
 mod lang;
 mod mcp;
 mod models;
@@ -111,6 +112,16 @@ enum Commands {
         /// Scope passed to `claude mcp add` (user | local | project). Defaults to "user".
         #[arg(long)]
         scope: Option<String>,
+    },
+    /// Claude Code / Cursor plugin hook: reads an event JSON from stdin and
+    /// injects code-memory context into the response (or exits 0 silently).
+    Hook {
+        /// The hook event to handle: PreToolUse or PostToolUse.
+        #[arg(long)]
+        event: String,
+        /// Output format: "claude" (default) or "cursor".
+        #[arg(long)]
+        format: Option<String>,
     },
 }
 
@@ -346,6 +357,17 @@ async fn main() -> Result<()> {
         }
         Commands::Setup { dry_run, scope } => {
             setup::run(cli.config.as_deref(), dry_run, scope)?;
+        }
+        Commands::Hook { event, format } => {
+            // Set DATABASE_URL from the loaded config so hook.rs can pick it up.
+            // (hook.rs reads it from env to avoid needing to thread Config through
+            // the tokio runtime boundary when connecting with a short timeout.)
+            if std::env::var("DATABASE_URL").is_err() {
+                std::env::set_var("DATABASE_URL", &config.storage.database_url);
+            }
+            hook::run(&event, format.as_deref()).await;
+            // Always exit 0 — the hook must never break the host tool call.
+            std::process::exit(0);
         }
     }
 

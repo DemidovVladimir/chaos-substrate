@@ -1,0 +1,29 @@
+{
+  "description": "Chaos Substrate code-memory context hooks",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/target/release/chaos --config ${CLAUDE_PLUGIN_ROOT}/chaos-substrate.toml hook --event PreToolUse",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/target/release/chaos --config ${CLAUDE_PLUGIN_ROOT}/chaos-substrate.toml hook --event PostToolUse",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

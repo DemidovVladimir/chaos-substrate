@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${workspaceFolder}/target/release/chaos --config ${workspaceFolder}/chaos-substrate.toml hook --event PreToolUse --format cursor",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${workspaceFolder}/target/release/chaos --config ${workspaceFolder}/chaos-substrate.toml hook --event PostToolUse --format cursor",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

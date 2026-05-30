@@ -27,6 +27,18 @@ impl Storage {
         Ok(Self { pool })
     }
 
+    /// Connect with a short acquire timeout — used by the `hook` subcommand so
+    /// a down database degrades fast rather than blocking the editor.
+    pub async fn connect_fast(database_url: &str, timeout: std::time::Duration) -> Result<Self> {
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .acquire_timeout(timeout)
+            .connect(database_url)
+            .await
+            .context("failed to connect to Postgres (fast)")?;
+        Ok(Self { pool })
+    }
+
     pub async fn migrate(&self) -> Result<()> {
         // The migrations directory is embedded at compile time and each file is
         // executed whole (no fragile ';' splitting); applied versions are tracked
@@ -451,6 +463,62 @@ impl Storage {
             updated_at: row.get("updated_at"),
         }))
     }
+
+    /// Fast keyword/symbol lookup by name — no embedder required.
+    ///
+    /// Joins `nodes` → `files` for the given `repo_id` and does a
+    /// case-insensitive ILIKE match on the node name, ordered so exact matches
+    /// come first.  Useful for the `hook` subcommand which must not call the
+    /// embedding HTTP API.
+    pub async fn search_symbols_by_name(
+        &self,
+        repo_id: Uuid,
+        term: &str,
+        limit: i64,
+    ) -> Result<Vec<SymbolHit>> {
+        let pattern = format!("%{term}%");
+        let rows = sqlx::query(
+            r#"
+            select n.name, n.kind, coalesce(f.path, '') as file_path, n.line_start
+            from nodes n
+            left join files f on f.id = n.file_id
+            where n.repo_id = $1
+              and n.name ilike $2
+              and n.kind not in ('repository', 'file')
+            order by
+                case when lower(n.name) = lower($3) then 0 else 1 end,
+                n.kind,
+                n.line_start nulls last
+            limit $4
+            "#,
+        )
+        .bind(repo_id)
+        .bind(&pattern)
+        .bind(term)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| SymbolHit {
+                name: row.get("name"),
+                kind: row.get("kind"),
+                file: row.get("file_path"),
+                line_start: row.get("line_start"),
+            })
+            .collect())
+    }
+}
+
+/// A symbol match returned by [`Storage::search_symbols_by_name`] and the
+/// hook subcommand's direct pool query.
+#[derive(Debug, Clone)]
+pub struct SymbolHit {
+    pub name: String,
+    pub kind: String,
+    pub file: String,
+    pub line_start: Option<i32>,
 }
 
 async fn insert_file(
