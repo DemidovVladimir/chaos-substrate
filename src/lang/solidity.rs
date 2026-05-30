@@ -6,7 +6,7 @@
 //! (already registered by `begin_file`) is left as-is.
 
 use crate::{
-    extractor::{chunk_for_node, edge, import_stable_id, is_bare_module_specifier, slice_lines},
+    extractor::{chunk_for_node, edge, slice_lines},
     lang::FileExtraction,
     models::{EdgeKind, KnowledgeNode, NodeKind},
     weights,
@@ -455,36 +455,7 @@ fn emit_import_directive(import: &Import, ctx: &mut FileExtraction<'_>) {
         return;
     }
 
-    let line = ctx.lines.line(loc.start()) as i32;
-    let is_bare = is_bare_module_specifier(&module);
-    let path = ctx.file.path.clone();
-
-    let node = KnowledgeNode {
-        id: Uuid::new_v4(),
-        repo_id: ctx.repo_id,
-        file_id: if is_bare { None } else { Some(ctx.file.id) },
-        kind: NodeKind::Dependency,
-        stable_id: import_stable_id(ctx.file, &module, is_bare),
-        name: module.clone(),
-        line_start: if is_bare { None } else { Some(line) },
-        line_end: if is_bare { None } else { Some(line) },
-        metadata: json!({
-            "module": module,
-            "language": "solidity",
-            "scope": if is_bare { "bare" } else { "relative" }
-        }),
-    };
-
-    ctx.result.edges.push(edge(
-        ctx.repo_id,
-        ctx.file_node_id,
-        node.id,
-        EdgeKind::Imports,
-        weights::IMPORTS_SOLIDITY,
-        json!({"file": path, "module": module, "line": line}),
-    ));
-
-    ctx.result.nodes.push(node);
+    ctx.emit_dependency(&module, "solidity", weights::IMPORTS_SOLIDITY, loc.start());
 }
 
 fn import_path_str(path: &ImportPath) -> String {

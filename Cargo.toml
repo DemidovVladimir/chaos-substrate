@@ -33,7 +33,6 @@ oxc_syntax = "0.116"
 rustpython-ast = { version = "0.4", features = ["visitor"] }
 rustpython-parser = "0.4"
 solang-parser = "0.3"
-thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util"] }
 toml = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }

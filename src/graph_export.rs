@@ -51,13 +51,10 @@ pub fn write_graph_html(path: &Path, graph: &GraphExport) -> Result<()> {
 }
 
 fn render_graph_html(graph_json: &str) -> String {
-    GRAPH_HTML.replace("__GRAPH_DATA__", &escape_script_json(graph_json))
-}
-
-fn escape_script_json(json: &str) -> String {
-    json.replace('&', "\\u0026")
-        .replace('<', "\\u003c")
-        .replace('>', "\\u003e")
+    GRAPH_HTML.replace(
+        "__GRAPH_DATA__",
+        &crate::export_util::escape_script_json(graph_json),
+    )
 }
 
 const GRAPH_HTML: &str = r#"<!doctype html>
@@ -796,11 +793,10 @@ requestRender();
 
 #[cfg(test)]
 mod tests {
-    use super::escape_script_json;
-
     #[test]
     fn escapes_json_for_script_context() {
-        let escaped = escape_script_json(r#"{"name":"</script><img src=x>","amp":"&"}"#);
+        let escaped =
+            crate::export_util::escape_script_json(r#"{"name":"</script><img src=x>","amp":"&"}"#);
         assert!(!escaped.contains("</script>"));
         assert!(escaped.contains("\\u003c/script\\u003e"));
         assert!(escaped.contains("\\u0026"));

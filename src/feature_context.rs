@@ -238,7 +238,10 @@ pub fn write_feature_context_html(path: &Path, response: &FeatureContextResponse
     let json = serde_json::to_string(response)?;
     fs::write(
         path,
-        CONTEXT_HTML.replace("__CONTEXT__", &escape_script_json(&json)),
+        CONTEXT_HTML.replace(
+            "__CONTEXT__",
+            &crate::export_util::escape_script_json(&json),
+        ),
     )?;
     Ok(())
 }
@@ -371,12 +374,6 @@ fn score_text(tokens: &[String], haystacks: &[&str]) -> usize {
         .iter()
         .map(|token| haystack.matches(token).count())
         .sum()
-}
-
-fn escape_script_json(json: &str) -> String {
-    json.replace('&', "\\u0026")
-        .replace('<', "\\u003c")
-        .replace('>', "\\u003e")
 }
 
 const STOP_WORDS: &[&str] = &[

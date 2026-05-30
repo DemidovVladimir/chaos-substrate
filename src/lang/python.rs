@@ -6,18 +6,13 @@
 //! by `begin_file`) is left as-is.
 
 use crate::{
-    extractor::{
-        chunk_for_node, edge, import_stable_id, is_bare_module_specifier, is_python_test_file,
-        is_test_symbol, slice_lines,
-    },
+    extractor::{is_python_test_file, is_test_symbol},
     lang::FileExtraction,
-    models::{EdgeKind, KnowledgeNode, NodeKind},
+    models::NodeKind,
     weights,
 };
 use rustpython_ast::{Expr, ExprCall, Visitor};
 use rustpython_parser::{ast, Parse};
-use serde_json::json;
-use uuid::Uuid;
 
 /// Entry point called from `extractor.rs` after `begin_file` has run.
 pub(crate) fn extract(ctx: &mut FileExtraction<'_>) -> anyhow::Result<()> {
@@ -151,9 +146,6 @@ fn emit_symbol(
     end_offset: usize,
     ctx: &mut FileExtraction<'_>,
 ) {
-    let line = ctx.lines.line(start_offset) as i32;
-    let end_line = ctx.lines.line(end_offset) as i32;
-
     let kind = if is_python_test_file(&ctx.file.path) || is_test_symbol(name) {
         NodeKind::Test
     } else {
@@ -161,86 +153,28 @@ fn emit_symbol(
     };
 
     let stable_id = format!("{}:{}:{}", ctx.file.path, kind.as_str(), name);
-    let code = slice_lines(&ctx.file.content, line as usize, end_line as usize);
 
-    let node = KnowledgeNode {
-        id: Uuid::new_v4(),
-        repo_id: ctx.repo_id,
-        file_id: Some(ctx.file.id),
-        kind: kind.clone(),
+    ctx.emit_code_symbol(
+        name,
+        kind.clone(),
         stable_id,
-        name: name.to_string(),
-        line_start: Some(line),
-        line_end: Some(end_line),
-        metadata: json!({
-            "language": "python",
-            "file": ctx.file.path,
-            "python_kind": python_kind
-        }),
-    };
-
-    ctx.symbol_names.entry(name.to_string()).or_insert(node.id);
-
-    ctx.result.edges.push(edge(
-        ctx.repo_id,
-        ctx.file_node_id,
-        node.id,
-        EdgeKind::Contains,
+        "python",
         weights::CONTAINS_CODE,
-        json!({"language": "python", "kind": python_kind}),
-    ));
-
-    ctx.result.chunks.push(chunk_for_node(
-        ctx.repo_id,
-        Some(ctx.file.id),
-        Some(node.id),
-        kind.as_str(),
-        &format!(
-            "Language: python\nFile: {}\nSymbol: {}\nKind: {}\nLines: {}-{}\n\n{}",
-            ctx.file.path, name, python_kind, line, end_line, code
-        ),
-        Some(line),
-        Some(end_line),
-        json!({
+        serde_json::json!({"language": "python", "kind": python_kind}),
+        serde_json::json!({"language": "python", "file": ctx.file.path, "python_kind": python_kind}),
+        python_kind,
+        start_offset,
+        end_offset,
+        serde_json::json!({
             "symbol": name,
             "kind": kind.as_str(),
             "python_kind": python_kind,
             "file": ctx.file.path
         }),
-    ));
-
-    ctx.result.nodes.push(node);
+    );
 }
 
 /// Emit an import dependency node and its `Imports` edge.
 fn emit_import(module: &str, offset: usize, ctx: &mut FileExtraction<'_>) {
-    let line = ctx.lines.line(offset) as i32;
-    let is_bare = is_bare_module_specifier(module);
-
-    let node = KnowledgeNode {
-        id: Uuid::new_v4(),
-        repo_id: ctx.repo_id,
-        file_id: if is_bare { None } else { Some(ctx.file.id) },
-        kind: NodeKind::Dependency,
-        stable_id: import_stable_id(ctx.file, module, is_bare),
-        name: module.to_string(),
-        line_start: if is_bare { None } else { Some(line) },
-        line_end: if is_bare { None } else { Some(line) },
-        metadata: json!({
-            "module": module,
-            "language": "python",
-            "scope": if is_bare { "bare" } else { "relative" }
-        }),
-    };
-
-    ctx.result.edges.push(edge(
-        ctx.repo_id,
-        ctx.file_node_id,
-        node.id,
-        EdgeKind::Imports,
-        weights::IMPORTS_MODULE,
-        json!({"file": ctx.file.path, "module": module, "line": line}),
-    ));
-
-    ctx.result.nodes.push(node);
+    ctx.emit_dependency(module, "python", weights::IMPORTS_MODULE, offset);
 }

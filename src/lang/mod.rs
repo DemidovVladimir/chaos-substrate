@@ -4,7 +4,12 @@
 //! node/edge/chunk shapes the regex extractors used to produce. Shared glue —
 //! the byte-offset→line index and the per-file extraction context — lives here.
 
-use crate::models::{ExtractionResult, SourceFile};
+use crate::{
+    extractor::{chunk_for_node, edge, import_stable_id, is_bare_module_specifier, slice_lines},
+    models::{EdgeKind, ExtractionResult, KnowledgeNode, NodeKind, SourceFile},
+    weights::EdgeWeight,
+};
+use serde_json::Value;
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -62,6 +67,137 @@ pub(crate) struct FileExtraction<'a> {
     pub symbol_names: &'a mut HashMap<String, Uuid>,
     pub result: &'a mut ExtractionResult,
     pub calls: &'a mut Vec<CallSite>,
+}
+
+impl<'a> FileExtraction<'a> {
+    /// Emit a code symbol node (function, class, enum, etc.) with its
+    /// `Contains` edge and text chunk.
+    ///
+    /// Covers the common pattern shared by JavaScript/TypeScript and Python
+    /// extraction.  Callers supply the already-resolved `kind` (post test-file
+    /// detection), a pre-formatted `stable_id`, and the language-specific
+    /// metadata/label values so that each language's output remains
+    /// byte-identical to what its own local helper produced previously.
+    ///
+    /// # Parameters
+    /// - `name`            – symbol name (already trimmed, non-empty)
+    /// - `kind`            – final `NodeKind` (test detection applied by caller)
+    /// - `stable_id`       – pre-computed stable ID string
+    /// - `language`        – language string stored in node/chunk metadata
+    /// - `contains_weight` – edge weight (e.g. `CONTAINS_CODE` / `CONTAINS_MEMBER`)
+    /// - `edge_meta`       – metadata value attached to the `Contains` edge
+    /// - `node_meta`       – full metadata object for the `KnowledgeNode`
+    /// - `kind_label`      – value shown in `"Kind: {kind_label}"` of the chunk
+    /// - `start_off`       – byte offset of the symbol start
+    /// - `end_off`         – byte offset of the symbol end
+    /// - `chunk_meta`      – full metadata object for the `KnowledgeChunk`
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn emit_code_symbol(
+        &mut self,
+        name: &str,
+        kind: NodeKind,
+        stable_id: String,
+        language: &str,
+        contains_weight: EdgeWeight,
+        edge_meta: Value,
+        node_meta: Value,
+        kind_label: &str,
+        start_off: usize,
+        end_off: usize,
+        chunk_meta: Value,
+    ) {
+        let line = self.lines.line(start_off);
+        let end_line = self.lines.line(end_off);
+        let code = slice_lines(&self.file.content, line, end_line);
+
+        let node = KnowledgeNode {
+            id: Uuid::new_v4(),
+            repo_id: self.repo_id,
+            file_id: Some(self.file.id),
+            kind: kind.clone(),
+            stable_id,
+            name: name.to_string(),
+            line_start: Some(line as i32),
+            line_end: Some(end_line as i32),
+            metadata: node_meta,
+        };
+
+        self.symbol_names.entry(name.to_string()).or_insert(node.id);
+
+        self.result.edges.push(edge(
+            self.repo_id,
+            self.file_node_id,
+            node.id,
+            EdgeKind::Contains,
+            contains_weight,
+            edge_meta,
+        ));
+
+        self.result.chunks.push(chunk_for_node(
+            self.repo_id,
+            Some(self.file.id),
+            Some(node.id),
+            kind.as_str(),
+            &format!(
+                "Language: {language}\nFile: {path}\nSymbol: {name}\nKind: {kind_label}\nLines: {line}-{end_line}\n\n{code}",
+                path = self.file.path,
+            ),
+            Some(line as i32),
+            Some(end_line as i32),
+            chunk_meta,
+        ));
+
+        self.result.nodes.push(node);
+    }
+
+    /// Emit a dependency (import) node and its `Imports` edge.
+    ///
+    /// Covers the common pattern shared by JavaScript/TypeScript, Python, and
+    /// Solidity extraction. No chunk is emitted for imports — only a node and
+    /// an edge — matching the previous per-language implementations.
+    ///
+    /// # Parameters
+    /// - `module`         – module/path string (non-empty, already validated)
+    /// - `language`       – language string stored in node metadata
+    /// - `import_weight`  – edge weight (e.g. `IMPORTS_MODULE` / `IMPORTS_SOLIDITY`)
+    /// - `offset`         – byte offset used to compute the 1-based line number
+    pub(crate) fn emit_dependency(
+        &mut self,
+        module: &str,
+        language: &str,
+        import_weight: EdgeWeight,
+        offset: usize,
+    ) {
+        let line = self.lines.line(offset) as i32;
+        let is_bare = is_bare_module_specifier(module);
+
+        let node = KnowledgeNode {
+            id: Uuid::new_v4(),
+            repo_id: self.repo_id,
+            file_id: if is_bare { None } else { Some(self.file.id) },
+            kind: NodeKind::Dependency,
+            stable_id: import_stable_id(self.file, module, is_bare),
+            name: module.to_string(),
+            line_start: if is_bare { None } else { Some(line) },
+            line_end: if is_bare { None } else { Some(line) },
+            metadata: serde_json::json!({
+                "module": module,
+                "language": language,
+                "scope": if is_bare { "bare" } else { "relative" }
+            }),
+        };
+
+        self.result.edges.push(edge(
+            self.repo_id,
+            self.file_node_id,
+            node.id,
+            EdgeKind::Imports,
+            import_weight,
+            serde_json::json!({"file": self.file.path, "module": module, "line": line}),
+        ));
+
+        self.result.nodes.push(node);
+    }
 }
 
 #[cfg(test)]

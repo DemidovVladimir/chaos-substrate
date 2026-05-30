@@ -8,8 +8,8 @@
 
 use crate::{
     extractor::{
-        cdk_service, chunk_for_node, edge, import_stable_id, is_bare_module_specifier,
-        is_js_ts_test_file, is_test_symbol, looks_like_cdk_file, slice_lines,
+        cdk_service, chunk_for_node, edge, is_js_ts_test_file, is_test_symbol, looks_like_cdk_file,
+        slice_lines,
     },
     lang::FileExtraction,
     models::{EdgeKind, KnowledgeNode, NodeKind},
@@ -297,69 +297,28 @@ fn emit_symbol(sym: &JsSymbol, ctx: &mut FileExtraction<'_>) {
     }
 
     let base_kind = sym.kind.to_node_kind();
-    let chunk_kind = if is_js_ts_test_file(&ctx.file.path) || is_test_symbol(name) {
+    let kind = if is_js_ts_test_file(&ctx.file.path) || is_test_symbol(name) {
         NodeKind::Test
     } else {
         base_kind
     };
 
-    let line = ctx.lines.line(sym.start as usize);
-    let end = ctx.lines.line(sym.end as usize);
-    let code = slice_lines(&ctx.file.content, line, end);
+    let language = ctx.file.language.as_str();
+    let stable_id = format!("{}:{}:{}", ctx.file.path, kind.as_str(), name);
 
-    let stable_id = format!("{}:{}:{}", ctx.file.path, chunk_kind.as_str(), name);
-
-    let node = KnowledgeNode {
-        id: Uuid::new_v4(),
-        repo_id: ctx.repo_id,
-        file_id: Some(ctx.file.id),
-        kind: chunk_kind.clone(),
+    ctx.emit_code_symbol(
+        name,
+        kind.clone(),
         stable_id,
-        name: name.to_string(),
-        line_start: Some(line as i32),
-        line_end: Some(end as i32),
-        metadata: json!({
-            "language": ctx.file.language.as_str(),
-            "file": ctx.file.path
-        }),
-    };
-
-    ctx.symbol_names.entry(name.to_string()).or_insert(node.id);
-
-    ctx.result.edges.push(edge(
-        ctx.repo_id,
-        ctx.file_node_id,
-        node.id,
-        EdgeKind::Contains,
+        language,
         weights::CONTAINS_CODE,
         json!({}),
-    ));
-
-    ctx.result.chunks.push(chunk_for_node(
-        ctx.repo_id,
-        Some(ctx.file.id),
-        Some(node.id),
-        chunk_kind.as_str(),
-        &format!(
-            "Language: {}\nFile: {}\nSymbol: {}\nKind: {}\nLines: {}-{}\n\n{}",
-            ctx.file.language.as_str(),
-            ctx.file.path,
-            name,
-            chunk_kind.as_str(),
-            line,
-            end,
-            code
-        ),
-        Some(line as i32),
-        Some(end as i32),
-        json!({
-            "symbol": name,
-            "kind": chunk_kind.as_str(),
-            "file": ctx.file.path
-        }),
-    ));
-
-    ctx.result.nodes.push(node);
+        json!({ "language": language, "file": ctx.file.path }),
+        kind.as_str(),
+        sym.start as usize,
+        sym.end as usize,
+        json!({ "symbol": name, "kind": kind.as_str(), "file": ctx.file.path }),
+    );
 }
 
 fn emit_import(imp: &JsImport, ctx: &mut FileExtraction<'_>) {
@@ -367,40 +326,12 @@ fn emit_import(imp: &JsImport, ctx: &mut FileExtraction<'_>) {
     if module.is_empty() {
         return;
     }
-
-    let line = ctx.lines.line(imp.start as usize) as i32;
-    let is_bare = is_bare_module_specifier(module);
-
-    let node = KnowledgeNode {
-        id: Uuid::new_v4(),
-        repo_id: ctx.repo_id,
-        file_id: if is_bare { None } else { Some(ctx.file.id) },
-        kind: NodeKind::Dependency,
-        stable_id: import_stable_id(ctx.file, module, is_bare),
-        name: module.to_string(),
-        line_start: if is_bare { None } else { Some(line) },
-        line_end: if is_bare { None } else { Some(line) },
-        metadata: json!({
-            "module": module,
-            "language": ctx.file.language.as_str(),
-            "scope": if is_bare { "bare" } else { "relative" }
-        }),
-    };
-
-    ctx.result.edges.push(edge(
-        ctx.repo_id,
-        ctx.file_node_id,
-        node.id,
-        EdgeKind::Imports,
+    ctx.emit_dependency(
+        module,
+        ctx.file.language.as_str(),
         weights::IMPORTS_MODULE,
-        json!({
-            "file": ctx.file.path,
-            "module": module,
-            "line": line
-        }),
-    ));
-
-    ctx.result.nodes.push(node);
+        imp.start as usize,
+    );
 }
 
 fn emit_cdk_stack(name: &str, start: u32, end: u32, ctx: &mut FileExtraction<'_>) {

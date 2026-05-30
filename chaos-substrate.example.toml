@@ -12,6 +12,3 @@ dimensions = 1536
 # model = "nomic-embed-text"
 # dimensions = 768
 # base_url = "http://localhost:11434"
-
-[indexing]
-skip_dirs = [".git", "target", "node_modules", ".venv", "dist", "build"]
