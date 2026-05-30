@@ -35,9 +35,10 @@ Rust-side, never run as a separate Node or Python service. It can also export a 
 This is the canonical bootstrap. Bundled Postgres uses `pgvector/pgvector:pg16` on host port `54329`.
 
 ```bash
-cp chaos-substrate.example.toml chaos-substrate.toml   # committed config defaults to Ollama
+cp chaos-substrate.example.toml chaos-substrate.toml   # example config defaults to local Ollama
 docker compose up -d                                   # pgvector on localhost:54329
-export OPENAI_API_KEY=...                               # or run Ollama; see below
+# Ollama default: ensure Ollama is running and the model is pulled:
+#   ollama pull nomic-embed-text   (see docs/OLLAMA_SETUP.md)
 chaos migrate                                           # create schema (sqlx migrations)
 chaos doctor                                            # check Postgres + real embedding probe
 chaos analyze /path/to/repo                             # index the repository
@@ -47,10 +48,14 @@ chaos query /path/to/repo "where is the request handler validated?"
 The default `DATABASE_URL` for the bundled container is
 `postgres://chaos:chaos@localhost:54329/chaos_substrate`.
 
-For Ollama, edit `chaos-substrate.toml` to use `provider = "ollama"` (base URL
-`http://localhost:11434`, model `nomic-embed-text`, 768 dims). The committed config already defaults
-to Ollama. See [docs/OLLAMA_SETUP.md](docs/OLLAMA_SETUP.md) for install, model pull, and
-troubleshooting. OpenAI uses `text-embedding-3-small` (1536 dims, needs `OPENAI_API_KEY`).
+The example config defaults to local Ollama (`nomic-embed-text`, 768 dims,
+`http://localhost:11434`). Ollama must be running and the model pulled before `chaos doctor` will
+pass. See [docs/OLLAMA_SETUP.md](docs/OLLAMA_SETUP.md) for install, model pull, and
+troubleshooting.
+
+**Using OpenAI instead:** uncomment the `open_ai` block in `chaos-substrate.toml`, comment out the
+`ollama` block, and set `OPENAI_API_KEY` in your environment (`export OPENAI_API_KEY=...`). OpenAI
+uses `text-embedding-3-small` (1536 dims).
 
 > The CLI examples above use the installed `chaos` binary. During development you can substitute
 > `cargo run --` for any one-off CLI command (for example `cargo run -- analyze /path/to/repo`).
@@ -105,13 +110,13 @@ hits, refresh or re-target the context before writing a feature website.
 
 All non-Rust extraction uses **real AST parsers**, not regex or pattern matching. Each captures
 functions, classes/structs, interfaces/traits, enums, type aliases, class methods, imports,
-inheritance, and (heuristic, file-scoped) call edges.
+inheritance edges (Rust traits/impls and Solidity only), and (heuristic, file-scoped) call edges.
 
 | Language | Parser | Functions | Classes/Structs | Methods | Imports | Inheritance | Calls |
 | --- | --- | :---: | :---: | :---: | :---: | :---: | :---: |
 | Rust | `syn` | ✅ | ✅ | ✅ | ✅ | ✅ (traits/impls) | ✅ |
-| TypeScript / JavaScript | `oxc` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Python | `rustpython-parser` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| TypeScript / JavaScript | `oxc` | ✅ | ✅ | ✅ | ✅ | ➖ | ✅ |
+| Python | `rustpython-parser` | ✅ | ✅ | ✅ | ✅ | ➖ | ✅ |
 | Solidity | `solang-parser` | ✅ | ✅ (contracts/libraries) | ✅ | ✅ | ✅ | ✅ |
 
 Supplemental context:

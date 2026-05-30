@@ -42,6 +42,9 @@ Use the mapped names when validating so this checklist does not report false sch
   (`chunks_repo_node_idx`), and embedding model (`embeddings_model_idx`).
 - [ ] `embeddings.embedding` has a pgvector ANN index (`hnsw` preferred, or `ivfflat` with
   documented list/probe settings) using the correct distance operator for the model.
+  *(Status: aspirational — not yet implemented. `migrations/001_init.sql` has only a B-tree index
+  on `(provider, model_id, dimensions)` for metadata lookup; there is no HNSW or IVFFlat vector
+  index. All vector searches are currently exact scans.)*
 - [ ] Exact vector scans remain available for small datasets, tests, and ANN recall validation.
 - [ ] Edge traversal indexes exist for both outgoing and incoming graph queries:
   `edges_repo_source_idx (repo_id, source_node_id)` and
@@ -57,6 +60,9 @@ Use the mapped names when validating so this checklist does not report false sch
 - [ ] Failed runs persist enough error context to diagnose parser, database, and embedder failures.
 - [ ] Database startup validates required extensions (`vector`, `pgcrypto`), migration version
   (`_sqlx_migrations`), embedding dimension, and expected indexes before serving queries.
+  *(Status: aspirational — not yet implemented. `src/storage.rs` `health()` checks only Postgres
+  connectivity (`select version()`) and the presence of the `vector` extension. It does not
+  validate `pgcrypto`, migration version, embedding dimensions, or index existence.)*
 - [ ] Recovery tests cover interrupted ingest, repeated ingest of the same revision, deleted/renamed files, and schema migration rollback/forward expectations.
 
 ## No-Mock Embedder Checks

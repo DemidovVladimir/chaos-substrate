@@ -65,7 +65,8 @@ right extractor. All non-Rust extraction uses **real AST parsers** — never reg
 
 The language extractors in `src/lang/*` share a `LineIndex` and produce a `FileExtraction`.
 Captured symbols include functions, classes/structs, interfaces/traits, enums, type aliases, class
-methods, imports, inheritance, and (heuristic, file-scoped) call edges. Markdown/MDX and text PDF
+methods, imports, inheritance edges (Rust traits/impls and Solidity only), and (heuristic,
+file-scoped) call edges. Markdown/MDX and text PDF
 are supplemental document context (lower weight). JSON is limited to config manifests
 (`package.json`, `cdk.json`, `tsconfig.json`, `jsconfig.json`); `Cargo.toml` is parsed for
 dependency nodes, and AWS-CDK constructs become deployment-resource nodes — all in `extractor.rs`.

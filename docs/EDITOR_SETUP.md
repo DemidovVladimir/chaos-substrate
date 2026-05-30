@@ -27,17 +27,25 @@ target/release/chaos setup --dry-run
 target/release/chaos setup
 ```
 
-Scope the write target when you only want one config file touched:
+The `--scope` flag **only affects the Claude Code `claude mcp add` registration**. The other
+editors (Codex, Cursor, Windsurf, OpenCode) always write to their fixed user-level config files
+regardless of `--scope`.
 
 ```bash
-target/release/chaos setup --scope user      # user-level config
-target/release/chaos setup --scope local     # machine-local config
-target/release/chaos setup --scope project   # project-scoped config in the current repo
+target/release/chaos setup --scope user      # Claude Code: user-level (default)
+target/release/chaos setup --scope local     # Claude Code: machine-local
+target/release/chaos setup --scope project   # Claude Code: project scope via claude mcp add
 ```
 
-`setup` is idempotent: rerunning it leaves an already-registered server in place. If an editor is
-not detected, it is skipped. The manual blocks below are for editors `setup` cannot detect, or when
-you want to wire config by hand.
+For a shareable project-scoped `.mcp.json` in a target repository, use the wrapper instead:
+
+```bash
+scripts/chaos-agent claude-code-add project /absolute/path/to/target-repo
+```
+
+`setup` is idempotent: rerunning it re-writes the chaos-substrate entry with the current values;
+other MCP servers in the file are preserved. If an editor is not detected, it is skipped. The
+manual blocks below are for editors `setup` cannot detect, or when you want to wire config by hand.
 
 ## Editor Support
 
@@ -58,9 +66,11 @@ tools; see the [MCP Tools](../README.md#mcp-tools) section of the README for the
 1. **Postgres + pgvector.** Use the bundled stack (`docker compose up -d`) which starts
    `pgvector/pgvector:pg16` on host port `54329` with
    `DATABASE_URL=postgres://chaos:chaos@localhost:54329/chaos_substrate`.
-2. **An embedder.** Either OpenAI (`text-embedding-3-small`, 1536 dims, needs `OPENAI_API_KEY`) or
-   Ollama (`nomic-embed-text`, 768 dims, `http://localhost:11434`). The committed
-   `chaos-substrate.toml` defaults to Ollama. Analysis fails closed if no real embedder is reachable.
+2. **An embedder.** The example config (`chaos-substrate.example.toml`) defaults to local Ollama
+   (`nomic-embed-text`, 768 dims, `http://localhost:11434`) — no API key needed. Ollama must be
+   running and the model pulled (`ollama pull nomic-embed-text`). For OpenAI instead, uncomment the
+   `open_ai` block in your config and set `OPENAI_API_KEY` (`text-embedding-3-small`, 1536 dims).
+   Analysis fails closed if no real embedder is reachable.
 3. **Build the release binary:**
 
    ```bash

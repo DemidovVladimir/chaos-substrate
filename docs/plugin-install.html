@@ -10,7 +10,7 @@
   <meta property="og:type" content="website">
   <meta property="og:title" content="Chaos Substrate — portable code-knowledge memory for AI agents">
   <meta property="og:description" content="Persistent Postgres+pgvector code memory that survives restarts — so agents stop re-reading the repo. Real AST parsers, hybrid retrieval, MCP-native.">
-  <meta property="og:url" content="https://github.com/your-org/chaos-substrate"><!-- TODO: set real URL -->
+  <meta property="og:url" content="https://github.com/chaos-substrate/chaos-substrate">
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary">
@@ -483,8 +483,7 @@
       <a href="#mcp-tools">MCP tools</a>
       <a href="#example">Example</a>
       <a href="#troubleshoot">Troubleshoot</a>
-      <!-- TODO: replace with real GitHub URL -->
-      <a class="nav-gh" href="https://github.com/your-org/chaos-substrate" target="_blank" rel="noopener" aria-label="View Chaos Substrate on GitHub">&#10138; GitHub</a>
+      <a class="nav-gh" href="https://github.com/chaos-substrate/chaos-substrate" target="_blank" rel="noopener" aria-label="View Chaos Substrate on GitHub">&#10138; GitHub</a>
     </div>
   </div>
 </nav>
@@ -598,8 +597,8 @@ chaos query /path/to/repo "where is auth?"</code></pre>
         <h2>A real embedder</h2>
         <p>Choose one — analysis will refuse to run without a working provider:</p>
         <ul style="margin-top:10px;">
-          <li><strong>OpenAI</strong> — <code>text-embedding-3-small</code>, 1536 dims. Set <code>OPENAI_API_KEY</code>. Only chunk text is sent.</li>
-          <li><strong>Ollama</strong> — <code>nomic-embed-text</code>, 768 dims, <code>http://localhost:11434</code>. The committed <code>chaos-substrate.toml</code> defaults to Ollama. See <a href="OLLAMA_SETUP.md">docs/OLLAMA_SETUP.md</a>.</li>
+          <li><strong>Ollama (default)</strong> — <code>nomic-embed-text</code>, 768 dims, <code>http://localhost:11434</code>. No API key needed. The example config defaults to Ollama; run <code>ollama pull nomic-embed-text</code> before indexing. See <a href="OLLAMA_SETUP.md">docs/OLLAMA_SETUP.md</a>.</li>
+          <li><strong>OpenAI (alternative)</strong> — <code>text-embedding-3-small</code>, 1536 dims. Uncomment the <code>open_ai</code> block in your config and set <code>OPENAI_API_KEY</code>. Only chunk text is sent.</li>
         </ul>
 
         <h2 style="margin-top:22px;">Rust toolchain</h2>
@@ -629,9 +628,9 @@ chaos query /path/to/repo "where is auth?"</code></pre>
           <div class="num">1</div>
           <div class="step-body">
             <strong>Clone and copy config</strong>
-            <p>The committed config defaults to Ollama. Edit it to switch to OpenAI.</p>
+            <p>The example config defaults to local Ollama (no API key). To use OpenAI instead, uncomment the <code>open_ai</code> block and set <code>OPENAI_API_KEY</code>.</p>
             <div class="pre-wrap">
-              <pre><code>git clone https://github.com/your-org/chaos-substrate   # TODO: real URL
+              <pre><code>git clone https://github.com/chaos-substrate/chaos-substrate
 cd chaos-substrate
 cp chaos-substrate.example.toml chaos-substrate.toml</code></pre>
               <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
@@ -647,11 +646,12 @@ cp chaos-substrate.example.toml chaos-substrate.toml</code></pre>
               <pre><code>docker compose up -d</code></pre>
               <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
             </div>
-            <p>Starts <code>pgvector/pgvector:pg16</code> on port 54329. For OpenAI embeddings also export your key:</p>
+            <p>Starts <code>pgvector/pgvector:pg16</code> on port 54329. For the default Ollama path, ensure Ollama is running and pull the model:</p>
             <div class="pre-wrap">
-              <pre><code>export OPENAI_API_KEY=sk-...</code></pre>
+              <pre><code>ollama pull nomic-embed-text</code></pre>
               <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
             </div>
+            <p style="margin-top:8px;">Using OpenAI instead? Export your key: <code>export OPENAI_API_KEY=sk-...</code></p>
           </div>
         </div>
 
@@ -715,13 +715,13 @@ cp chaos-substrate.example.toml chaos-substrate.toml</code></pre>
 # Apply to all detected editors
 ./target/release/chaos --config chaos-substrate.toml setup
 
-# Write only project-scoped config
+# project scope applies to Claude Code's MCP registration (other editors use their fixed config paths)
 ./target/release/chaos --config chaos-substrate.toml setup --scope project</code></pre>
             <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
           </div>
         </div>
         <div>
-          <p>Scopes: <code>user</code> (user-level config), <code>local</code> (machine-local), <code>project</code> (shareable <code>.mcp.json</code> in the target repo). Idempotent — rerunning leaves an already-registered server in place.</p>
+          <p>Scopes: <code>user</code> (user-level config), <code>local</code> (machine-local), <code>project</code> (project scope via Claude Code's <code>claude mcp add</code>; other editors always use their fixed config paths). Idempotent — rerunning re-writes the chaos-substrate entry with the current values; other MCP servers in the file are preserved.</p>
           <p>For Cursor, Windsurf, and OpenCode per-editor JSON paths, and for the full hooks detail, see <a href="EDITOR_SETUP.md">docs/EDITOR_SETUP.md</a>.</p>
           <div class="callout callout-info">
             <span class="callout-icon">&#9432;</span>
@@ -944,8 +944,7 @@ args    = ["--config", "/abs/chaos-substrate.toml", "mcp"]</code></pre>
       <p>Portable, persistent code-knowledge memory for AI agents. Postgres&nbsp;+&nbsp;pgvector. Single Rust binary.</p>
     </div>
     <div class="footer-links">
-      <!-- TODO: replace GitHub URL with real repo URL -->
-      <a href="https://github.com/your-org/chaos-substrate" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/chaos-substrate/chaos-substrate" target="_blank" rel="noopener">GitHub</a>
       <a href="../README.md">README</a>
       <a href="../ARCHITECTURE.md">ARCHITECTURE.md</a>
       <a href="../RUNBOOK.md">RUNBOOK.md</a>

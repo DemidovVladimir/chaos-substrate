@@ -3,12 +3,14 @@ database_url = "postgres://chaos:chaos@localhost:54329/chaos_substrate"
 
 [embedding]
 # Real embedders only. No mock or random vectors exist in runtime code.
-provider = "open_ai"
-model = "text-embedding-3-small"
-dimensions = 1536
+# Local default (no API key). Requires Ollama running with the model pulled:
+#   ollama pull nomic-embed-text   (or: scripts/chaos-agent ollama-setup)
+provider = "ollama"
+model = "nomic-embed-text"
+dimensions = 768
+base_url = "http://localhost:11434"
 
-# Alternative local provider:
-# provider = "ollama"
-# model = "nomic-embed-text"
-# dimensions = 768
-# base_url = "http://localhost:11434"
+# Alternative cloud provider (needs OPENAI_API_KEY in the environment):
+# provider = "open_ai"
+# model = "text-embedding-3-small"
+# dimensions = 1536
