@@ -246,8 +246,13 @@ pub fn write_feature_context_html(path: &Path, response: &FeatureContextResponse
     Ok(())
 }
 
-fn read_feature_manifest(path: &Path) -> Result<Option<FeatureManifest>> {
+pub(crate) fn read_feature_manifest(path: &Path) -> Result<Option<FeatureManifest>> {
     let html = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    read_feature_manifest_from_html(&html)
+        .with_context(|| format!("parsing feature manifest from {}", path.display()))
+}
+
+pub(crate) fn read_feature_manifest_from_html(html: &str) -> Result<Option<FeatureManifest>> {
     let Some(start) = html.find(MANIFEST_START) else {
         return Ok(None);
     };
@@ -256,8 +261,7 @@ fn read_feature_manifest(path: &Path) -> Result<Option<FeatureManifest>> {
         return Ok(None);
     };
     let raw = &html[json_start..json_start + end];
-    let manifest = serde_json::from_str(raw.trim())
-        .with_context(|| format!("parsing feature manifest from {}", path.display()))?;
+    let manifest = serde_json::from_str(raw.trim())?;
     Ok(Some(manifest))
 }
 
