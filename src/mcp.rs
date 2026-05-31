@@ -303,7 +303,7 @@ fn write_llm_feature_website(
     Ok(output)
 }
 
-fn validate_feature_website_contract(html: &str, manifest: &Value) -> Result<()> {
+pub(crate) fn validate_feature_website_contract(html: &str, manifest: &Value) -> Result<()> {
     let required_manifest = [
         ("claims", 3usize),
         ("modes", 2usize),

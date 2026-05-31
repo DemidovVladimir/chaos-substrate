@@ -177,6 +177,64 @@ impl Storage {
         Ok(())
     }
 
+    /// Row counts per persisted table, used to report what a clean removed.
+    pub async fn table_counts(&self) -> Result<Value> {
+        let row = sqlx::query(
+            "select \
+                (select count(*) from repositories) as repositories, \
+                (select count(*) from analysis_runs) as analysis_runs, \
+                (select count(*) from files) as files, \
+                (select count(*) from nodes) as nodes, \
+                (select count(*) from edges) as edges, \
+                (select count(*) from chunks) as chunks, \
+                (select count(*) from embeddings) as embeddings",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(json!({
+            "repositories": row.get::<i64, _>("repositories"),
+            "analysis_runs": row.get::<i64, _>("analysis_runs"),
+            "files": row.get::<i64, _>("files"),
+            "nodes": row.get::<i64, _>("nodes"),
+            "edges": row.get::<i64, _>("edges"),
+            "chunks": row.get::<i64, _>("chunks"),
+            "embeddings": row.get::<i64, _>("embeddings"),
+        }))
+    }
+
+    /// Wipe the entire persisted index (every repository). Returns the row
+    /// counts that were removed so the caller can report what was cleared.
+    pub async fn clear_all(&self) -> Result<Value> {
+        let removed = self.table_counts().await?;
+        sqlx::query(
+            "truncate embeddings, chunks, edges, nodes, files, analysis_runs, repositories restart identity cascade",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(removed)
+    }
+
+    /// Remove a single repository and all of its derived rows.
+    pub async fn purge_repository(&self, repo_id: Uuid) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("delete from embeddings using chunks where embeddings.chunk_id = chunks.id and chunks.repo_id = $1")
+            .bind(repo_id)
+            .execute(&mut *tx)
+            .await?;
+        for table in ["chunks", "edges", "nodes", "files", "analysis_runs"] {
+            sqlx::query(&format!("delete from {table} where repo_id = $1"))
+                .bind(repo_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        sqlx::query("delete from repositories where id = $1")
+            .bind(repo_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn chunks_missing_embeddings(
         &self,
         repo_id: Uuid,
