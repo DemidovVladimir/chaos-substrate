@@ -56,6 +56,19 @@ chaos refresh /path/to/repo --all-features
 `analyze` requires a real embedder (OpenAI or Ollama). If none is configured, analysis
 **fails by design** — never produces fake/random vectors.
 
+## Clean / Reset
+
+```sh
+# Wipe every indexed repository from the database
+chaos clean
+
+# Wipe only one repository (by absolute path or repository name)
+chaos clean /path/to/repo
+```
+
+`clean` removes persisted index data but leaves the schema in place — no `migrate` is needed
+before re-indexing.
+
 ## Query
 
 ```sh

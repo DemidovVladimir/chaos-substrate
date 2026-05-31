@@ -14,13 +14,13 @@ Chaos Substrate supports TypeScript and JavaScript repositories through Rust cod
 
 - npm dependencies from `dependencies`, `devDependencies`, `peerDependencies`, and `optionalDependencies`
 - npm scripts
-- imports, re-exports, and CommonJS `require(...)`
+- ES module `import` declarations (as dependency edges)
 - functions, arrow/const-function exports, and class methods
 - classes
 - interfaces
 - enums
 - type aliases
-- test symbols from `.test.*`, `.spec.*`, and `__tests__` paths
+- test symbols from `.test.*`, `.spec.*`, `__tests__`, and `__test__` paths
 - AWS CDK app commands from `cdk.json`
 - AWS CDK stack classes
 - AWS CDK construct/resource declarations such as Lambda functions, DynamoDB tables, queues, buckets, and API resources

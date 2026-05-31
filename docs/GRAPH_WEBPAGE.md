@@ -18,6 +18,8 @@ OpenAI:
 
 ```sh
 cp chaos-substrate.example.toml chaos-substrate.toml
+# edit chaos-substrate.toml: comment out the Ollama block and
+# uncomment the `provider = "open_ai"` block (the example file defaults to Ollama)
 export OPENAI_API_KEY="..."
 ```
 

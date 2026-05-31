@@ -27,7 +27,7 @@ Rust-side, never run as a separate Node or Python service. It can also export a 
 | Mode | What | For | How to start |
 | --- | --- | --- | --- |
 | **Agent via MCP** | A stdio MCP server with 4 tools (`chaos_analyze`, `chaos_query`, `chaos_feature_context`, `chaos_write_feature_website`). | Coding agents (Claude Code, Codex, Cursor, Windsurf, OpenCode) that should query durable code memory instead of re-reading files. | `chaos setup` to register the server, then ask the agent to analyze and query. See [docs/EDITOR_SETUP.md](docs/EDITOR_SETUP.md). |
-| **Raw CLI** | The `chaos` binary: `analyze`, `query`, `feature-context`, `graph`, `obsidian`, `refresh`. | Humans and scripts doing setup, debugging, one-off indexing, or agentless operation. | `chaos analyze <repo>` then `chaos query <repo> "<question>"`. See [Quick Start](#quick-start). |
+| **Raw CLI** | The `chaos` binary: `analyze`, `query`, `feature-context`, `graph`, `obsidian`, `refresh`, `clean`. | Humans and scripts doing setup, debugging, one-off indexing, or agentless operation. | `chaos analyze <repo>` then `chaos query <repo> "<question>"`. See [Quick Start](#quick-start). |
 | **Generated static feature-website** | A self-contained dark HTML feature page with interactive graph/story/code navigation plus a machine-readable manifest. | Sharing or reviewing how a feature works, and seeding future agent context from the embedded manifest. | `chaos feature-context <repo> "<task>" --output-html page.html`, or the `chaos_write_feature_website` MCP tool. |
 
 ## Quick Start
@@ -154,6 +154,7 @@ stores provider, model, dimensions, content hash, and pgvector data.
 ```bash
 chaos migrate                                          # create/update schema
 chaos doctor                                           # check Postgres + embedding provider
+chaos clean [<repo>]                                   # wipe the index (all repos, or just one)
 chaos analyze <repo>                                   # index a repository
 chaos query <repo> "<question>" [--limit N]            # source-grounded answer
 chaos feature-context <repo> "<task>" [--output-html page.html]

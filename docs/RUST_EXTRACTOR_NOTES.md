@@ -50,5 +50,6 @@ emits today is narrower:
   `Defines`, `Tests`, `Documents`, `Mentions`, `DependsOn`, `Configures`, `Deploys`,
   `SimilarTo`, `PrerequisiteFor`. The aspirational `method_of`, `uses_macro`, `returns`,
   `accepts`, and `references_type` edges are **not** emitted (method-on-type relationships are
-  represented with `Contains`; type usage uses `UsesType`).
+  represented with `Contains`). No type-usage edges are produced today either: `UsesType` is
+  defined in the `EdgeKind` enum but the extractor never emits it.
 - Call edges are heuristic and file-scoped; cross-file call resolution is name-based.

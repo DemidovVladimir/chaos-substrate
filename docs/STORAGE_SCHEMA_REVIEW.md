@@ -17,8 +17,8 @@ Use the mapped names when validating so this checklist does not report false sch
   `chunks` holds the embeddable text units with `content`, `content_hash`, line range,
   `chunk_type`, and a `search_vector` tsvector for lexical search.
 - [ ] **Embeddings** → `embeddings`: one row per embedded chunk with `chunk_id` foreign key,
-  `provider`, `model_id`, `dimensions`, content hash, a `vector` `embedding` column, timestamps,
-  a `(chunk_id, provider, model_id, dimensions, content_hash)` uniqueness constraint, and a
+  `provider`, `model_id`, `dimensions`, content hash, a `vector` `embedding` column, a `created_at`
+  timestamp, a `(chunk_id, provider, model_id, dimensions, content_hash)` uniqueness constraint, and a
   `check (dimensions = vector_dims(embedding))` guard.
 - [ ] **Relationships** → `edges`: directed code-graph edges with `source_node_id`,
   `target_node_id`, `kind`, plus `cost` and `confidence` columns.

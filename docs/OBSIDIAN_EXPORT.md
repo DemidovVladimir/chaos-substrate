@@ -40,7 +40,7 @@ The vault contains:
 - `Topics/` notes for inferred subsystems and feature areas
 - `Nodes/` notes for files, symbols, dependencies, scripts, tests, and deployment resources
 - `Edges.md` with a compact relationship manifest
-- `.obsidian/graph.json` with graph view defaults
+- `.obsidian/app.json` and `.obsidian/graph.json` with vault and graph view defaults
 
 ## 4. Validate The Graph
 

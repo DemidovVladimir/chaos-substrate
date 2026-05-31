@@ -223,6 +223,13 @@ heuristics. Exact target values enumerated in the plan; `cost` values are frozen
 
 ## Correction (2026-05-29, Task 11)
 
+> **Superseded by the shipped implementation.** The `regex` crate was ultimately
+> **removed** — it is no longer a dependency in `Cargo.toml` and there are zero `regex::`
+> uses in `src/`. `find_item_line` was rewritten without regex: it now uses a hand-rolled
+> word-boundary matcher (`line_has_keyword_name` in `src/extractor.rs`, "the equivalent of
+> the regex `\b{keyword}\s+{name}\b` but without compiling a regex per call"). The historical
+> note below is retained for context but no longer reflects the codebase.
+
 The `regex` crate dependency is **retained**: the Rust (`syn`) extraction path's
 `find_item_line` function uses `regex::Regex::new` + `regex::escape` to locate symbol lines
 within source text (syn spans lack absolute line numbers in non-proc-macro builds). Removing
