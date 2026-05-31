@@ -6,3 +6,21 @@ provider = "ollama"
 model = "nomic-embed-text"
 dimensions = 768
 base_url = "http://localhost:11434"
+
+[indexing]
+# Directory basenames skipped during the source walk. Includes the built-in
+# defaults plus Chaos Substrate's own generated artifacts, which must never be
+# re-indexed in a target repo (self-referential noise).
+skip_dirs = [
+    ".git",
+    "target",
+    "node_modules",
+    ".venv",
+    "dist",
+    "build",
+    "chaos-obsidian-vault",
+    "features_memory",
+    "test",
+    "tests",
+    "__tests__",
+]
