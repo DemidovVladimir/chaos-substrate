@@ -403,6 +403,13 @@ impl RustRepositoryExtractor {
         result.nodes.push(file_node.clone());
 
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap_or(json!({}));
+
+        // Dependency and script nodes/edges are retained for the knowledge
+        // graph, but their embeddings are aggregated into a single chunk per
+        // manifest instead of one chunk per entry, which otherwise inflates the
+        // embedding count enormously for little retrieval value.
+        let mut dependency_names: Vec<String> = Vec::new();
+        let mut dependency_lines: Vec<String> = Vec::new();
         for section in [
             "dependencies",
             "devDependencies",
@@ -430,23 +437,32 @@ impl RustRepositoryExtractor {
                         weights::DEPENDS_ON,
                         json!({}),
                     ));
-                    result.chunks.push(chunk_for_node(
-                        repo_id,
-                        Some(file.id),
-                        Some(node.id),
-                        "dependency",
-                        &format!(
-                            "File: {rel}\nEcosystem: npm\nDependency: {name}\nSection: {section}\nVersion: {version}\n"
-                        ),
-                        node.line_start,
-                        node.line_end,
-                        json!({"ecosystem": "npm", "dependency": name, "section": section, "version": version}),
-                    ));
+                    let version = version.as_str().unwrap_or_default();
+                    dependency_lines.push(format!("- {name}@{version} ({section})"));
+                    dependency_names.push(name.clone());
                     result.nodes.push(node);
                 }
             }
         }
+        if !dependency_lines.is_empty() {
+            result.chunks.push(chunk_for_node(
+                repo_id,
+                Some(file.id),
+                Some(file_node.id),
+                "dependency",
+                &format!(
+                    "File: {rel}\nEcosystem: npm\nDependencies ({}):\n{}\n",
+                    dependency_names.len(),
+                    dependency_lines.join("\n")
+                ),
+                None,
+                None,
+                json!({"ecosystem": "npm", "dependency": dependency_names}),
+            ));
+        }
 
+        let mut script_names: Vec<String> = Vec::new();
+        let mut script_lines: Vec<String> = Vec::new();
         if let Some(scripts) = parsed.get("scripts").and_then(|v| v.as_object()) {
             for (name, command) in scripts {
                 let node = KnowledgeNode {
@@ -468,18 +484,27 @@ impl RustRepositoryExtractor {
                     weights::DEFINES_SCRIPT,
                     json!({}),
                 ));
-                result.chunks.push(chunk_for_node(
-                    repo_id,
-                    Some(file.id),
-                    Some(node.id),
-                    "script",
-                    &format!("File: {rel}\nNPM script: {name}\nCommand: {command}\n"),
-                    node.line_start,
-                    node.line_end,
-                    json!({"ecosystem": "npm", "script": name, "command": command}),
-                ));
+                let command = command.as_str().unwrap_or_default();
+                script_lines.push(format!("- {name}: {command}"));
+                script_names.push(name.clone());
                 result.nodes.push(node);
             }
+        }
+        if !script_lines.is_empty() {
+            result.chunks.push(chunk_for_node(
+                repo_id,
+                Some(file.id),
+                Some(file_node.id),
+                "script",
+                &format!(
+                    "File: {rel}\nNPM scripts ({}):\n{}\n",
+                    script_names.len(),
+                    script_lines.join("\n")
+                ),
+                None,
+                None,
+                json!({"ecosystem": "npm", "script": script_names}),
+            ));
         }
         Ok(())
     }
@@ -1792,6 +1817,87 @@ mod tests {
             .chunks
             .iter()
             .any(|chunk| chunk.content.contains("Language: typescript")));
+    }
+
+    #[test]
+    fn aggregates_package_json_dependencies_and_scripts_into_single_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{
+              "scripts": {"build": "tsc", "test": "vitest", "lint": "eslint ."},
+              "dependencies": {"aws-cdk-lib": "^2.0.0", "constructs": "^10.0.0", "zod": "^3.0.0"},
+              "devDependencies": {"typescript": "^5.0.0", "vitest": "^1.0.0"}
+            }"#,
+        )
+        .unwrap();
+
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor
+            .extract(dir.path(), Uuid::new_v4(), Some("test".into()))
+            .unwrap();
+
+        // Chunks must be aggregated: exactly one dependency chunk and one script
+        // chunk per manifest, not one per dependency / script.
+        let dependency_chunks = result
+            .chunks
+            .iter()
+            .filter(|chunk| chunk.chunk_type == "dependency")
+            .count();
+        let script_chunks = result
+            .chunks
+            .iter()
+            .filter(|chunk| chunk.chunk_type == "script")
+            .count();
+        assert_eq!(
+            dependency_chunks, 1,
+            "expected one aggregated dependency chunk"
+        );
+        assert_eq!(script_chunks, 1, "expected one aggregated script chunk");
+
+        // The aggregated chunks must remain searchable: every dependency and
+        // script name appears in its chunk content.
+        let dep_chunk = result
+            .chunks
+            .iter()
+            .find(|chunk| chunk.chunk_type == "dependency")
+            .expect("dependency chunk present");
+        for name in ["aws-cdk-lib", "constructs", "zod", "typescript", "vitest"] {
+            assert!(
+                dep_chunk.content.contains(name),
+                "dependency chunk should mention {name}"
+            );
+        }
+        // Preserve query-layer filtering, which keys off metadata.dependency.
+        assert!(dep_chunk.metadata.get("dependency").is_some());
+
+        let script_chunk = result
+            .chunks
+            .iter()
+            .find(|chunk| chunk.chunk_type == "script")
+            .expect("script chunk present");
+        for name in ["build", "test", "lint"] {
+            assert!(
+                script_chunk.content.contains(name),
+                "script chunk should mention {name}"
+            );
+        }
+        assert!(script_chunk.metadata.get("script").is_some());
+
+        // The knowledge graph must be preserved: individual dependency and
+        // script nodes still exist.
+        let dependency_nodes = result
+            .nodes
+            .iter()
+            .filter(|node| node.kind == NodeKind::Dependency)
+            .count();
+        let script_nodes = result
+            .nodes
+            .iter()
+            .filter(|node| node.kind == NodeKind::Script)
+            .count();
+        assert_eq!(dependency_nodes, 5, "all dependency nodes preserved");
+        assert_eq!(script_nodes, 3, "all script nodes preserved");
     }
 
     #[test]
