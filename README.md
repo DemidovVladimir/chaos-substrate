@@ -48,6 +48,10 @@ chaos query /path/to/repo "where is the request handler validated?"
 The default `DATABASE_URL` for the bundled container is
 `postgres://chaos:chaos@localhost:54329/chaos_substrate`.
 
+> **New to the project and using Claude Code?** Follow
+> [docs/QUICKSTART_CLAUDE.md](docs/QUICKSTART_CLAUDE.md) for the full path from installing Rust
+> to generating a feature page, as a single linear guide.
+
 The example config defaults to local Ollama (`nomic-embed-text`, 768 dims,
 `http://localhost:11434`). Ollama must be running and the model pulled before `chaos doctor` will
 pass. See [docs/OLLAMA_SETUP.md](docs/OLLAMA_SETUP.md) for install, model pull, and
@@ -202,6 +206,7 @@ without this manifest.
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System design: extraction, storage, retrieval, and the MCP surface. |
 | [RUNBOOK.md](RUNBOOK.md) | Canonical ops command reference for running, indexing, and maintaining. |
 | [llms.txt](llms.txt) | Machine-readable project summary for LLMs. |
+| [docs/QUICKSTART_CLAUDE.md](docs/QUICKSTART_CLAUDE.md) | End-to-end onboarding for Claude Code: Rust install → bootstrap → plugin → index → feature page. |
 | [docs/EDITOR_SETUP.md](docs/EDITOR_SETUP.md) | Canonical per-editor install (Claude Code / Codex / Cursor / Windsurf / OpenCode). |
 | [docs/MCP_SETUP.md](docs/MCP_SETUP.md) | Generic stdio MCP server setup and JSON-RPC details. |
 | [docs/CLAUDE_MCP_INSTALL.md](docs/CLAUDE_MCP_INSTALL.md) | Registering the server with Claude Code / Claude Desktop. |
