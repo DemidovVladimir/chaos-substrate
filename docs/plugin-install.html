@@ -499,14 +499,14 @@
       Agents stop re-reading the repo on every task. Chaos Substrate indexes any codebase into
       a <strong>source-grounded knowledge graph + real embeddings</strong> stored in
       Postgres&nbsp;+&nbsp;pgvector — memory that survives process restarts. A single Rust binary.
-      A stdio MCP server. Four tools.
-    </p>
+      A stdio MCP server. Nine tools.
+</p>
 
     <div class="hero-chips">
       <span class="chip chip-cyan"><span class="chip-dot"></span>Persistent Postgres&nbsp;+&nbsp;pgvector memory</span>
       <span class="chip chip-amber"><span class="chip-dot"></span>Source-grounded answers</span>
       <span class="chip chip-rose"><span class="chip-dot"></span>5 languages via real AST parsers</span>
-      <span class="chip chip-green"><span class="chip-dot"></span>MCP-native · 4 tools</span>
+      <span class="chip chip-green"><span class="chip-dot"></span>MCP-native · 9 tools</span>
     </div>
 
     <div class="hero-ctas">
@@ -522,15 +522,18 @@
     <div class="grid-3">
       <section>
         <h3>&#9678; Agent via MCP</h3>
-        <p>A stdio MCP server with 4 tools. Coding agents (Claude Code, Codex, Cursor, Windsurf, OpenCode) query durable code memory instead of re-reading files on every task.</p>
+        <p>A stdio MCP server with 9 tools. Coding agents (Claude Code, Codex, Cursor, Windsurf, OpenCode) query durable code memory instead of re-reading files on every task.</p>
         <p>Register once with <code>chaos setup</code>, then ask the agent to analyze and query. Skills + hooks also ship for Claude Code and Cursor.</p>
       </section>
       <section>
         <h3>&#9654; Raw CLI</h3>
-        <p>The <code>chaos</code> binary: <code>analyze</code>, <code>query</code>, <code>feature-context</code>, <code>graph</code>, <code>obsidian</code>, <code>refresh</code>. For humans and scripts doing setup, one-off indexing, debugging, or agentless operation.</p>
+        <p>The <code>chaos</code> binary: <code>analyze</code>, <code>add</code>, <code>stats</code>, <code>query</code>, <code>feature-context</code>, <code>impact</code>, <code>graph</code>, <code>obsidian</code>, <code>refresh</code>. For humans and scripts doing setup, one-off indexing, debugging, or agentless operation.</p>
         <div class="pre-wrap">
           <pre><code>chaos analyze /path/to/repo
-chaos query /path/to/repo "where is auth?"</code></pre>
+chaos add /path/to/repo
+chaos stats /path/to/repo
+chaos query /path/to/repo "where is auth?"
+chaos impact /path/to/repo "add OAuth2 login"</code></pre>
           <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
         </div>
       </section>
@@ -782,8 +785,8 @@ args    = ["--config", "/abs/chaos-substrate.toml", "mcp"]</code></pre>
   <div class="section-wrap">
     <div class="section-label">MCP tools</div>
     <section>
-      <h2>4 tools — the canonical tool surface</h2>
-      <p>The stdio MCP server speaks newline-delimited JSON-RPC (no <code>Content-Length</code> framing) and exposes exactly four tools. Agents should prefer these when available; do not synthesize feature pages from <code>chaos_query</code> alone when <code>chaos_feature_context</code> and <code>chaos_write_feature_website</code> are available.</p>
+      <h2>9 tools — the canonical tool surface</h2>
+      <p>The stdio MCP server speaks newline-delimited JSON-RPC (no <code>Content-Length</code> framing) and exposes exactly nine tools. Agents should prefer these when available; do not synthesize feature pages from <code>chaos_query</code> alone when <code>chaos_feature_context</code> and <code>chaos_write_feature_website</code> are available.</p>
 
       <div class="tbl-wrap">
         <table>
@@ -803,6 +806,18 @@ args    = ["--config", "/abs/chaos-substrate.toml", "mcp"]</code></pre>
               <td>First, before any query. Re-run after the repo changes.</td>
             </tr>
             <tr>
+              <td>chaos_add</td>
+              <td>Incrementally indexes only git-diff changed files (working tree by default, a committed range via <code>since</code>, or explicit <code>paths</code> incl. Markdown/exports and PDFs), re-embedding just the changed chunks. Then refreshes the Obsidian vault and writes a feature/bug HTML page — all in one call. Cross-file call edges into unchanged files are not rebuilt; run <code>chaos_analyze</code> for a full graph rebuild.</td>
+              <td><code>repo_path</code>, <code>paths</code>, <code>since</code>, <code>kind</code>&nbsp;(feature|bug), <code>message</code>, <code>obsidian_output</code>, <code>no_obsidian</code>, <code>no_page</code></td>
+              <td>After editing a few files, to refresh memory without re-indexing the whole repo.</td>
+            </tr>
+            <tr>
+              <td>chaos_stats</td>
+              <td>Reports index statistics for an already-indexed repository, read from Postgres: totals (files, nodes, edges, chunks, embedded vs missing, split chunks, nodes with a chunk) plus breakdowns of nodes by kind, edges by kind, chunks by type, and files by language. Read-only and embedder-free.</td>
+              <td><code>repo</code></td>
+              <td>To explain or sanity-check what an <code>chaos_analyze</code> or <code>chaos_add</code> produced.</td>
+            </tr>
+            <tr>
               <td>chaos_query</td>
               <td>Answers a focused, source-grounded question via hybrid (semantic&nbsp;+&nbsp;keyword) retrieval against the persisted chunks and graph paths.</td>
               <td><code>repo</code>, <code>question</code>, <code>limit</code>&nbsp;(default&nbsp;10)</td>
@@ -815,10 +830,28 @@ args    = ["--config", "/abs/chaos-substrate.toml", "mcp"]</code></pre>
               <td>Before implementing or explaining a feature, to assemble an implementation brief.</td>
             </tr>
             <tr>
+              <td>chaos_impact</td>
+              <td>Builds a feature-vs-existing-code impact report for an indexed repo and <strong>always</strong> writes an interactive HTML (impact summary&nbsp;+&nbsp;evidence dashboard) to <code>docs/features_memory/&lt;slug&gt;-impact.html</code>. Returns a compact JSON summary — counts plus the existing files/symbols the feature touches, warnings, and the HTML path — keeping the full evidence in the HTML so it won't flood agent context. Frames how a proposed feature maps onto the codebase as it exists today (the before).</td>
+              <td><code>repo</code>, <code>feature</code>, <code>output_html</code>, <code>features_dir</code>, <code>limit</code>&nbsp;(10), <code>feature_limit</code>&nbsp;(3), <code>nodes_per_feature</code>&nbsp;(8)</td>
+              <td>Before implementing a feature, to see what it touches in the current codebase as a shareable impact page.</td>
+            </tr>
+            <tr>
               <td>chaos_write_feature_website</td>
               <td>Writes an LLM-composed feature page plus its machine-readable manifest block. The page must include interactive graph/story/code navigation, architecture/flow sections, evidence, and a populated manifest — not a README-style summary.</td>
               <td><code>repo</code>, <code>slug</code>, <code>title</code>, <code>html</code>, <code>manifest</code></td>
               <td>To persist a reviewed feature explanation as a shareable static page.</td>
+            </tr>
+            <tr>
+              <td>chaos_obsidian</td>
+              <td>Exports an already-indexed repository as an Obsidian vault — one Markdown note per graph node, grouped into topic notes, plus an edge manifest — read from the persisted graph. Run after <code>chaos_analyze</code>, which never writes files.</td>
+              <td><code>repo</code>, <code>output</code></td>
+              <td>To produce a browsable Markdown vault of the indexed graph; defaults output to <code>&lt;repo&gt;/chaos-obsidian-vault</code>.</td>
+            </tr>
+            <tr>
+              <td>chaos_refresh</td>
+              <td>Regenerates project-local artifacts from the persisted index without re-indexing: rewrites the Obsidian vault and, with <code>all_features=true</code>, re-renders the deterministic feature pages in <code>docs/features_memory</code> from their embedded manifests.</td>
+              <td><code>repo</code>, <code>obsidian_output</code>, <code>features_dir</code>, <code>all_features</code></td>
+              <td>After <code>chaos_analyze</code> or <code>chaos_add</code>, to rebuild local docs/pages without re-embedding.</td>
             </tr>
           </tbody>
         </table>
@@ -899,7 +932,7 @@ args    = ["--config", "/abs/chaos-substrate.toml", "mcp"]</code></pre>
           <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
         </div>
 
-        <p style="margin-top:12px;">In the editor, confirm all four MCP tools are listed: <code>chaos_analyze</code>, <code>chaos_query</code>, <code>chaos_feature_context</code>, <code>chaos_write_feature_website</code>.</p>
+        <p style="margin-top:12px;">In the editor, confirm all nine MCP tools are listed: <code>chaos_analyze</code>, <code>chaos_add</code>, <code>chaos_stats</code>, <code>chaos_query</code>, <code>chaos_feature_context</code>, <code>chaos_impact</code>, <code>chaos_write_feature_website</code>, <code>chaos_obsidian</code>, <code>chaos_refresh</code>.</p>
       </section>
 
       <section>

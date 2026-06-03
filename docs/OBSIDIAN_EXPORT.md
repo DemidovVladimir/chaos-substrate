@@ -30,6 +30,14 @@ cargo run -- obsidian repo-name --output chaos-obsidian-vault
 The command prints a JSON summary with the output folder, repository id, topic count, node note
 count, and edge count.
 
+`chaos add` and `chaos refresh` also regenerate the vault from the persisted index, so an explicit
+`obsidian` run is only needed when you want a standalone export or a different output directory:
+
+```sh
+cargo run -- add /absolute/path/to/repo --obsidian-output chaos-obsidian-vault
+cargo run -- refresh /absolute/path/to/repo --obsidian-output chaos-obsidian-vault
+```
+
 ## 3. Open In Obsidian
 
 In Obsidian, choose "Open folder as vault" and select the generated output directory.

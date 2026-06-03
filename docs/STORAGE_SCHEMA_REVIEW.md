@@ -55,6 +55,10 @@ Use the mapped names when validating so this checklist does not report false sch
 ## Restart And Recovery
 
 - [ ] Ingestion runs are idempotent: restarting after a crash can resume or safely retry without duplicate objects, embeddings, or edges.
+- [ ] Incremental ingest is supported: `src/storage.rs` `merge_files_index()` deletes only the
+  changed files (cascading their `nodes`/`chunks`/`embeddings`/`edges` via foreign keys), re-inserts
+  those files, then upserts nodes by `(repo_id, stable_id)` via `upsert_node_returning_id()` and
+  remaps edge/chunk node references to the surviving node ids — all in a single transaction.
 - [ ] Writes are transactional at a coherent unit of work, such as file, batch, or run phase; partial failures leave inspectable state.
 - [ ] Content hashes gate re-embedding so unchanged code is not embedded again after process restart.
 - [ ] Failed runs persist enough error context to diagnose parser, database, and embedder failures.

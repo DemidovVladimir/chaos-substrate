@@ -77,6 +77,31 @@ impl Config {
         if let Ok(url) = env::var("DATABASE_URL") {
             cfg.storage.database_url = url;
         }
+
+        // Environment variables override the embedding section of a config file
+        // too, matching the env-wins precedence DATABASE_URL already follows.
+        // Without this, CHAOS_EMBED_* was silently ignored whenever a
+        // chaos-substrate.toml existed (read only in the no-file `from_env`
+        // branch), so dev (no file) and prod (with file) could diverge.
+        if let Ok(provider) = env::var("CHAOS_EMBED_PROVIDER") {
+            cfg.embedding.provider = match provider.to_ascii_lowercase().as_str() {
+                "openai" | "open_ai" => EmbeddingProvider::OpenAi,
+                "ollama" => EmbeddingProvider::Ollama,
+                other => anyhow::bail!("unsupported CHAOS_EMBED_PROVIDER: {other}"),
+            };
+        }
+        if let Ok(model) = env::var("CHAOS_EMBED_MODEL") {
+            cfg.embedding.model = model;
+        }
+        if let Ok(dimensions) = env::var("CHAOS_EMBED_DIMENSIONS") {
+            cfg.embedding.dimensions = dimensions
+                .parse()
+                .with_context(|| format!("invalid CHAOS_EMBED_DIMENSIONS: {dimensions}"))?;
+        }
+        if let Ok(base_url) = env::var("CHAOS_EMBED_BASE_URL") {
+            cfg.embedding.base_url = Some(base_url);
+        }
+
         Ok(cfg)
     }
 

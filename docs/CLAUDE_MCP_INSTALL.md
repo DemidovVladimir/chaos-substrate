@@ -37,6 +37,20 @@ cargo run -- analyze /absolute/path/to/typescript-repo
 
 Current behavior replaces the stored index for that repository and reuses the same persisted database. The durable memory remains on disk in Postgres.
 
+For fast iteration, incrementally index only the files that changed instead of the whole repository:
+
+```sh
+cargo run -- add /absolute/path/to/typescript-repo
+```
+
+By default `add` detects changed files from the git working tree (staged, unstaged, and untracked).
+Use `--since REF` for a committed range, or `--path FILE` (repeatable) for explicit files including
+Markdown/Notion exports and PDFs. It re-embeds only the changed chunks, refreshes the Obsidian vault,
+and writes a feature/bug page into `docs/features_memory` (auto-detected from branch and latest commit
+subject; override with `--kind feature|bug`). Cross-file call edges into unchanged files are not
+rebuilt incrementally; run a full `analyze` (or `refresh`) for a complete graph rebuild. Like
+`analyze`, it requires a real embedder.
+
 ## 4. Test Query Locally
 
 ```sh
@@ -169,6 +183,22 @@ Analyze/index:
 {
   "repo_path": "/absolute/path/to/typescript-repo"
 }
+```
+
+Incrementally index changed files (git diff or explicit paths), refresh the Obsidian vault, and write
+a feature/bug page in one call with `chaos_add`:
+
+```json
+{
+  "repo_path": "/absolute/path/to/typescript-repo",
+  "kind": "feature"
+}
+```
+
+Example:
+
+```text
+Use chaos_add on repo /absolute/path/to/typescript-repo to index my working-tree changes.
 ```
 
 Example:

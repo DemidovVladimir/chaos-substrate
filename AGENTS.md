@@ -20,8 +20,11 @@ TypeScript, JavaScript, Python, and Solidity are analysis targets only; they are
 cargo run -- migrate
 cargo run -- doctor
 cargo run -- analyze /path/to/repo
+cargo run -- add /path/to/repo -m "what changed"
+cargo run -- stats /path/to/repo
 cargo run -- query /path/to/repo "question"
 cargo run -- feature-context /path/to/repo "task"
+cargo run -- impact /path/to/repo "<feature>"
 cargo run -- graph /path/to/repo --output graph.html
 cargo run -- mcp
 ```
@@ -31,9 +34,14 @@ cargo run -- mcp
 Agents should prefer MCP tools when available:
 
 - `chaos_analyze`: index or refresh a repository.
+- `chaos_add`: incrementally index git-diff changes (or explicit `paths`), refresh the Obsidian vault, and write a feature/bug page in one call.
+- `chaos_stats`: report index statistics for an already-indexed repository from Postgres — totals (files, nodes, edges, chunks, embedded vs missing, split chunks) plus breakdowns of nodes by kind, edges by kind, chunks by type, and files by language. Read-only and embedder-free; use to explain or sanity-check what an analyze/add produced.
 - `chaos_query`: answer focused source-grounded questions.
 - `chaos_feature_context`: gather evidence for feature understanding.
+- `chaos_impact`: build a feature-vs-existing-code impact report for an indexed repo and ALWAYS write an interactive HTML (impact summary + evidence dashboard) to `docs/features_memory/<slug>-impact.html`; returns a compact JSON summary (counts plus the existing files/symbols the feature touches, warnings, and the HTML path) so it does not flood agent context, framing how the feature maps onto the codebase as it is today (the "before").
 - `chaos_write_feature_website`: write an LLM-composed feature page with a manifest.
+- `chaos_obsidian`: export an already-indexed repository as an Obsidian vault from the persisted graph (run after `chaos_analyze`, which never writes files).
+- `chaos_refresh`: regenerate project-local artifacts (Obsidian vault and, with `all_features`, the feature pages) from the persisted index without re-indexing.
 
 Do not synthesize feature pages from `chaos_query` alone when `chaos_feature_context` and
 `chaos_write_feature_website` are available.

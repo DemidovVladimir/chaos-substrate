@@ -33,12 +33,35 @@ Use the `chaos-agent` wrapper for setup, debugging, or when MCP is unavailable.
 If MCP tools are available, prefer them over shelling out:
 
 1. Use `chaos_analyze` to index or refresh a repository.
-2. Use `chaos_query` for focused questions.
-3. Use `chaos_feature_context` when the user asks to explain a feature, prepare implementation
+2. Use `chaos_add` for one-shot incremental indexing of git-changed files (or explicit `paths`); it
+   re-embeds only the changed chunks, refreshes the Obsidian vault, and writes a feature/bug page in
+   a single call. A full `chaos_analyze` is still needed to rebuild cross-file call edges into
+   unchanged files.
+3. Use `chaos_stats` to report index statistics for an already-indexed repository, read from
+   Postgres: totals (files, nodes, edges, chunks, embedded vs missing, split chunks) plus breakdowns
+   of nodes by kind, edges by kind, chunks by type, and files by language. It is read-only and
+   embedder-free; use it to explain or sanity-check what an `chaos_analyze`/`chaos_add` produced.
+4. Use `chaos_query` for focused questions.
+5. Use `chaos_feature_context` when the user asks to explain a feature, prepare implementation
    context, or generate a feature explanation.
-4. Use `chaos_write_feature_website` only after reading `chaos_feature_context` output and composing
+6. Use `chaos_impact` to build a feature-vs-existing-code impact report for an indexed repo. It
+   ALWAYS writes an interactive HTML (impact summary plus evidence dashboard) to
+   `docs/features_memory/<slug>-impact.html` and returns a COMPACT JSON summary — counts plus the
+   existing files/symbols the feature touches, warnings, and the HTML path. The full evidence lives
+   only in the HTML, so it will not flood an agent context like a raw `chaos_feature_context` dump.
+   Use it to see how a proposed feature maps onto the codebase as it exists today (the before). It
+   mirrors the `chaos impact <repo> <feature>` CLI command.
+7. Use `chaos_write_feature_website` only after reading `chaos_feature_context` output and composing
    a feature-specific website plus manifest. The LLM must decide the feature story, claims, nodes,
    and flow from evidence; the tool only writes the artifact.
+8. Use `chaos_obsidian` to export an already-indexed repository as an Obsidian vault from the
+   persisted graph; run it after `chaos_analyze` (which never writes files) when you want browsable
+   docs. This lets an MCP-only agent generate the vault without shelling out to the CLI.
+9. Use `chaos_refresh` to regenerate project-local artifacts from the persisted index without
+   re-indexing: it rewrites the Obsidian vault and, with `all_features=true`, re-renders the
+   deterministic feature pages in `docs/features_memory` from their embedded manifests. This lets an
+   MCP-only agent refresh pages without shelling out to the CLI; run `chaos_analyze` or `chaos_add`
+   first.
 
 Treat `chaos_feature_context.warnings` as blocking for generated feature websites. If it says a
 filesystem path exists but no Postgres hits referenced it, or that docs exist but no docs were
@@ -210,8 +233,27 @@ Use a real Postgres database with pgvector for persistence tests. Use real OpenA
 - MCP transport is stdio.
 - The process should be launched directly by the agent client.
 - Keep stdout protocol-clean; diagnostics should go to stderr or structured logging that does not corrupt MCP messages.
-- MCP tools are `chaos_analyze`, `chaos_query`, `chaos_feature_context`, and
-  `chaos_write_feature_website`.
+- MCP tools are `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`, `chaos_feature_context`,
+  `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`, and `chaos_refresh`.
+- `chaos_add` incrementally indexes only git-changed files (or explicit `paths`), refreshes the
+  Obsidian vault, and writes a feature/bug page in one call; use it instead of a full
+  `chaos_analyze` after small edits.
+- `chaos_stats` is a read-only, embedder-free stats/breakdown tool: it reports index totals (files,
+  nodes, edges, chunks, embedded vs missing, split chunks) plus breakdowns of nodes by kind, edges
+  by kind, chunks by type, and files by language for an already-indexed repository; use it to
+  explain or sanity-check what an analyze/add produced. It mirrors the `chaos stats <repo>` CLI
+  command.
 - `chaos_feature_context` is the MCP equivalent of `chaos-agent context`.
+- `chaos_impact` builds a feature-vs-existing-code impact report for an indexed repo; it ALWAYS
+  writes an interactive HTML (impact summary plus evidence dashboard) to
+  `docs/features_memory/<slug>-impact.html` and returns a COMPACT summary — counts plus the existing
+  files/symbols the feature touches, warnings, and the HTML path — keeping the full evidence in the
+  HTML only so it will not flood an agent context like a raw `chaos_feature_context` dump. It mirrors
+  the `chaos impact <repo> <feature>` CLI command.
 - `chaos_write_feature_website` is the MCP-safe write path for LLM-composed feature explanation
   pages with embedded `chaos-feature-manifest` JSON.
+- `chaos_obsidian` exports an already-indexed repository as an Obsidian vault read from the
+  persisted graph; it lets an MCP-only agent generate the vault without shelling out to the CLI.
+- `chaos_refresh` regenerates the Obsidian vault and, with `all_features=true`, re-renders the
+  deterministic feature pages in `docs/features_memory` from their embedded manifests without
+  re-indexing; it lets an MCP-only agent refresh pages without shelling out to the CLI.

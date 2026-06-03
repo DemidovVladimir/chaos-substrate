@@ -94,10 +94,10 @@ impl<Id> Eq for State<Id> {}
 
 impl<Id> Ord for State<Id> {
     fn cmp(&self, other: &Self) -> Ordering {
-        other
-            .cost
-            .partial_cmp(&self.cost)
-            .unwrap_or(Ordering::Equal)
+        // `total_cmp` is a total order over all f64 (NaN sorts consistently),
+        // so the BinaryHeap invariant holds even if a cost is ever non-finite.
+        // Reversed (other vs self) to make the heap pop the lowest cost first.
+        other.cost.total_cmp(&self.cost)
     }
 }
 

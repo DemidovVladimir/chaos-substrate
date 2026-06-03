@@ -1,3 +1,4 @@
+mod add;
 mod config;
 mod embedding;
 mod export_util;
@@ -7,6 +8,7 @@ mod feature_export;
 mod graph;
 mod graph_export;
 mod hook;
+mod impact;
 mod lang;
 mod mcp;
 mod models;
@@ -65,6 +67,39 @@ enum Commands {
     },
     /// Analyze and persist a repository knowledge graph and embeddings.
     Analyze { repo_path: PathBuf },
+    /// Index files changed in git (or explicit paths), refresh the Obsidian
+    /// vault, and write an interactive feature/bug page — all in one shot.
+    /// No file list needed; the git working tree (or `--since <ref>`) drives it.
+    Add {
+        /// Repository to operate on.
+        #[arg(default_value = ".")]
+        repo_path: PathBuf,
+        /// Explicit file(s) to index; overrides git-diff detection. Repeatable.
+        #[arg(long = "path")]
+        paths: Vec<PathBuf>,
+        /// Diff against this git ref instead of the working tree (e.g. HEAD~1, main).
+        #[arg(long)]
+        since: Option<String>,
+        /// Force classification: `feature` or `bug`. Auto-detected from git if omitted.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Short title/summary of the change (drives the page title and slug).
+        #[arg(short = 'm', long)]
+        message: Option<String>,
+        /// Obsidian vault output directory (default <repo>/chaos-obsidian-vault).
+        #[arg(long)]
+        obsidian_output: Option<PathBuf>,
+        /// Skip refreshing the Obsidian vault.
+        #[arg(long)]
+        no_obsidian: bool,
+        /// Skip writing the feature/bug page.
+        #[arg(long)]
+        no_page: bool,
+    },
+    /// Report index statistics for an indexed repository: totals plus
+    /// breakdowns of nodes by kind, edges by kind, chunks by type, and files by
+    /// language. Read-only; explains what an analyze/add produced.
+    Stats { repo: String },
     /// Query an already indexed repository.
     Query {
         repo: String,
@@ -76,6 +111,23 @@ enum Commands {
     FeatureContext {
         repo: String,
         task: String,
+        #[arg(long)]
+        features_dir: Option<PathBuf>,
+        #[arg(long)]
+        output_html: Option<PathBuf>,
+        #[arg(long, default_value_t = 10)]
+        limit: i64,
+        #[arg(long, default_value_t = 3)]
+        feature_limit: usize,
+        #[arg(long, default_value_t = 8)]
+        nodes_per_feature: usize,
+    },
+    /// Build a feature-vs-existing-code impact report and ALWAYS write an
+    /// interactive HTML (impact summary + evidence) into docs/features_memory.
+    /// Shows how a feature maps onto the codebase as it is today (the "before").
+    Impact {
+        repo: String,
+        feature: String,
         #[arg(long)]
         features_dir: Option<PathBuf>,
         #[arg(long)]
@@ -283,6 +335,39 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Commands::Add {
+            repo_path,
+            paths,
+            since,
+            kind,
+            message,
+            obsidian_output,
+            no_obsidian,
+            no_page,
+        } => {
+            let storage = Storage::connect(&config.storage.database_url).await?;
+            let embedder = build_embedder(&config.embedding)?;
+            let opts = add::AddOptions {
+                paths,
+                since,
+                kind,
+                message,
+                obsidian_output,
+                no_obsidian,
+                no_page,
+            };
+            let summary = add::run(&config, &storage, embedder.as_ref(), &repo_path, &opts).await?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
+        Commands::Stats { repo } => {
+            let storage = Storage::connect(&config.storage.database_url).await?;
+            let repo = storage
+                .find_repository(&repo)
+                .await?
+                .with_context(|| format!("repository is not indexed: {repo}"))?;
+            let stats = storage.repo_stats(&repo).await?;
+            println!("{}", serde_json::to_string_pretty(&stats)?);
+        }
         Commands::Query {
             repo,
             question,
@@ -333,6 +418,27 @@ async fn main() -> Result<()> {
                 write_feature_context_html(&output_html, &response)?;
             }
             println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Commands::Impact {
+            repo,
+            feature,
+            features_dir,
+            output_html,
+            limit,
+            feature_limit,
+            nodes_per_feature,
+        } => {
+            let storage = Storage::connect(&config.storage.database_url).await?;
+            let embedder = build_embedder(&config.embedding)?;
+            let opts = impact::ImpactOptions {
+                features_dir,
+                output_html,
+                limit,
+                feature_limit,
+                nodes_per_feature,
+            };
+            let summary = impact::run(&storage, embedder.as_ref(), &repo, &feature, &opts).await?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
         }
         Commands::Graph { repo, output } => {
             let storage = Storage::connect(&config.storage.database_url).await?;

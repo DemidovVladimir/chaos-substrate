@@ -58,7 +58,7 @@ manual blocks below are for editors `setup` cannot detect, or when you want to w
 | OpenCode    | yes | no     | no    | yes                       |
 
 Skills ship via the plugin packages (`.claude-plugin` for Claude Code, `.codex-plugin` for Codex).
-Hooks ship for Claude Code and Cursor (see [Hooks](#hooks)). All five editors get the same four MCP
+Hooks ship for Claude Code and Cursor (see [Hooks](#hooks)). All five editors get the same nine MCP
 tools; see the [MCP Tools](../README.md#mcp-tools) section of the README for the tool reference.
 
 ## Prerequisites
@@ -212,9 +212,11 @@ After registering an editor:
 
    ```bash
    target/release/chaos --config chaos-substrate.toml analyze /path/to/repo
+   target/release/chaos --config chaos-substrate.toml stats /path/to/repo
    target/release/chaos --config chaos-substrate.toml query /path/to/repo "where is the request handler validated?"
    ```
 
-3. In the editor, confirm the four MCP tools are listed: `chaos_analyze`, `chaos_query`,
-   `chaos_feature_context`, and `chaos_write_feature_website`. See the
+3. In the editor, confirm the nine MCP tools are listed: `chaos_analyze`, `chaos_add`,
+   `chaos_stats`, `chaos_query`, `chaos_feature_context`, `chaos_impact`,
+   `chaos_write_feature_website`, `chaos_obsidian`, and `chaos_refresh`. See the
    [MCP Tools](../README.md#mcp-tools) section of the README for what each tool does.

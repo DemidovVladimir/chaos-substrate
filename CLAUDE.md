@@ -18,9 +18,12 @@ Use it to create and query a persistent knowledge base for Rust, Solidity, TypeS
 cargo run -- migrate
 cargo run -- doctor
 cargo run -- analyze /path/to/repo
+cargo run -- add /path/to/repo -m "what changed"   # index git-diff, refresh vault, write feature/bug page
+cargo run -- stats /path/to/repo
 cargo run -- refresh /path/to/repo --all-features
 cargo run -- query /path/to/repo "question"
 cargo run -- feature-context /path/to/repo "task" --output-html out.html
+cargo run -- impact /path/to/repo "<feature>"
 cargo run -- graph /path/to/repo -o graph.html
 cargo run -- obsidian /path/to/repo -o vault
 cargo run -- setup --dry-run
@@ -35,9 +38,14 @@ Full ops reference: see RUNBOOK.md.
 Agents should prefer MCP tools when available:
 
 - `chaos_analyze`: index or refresh a repository.
+- `chaos_add`: incrementally index the files changed in git (or explicit `paths`), refresh the Obsidian vault, and write an interactive feature/bug page — in one call. Use after making changes instead of a full `chaos_analyze` when you only touched a few files.
+- `chaos_stats`: report index statistics for an already-indexed repository read from Postgres — totals (files, nodes, edges, chunks, embedded vs missing, split chunks) plus breakdowns of nodes by kind, edges by kind, chunks by type, and files by language. Read-only and embedder-free; use to explain or sanity-check what an `chaos_analyze`/`chaos_add` produced.
 - `chaos_query`: answer focused source-grounded questions.
 - `chaos_feature_context`: gather evidence for feature understanding.
+- `chaos_impact`: build a feature-vs-existing-code impact report for an indexed repo and ALWAYS write an interactive HTML (impact summary + evidence dashboard) to `docs/features_memory/<slug>-impact.html`; returns only a compact JSON summary (counts, the existing files/symbols the feature touches, warnings, and the HTML path) so it won't flood agent context like a raw `chaos_feature_context` dump. Use it to see how a proposed feature maps onto the codebase as it is today (the before).
 - `chaos_write_feature_website`: write an LLM-composed feature page with a manifest.
+- `chaos_obsidian`: export an already-indexed repository as an Obsidian vault from the persisted graph (run after `chaos_analyze`, which never writes files).
+- `chaos_refresh`: regenerate project-local artifacts (Obsidian vault, and with `all_features` the `docs/features_memory` pages) from the persisted index without re-indexing.
 
 Do not synthesize feature pages from `chaos_query` alone when `chaos_feature_context` and
 `chaos_write_feature_website` are available.

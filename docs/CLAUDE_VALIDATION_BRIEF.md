@@ -109,8 +109,11 @@ CLI help validation:
 ```sh
 cargo run -- --help
 cargo run -- analyze --help
+cargo run -- add --help
+cargo run -- stats --help
 cargo run -- query --help
 cargo run -- feature-context --help
+cargo run -- impact --help
 cargo run -- graph --help
 cargo run -- mcp --help
 ```
@@ -134,6 +137,8 @@ Use a small real repository containing Rust, Solidity, TypeScript, JavaScript, o
 docker compose up -d
 cargo run -- --config chaos-substrate.local.toml migrate
 cargo run -- --config chaos-substrate.local.toml analyze /path/to/repo
+cargo run -- --config chaos-substrate.local.toml add /path/to/repo
+cargo run -- --config chaos-substrate.local.toml stats /path/to/repo
 cargo run -- --config chaos-substrate.local.toml query /path/to/repo "where is request validation handled?"
 cargo run -- --config chaos-substrate.local.toml feature-context /path/to/repo "implement related feature"
 cargo run -- --config chaos-substrate.local.toml graph /path/to/repo --output graph.html
@@ -143,6 +148,11 @@ cargo run -- --config chaos-substrate.local.toml refresh /path/to/repo
 Expected behavior:
 
 - `analyze` persists repository, files, nodes, edges, chunks, and embeddings.
+- `add` detects changed files from git (working tree by default, `--since REF` for a committed
+  range, `--path` for explicit files), incrementally indexes only those files into Postgres/pgvector
+  (re-embedding just the changed chunks), refreshes the Obsidian vault, and writes a feature/bug page
+  into `docs/features_memory`. Cross-file call edges into unchanged files are not rebuilt
+  incrementally; run a full `analyze`/`refresh` for a complete graph rebuild.
 - `query` returns relevant chunks with file paths and line ranges.
 - `feature-context` returns Postgres hits plus any matching generated feature manifests from
   `docs/features_memory`.
@@ -216,8 +226,9 @@ Chaos Substrate should become a modular code-to-knowledge memory system:
 - Call edges are file-scoped heuristics; cross-file call resolution is name-based, not type-resolved.
 - No Go/Kubernetes/Terraform adapter yet.
 - No full integration test with a real embedder was run unless the validator provides OpenAI or Ollama.
-- MCP has a focused tool surface: `chaos_analyze`, `chaos_query`, `chaos_feature_context`, and
-  `chaos_write_feature_website`.
+- MCP has a focused tool surface of nine tools: `chaos_analyze`, `chaos_add`, `chaos_stats`,
+  `chaos_query`, `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`,
+  `chaos_obsidian`, and `chaos_refresh`.
 
 ## Pass Criteria
 

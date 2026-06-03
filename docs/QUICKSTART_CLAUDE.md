@@ -63,7 +63,7 @@ reachable — analysis is **fail-closed** and will not fabricate vectors.
 
 ## 4. Install the plugin in Claude Code
 
-The plugin bundles the skill, the four MCP tools, and the tool-use hooks together.
+The plugin bundles the skill, the nine MCP tools, and the tool-use hooks together.
 
 For local testing, launch Claude Code pointed at this checkout:
 
@@ -78,8 +78,8 @@ install `chaos-substrate` from the `/plugin` UI. Full marketplace and Cowork-zip
 Inside Claude Code, verify the plugin loaded:
 
 - The skill is available as `/chaos-substrate:chaos-substrate`.
-- The four MCP tools are listed: `chaos_analyze`, `chaos_query`, `chaos_feature_context`,
-  `chaos_write_feature_website`.
+- The nine MCP tools are listed: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
+  `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`, `chaos_refresh`.
 - The hooks inject code-memory context on `Grep` / `Glob` / `Bash` (safe no-op if the DB or
   index is unavailable).
 
@@ -104,6 +104,37 @@ CLI mirror (on PATH after step 3):
 ```bash
 chaos-agent update /absolute/path/to/your-repo
 ```
+
+**Incremental indexing after edits.** Once a repo is analyzed, you don't have to re-index the
+whole tree for small changes. After editing a few files, ask Claude Code to run `chaos_add`:
+
+```text
+Run chaos_add to index my changes and write a feature page.
+```
+
+`chaos_add` detects the changed files from git (working-tree staged + unstaged + untracked by
+default; pass explicit paths or a `--since REF` range), re-embeds only those changed chunks
+into Postgres/pgvector, refreshes the Obsidian vault, and writes a feature/bug HTML page into
+`docs/features_memory/` — feature vs. bug is auto-detected from the branch name and latest
+commit subject. CLI mirror:
+
+```bash
+chaos add /absolute/path/to/your-repo
+chaos add /absolute/path/to/your-repo --since main --kind feature -m "describe the change"
+```
+
+**Sanity-check the index.** After an `analyze` or `add`, ask Claude Code to run `chaos_stats`
+(or run the CLI mirror) to see index totals and breakdowns read from Postgres — files, nodes,
+edges, chunks, embedded vs. missing, plus per-kind/per-language counts. It is read-only and
+embedder-free. CLI mirror:
+
+```bash
+chaos stats /absolute/path/to/your-repo
+```
+
+> `chaos_add` does **not** rebuild cross-file call edges into unchanged files; run a full
+> `chaos analyze` (or `chaos refresh`) for a complete graph rebuild. Like `analyze`, it
+> requires a real embedder.
 
 ## 6. Generate feature knowledge for end-to-end encryption
 
@@ -154,4 +185,4 @@ Deeper references:
 - [EDITOR_SETUP.md](EDITOR_SETUP.md) — canonical per-editor MCP registration.
 - [CLAUDE_MCP_INSTALL.md](CLAUDE_MCP_INSTALL.md) — Claude Desktop config and a longer MCP walkthrough.
 - [PLUGIN_INSTALL.md](PLUGIN_INSTALL.md) — plugin package, marketplace, and Cowork zip.
-- README → [MCP Tools](../README.md#mcp-tools) — the four-tool reference.
+- README → [MCP Tools](../README.md#mcp-tools) — the nine-tool reference.

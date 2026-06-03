@@ -29,7 +29,9 @@ chaos-substrate/
 - Codex reads `.codex-plugin/plugin.json`.
 - Claude Code reads `.claude-plugin/plugin.json` and `.claude-plugin/hooks/hooks.json`.
 - Both share the root `.mcp.json`, `skills/`, and `bin/chaos-agent`.
-- The shared MCP server exposes four tools; see the [MCP Tools](../README.md#mcp-tools) section of the
+- The shared MCP server exposes nine tools (`chaos_analyze`, `chaos_add`, `chaos_stats`,
+  `chaos_query`, `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`,
+  `chaos_obsidian`, `chaos_refresh`); see the [MCP Tools](../README.md#mcp-tools) section of the
   README for the reference.
 - The tool-use hooks (`.claude-plugin/hooks/hooks.json`, `.cursor/hooks.json`) run `chaos hook` to
   inject code-memory context on `Grep`, `Glob`, and `Bash`. The hook always exits 0, is a safe
@@ -76,9 +78,18 @@ zip with `scripts/package-cowork-plugin` and upload it again; the MCP surface mu
 ```text
 Use Chaos Substrate on this project and create an index plus explanation.
 Update the Chaos Substrate index.
+Add my latest changes to the Chaos Substrate memory and write a feature page.
 Find implementation context for authorization and RBAC.
 Generate a feature explanation website for authorization and RBAC.
 ```
+
+For incremental work, `chaos add` (MCP `chaos_add`) is the one-shot path: it detects changed files
+from git (working tree by default, `--since REF` for a committed range, `--path` for explicit files
+including Markdown/Notion exports and PDFs), incrementally re-embeds only those changed chunks into
+Postgres/pgvector, refreshes the Obsidian vault, and writes an interactive feature or bug HTML page
+into `docs/features_memory` (feature vs bug auto-detected from branch + latest commit subject,
+override with `--kind`). Cross-file call edges into unchanged files are not rebuilt incrementally;
+run a full `chaos analyze` (or `chaos refresh`) for a complete graph rebuild.
 
 The plugin skill chooses the underlying wrapper command. Direct CLI use is for debugging or
 agentless operation:
@@ -106,10 +117,22 @@ See `docs/OLLAMA_SETUP.md` for installation and troubleshooting.
   - Plugin intent: create or refresh the project memory. Implementation command: `chaos-agent onboard <repo-path>` for first setup.
 - "Update index"
   - Plugin intent: refresh the existing memory. Implementation command: `chaos-agent update <repo-path>`.
+- "Add my latest changes" / "index what I just changed and write a page"
+  - Plugin intent: one-shot incremental update from git diff. MCP tool: `chaos_add`. CLI: `chaos add [repo-path]`.
+    Incrementally indexes only the changed files, refreshes the Obsidian vault, and writes a feature/bug page.
+- "Show index stats" / "what did the analyze produce"
+  - Plugin intent: report index statistics for an already-indexed repo (totals plus breakdowns of
+    nodes, edges, chunks, and files), read-only and embedder-free. MCP tool: `chaos_stats`. CLI:
+    `chaos stats <repo-path>`.
 - "Generate explanation for X feature"
   - Plugin intent: produce focused feature context and a feature-memory website. MCP flow: `chaos_feature_context`, then LLM-composed HTML/manifest via `chaos_write_feature_website`. CLI fallback: `chaos-agent explain <repo-path> "X"`.
 - "Find context for implementing X"
   - Plugin intent: return source-grounded implementation context. MCP tool: `chaos_feature_context`. CLI fallback: `chaos-agent context <repo-path> "X"`.
+- "Show how X feature impacts the existing code"
+  - Plugin intent: build a feature-vs-existing-code impact report for an indexed repo and always
+    write an interactive HTML (impact summary + evidence) into `docs/features_memory`, returning a
+    compact summary of the existing files/symbols the feature touches. MCP tool: `chaos_impact`.
+    CLI: `chaos impact <repo-path> "X"`.
 - "Use this with Claude Code or Claude Cowork"
   - Run `chaos-agent claude-code-add local <repo-path>` for private setup or `project` for shared
     `.mcp.json`. See [docs/EDITOR_SETUP.md](EDITOR_SETUP.md) for all editors.
@@ -126,7 +149,7 @@ Codex uses `.codex-plugin/plugin.json`. The manifest points to:
 
 During development, install or load this repository as the `chaos-substrate` plugin. Once enabled,
 the agent can use the `chaos-substrate` skill and the MCP tools exposed by `chaos-agent mcp` (see
-the [MCP Tools](../README.md#mcp-tools) section of the README for the four-tool reference).
+the [MCP Tools](../README.md#mcp-tools) section of the README for the nine-tool reference).
 
 `chaos_write_feature_website` enforces the feature-page contract. It rejects prose-only pages that
 do not include an interactive graph, story flow, architecture/flow sections, code context, evidence

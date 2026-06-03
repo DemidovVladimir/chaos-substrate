@@ -45,7 +45,7 @@ hybrid retrieval  ──  src/query.rs
   ▼
 outputs
   ├─ CLI results (JSON on stdout)              ──  src/main.rs
-  ├─ MCP tools (4)                             ──  src/mcp.rs
+  ├─ MCP tools (9)                             ──  src/mcp.rs
   ├─ interactive graph.html                    ──  src/graph_export.rs
   ├─ Obsidian vault                            ──  src/obsidian_export.rs
   └─ feature context + feature websites        ──  src/feature_context.rs, src/feature_export.rs
@@ -101,9 +101,10 @@ table. Migrations run via `sqlx::migrate!` and are tracked in `_sqlx_migrations`
 
 ## MCP Tools
 
-The stdio MCP server exposes exactly four tools: `chaos_analyze`, `chaos_query`,
-`chaos_feature_context`, and `chaos_write_feature_website`. See the **MCP Tools** section of
-`README.md` for the canonical reference of names, arguments, and intended usage.
+The stdio MCP server exposes exactly nine tools: `chaos_analyze`, `chaos_add`, `chaos_stats`,
+`chaos_query`, `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`,
+`chaos_obsidian`, and `chaos_refresh`. See the **MCP Tools** section of `README.md` for the
+canonical reference of names, arguments, and intended usage.
 
 ## Hard Rules (non-negotiable)
 

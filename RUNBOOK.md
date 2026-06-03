@@ -56,6 +56,36 @@ chaos refresh /path/to/repo --all-features
 `analyze` requires a real embedder (OpenAI or Ollama). If none is configured, analysis
 **fails by design** — never produces fake/random vectors.
 
+## Add (incremental)
+
+`chaos add` is the one-shot "index what I just changed" command: it detects changed files from
+git (no file list needed), merges **only those files** into the existing index (delete + re-extract
++ re-embed just them), refreshes the Obsidian vault, and writes an interactive feature/bug page into
+`docs/features_memory`.
+
+```sh
+# Index the current git working-tree changes (staged + unstaged + untracked)
+chaos add /path/to/repo -m "what this change does"
+
+# Diff a committed range instead of the working tree
+chaos add /path/to/repo --since HEAD~3
+
+# Index specific files (e.g. a Notion/Markdown export or PDF), bypassing git
+chaos add /path/to/repo --path notes/spec.md --path docs/design.pdf
+
+# Force classification / skip an artifact
+chaos add /path/to/repo --kind bug -m "fix null deref"
+chaos add /path/to/repo --no-obsidian        # skip vault refresh
+chaos add /path/to/repo --no-page            # skip the feature/bug page
+```
+
+Feature vs bug is auto-detected from the branch name + latest commit subject (`fix`/`bug`/`hotfix`/…
+→ bug, else feature); override with `--kind`. Generated artifact directories (the vault,
+`features_memory`, plus everything in `indexing.skip_dirs`) are excluded, so `chaos add` never
+re-indexes its own output. Cross-file call edges into *unchanged* files are not rebuilt incrementally
+— run `chaos analyze` (or `chaos refresh`) for a full graph rebuild. Like `analyze`, it requires a
+real embedder.
+
 ## Clean / Reset
 
 ```sh
@@ -78,6 +108,18 @@ chaos query /path/to/repo "Where are call edges built?" --limit 20
 
 `--limit N` controls the number of retrieved results (default 10).
 
+## Stats
+
+```sh
+# Report index statistics for an already-indexed repository (read-only, no embedder)
+chaos stats /path/to/repo
+```
+
+Reads from Postgres and prints totals (files, nodes, edges, chunks, embedded vs missing
+embeddings, split chunks, nodes with chunks) plus breakdowns of nodes by kind, edges by kind,
+chunks by type, and files by language. Use it to explain or sanity-check what an `analyze`/`add`
+produced.
+
 ## Feature Context
 
 ```sh
@@ -93,6 +135,17 @@ chaos feature-context /path/to/repo "task" \
 
 Flags: `--limit N` (=10), `--feature-limit N` (=3), `--nodes-per-feature N` (=8),
 `--features-dir P`, `--output-html P`.
+
+## Impact
+
+```sh
+chaos impact /path/to/repo "Add a new language extractor"
+```
+
+Builds a feature-vs-existing-code impact report and **always** writes an interactive HTML (an
+impact summary + the evidence dashboard) to `docs/features_memory/<slug>-impact.html`, showing how
+a feature maps onto the codebase as it is today (the "before"). Unlike `feature-context` (which only
+writes HTML when `--output-html` is passed), `impact` always produces the page.
 
 ## Exports
 
@@ -114,8 +167,9 @@ Use the release binary directly:
 target/release/chaos --config chaos-substrate.toml mcp
 ```
 
-Exposes exactly 4 tools: `chaos_analyze`, `chaos_query`, `chaos_feature_context`,
-`chaos_write_feature_website` (see README.md "MCP Tools" for the full reference).
+Exposes exactly 9 tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
+`chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
+`chaos_refresh` (see README.md "MCP Tools" for the full reference).
 
 Validate the server responds with a single JSON line:
 

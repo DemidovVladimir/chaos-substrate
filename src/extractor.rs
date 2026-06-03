@@ -30,11 +30,47 @@ impl RustRepositoryExtractor {
         Self { indexing }
     }
 
+    /// Extract the entire repository: walk `root` for every indexable file and
+    /// build the full knowledge graph + chunks.
     pub fn extract(
         &self,
         root: &Path,
         repo_id: Uuid,
         commit_sha: Option<String>,
+    ) -> Result<ExtractionResult> {
+        let paths = self.source_paths(root);
+        self.extract_files(root, repo_id, commit_sha, paths)
+    }
+
+    /// Extract only the supplied paths (used by incremental `chaos add`). Paths
+    /// that are not indexable source/doc files, or that no longer exist on
+    /// disk, are silently skipped so callers can pass a raw git-diff list. The
+    /// returned [`ExtractionResult`] has no `files` when nothing indexable
+    /// remains.
+    ///
+    /// Call edges are resolved only among the supplied paths; cross-file edges
+    /// into unchanged files are not rebuilt here (a full [`extract`] does that).
+    pub fn extract_paths(
+        &self,
+        root: &Path,
+        repo_id: Uuid,
+        commit_sha: Option<String>,
+        paths: &[PathBuf],
+    ) -> Result<ExtractionResult> {
+        let filtered = paths
+            .iter()
+            .filter(|path| path.is_file() && is_indexable_path(path))
+            .cloned()
+            .collect::<Vec<_>>();
+        self.extract_files(root, repo_id, commit_sha, filtered)
+    }
+
+    fn extract_files(
+        &self,
+        root: &Path,
+        repo_id: Uuid,
+        commit_sha: Option<String>,
+        paths: Vec<PathBuf>,
     ) -> Result<ExtractionResult> {
         let mut result = ExtractionResult::empty();
         let repo_node = KnowledgeNode {
@@ -56,7 +92,7 @@ impl RustRepositoryExtractor {
 
         let mut symbol_names: HashMap<String, Uuid> = HashMap::new();
         let mut calls: Vec<crate::lang::CallSite> = Vec::new();
-        for path in self.source_paths(root) {
+        for path in paths {
             let rel = path
                 .strip_prefix(root)
                 .unwrap_or(&path)
@@ -171,19 +207,7 @@ impl RustRepositoryExtractor {
             .filter_map(Result::ok)
             .filter(|entry| entry.file_type().map(|ft| ft.is_file()).unwrap_or(false))
             .map(|entry| entry.into_path())
-            .filter(|path| {
-                path.file_name().and_then(|s| s.to_str()) == Some("Cargo.toml")
-                    || path.file_name().and_then(|s| s.to_str()) == Some("package.json")
-                    || path.file_name().and_then(|s| s.to_str()) == Some("cdk.json")
-                    || path.file_name().and_then(|s| s.to_str()) == Some("tsconfig.json")
-                    || path.file_name().and_then(|s| s.to_str()) == Some("jsconfig.json")
-                    || path.extension().and_then(|s| s.to_str()) == Some("rs")
-                    || markdown_language(path).is_some()
-                    || solidity_language(path).is_some()
-                    || pdf_language(path).is_some()
-                    || js_ts_language(path).is_some()
-                    || python_language(path).is_some()
-            })
+            .filter(|path| is_indexable_path(path))
             .collect()
     }
 
@@ -1183,6 +1207,23 @@ fn file_node(repo_id: Uuid, file: &SourceFile, rel: &str) -> KnowledgeNode {
     }
 }
 
+/// True when `path` is a file the extractor knows how to index. Shared by the
+/// full-repo walk ([`RustRepositoryExtractor::source_paths`]) and the
+/// incremental path filter ([`RustRepositoryExtractor::extract_paths`]) so both
+/// agree on exactly which files become knowledge.
+pub(crate) fn is_indexable_path(path: &Path) -> bool {
+    let file_name = path.file_name().and_then(|s| s.to_str());
+    matches!(
+        file_name,
+        Some("Cargo.toml" | "package.json" | "cdk.json" | "tsconfig.json" | "jsconfig.json")
+    ) || path.extension().and_then(|s| s.to_str()) == Some("rs")
+        || markdown_language(path).is_some()
+        || solidity_language(path).is_some()
+        || pdf_language(path).is_some()
+        || js_ts_language(path).is_some()
+        || python_language(path).is_some()
+}
+
 fn js_ts_language(path: &Path) -> Option<Language> {
     let file_name = path.file_name()?.to_str()?;
     if file_name.ends_with(".d.ts") {
@@ -1684,6 +1725,50 @@ mod tests {
         // Adjacent without whitespace must not match the keyword+name form.
         let src = "fnhandler\nfn handler\n";
         assert_eq!(find_item_line(src, "fn", "handler"), Some(2));
+    }
+
+    #[test]
+    fn extract_paths_indexes_only_supplied_indexable_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("a.rs"), "pub fn alpha() {}\n").unwrap();
+        fs::write(root.join("b.rs"), "pub fn beta() {}\n").unwrap();
+        fs::write(root.join("notes.txt"), "not indexable\n").unwrap();
+
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor
+            .extract_paths(
+                root,
+                Uuid::new_v4(),
+                None,
+                &[
+                    root.join("a.rs"),
+                    root.join("notes.txt"),
+                    root.join("missing.rs"),
+                ],
+            )
+            .unwrap();
+
+        // Only a.rs is indexed: notes.txt is not indexable, missing.rs absent,
+        // and b.rs was not supplied.
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].path, "a.rs");
+        assert!(result.nodes.iter().any(|n| n.name == "alpha"));
+        assert!(!result.nodes.iter().any(|n| n.name == "beta"));
+    }
+
+    #[test]
+    fn extract_paths_with_no_indexable_files_yields_empty_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("readme.txt"), "plain text\n").unwrap();
+
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor
+            .extract_paths(root, Uuid::new_v4(), None, &[root.join("readme.txt")])
+            .unwrap();
+
+        assert!(result.files.is_empty());
     }
 
     fn write_minimal_pdf(path: &Path) {

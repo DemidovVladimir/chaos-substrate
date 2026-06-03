@@ -16,6 +16,25 @@ It does not read the whole `docs/` tree. By default it scans only direct `*.html
 <script type="application/json" id="chaos-feature-manifest">...</script>
 ```
 
+Pages land in `docs/features_memory` from two producers:
+
+- `chaos add` / `chaos_add` writes a deterministic feature/bug page (no LLM round-trip) every time it
+  incrementally indexes a change. It builds the manifest directly from the changed symbols and their
+  graph neighbors, satisfying the same interactive contract as the LLM write path.
+- `chaos_write_feature_website` writes an LLM-composed page from `chaos_feature_context` evidence.
+
+Both embed the same `chaos-feature-manifest` block, so `feature-context` can match either kind.
+
+## Sibling: `chaos impact`
+
+`chaos_impact` / `chaos impact <repo> <feature>` is the sibling tool. Where `feature-context` returns
+evidence as JSON and only writes HTML when `--output-html` is passed, `chaos impact` ALWAYS writes an
+interactive impact HTML (an impact summary plus the evidence dashboard) to
+`docs/features_memory/<slug>-impact.html`, framed as feature-vs-existing-code — how this feature maps
+onto the codebase as it is TODAY (the before). It returns a compact summary (counts plus the existing
+files/symbols the feature touches, warnings, and the HTML path), keeping the full evidence in the HTML
+only. Reach for it when you want the guaranteed HTML artifact rather than a feature_context JSON dump.
+
 ## Usage
 
 ```bash
@@ -120,13 +139,18 @@ query-generated maps should record extractor/query provenance more precisely.
 ## Recommended Agent Workflow
 
 1. Use MCP `chaos_feature_context` with the user task when MCP is available. Use
-   `chaos feature-context` only for direct CLI debugging.
+   `chaos feature-context` only for direct CLI debugging. When you want a guaranteed interactive
+   impact HTML instead of feature_context JSON, use `chaos_impact` (or `chaos impact <repo>
+   <feature>`), which always writes the impact page and returns a compact summary.
 2. Read the highest scoring `postgres.hits` and `feature_matches`.
 3. Use feature manifests as the stable machine contract; do not scrape the visual DOM.
 4. Open source files from the returned paths and line ranges before editing.
-5. After implementation, run project tests, then re-run `chaos analyze` and `chaos refresh` to
-   update the index and Obsidian vault. For feature pages, compose the page and manifest from
-   `chaos_feature_context` evidence, then write it with `chaos_write_feature_website`.
+5. After implementation, run project tests, then re-index. Use `chaos add` (or MCP `chaos_add`) to
+   incrementally index just the changed files, refresh the Obsidian vault, and write a deterministic
+   feature/bug page into `docs/features_memory` in one shot; run a full `chaos analyze` (or
+   `chaos refresh`) when you need a complete graph rebuild. For an LLM-composed feature page, compose
+   the page and manifest from `chaos_feature_context` evidence, then write it with
+   `chaos_write_feature_website`.
 
 ## Why Manifests Instead Of DOM Scraping
 

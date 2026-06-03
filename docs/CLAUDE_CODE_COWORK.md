@@ -108,8 +108,12 @@ project, add a short section like this:
 Use Chaos Substrate before non-trivial architecture, security, or feature work.
 
 - Index/update: ask for `chaos_analyze` on this repository.
+- Incremental update: use `chaos_add` to index only git-diff (or explicit paths), refresh the
+  Obsidian vault, and write a feature/bug page in one call.
 - Query: use `chaos_query` with a focused question before editing.
 - Feature context: use `chaos_feature_context`.
+- Feature impact: use `chaos_impact` to see how a proposed feature maps onto the codebase as it is
+  today; it always writes an interactive HTML impact report and returns a compact summary.
 - Feature website generation: read `chaos_feature_context`, compose the feature-specific page and
   manifest, then call `chaos_write_feature_website`.
 - Do not treat generated docs as source of truth when source code disagrees.
@@ -129,6 +133,12 @@ Or:
 
 ```text
 Use chaos_query on this repository. Question: where is request authorization enforced?
+```
+
+Or, after changing files on a branch:
+
+```text
+Use chaos_add on this repository to index my changes, refresh the vault, and write a feature page.
 ```
 
 For feature explanations and website generation, use the MCP two-step workflow:
@@ -155,7 +165,9 @@ index/query context instead of writing a weak page.
 
 If Claude only uses `chaos_query` for a feature explanation, the plugin is stale or MCP is exposing
 the old tool surface. Rebuild and re-upload `dist/chaos-substrate-cowork-plugin.zip`, then verify the
-MCP tool list contains `chaos_feature_context` and `chaos_write_feature_website`.
+MCP tool list contains all nine tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
+`chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`, and
+`chaos_refresh`.
 
 Claude Cowork-style sandboxes may not be able to reach host Postgres or write project files
 directly. In that case, the agent should use the host MCP tools instead of claiming only the CLI can

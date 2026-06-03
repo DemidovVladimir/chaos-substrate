@@ -9,7 +9,7 @@ use crate::{
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use sqlx::{postgres::PgPoolOptions, PgPool, Row};
-use std::{fs, path::Path};
+use std::{collections::HashMap, fs, path::Path};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -177,6 +177,89 @@ impl Storage {
         Ok(())
     }
 
+    /// Incrementally merge a partial extraction (only `changed_paths`) into an
+    /// existing repository index, leaving every other file's nodes, edges,
+    /// chunks, and embeddings untouched.
+    ///
+    /// Steps, all in one transaction:
+    /// 1. Delete the prior rows for `changed_paths`. The FK cascade chain
+    ///    (`files → nodes → edges`, `files → chunks → embeddings`) removes all
+    ///    derived data for those files, including stale call edges into their
+    ///    symbols.
+    /// 2. Insert the fresh files.
+    /// 3. Upsert nodes by `(repo_id, stable_id)`, capturing each row's
+    ///    authoritative id. Pre-existing nodes that survive the delete (the
+    ///    repository node, shared bare-import nodes owned by unchanged files)
+    ///    keep their original id, so the extraction's fresh uuids are remapped
+    ///    to those ids before edges/chunks that reference them are inserted —
+    ///    otherwise the FK constraint would reject a dangling reference.
+    /// 4. Insert edges and chunks with remapped node ids.
+    ///
+    /// Embeddings are NOT created here; callers run
+    /// [`Storage::chunks_missing_embeddings`] afterwards (only the newly
+    /// inserted chunks lack embeddings, so only they are re-embedded).
+    pub async fn merge_files_index(
+        &self,
+        repo_id: Uuid,
+        changed_paths: &[String],
+        result: &ExtractionResult,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+
+        if !changed_paths.is_empty() {
+            sqlx::query("delete from files where repo_id = $1 and path = any($2)")
+                .bind(repo_id)
+                .bind(changed_paths)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        for file in &result.files {
+            insert_file(&mut tx, file).await?;
+        }
+
+        let mut remap: HashMap<Uuid, Uuid> = HashMap::with_capacity(result.nodes.len());
+        for node in &result.nodes {
+            let db_id = upsert_node_returning_id(&mut tx, node).await?;
+            remap.insert(node.id, db_id);
+        }
+
+        for edge in &result.edges {
+            let (Some(&source), Some(&target)) = (
+                remap.get(&edge.source_node_id),
+                remap.get(&edge.target_node_id),
+            ) else {
+                continue;
+            };
+            if source == target {
+                continue;
+            }
+            insert_edge(
+                &mut tx,
+                &KnowledgeEdge {
+                    source_node_id: source,
+                    target_node_id: target,
+                    ..edge.clone()
+                },
+            )
+            .await?;
+        }
+
+        for chunk in &result.chunks {
+            insert_chunk(
+                &mut tx,
+                &KnowledgeChunk {
+                    node_id: chunk.node_id.and_then(|id| remap.get(&id).copied()),
+                    ..chunk.clone()
+                },
+            )
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Row counts per persisted table, used to report what a clean removed.
     pub async fn table_counts(&self) -> Result<Value> {
         let row = sqlx::query(
@@ -200,6 +283,83 @@ impl Storage {
             "chunks": row.get::<i64, _>("chunks"),
             "embeddings": row.get::<i64, _>("embeddings"),
         }))
+    }
+
+    /// Per-repository index statistics: totals plus breakdowns by node kind,
+    /// edge kind, chunk type, and file language. Pure read (no embedder) —
+    /// explains what an `analyze`/`add` produced. Powers `chaos stats` and the
+    /// `chaos_stats` MCP tool.
+    pub async fn repo_stats(&self, repo: &Repository) -> Result<Value> {
+        let repo_id = repo.id;
+        let totals = sqlx::query(
+            r#"
+            select
+                (select count(*) from files  where repo_id = $1) as files,
+                (select count(*) from nodes  where repo_id = $1) as nodes,
+                (select count(*) from edges  where repo_id = $1) as edges,
+                (select count(*) from chunks where repo_id = $1) as chunks,
+                (select count(distinct e.chunk_id)
+                   from embeddings e join chunks c on c.id = e.chunk_id
+                   where c.repo_id = $1) as embedded_chunks,
+                (select count(*) from chunks c
+                   left join embeddings e on e.chunk_id = c.id
+                   where c.repo_id = $1 and e.id is null) as chunks_missing_embeddings,
+                (select count(*) from chunks
+                   where repo_id = $1 and jsonb_exists(metadata, 'split_part')) as split_chunks,
+                (select count(distinct node_id) from chunks
+                   where repo_id = $1 and node_id is not null) as nodes_with_chunk
+            "#,
+        )
+        .bind(repo_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(json!({
+            "repo": {
+                "id": repo.id,
+                "name": repo.name,
+                "root_path": repo.root_path,
+                "current_commit_sha": repo.current_commit_sha,
+            },
+            "totals": {
+                "files": totals.get::<i64, _>("files"),
+                "nodes": totals.get::<i64, _>("nodes"),
+                "edges": totals.get::<i64, _>("edges"),
+                "chunks": totals.get::<i64, _>("chunks"),
+                "embedded_chunks": totals.get::<i64, _>("embedded_chunks"),
+                "chunks_missing_embeddings": totals.get::<i64, _>("chunks_missing_embeddings"),
+                "split_chunks": totals.get::<i64, _>("split_chunks"),
+                "nodes_with_chunk": totals.get::<i64, _>("nodes_with_chunk"),
+            },
+            "files_by_language": self.group_counts(repo_id, "files", "language").await?,
+            "nodes_by_kind": self.group_counts(repo_id, "nodes", "kind").await?,
+            "edges_by_kind": self.group_counts(repo_id, "edges", "kind").await?,
+            "chunks_by_type": self.group_counts(repo_id, "chunks", "chunk_type").await?,
+        }))
+    }
+
+    /// `[{ "name": <value>, "count": <n> }, …]` grouped by `column` of `table`,
+    /// ordered by count desc. `table`/`column` are fixed internal identifiers
+    /// (never user input), so interpolating them is safe.
+    async fn group_counts(&self, repo_id: Uuid, table: &str, column: &str) -> Result<Value> {
+        let sql = format!(
+            "select {column} as label, count(*) as c from {table} \
+             where repo_id = $1 group by {column} order by c desc, label"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(repo_id)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(Value::Array(
+            rows.into_iter()
+                .map(|row| {
+                    json!({
+                        "name": row.get::<String, _>("label"),
+                        "count": row.get::<i64, _>("c"),
+                    })
+                })
+                .collect(),
+        ))
     }
 
     /// Wipe the entire persisted index (every repository). Returns the row
@@ -630,6 +790,42 @@ async fn insert_node(
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+/// Upsert a node by `(repo_id, stable_id)` and return the authoritative row id
+/// (the existing id on conflict, the new id on insert). Mirrors [`insert_node`]
+/// but reports the id so [`Storage::merge_files_index`] can remap edge/chunk
+/// references onto surviving rows.
+async fn upsert_node_returning_id(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    node: &KnowledgeNode,
+) -> Result<Uuid> {
+    let row = sqlx::query(
+        r#"
+        insert into nodes (id, repo_id, file_id, kind, stable_id, name, line_start, line_end, metadata)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        on conflict (repo_id, stable_id) do update set
+            file_id = coalesce(nodes.file_id, excluded.file_id),
+            kind = excluded.kind,
+            name = excluded.name,
+            line_start = coalesce(nodes.line_start, excluded.line_start),
+            line_end = coalesce(nodes.line_end, excluded.line_end),
+            metadata = nodes.metadata || excluded.metadata
+        returning id
+        "#,
+    )
+    .bind(node.id)
+    .bind(node.repo_id)
+    .bind(node.file_id)
+    .bind(node.kind.as_str())
+    .bind(&node.stable_id)
+    .bind(&node.name)
+    .bind(node.line_start)
+    .bind(node.line_end)
+    .bind(&node.metadata)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(row.get("id"))
 }
 
 async fn insert_edge(

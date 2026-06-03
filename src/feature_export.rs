@@ -208,7 +208,7 @@ g.addEventListener("keydown",function(ev){if(ev.key==="Enter"||ev.key===" "){ev.
 graph.appendChild(g);});}
 function relations(id){var rows=[];EDGES.forEach(function(e){if(e.source===id&&byId[e.target])rows.push(["To",byId[e.target],e.label]);if(e.target===id&&byId[e.source])rows.push(["From",byId[e.source],e.label]);});
 if(!rows.length)return '<div class="meta">No direct relations.</div>';
-return rows.map(function(r){return '<div class="relation" data-target="'+r[1].id+'"><strong>'+r[0]+" "+esc(r[1].label)+"</strong><br>"+esc(r[2])+"</div>";}).join("");}
+return rows.map(function(r){return '<div class="relation" data-target="'+esc(r[1].id)+'"><strong>'+r[0]+" "+esc(r[1].label)+"</strong><br>"+esc(r[2])+"</div>";}).join("");}
 function select(id,focus){if(!byId[id])return;active=id;var n=byId[id];
 document.getElementById("title").textContent=n.label;
 document.getElementById("meta").textContent=n.file+" | lines "+n.lines;

@@ -5,6 +5,8 @@ use crate::{
         build_feature_context_warnings, load_feature_matches, write_feature_context_html,
         FeatureContextResponse,
     },
+    feature_export::refresh_project_exports,
+    obsidian_export::write_obsidian_vault,
     query::{query_feature_context_repo, query_repo},
     storage::Storage,
     Config,
@@ -57,6 +59,35 @@ pub async fn run(config: Config) -> Result<()> {
                             }
                         },
                         {
+                            "name": "chaos_add",
+                            "description": "Incrementally index the files changed in git (or an explicit path list), refresh the Obsidian vault, and write an interactive feature/bug page into docs/features_memory — in one shot. Detects changes from the working tree by default (no file list needed); pass `since` for a committed range or `paths` to index specific files (code, Markdown/Notion exports, PDFs). Auto-classifies feature vs bug; override with `kind` and `message`.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo_path": {"type": "string", "description": "Repository to operate on. Defaults to the current directory."},
+                                    "paths": {"type": "array", "items": {"type": "string"}, "description": "Explicit files to index; overrides git-diff detection."},
+                                    "since": {"type": "string", "description": "Diff against this git ref instead of the working tree (e.g. HEAD~1, main)."},
+                                    "kind": {"type": "string", "enum": ["feature", "bug"], "description": "Force the page classification. Auto-detected from git if omitted."},
+                                    "message": {"type": "string", "description": "Short title/summary of the change; drives the page title and slug."},
+                                    "obsidian_output": {"type": "string", "description": "Obsidian vault output directory. Defaults to <repo>/chaos-obsidian-vault."},
+                                    "no_obsidian": {"type": "boolean", "default": false},
+                                    "no_page": {"type": "boolean", "default": false}
+                                },
+                                "required": []
+                            }
+                        },
+                        {
+                            "name": "chaos_stats",
+                            "description": "Report index statistics for an already-indexed repository, read from Postgres: totals (files, nodes, edges, chunks, embedded vs missing, split chunks) plus breakdowns of nodes by kind, edges by kind, chunks by type, and files by language. Read-only and embedder-free — use to explain or sanity-check what an analyze/add produced.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo": {"type": "string"}
+                                },
+                                "required": ["repo"]
+                            }
+                        },
+                        {
                             "name": "chaos_query",
                             "description": "Query persisted code knowledge memory with hybrid semantic, keyword, and graph context routing.",
                             "inputSchema": {
@@ -87,6 +118,23 @@ pub async fn run(config: Config) -> Result<()> {
                             }
                         },
                         {
+                            "name": "chaos_impact",
+                            "description": "Build a feature-vs-existing-code impact report for an indexed repo and ALWAYS write an interactive HTML (impact summary + evidence) into docs/features_memory. Returns a COMPACT summary — counts plus the existing files/symbols the feature touches, warnings, and the HTML path — and keeps the full evidence in the HTML only (so it won't flood your context like a raw feature_context dump). Use to see how a proposed feature maps onto the codebase as it exists today.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo": {"type": "string"},
+                                    "feature": {"type": "string", "description": "The feature/task to assess (e.g. a spike doc's goal)."},
+                                    "features_dir": {"type": "string"},
+                                    "output_html": {"type": "string", "description": "Override the default docs/features_memory/<slug>-impact.html path."},
+                                    "limit": {"type": "integer", "default": 10},
+                                    "feature_limit": {"type": "integer", "default": 3},
+                                    "nodes_per_feature": {"type": "integer", "default": 8}
+                                },
+                                "required": ["repo", "feature"]
+                            }
+                        },
+                        {
                             "name": "chaos_write_feature_website",
                             "description": "Write an LLM-composed interactive feature website into docs/features_memory with an embedded chaos-feature-manifest JSON block. Use after chaos_feature_context, not as a substitute for understanding the feature. HTML must include interactive graph, story flow, architecture, code, and evidence sections.",
                             "inputSchema": {
@@ -99,6 +147,32 @@ pub async fn run(config: Config) -> Result<()> {
                                     "manifest": {"type": "object"}
                                 },
                                 "required": ["repo", "slug", "title", "html", "manifest"]
+                            }
+                        },
+                        {
+                            "name": "chaos_obsidian",
+                            "description": "Export an already-indexed repository as an Obsidian vault (one Markdown note per graph node, grouped into topic notes, plus an edge manifest) read from the persisted graph. Run after chaos_analyze when you want browsable docs; chaos_analyze itself never writes files. Writes to <repo>/chaos-obsidian-vault by default.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo": {"type": "string"},
+                                    "output": {"type": "string", "description": "Vault output directory. Defaults to <repo>/chaos-obsidian-vault."}
+                                },
+                                "required": ["repo"]
+                            }
+                        },
+                        {
+                            "name": "chaos_refresh",
+                            "description": "Regenerate project-local artifacts from the persisted index without re-indexing: rewrites the Obsidian vault and, with all_features=true, re-renders the deterministic feature pages in docs/features_memory from their embedded manifests (refreshing each node's source snippet from the current repo). Run chaos_analyze or chaos_add first.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo": {"type": "string"},
+                                    "obsidian_output": {"type": "string", "description": "Vault output directory. Defaults to <repo>/chaos-obsidian-vault."},
+                                    "features_dir": {"type": "string", "description": "Feature-page directory. Defaults to <repo>/docs/features_memory."},
+                                    "all_features": {"type": "boolean", "default": false, "description": "Also re-render every feature page from its embedded manifest."}
+                                },
+                                "required": ["repo"]
                             }
                         }
                     ]
@@ -153,6 +227,55 @@ async fn handle_tool_call(
                 .context("repo_path is required")?;
             let summary = analyze_repo(config, storage, embedder, Path::new(repo_path)).await?;
             Ok(tool_text(summary))
+        }
+        "chaos_add" => {
+            let repo_path = args.get("repo_path").and_then(Value::as_str).unwrap_or(".");
+            let opts = crate::add::AddOptions {
+                paths: args
+                    .get("paths")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(PathBuf::from)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                since: args.get("since").and_then(Value::as_str).map(String::from),
+                kind: args.get("kind").and_then(Value::as_str).map(String::from),
+                message: args
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map(String::from),
+                obsidian_output: args
+                    .get("obsidian_output")
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from),
+                no_obsidian: args
+                    .get("no_obsidian")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                no_page: args
+                    .get("no_page")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            };
+            let summary =
+                crate::add::run(config, storage, embedder, Path::new(repo_path), &opts).await?;
+            Ok(tool_text(serde_json::to_string_pretty(&summary)?))
+        }
+        "chaos_stats" => {
+            let repo = args
+                .get("repo")
+                .and_then(Value::as_str)
+                .context("repo is required")?;
+            let repo = storage
+                .find_repository(repo)
+                .await?
+                .context("repository is not indexed")?;
+            let stats = storage.repo_stats(&repo).await?;
+            Ok(tool_text(serde_json::to_string_pretty(&stats)?))
         }
         "chaos_query" => {
             let repo = args
@@ -220,6 +343,37 @@ async fn handle_tool_call(
                 "context": response
             }))?))
         }
+        "chaos_impact" => {
+            let repo = args
+                .get("repo")
+                .and_then(Value::as_str)
+                .context("repo is required")?;
+            let feature = args
+                .get("feature")
+                .and_then(Value::as_str)
+                .context("feature is required")?;
+            let opts = crate::impact::ImpactOptions {
+                features_dir: args
+                    .get("features_dir")
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from),
+                output_html: args
+                    .get("output_html")
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from),
+                limit: args.get("limit").and_then(Value::as_i64).unwrap_or(10),
+                feature_limit: args
+                    .get("feature_limit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(3) as usize,
+                nodes_per_feature: args
+                    .get("nodes_per_feature")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(8) as usize,
+            };
+            let summary = crate::impact::run(storage, embedder, repo, feature, &opts).await?;
+            Ok(tool_text(serde_json::to_string_pretty(&summary)?))
+        }
         "chaos_write_feature_website" => {
             let repo = args
                 .get("repo")
@@ -246,6 +400,76 @@ async fn handle_tool_call(
             Ok(tool_text(serde_json::to_string_pretty(&json!({
                 "output_html": path,
                 "manifest_embedded": true
+            }))?))
+        }
+        "chaos_obsidian" => {
+            let repo = args
+                .get("repo")
+                .and_then(Value::as_str)
+                .context("repo is required")?;
+            let repo = storage
+                .find_repository(repo)
+                .await?
+                .context("repository is not indexed")?;
+            let repo_root = PathBuf::from(&repo.root_path);
+            let output = args
+                .get("output")
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| repo_root.join("chaos-obsidian-vault"));
+            let graph = storage.load_graph_export(&repo).await?;
+            let summary = write_obsidian_vault(&output, &graph)?;
+            Ok(tool_text(serde_json::to_string_pretty(&json!({
+                "output": summary.output,
+                "repo_id": repo.id,
+                "topics": summary.topics,
+                "node_notes": summary.node_notes,
+                "edges": summary.edges
+            }))?))
+        }
+        "chaos_refresh" => {
+            let repo = args
+                .get("repo")
+                .and_then(Value::as_str)
+                .context("repo is required")?;
+            let repo = storage
+                .find_repository(repo)
+                .await?
+                .context("repository is not indexed")?;
+            let repo_root = PathBuf::from(&repo.root_path);
+            let obsidian_output = args
+                .get("obsidian_output")
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| repo_root.join("chaos-obsidian-vault"));
+            let features_dir = args
+                .get("features_dir")
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| repo_root.join("docs/features_memory"));
+            let all_features = args
+                .get("all_features")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let graph = storage.load_graph_export(&repo).await?;
+            let summary = refresh_project_exports(
+                &graph,
+                &obsidian_output,
+                &features_dir,
+                all_features,
+                &repo_root,
+            )?;
+            Ok(tool_text(serde_json::to_string_pretty(&json!({
+                "repo_id": repo.id,
+                "obsidian": {
+                    "output": summary.obsidian.output,
+                    "topics": summary.obsidian.topics,
+                    "node_notes": summary.obsidian.node_notes,
+                    "edges": summary.obsidian.edges
+                },
+                "features_dir": features_dir,
+                "feature_pages": summary.feature_pages,
+                "skipped_feature_pages": summary.skipped_feature_pages
             }))?))
         }
         _ => anyhow::bail!("unknown tool: {name}"),
@@ -459,16 +683,20 @@ fn json_error(id: Value, code: i64, message: &str) -> Value {
 }
 
 fn read_message(stdin: &mut std::io::Stdin) -> Result<Option<Value>> {
-    let mut line = String::new();
-    let bytes_read = stdin.lock().read_line(&mut line)?;
-    if bytes_read == 0 {
-        return Ok(None);
+    // Skip blank keep-alive lines iteratively. A recursive call here would let
+    // a client streaming many empty lines overflow the stack (DoS), so loop.
+    loop {
+        let mut line = String::new();
+        let bytes_read = stdin.lock().read_line(&mut line)?;
+        if bytes_read == 0 {
+            return Ok(None);
+        }
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            continue;
+        }
+        return Ok(Some(serde_json::from_str(trimmed)?));
     }
-    let trimmed = line.trim_end_matches(['\r', '\n']);
-    if trimmed.is_empty() {
-        return read_message(stdin);
-    }
-    Ok(Some(serde_json::from_str(trimmed)?))
 }
 
 fn write_message(stdout: &mut std::io::Stdout, message: &Value) -> Result<()> {
