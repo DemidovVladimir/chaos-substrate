@@ -260,11 +260,16 @@ impl Storage {
         Ok(())
     }
 
-    /// Replace the entire persisted L1 community layer for a repo with a fresh
-    /// detection result, in one transaction. Wiping `communities` cascades to
-    /// `community_members` and `community_edges`. Community ids and the partition
-    /// are deterministic (see `src/community.rs`), so re-running on unchanged
-    /// code reproduces the same logical layer.
+    /// Replace the persisted L1 community layer for a repo with a fresh
+    /// detection result, in one transaction.
+    ///
+    /// Communities are **upserted by id** (not wiped) so that the deterministic
+    /// id of an unchanged community keeps its row — and therefore its P3 summary,
+    /// `summary_hash`, `subtree_hash`, and summary embedding. This is what lets
+    /// the P3 hash gate skip re-summarizing across a full re-index. Members and
+    /// quotient edges are fully replaced (members reference regenerated node
+    /// ids); communities no longer in the partition are deleted (cascading their
+    /// members/edges/embeddings).
     pub async fn replace_communities(
         &self,
         repo_id: Uuid,
@@ -272,17 +277,41 @@ impl Storage {
         detection_params: &Value,
     ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
-        sqlx::query("delete from communities where repo_id = $1")
+        let new_ids: Vec<Uuid> = detection.communities.iter().map(|c| c.id).collect();
+
+        // Drop members + quotient edges (rebuilt below), then any community no
+        // longer in the partition (cascades its members/edges/embeddings).
+        sqlx::query(
+            "delete from community_members where community_id in \
+             (select id from communities where repo_id = $1)",
+        )
+        .bind(repo_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("delete from community_edges where repo_id = $1")
             .bind(repo_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("delete from communities where repo_id = $1 and not (id = any($2))")
+            .bind(repo_id)
+            .bind(&new_ids)
             .execute(&mut *tx)
             .await?;
 
         for community in &detection.communities {
+            // On conflict, preserve summary / summary_hash / subtree_hash /
+            // summarized_at (set by P2 merkle and P3 summarize) — only the
+            // detection-derived fields change.
             sqlx::query(
                 r#"
                 insert into communities
                     (id, repo_id, level, parent_id, label, member_count, detection_params, created_at, updated_at)
                 values ($1, $2, $3, null, $4, $5, $6, now(), now())
+                on conflict (id) do update set
+                    label = excluded.label,
+                    member_count = excluded.member_count,
+                    detection_params = excluded.detection_params,
+                    updated_at = now()
                 "#,
             )
             .bind(community.id)
@@ -514,6 +543,168 @@ impl Storage {
                 )
             })
             .collect())
+    }
+
+    // ---- L3 community summary support (P3) ----------------------------------
+
+    /// Communities that need a (re)summary for the given embedder identity:
+    /// those whose content (`subtree_hash`) moved since the stored
+    /// `summary_hash`, or that have no summary embedding yet. Returns
+    /// `(community_id, current subtree_hash)` ordered by id (deterministic). The
+    /// gate: a no-change re-index returns an empty list ⇒ zero embedder calls.
+    pub async fn communities_needing_summary(
+        &self,
+        repo_id: Uuid,
+        provider: &str,
+        model_id: &str,
+        dimensions: usize,
+    ) -> Result<Vec<(Uuid, String)>> {
+        let rows = sqlx::query(
+            r#"
+            select c.id, c.subtree_hash
+            from communities c
+            left join community_embeddings ce
+              on ce.community_id = c.id
+             and ce.provider = $2 and ce.model_id = $3 and ce.dimensions = $4
+            where c.repo_id = $1
+              and c.subtree_hash is not null
+              and (c.summary_hash is distinct from c.subtree_hash or ce.id is null)
+            order by c.id
+            "#,
+        )
+        .bind(repo_id)
+        .bind(provider)
+        .bind(model_id)
+        .bind(dimensions as i32)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get::<Uuid, _>("id"), r.get::<String, _>("subtree_hash")))
+            .collect())
+    }
+
+    /// Count of communities that have a rolled `subtree_hash` (the summarizable
+    /// universe).
+    pub async fn count_hashed_communities(&self, repo_id: Uuid) -> Result<i64> {
+        Ok(sqlx::query_scalar(
+            "select count(*) from communities where repo_id = $1 and subtree_hash is not null",
+        )
+        .bind(repo_id)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    /// Inputs for an extractive community summary: label, member count, member
+    /// (name, kind, path) tuples, and a few representative chunk snippets — all
+    /// in a deterministic order so the summary text (and its embedding) are
+    /// reproducible.
+    pub async fn load_community_summary_inputs(
+        &self,
+        community_id: Uuid,
+    ) -> Result<CommunitySummaryInputs> {
+        let head = sqlx::query("select label, member_count from communities where id = $1")
+            .bind(community_id)
+            .fetch_one(&self.pool)
+            .await?;
+        let members = sqlx::query(
+            r#"
+            select n.name, n.kind, coalesce(f.path, '') as path
+            from community_members cm
+            join nodes n on n.id = cm.node_id
+            left join files f on f.id = n.file_id
+            where cm.community_id = $1
+            order by n.kind, n.name, n.stable_id
+            limit 200
+            "#,
+        )
+        .bind(community_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let snippets = sqlx::query(
+            r#"
+            select c.content
+            from community_members cm
+            join chunks c on c.node_id = cm.node_id
+            where cm.community_id = $1
+            order by length(c.content) desc, c.content_hash
+            limit 5
+            "#,
+        )
+        .bind(community_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(CommunitySummaryInputs {
+            label: head.get("label"),
+            member_count: head.get("member_count"),
+            members: members
+                .into_iter()
+                .map(|r| {
+                    (
+                        r.get::<String, _>("name"),
+                        r.get::<String, _>("kind"),
+                        r.get::<String, _>("path"),
+                    )
+                })
+                .collect(),
+            snippets: snippets
+                .into_iter()
+                .map(|r| r.get::<String, _>("content"))
+                .collect(),
+        })
+    }
+
+    /// Persist a community summary + its real embedding (one transaction). The
+    /// embedding commits to `subtree_hash` via `content_hash`, and `summary_hash`
+    /// is set to `subtree_hash` so the gate skips it next time content is stable.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn save_community_summary(
+        &self,
+        community_id: Uuid,
+        summary: &str,
+        subtree_hash: &str,
+        provider: &str,
+        model_id: &str,
+        dimensions: usize,
+        embedding: &[f32],
+    ) -> Result<()> {
+        if embedding.len() != dimensions {
+            anyhow::bail!(
+                "refusing to store community embedding with dimension {}; configured dimension is {}",
+                embedding.len(),
+                dimensions
+            );
+        }
+        let literal = vector_literal(embedding);
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "update communities set summary = $2, summary_hash = $3, summarized_at = now() where id = $1",
+        )
+        .bind(community_id)
+        .bind(summary)
+        .bind(subtree_hash)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            insert into community_embeddings
+                (id, community_id, provider, model_id, dimensions, content_hash, embedding, created_at)
+            values ($1, $2, $3, $4, $5, $6, $7::vector, now())
+            on conflict (community_id, provider, model_id, dimensions)
+            do update set embedding = excluded.embedding, content_hash = excluded.content_hash, created_at = now()
+            "#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(community_id)
+        .bind(provider)
+        .bind(model_id)
+        .bind(dimensions as i32)
+        .bind(subtree_hash)
+        .bind(literal)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Row counts per persisted table, used to report what a clean removed.
@@ -1029,6 +1220,18 @@ impl Storage {
             })
             .collect())
     }
+}
+
+/// Deterministically-ordered inputs for an extractive community summary
+/// (see `src/community_summary.rs`).
+#[derive(Debug, Clone)]
+pub struct CommunitySummaryInputs {
+    pub label: String,
+    pub member_count: i32,
+    /// `(name, kind, file_path)` per member, capped and ordered.
+    pub members: Vec<(String, String, String)>,
+    /// A few representative chunk snippets.
+    pub snippets: Vec<String>,
 }
 
 /// A symbol match returned by [`Storage::search_symbols_by_name`] and the
@@ -1593,6 +1796,154 @@ mod db_tests {
             h1, h2,
             "community hashes must be stable for unchanged content"
         );
+
+        storage.purge_repository(repo.id).await.expect("purge");
+    }
+
+    /// A test embedder that always fails — used to prove the summary path fails
+    /// closed and never writes a placeholder vector. (Not a fake embedder: it
+    /// produces no vector at all, it errors.)
+    struct FailEmbedder;
+
+    #[async_trait::async_trait]
+    impl crate::embedding::Embedder for FailEmbedder {
+        fn provider(&self) -> &'static str {
+            "failtest"
+        }
+        fn model_id(&self) -> &str {
+            "fail"
+        }
+        fn dimensions(&self) -> usize {
+            768
+        }
+        async fn embed(&self, _input: &str) -> Result<Vec<f32>> {
+            anyhow::bail!("embedder unavailable (test)")
+        }
+    }
+
+    /// Build the project's real configured embedder, probing it; None if the DB
+    /// or embedder backend is unavailable (so CI skips cleanly).
+    async fn try_real_embedder() -> Option<Box<dyn crate::embedding::Embedder>> {
+        let cfg = crate::config::Config::load(None).ok()?;
+        let embedder = crate::embedding::build_embedder(&cfg.embedding).ok()?;
+        embedder.embed("probe").await.ok()?;
+        Some(embedder)
+    }
+
+    async fn index_two_clusters(storage: &Storage) -> Repository {
+        let repo_path = format!("/tmp/chaos-test-{}", Uuid::new_v4());
+        let repo = storage
+            .upsert_repository(Path::new(&repo_path), Some("testsha"))
+            .await
+            .expect("repo");
+        storage
+            .replace_repo_index(repo.id, &two_cluster_fixture(repo.id))
+            .await
+            .expect("index");
+        detect_and_persist(storage, repo.id, &CommunityConfig::default())
+            .await
+            .expect("detect");
+        crate::merkle::compute_and_persist(storage, repo.id)
+            .await
+            .expect("merkle");
+        repo
+    }
+
+    /// THE headline P3 test: a no-op re-summarize makes ZERO embedder calls, and
+    /// changing one chunk re-summarizes only the affected community.
+    #[tokio::test]
+    async fn summary_hash_gate_skips_unchanged_communities() {
+        let Some(url) = db_url() else {
+            eprintln!("skip summary_hash_gate: DATABASE_URL unset");
+            return;
+        };
+        let storage = Storage::connect(&url).await.expect("connect");
+        storage.migrate().await.expect("migrate");
+        let Some(embedder) = try_real_embedder().await else {
+            eprintln!("skip summary_hash_gate: real embedder unavailable");
+            return;
+        };
+        let repo = index_two_clusters(&storage).await;
+        let total = storage.count_hashed_communities(repo.id).await.unwrap();
+        assert!(total >= 2);
+
+        // First pass: everything summarized.
+        let first = crate::community_summary::summarize_repo(&storage, embedder.as_ref(), repo.id)
+            .await
+            .expect("summarize1");
+        assert_eq!(first.embed_calls as i64, total, "first pass summarizes all");
+        assert_eq!(first.skipped, 0);
+
+        // Second pass, no change: the gate skips everything — ZERO embed calls.
+        let second = crate::community_summary::summarize_repo(&storage, embedder.as_ref(), repo.id)
+            .await
+            .expect("summarize2");
+        assert_eq!(
+            second.embed_calls, 0,
+            "no-op re-summarize must make 0 embed calls"
+        );
+        assert_eq!(second.skipped as i64, total);
+
+        // Change one chunk of a/a.rs, re-roll, summarize: exactly one community.
+        sqlx::query(
+            "update chunks set content_hash = 'CHANGED-CHUNK-P3' \
+             where id = (select c.id from chunks c join files f on f.id = c.file_id \
+                        where f.repo_id = $1 and f.path = 'a/a.rs' order by c.content_hash limit 1)",
+        )
+        .bind(repo.id)
+        .execute(&storage.pool)
+        .await
+        .unwrap();
+        crate::merkle::compute_and_persist(&storage, repo.id)
+            .await
+            .expect("merkle2");
+        let third = crate::community_summary::summarize_repo(&storage, embedder.as_ref(), repo.id)
+            .await
+            .expect("summarize3");
+        assert_eq!(
+            third.embed_calls, 1,
+            "only the community owning the changed file re-summarizes"
+        );
+
+        storage.purge_repository(repo.id).await.expect("purge");
+    }
+
+    /// Fail-closed: with the embedder unavailable, summarizing errors and writes
+    /// NO embedding row and NO summary text (never a placeholder vector).
+    #[tokio::test]
+    async fn summary_fails_closed_without_embedder() {
+        let Some(url) = db_url() else {
+            eprintln!("skip summary_fails_closed: DATABASE_URL unset");
+            return;
+        };
+        let storage = Storage::connect(&url).await.expect("connect");
+        storage.migrate().await.expect("migrate");
+        let repo = index_two_clusters(&storage).await;
+
+        let result =
+            crate::community_summary::summarize_repo(&storage, &FailEmbedder, repo.id).await;
+        assert!(
+            result.is_err(),
+            "summary must fail closed when embedder is down"
+        );
+
+        let embeddings: i64 = sqlx::query_scalar(
+            "select count(*) from community_embeddings ce \
+             join communities c on c.id = ce.community_id where c.repo_id = $1",
+        )
+        .bind(repo.id)
+        .fetch_one(&storage.pool)
+        .await
+        .unwrap();
+        assert_eq!(embeddings, 0, "no placeholder embedding may be written");
+        let summarized: i64 = sqlx::query_scalar(
+            "select count(*) from communities where repo_id = $1 and summary is not null",
+        )
+        .bind(repo.id)
+        .fetch_one(&storage.pool)
+        .await
+        .unwrap();
+        assert_eq!(summarized, 0, "no summary text may be written on failure");
 
         storage.purge_repository(repo.id).await.expect("purge");
     }

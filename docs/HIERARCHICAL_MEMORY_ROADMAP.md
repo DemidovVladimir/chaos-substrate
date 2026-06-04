@@ -118,7 +118,7 @@ PR in every phase must hold these:
 | **P0** | Read-only L1 spike (de-risk) | — | a throwaway/debug view of communities over the existing index | ☑ Done (verdict in §9) |
 | **P1** | Persisted community layer | P0 | `communities` + membership + quotient edges, deterministic detection in pipeline | ☑ Done |
 | **P2** | Hash-rollup (Merkle) layer | P1 | subtree hashes rolled to community/repo roots; changed-community detection in `add` | ☑ Done |
-| **P3** | Summary tree (god-node summaries) | P1, P2 | hash-gated LLM summaries + embeddings per community | ☐ Not started |
+| **P3** | Summary tree (god-node summaries) | P1, P2 | hash-gated summaries + embeddings per community | ☑ Done |
 | **P4** | Top-down retrieval + decomposition tool | P1 (P3 for quality) | hierarchical retrieval path + `chaos_change_plan` MCP tool | ☐ Not started |
 | **P5** | Surfacing + delivery | P1–P4 | HTML/Obsidian hierarchy views, SKILL.md, plugin repackage | ☐ Not started |
 
@@ -227,11 +227,15 @@ positives, no misses) on the golden fixtures.
 embedding — computed **only when its L2 root changed**.
 
 **Tasks.**
-- ☐ **P3-T1** Migration `004_community_summary.sql`: add `summary text`, `summary_hash text` (the L2 root the summary was computed from), and a summary-embedding linkage (reuse `embeddings` keyed to the community, or a `community_embeddings` table) to `communities`.
-- ☐ **P3-T2** `src/community_summary.rs`: build a RAPTOR-style summary per community from its member symbols/docs/snippets. Real LLM call; respect existing provider config.
-- ☐ **P3-T3** **Hash gate:** before summarizing, compare the community's current `subtree_hash` to its stored `summary_hash`. Equal ⇒ **skip** (reuse cached summary + embedding). Changed ⇒ recompute and update both. This is the mechanism that keeps summaries cheap and stable.
-- ☐ **P3-T4** Embed each summary with the **real** embedder; persist. Fail closed if the embedder is unavailable (invariant #1).
-- ☐ **P3-T5** Optional recursive level: summaries-of-summaries for parent communities (`level > 0`), same gating.
+- ☑ **P3-T1** Migration `004_community_summary.sql`: `communities.{summary, summary_hash, summarized_at}` + a dedicated `community_embeddings` table (pgvector, `unique(community_id, provider, model_id, dimensions)`, `check(dimensions = vector_dims(embedding))`).
+- ☑ **P3-T2** `src/community_summary.rs::compose_summary` — a deterministic **extractive** summary per community (label, composition, files, key symbols, representative snippets). _D5/LLM note below._
+- ☑ **P3-T3** **Hash gate** (`Storage::communities_needing_summary`): re-summarize only when `subtree_hash IS DISTINCT FROM summary_hash` or no embedding exists for the current embedder identity. `replace_communities` was changed to **upsert** (preserving summary/hash fields) so the gate survives a full re-index.
+- ☑ **P3-T4** Each summary embedded by the **real** embedder into `community_embeddings`; **fails closed** (`save_community_summary` rejects dimension mismatch; an unavailable embedder errors the run and writes no row).
+- ☑ **P3-T5** _D5 verdict: single level for v1._ The schema (`level`, `parent_id`) already supports recursion; summaries-of-summaries deferred.
+
+  *Validation:* **gate efficiency (headline)** — DB test + real-data: re-analyzing `chaos-substrate` with no changes made **0** summary embed calls (54 skipped); changing one chunk re-summarized exactly **1** community. **Fail-closed** — DB test with an error-returning embedder errors and writes neither an embedding row nor summary text (grep-proof: no fake-vector path). **Quality (manual)** — spot-checked summaries name real symbols/files/composition and are deterministic; embedded by Ollama `nomic-embed-text` (768d).
+
+  **D4 verdict: dedicated `community_embeddings` table** (keeps L0 `embeddings` frozen — no relaxing its `chunk_id` constraint). LLM note: the crate ships a real embedder but no text-generation client; per the hard rules we did not casually add one, so summaries are extractive-deterministic (real, grounded, reproducible). An LLM-generated variant can slot behind the same hash gate later without changing the storage contract.
 
 **Deliverables.** Communities carry stable, cached, embedded summaries that only
 move when the underlying code moves.
@@ -331,8 +335,8 @@ Plus the invariant checks that don't belong to a single phase:
 - **D1.** Community detection algorithm + resolution (Leiden vs Louvain; default resolution). _Decide in P0._
 - **D2.** _Verdict (P1): **separate `communities` table.**_ God-nodes are rows in `communities` (+ `community_members`, `community_edges`), not `nodes` with a `NodeKind::Feature`. Keeps L0 frozen and supports many-to-many membership without perturbing existing node queries.
 - **D3.** _Verdict (P1): **preserve typed relations.**_ Each `community_edges` row carries the dominant L0 edge kind for that boundary plus a per-kind count map in `metadata`, so P4 can reason about *how* features couple (imports vs calls vs depends_on).
-- **D4.** Summary embedding storage: reuse `embeddings` keyed to community vs. dedicated `community_embeddings`. _Decide in P3-T1._
-- **D5.** Recursive levels (summaries-of-summaries) in v1, or single level first? _Decide in P3-T5._
+- **D4.** _Verdict (P3): **dedicated `community_embeddings` table.**_ Keeps L0 `embeddings` frozen (no nullable `chunk_id`); same pgvector + real embedder, keyed `(community_id, provider, model_id, dimensions)`.
+- **D5.** _Verdict (P3): **single level for v1.**_ `communities.level`/`parent_id` already model recursion; summaries-of-summaries deferred.
 - **D6.** Tool name: `chaos_change_plan` vs `chaos_scope`. _Decide in P4-T2._
 
 **P0 verdict — communities quality on `molecule_core` (2026-06-04): PASS.**

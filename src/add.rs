@@ -149,10 +149,11 @@ pub async fn run(
         )
         .await?;
         let merkle = crate::merkle::compute_and_persist(storage, repo.id).await?;
-        Result::<_, anyhow::Error>::Ok((embedded, detection, merkle))
+        let summary = crate::community_summary::summarize_repo(storage, embedder, repo.id).await?;
+        Result::<_, anyhow::Error>::Ok((embedded, detection, merkle, summary))
     }
     .await;
-    let (embedded, detection, merkle) = match indexed {
+    let (embedded, detection, merkle, summary) = match indexed {
         Ok(value) => {
             storage.finish_analysis(run_id, "completed", None).await?;
             value
@@ -246,6 +247,11 @@ pub async fn run(
             "total": detection.communities.len(),
             "feature_communities": feature_communities,
             "quotient_edges": detection.quotient_edges.len(),
+            "summaries": {
+                "summarized": summary.summarized,
+                "skipped": summary.skipped,
+                "embed_calls": summary.embed_calls,
+            },
         },
         "blast_radius": {
             "changed_feature_count": changed_communities.len(),

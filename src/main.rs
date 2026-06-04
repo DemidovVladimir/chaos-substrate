@@ -1,5 +1,6 @@
 mod add;
 mod community;
+mod community_summary;
 mod config;
 mod embedding;
 mod export_util;
@@ -353,12 +354,15 @@ async fn main() -> Result<()> {
                 .await?;
                 // L2: roll the content-hash leaves up to file/community/repo roots.
                 let merkle = merkle::compute_and_persist(&storage, repo.id).await?;
-                Result::<_, anyhow::Error>::Ok((result, missing.len(), detection, merkle))
+                // L3: hash-gated community summaries, embedded by the real embedder.
+                let summary =
+                    community_summary::summarize_repo(&storage, embedder.as_ref(), repo.id).await?;
+                Result::<_, anyhow::Error>::Ok((result, missing.len(), detection, merkle, summary))
             }
             .await;
 
             match outcome {
-                Ok((result, embedded, detection, merkle)) => {
+                Ok((result, embedded, detection, merkle, summary)) => {
                     storage.finish_analysis(run_id, "completed", None).await?;
                     let feature_communities =
                         detection.communities.iter().filter(|c| c.size >= 2).count();
@@ -375,7 +379,12 @@ async fn main() -> Result<()> {
                             "feature_communities": feature_communities,
                             "quotient_edges": detection.quotient_edges.len(),
                             "modularity": detection.modularity,
-                            "repo_root_hash": merkle.repo_root_hash
+                            "repo_root_hash": merkle.repo_root_hash,
+                            "summaries": {
+                                "summarized": summary.summarized,
+                                "skipped": summary.skipped,
+                                "embed_calls": summary.embed_calls
+                            }
                         }))?
                     );
                 }

@@ -707,6 +707,8 @@ async fn analyze_repo(
         .await?;
         // L2: roll the content-hash leaves up to file/community/repo roots.
         let merkle = crate::merkle::compute_and_persist(storage, repo.id).await?;
+        // L3: hash-gated community summaries, embedded by the real embedder.
+        let summary = crate::community_summary::summarize_repo(storage, embedder, repo.id).await?;
         let feature_communities = detection.communities.iter().filter(|c| c.size >= 2).count();
         Result::<_, anyhow::Error>::Ok(json!({
             "repo_id": repo.id,
@@ -719,7 +721,12 @@ async fn analyze_repo(
             "feature_communities": feature_communities,
             "quotient_edges": detection.quotient_edges.len(),
             "modularity": detection.modularity,
-            "repo_root_hash": merkle.repo_root_hash
+            "repo_root_hash": merkle.repo_root_hash,
+            "summaries": {
+                "summarized": summary.summarized,
+                "skipped": summary.skipped,
+                "embed_calls": summary.embed_calls
+            }
         }))
     }
     .await;
