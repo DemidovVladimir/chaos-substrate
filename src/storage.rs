@@ -1,6 +1,7 @@
 use crate::{
     embedding::vector_literal,
     graph_export::{GraphExport, GraphExportEdge, GraphExportNode, GraphRepository},
+    hierarchy_export::{CommunityDetail, CommunityHierarchy, QuotientEdgeDetail},
     models::{
         ExtractionResult, KnowledgeChunk, KnowledgeEdge, KnowledgeNode, Repository, SearchHit,
         SourceFile,
@@ -828,6 +829,104 @@ impl Storage {
             .into_iter()
             .map(|r| r.get::<Uuid, _>("community_id"))
             .collect())
+    }
+
+    /// Load the full feature hierarchy (communities of size ≥ 2, their top
+    /// members, and the quotient edges among them) for surfacing. Read-only and
+    /// embedder-free; empty for a repo with no persisted communities.
+    pub async fn load_community_hierarchy(
+        &self,
+        repo: &Repository,
+        top_members: usize,
+    ) -> Result<CommunityHierarchy> {
+        let crows = sqlx::query(
+            r#"
+            select id, label, summary, member_count
+            from communities
+            where repo_id = $1 and member_count >= 2
+            order by member_count desc, label, id
+            "#,
+        )
+        .bind(repo.id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let feature_ids: std::collections::HashSet<Uuid> =
+            crows.iter().map(|r| r.get::<Uuid, _>("id")).collect();
+
+        // Members for all feature communities, grouped + capped in Rust.
+        let mrows = sqlx::query(
+            r#"
+            select cm.community_id, n.name, n.kind, coalesce(f.path, '') as path
+            from community_members cm
+            join communities c on c.id = cm.community_id
+            join nodes n on n.id = cm.node_id
+            left join files f on f.id = n.file_id
+            where c.repo_id = $1 and c.member_count >= 2 and n.kind <> 'file'
+            order by cm.community_id, n.kind, n.name, n.stable_id
+            "#,
+        )
+        .bind(repo.id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut members_by: HashMap<Uuid, Vec<(String, String, String)>> = HashMap::new();
+        for row in mrows {
+            let cid: Uuid = row.get("community_id");
+            let bucket = members_by.entry(cid).or_default();
+            if bucket.len() < top_members {
+                bucket.push((row.get("name"), row.get("kind"), row.get("path")));
+            }
+        }
+
+        let communities: Vec<CommunityDetail> = crows
+            .into_iter()
+            .map(|r| {
+                let id: Uuid = r.get("id");
+                CommunityDetail {
+                    top_members: members_by.remove(&id).unwrap_or_default(),
+                    id,
+                    label: r.get("label"),
+                    summary: r.get("summary"),
+                    member_count: r.get("member_count"),
+                }
+            })
+            .collect();
+
+        let erows = sqlx::query(
+            r#"
+            select source_community_id, target_community_id, kind, weight, edge_count
+            from community_edges
+            where repo_id = $1
+            order by weight desc, source_community_id, target_community_id
+            "#,
+        )
+        .bind(repo.id)
+        .fetch_all(&self.pool)
+        .await?;
+        let edges: Vec<QuotientEdgeDetail> = erows
+            .into_iter()
+            .filter_map(|r| {
+                let source: Uuid = r.get("source_community_id");
+                let target: Uuid = r.get("target_community_id");
+                if feature_ids.contains(&source) && feature_ids.contains(&target) {
+                    Some(QuotientEdgeDetail {
+                        source,
+                        target,
+                        kind: r.get("kind"),
+                        weight: r.get("weight"),
+                        edge_count: r.get("edge_count"),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(CommunityHierarchy {
+            repo_name: repo.name.clone(),
+            communities,
+            edges,
+        })
     }
 
     /// Map of node id -> the communities it belongs to, for a set of nodes.

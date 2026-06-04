@@ -165,9 +165,9 @@ index/query context instead of writing a weak page.
 
 If Claude only uses `chaos_query` for a feature explanation, the plugin is stale or MCP is exposing
 the old tool surface. Rebuild and re-upload `dist/chaos-substrate-cowork-plugin.zip`, then verify the
-MCP tool list contains all ten tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
+MCP tool list contains all eleven tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
 `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
-`chaos_refresh`, and `chaos_write_storyboard`.
+`chaos_refresh`, `chaos_write_storyboard`, and `chaos_change_plan`.
 
 Claude Cowork-style sandboxes may not be able to reach host Postgres or write project files
 directly. In that case, the agent should use the host MCP tools instead of claiming only the CLI can

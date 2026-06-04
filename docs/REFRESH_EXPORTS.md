@@ -53,13 +53,18 @@ graph automatically, because that turns a local flow step into an unreadable nei
 For plugin/MCP workflows, generate feature pages by first calling `chaos_feature_context`, then
 having the LLM compose the page and manifest, then calling `chaos_write_feature_website`.
 
-The MCP server exposes ten tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
+The MCP server exposes eleven tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
 `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
-`chaos_refresh`, and `chaos_write_storyboard`.
+`chaos_refresh`, `chaos_write_storyboard`, and `chaos_change_plan`.
 
 Both `chaos refresh` and `chaos obsidian` are now also available as MCP tools, so an agent can
 regenerate the Obsidian vault (`chaos_obsidian`) or refresh the vault and feature pages
 (`chaos_refresh`) directly over MCP, not only from the CLI.
+
+`chaos_refresh` and `chaos_obsidian` also regenerate the god-node community notes
+(`vault/Communities/*.md` plus `vault/Feature Map.md`) and an interactive
+`docs/features_memory/feature-map.html` from the persisted hierarchy layers — with no re-index and
+no embedder.
 
 For direct CLI debugging, generate a focused feature explanation page from the current index:
 

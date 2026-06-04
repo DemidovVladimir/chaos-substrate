@@ -207,11 +207,17 @@ pub async fn run(
             .clone()
             .unwrap_or_else(|| repo_root.join("chaos-obsidian-vault"));
         let summary = write_obsidian_vault(&output, &graph)?;
+        // Regenerate the god-node notes + feature map from the persisted layers.
+        let hierarchy = storage.load_community_hierarchy(&repo, 14).await?;
+        let features_dir = repo_root.join("docs/features_memory");
+        let hier = crate::hierarchy_export::write_hierarchy(&output, &features_dir, &hierarchy)?;
         json!({
             "output": summary.output,
             "topics": summary.topics,
             "node_notes": summary.node_notes,
             "edges": summary.edges,
+            "community_notes": hier.community_notes,
+            "feature_map_html": hier.feature_map_html,
         })
     };
 

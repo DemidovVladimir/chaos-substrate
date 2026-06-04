@@ -18,6 +18,29 @@ Use this skill when working on or operating Chaos Substrate, a Rust-only code kn
 - Source code is prioritized over docs during code-repository queries. Markdown/MDX docs and
   extractable text PDFs are indexed as supplemental context, not ignored.
 
+## Hierarchical Memory (L0/L1/L2/L3)
+
+The base graph is the L0 multigraph (files, symbols, chunks, edges). Layered on top of it — all in
+Rust, all additive, never replacing L0 — is a hierarchy that lets agents reason at the feature level:
+
+- L1 communities / "god-nodes" / features: a deterministic Louvain partition of the graph
+  (`src/community.rs`) persisted as the `communities`, `community_members`, and `community_edges`
+  (quotient graph) tables. Migration `migrations/002_communities.sql`.
+- L2 Merkle rollup: each chunk `content_hash` rolls up into file -> community -> repo `subtree_hash`
+  (`src/merkle.rs`), driving `chaos add`'s feature "blast radius". Migration
+  `migrations/003_subtree_hash.sql`.
+- L3 hash-gated community summaries embedded by the REAL embedder (`src/community_summary.rs`,
+  `community_embeddings` table). Summaries are regenerated only when a community's subtree hash
+  changes, so a no-change re-index makes ZERO summary embed calls. Migration
+  `migrations/004_community_summary.sql`.
+- `src/change_plan.rs` powers `chaos_change_plan`; `src/hierarchy_export.rs` writes the Obsidian
+  god-node notes and the feature-map HTML.
+
+Everything is additive: a repository indexed before the hierarchy existed still answers
+`chaos_query`, `chaos_stats`, and `chaos_add`. The hierarchy surfaces through `chaos_query`'s
+`hierarchical` option, `chaos_change_plan`, and the god-node community notes / feature map that
+`chaos_obsidian` and `chaos_refresh` regenerate.
+
 ## Hard Boundaries
 
 - Do not edit `Cargo.toml` or `src/` unless the user explicitly asks.
@@ -41,7 +64,10 @@ If MCP tools are available, prefer them over shelling out:
    Postgres: totals (files, nodes, edges, chunks, embedded vs missing, split chunks) plus breakdowns
    of nodes by kind, edges by kind, chunks by type, and files by language. It is read-only and
    embedder-free; use it to explain or sanity-check what an `chaos_analyze`/`chaos_add` produced.
-4. Use `chaos_query` for focused questions.
+4. Use `chaos_query` for focused questions. It takes an optional `hierarchical` boolean (CLI
+   `query --hierarchical`): top-down retrieval that matches feature (community) summaries first and
+   returns the surfaced features alongside the chunk hits, falling back to flat search when no
+   hierarchy exists.
 5. Use `chaos_feature_context` when the user asks to explain a feature, prepare implementation
    context, or generate a feature explanation.
 6. Use `chaos_impact` to build a feature-vs-existing-code impact report for an indexed repo. It
@@ -82,6 +108,14 @@ If MCP tools are available, prefer them over shelling out:
     `chaos_write_feature_website`: storyboard = users & experience (no code); feature website =
     engineers, graph, architecture, and source. It mirrors the
     `chaos storyboard <repo> --manifest <file.json>` CLI command.
+11. Use `chaos_change_plan` to decompose a proposed change into the FEATURES (L1 communities /
+    god-nodes) it spans, with a dependency-aware check order. It matches the change description
+    against community summary embeddings (optionally also seeding from a real git diff via `since`),
+    then ALWAYS writes an interactive Blade-Runner HTML plan to
+    `docs/features_memory/<slug>-plan.html` and returns a COMPACT JSON summary — per-feature label,
+    confidence, check order, top symbols, and the HTML path. The full plan lives only in the HTML, so
+    it will not flood an agent context. It mirrors the `chaos change-plan <repo> "<change>"
+    [--since <ref>]` CLI command.
 
 Treat `chaos_feature_context.warnings` as blocking for generated feature websites. If it says a
 filesystem path exists but no Postgres hits referenced it, or that docs exist but no docs were
@@ -253,9 +287,9 @@ Use a real Postgres database with pgvector for persistence tests. Use real OpenA
 - MCP transport is stdio.
 - The process should be launched directly by the agent client.
 - Keep stdout protocol-clean; diagnostics should go to stderr or structured logging that does not corrupt MCP messages.
-- MCP tools are `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`, `chaos_feature_context`,
-  `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`, `chaos_refresh`, and
-  `chaos_write_storyboard`.
+- The MCP server exposes ELEVEN tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
+  `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
+  `chaos_refresh`, `chaos_write_storyboard`, and `chaos_change_plan`.
 - `chaos_add` incrementally indexes only git-changed files (or explicit `paths`), refreshes the
   Obsidian vault, and writes a feature/bug page in one call; use it instead of a full
   `chaos_analyze` after small edits.
@@ -264,6 +298,10 @@ Use a real Postgres database with pgvector for persistence tests. Use real OpenA
   by kind, chunks by type, and files by language for an already-indexed repository; use it to
   explain or sanity-check what an analyze/add produced. It mirrors the `chaos stats <repo>` CLI
   command.
+- `chaos_query` answers focused source-grounded questions; its optional `hierarchical` boolean (CLI
+  `query --hierarchical`) does top-down retrieval that matches feature (community) summaries first and
+  returns the surfaced features alongside the chunk hits, falling back to flat search when no
+  hierarchy exists.
 - `chaos_feature_context` is the MCP equivalent of `chaos-agent context`.
 - `chaos_impact` builds a feature-vs-existing-code impact report for an indexed repo; it ALWAYS
   writes an interactive HTML (impact summary plus evidence dashboard) to
@@ -274,10 +312,16 @@ Use a real Postgres database with pgvector for persistence tests. Use real OpenA
 - `chaos_write_feature_website` is the MCP-safe write path for LLM-composed feature explanation
   pages with embedded `chaos-feature-manifest` JSON.
 - `chaos_obsidian` exports an already-indexed repository as an Obsidian vault read from the
-  persisted graph; it lets an MCP-only agent generate the vault without shelling out to the CLI.
+  persisted graph; it lets an MCP-only agent generate the vault without shelling out to the CLI. It
+  now also regenerates god-node community notes (`vault/Communities/*.md` plus a `Feature Map.md`)
+  and an interactive `docs/features_memory/feature-map.html` from the persisted layers — no re-index
+  and no embedder.
 - `chaos_refresh` regenerates the Obsidian vault and, with `all_features=true`, re-renders the
   deterministic feature pages in `docs/features_memory` from their embedded manifests without
-  re-indexing; it lets an MCP-only agent refresh pages without shelling out to the CLI.
+  re-indexing; it lets an MCP-only agent refresh pages without shelling out to the CLI. It also
+  regenerates the god-node community notes (`vault/Communities/*.md` plus `Feature Map.md`) and the
+  interactive `docs/features_memory/feature-map.html` from the persisted layers, with no re-index and
+  no embedder.
 - `chaos_write_storyboard` is the MCP-safe write path for a client/user-facing storyboard: a
   code-free UI/UX user-story page (personas, "As a … I want … so that …" stories, clickable frames,
   outcomes, and confidence rings) rendered in a fixed dark Blade Runner theme and written to
@@ -290,3 +334,10 @@ Use a real Postgres database with pgvector for persistence tests. Use real OpenA
   It is user-facing — use
   `chaos_write_feature_website` for the engineer-facing graph/architecture/code page. It mirrors the
   `chaos storyboard <repo> --manifest <file.json>` CLI command.
+- `chaos_change_plan` decomposes a proposed change into the FEATURES (L1 communities / god-nodes) it
+  spans, with a dependency-aware check order. It matches the change description against community
+  summary embeddings (optionally also seeding from a real git diff via `since`), then ALWAYS writes
+  an interactive Blade-Runner HTML plan to `docs/features_memory/<slug>-plan.html` and returns a
+  COMPACT JSON summary — per-feature label, confidence, check order, top symbols, and the HTML path —
+  keeping the full plan in the HTML only so it will not flood an agent context. It mirrors the
+  `chaos change-plan <repo> "<change>" [--since <ref>]` CLI command.

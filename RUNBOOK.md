@@ -28,6 +28,8 @@ docker compose up -d
 cp chaos-substrate.example.toml chaos-substrate.toml   # if you keep an example; otherwise edit chaos-substrate.toml
 
 # 3. Apply database migrations (sqlx::migrate!, tracked in _sqlx_migrations)
+#    Includes the hierarchy layers: 002_communities (L1 god-nodes),
+#    003_subtree_hash (L2 Merkle rollup), 004_community_summary (L3 summaries).
 cargo run -- migrate
 # or: target/release/chaos --config chaos-substrate.toml migrate
 
@@ -55,6 +57,10 @@ chaos refresh /path/to/repo --all-features
 
 `analyze` requires a real embedder (OpenAI or Ollama). If none is configured, analysis
 **fails by design** — never produces fake/random vectors.
+
+`refresh` (and `obsidian`) also regenerate god-node community notes from the persisted layers —
+`vault/Communities/*.md` plus a `Feature Map.md`, and an interactive
+`docs/features_memory/feature-map.html` — with **no** re-index and **no** embedder.
 
 ## Add (incremental)
 
@@ -104,9 +110,14 @@ before re-indexing.
 ```sh
 chaos query /path/to/repo "How does the embedder retry on failure?"
 chaos query /path/to/repo "Where are call edges built?" --limit 20
+chaos query /path/to/repo "Where is auth handled?" --hierarchical
 ```
 
 `--limit N` controls the number of retrieved results (default 10).
+
+`--hierarchical` switches to top-down retrieval: it matches feature (community) summaries first and
+returns the surfaced features alongside the chunk hits, falling back to flat search when the repo has
+no hierarchy.
 
 ## Stats
 
@@ -147,6 +158,19 @@ impact summary + the evidence dashboard) to `docs/features_memory/<slug>-impact.
 a feature maps onto the codebase as it is today (the "before"). Unlike `feature-context` (which only
 writes HTML when `--output-html` is passed), `impact` always produces the page.
 
+## Change Plan
+
+```sh
+chaos change-plan /path/to/repo "Add OAuth login and refresh tokens"
+chaos change-plan /path/to/repo "Add OAuth login and refresh tokens" --since HEAD~3
+```
+
+Decomposes a proposed change into the **features** (L1 communities / god-nodes) it spans, with a
+dependency-aware check order. It matches the change description against the community summary
+embeddings (optionally also seeding from a real git diff via `--since`), then **always** writes an
+interactive Blade-Runner HTML plan to `docs/features_memory/<slug>-plan.html` and prints a compact
+summary (per-feature label, confidence, check order, top symbols, HTML path).
+
 ## Exports
 
 ```sh
@@ -158,6 +182,9 @@ chaos obsidian /path/to/repo
 chaos obsidian /path/to/repo -o vault
 ```
 
+`obsidian` also emits god-node community notes (`vault/Communities/*.md` + `Feature Map.md`) and
+`docs/features_memory/feature-map.html` from the persisted layers — no re-index, no embedder.
+
 ## MCP Server
 
 Run the MCP server over stdio (newline-delimited JSON-RPC, **no** Content-Length framing).
@@ -167,9 +194,10 @@ Use the release binary directly:
 target/release/chaos --config chaos-substrate.toml mcp
 ```
 
-Exposes exactly 10 tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
+Exposes exactly 11 tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
 `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
-`chaos_refresh`, `chaos_write_storyboard` (see README.md "MCP Tools" for the full reference).
+`chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan` (see README.md "MCP Tools" for the
+full reference).
 
 Validate the server responds with a single JSON line:
 

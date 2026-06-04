@@ -1,6 +1,6 @@
 # Hierarchical Memory Roadmap — Layered Index (L0 / L1 / L2)
 
-> **Status:** Draft for review · **Last updated:** 2026-06-04 · **Owner:** _unassigned_
+> **Status:** ✅ Implemented (P0–P5 all green) · **Last updated:** 2026-06-04 · **Owner:** _unassigned_
 >
 > This document is the single source of truth for evolving Chaos Substrate from a
 > flat multigraph into a **layered, hierarchical memory**. It is written to be
@@ -120,7 +120,7 @@ PR in every phase must hold these:
 | **P2** | Hash-rollup (Merkle) layer | P1 | subtree hashes rolled to community/repo roots; changed-community detection in `add` | ☑ Done |
 | **P3** | Summary tree (god-node summaries) | P1, P2 | hash-gated summaries + embeddings per community | ☑ Done |
 | **P4** | Top-down retrieval + decomposition tool | P1 (P3 for quality) | hierarchical retrieval path + `chaos_change_plan` MCP tool | ☑ Done |
-| **P5** | Surfacing + delivery | P1–P4 | HTML/Obsidian hierarchy views, SKILL.md, plugin repackage | ☐ Not started |
+| **P5** | Surfacing + delivery | P1–P4 | HTML/Obsidian hierarchy views, SKILL.md, plugin repackage | ☑ Done |
 
 Legend: ☐ Not started · ◐ In progress · ☑ Done (validation passed).
 
@@ -286,11 +286,13 @@ flat; tool output is compact + writes the HTML.
 **Goal.** Make the hierarchy visible and ship it through the plugin convention.
 
 **Tasks.**
-- ☐ **P5-T1** Obsidian export (`src/obsidian_export.rs`): render god-node notes (one per community) with member links + quotient-edge links; add a top-level "feature map."
-- ☐ **P5-T2** Graph/feature HTML (`src/graph_export.rs` / `feature_export.rs`): a navigable feature map (communities as nodes, quotient edges between them, drill-down into members). Blade Runner theme.
-- ☐ **P5-T3** Update `chaos_refresh` to regenerate the hierarchy views from the persisted layers (no re-index).
-- ☐ **P5-T4** Docs: `SKILL.md` entry for `chaos_change_plan` + the hierarchy concept; update `ARCHITECTURE.md`, `RUNBOOK.md`, and any hardcoded tool-count references.
-- ☐ **P5-T5** Repackage the local-marketplace plugin per the delivery convention (version bump + `scripts/package-cowork-plugin`); keep tool-count docs in sync.
+- ☑ **P5-T1** `src/hierarchy_export.rs::write_community_notes`: one god-node note per feature community (`vault/Communities/*.md`) with summary, key members, and `[[…]]` quotient-edge links to peer features, plus a top-level `Feature Map.md` index.
+- ☑ **P5-T2** `src/hierarchy_export.rs::write_feature_map_html`: a navigable `docs/features_memory/feature-map.html` — communities as nodes (sized by members) on a deterministic layout, quotient edges, click-to-drill into summary + members + connections. Blade Runner theme.
+- ☑ **P5-T3** `chaos_refresh` / `chaos_obsidian` / `chaos add` regenerate the hierarchy views from the persisted layers — `Storage::load_community_hierarchy` is a pure read; **refresh builds no embedder**.
+- ☑ **P5-T4** Docs: `SKILL.md` + `CLAUDE.md` gained `chaos_change_plan` + a hierarchy (L0–L3) section; `ARCHITECTURE.md`, `RUNBOOK.md`, `README.md`, and the six `docs/*.md` files updated to **11 tools** with `chaos_change_plan` in every list.
+- ☑ **P5-T5** Version bumped `0.8.0 → 0.9.0` (Cargo.toml + both `plugin.json` + `marketplace.json`); `scripts/package-cowork-plugin` produced `dist/chaos-substrate-cowork-plugin-0.9.0.zip` (bundles the new `src/`, `migrations/`, `skills/`, release binary).
+
+  *Validation:* hierarchy_export unit tests (notes + cross-links, HTML markers, empty-hierarchy no-op). Real-data `chaos refresh` on `chaos-substrate` wrote 28 god-node notes + `Feature Map.md` + an 85 KB feature-map.html **with no embedder built**. MCP stdio serves **11** tools and a `chaos_change_plan` `tools/call` round-trip works; doc tool count matches the served surface; plugin builds + packages at 0.9.0.
 
 **Validation.**
 - Standing gates.

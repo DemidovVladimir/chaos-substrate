@@ -2,6 +2,7 @@ use crate::{
     export_util::escape_script_json,
     feature_context::{read_feature_manifest, FeatureContextNode, FeatureManifest},
     graph_export::GraphExport,
+    hierarchy_export::{write_hierarchy, CommunityHierarchy},
     obsidian_export::{write_obsidian_vault, ObsidianSummary},
 };
 use anyhow::Result;
@@ -14,6 +15,10 @@ pub struct RefreshSummary {
     pub obsidian: ObsidianSummary,
     pub feature_pages: Vec<PathBuf>,
     pub skipped_feature_pages: Vec<PathBuf>,
+    /// Number of god-node (community) notes written into the vault.
+    pub community_notes: usize,
+    /// Path of the navigable feature-map HTML, if the hierarchy was present.
+    pub feature_map_html: Option<PathBuf>,
 }
 
 pub fn refresh_project_exports(
@@ -22,8 +27,19 @@ pub fn refresh_project_exports(
     features_dir: &Path,
     all_features: bool,
     repo_root: &Path,
+    hierarchy: Option<&CommunityHierarchy>,
 ) -> Result<RefreshSummary> {
     let obsidian = write_obsidian_vault(obsidian_output, graph)?;
+
+    // L1/L3 hierarchy views (god-node notes + feature map) — regenerated from
+    // the persisted layers, no re-index and no embedder.
+    let (community_notes, feature_map_html) = match hierarchy {
+        Some(h) if !h.is_empty() => {
+            let summary = write_hierarchy(obsidian_output, features_dir, h)?;
+            (summary.community_notes, summary.feature_map_html)
+        }
+        _ => (0, None),
+    };
 
     let mut feature_pages = Vec::new();
     let mut skipped_feature_pages = Vec::new();
@@ -49,6 +65,8 @@ pub fn refresh_project_exports(
         obsidian,
         feature_pages,
         skipped_feature_pages,
+        community_notes,
+        feature_map_html,
     })
 }
 

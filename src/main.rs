@@ -10,6 +10,7 @@ mod feature_context;
 mod feature_export;
 mod graph;
 mod graph_export;
+mod hierarchy_export;
 mod hook;
 mod impact;
 mod lang;
@@ -622,6 +623,8 @@ async fn main() -> Result<()> {
                 .with_context(|| format!("repository is not indexed: {repo}"))?;
             let graph = storage.load_graph_export(&repo).await?;
             let summary = write_obsidian_vault(&output, &graph)?;
+            let hierarchy = storage.load_community_hierarchy(&repo, 14).await?;
+            let hier = hierarchy_export::write_hierarchy(&output, &output, &hierarchy)?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&json!({
@@ -629,7 +632,9 @@ async fn main() -> Result<()> {
                     "repo_id": repo.id,
                     "topics": summary.topics,
                     "node_notes": summary.node_notes,
-                    "edges": summary.edges
+                    "edges": summary.edges,
+                    "community_notes": hier.community_notes,
+                    "feature_map_html": hier.feature_map_html
                 }))?
             );
         }
@@ -645,6 +650,7 @@ async fn main() -> Result<()> {
                 .await?
                 .with_context(|| format!("repository is not indexed: {repo}"))?;
             let graph = storage.load_graph_export(&repo).await?;
+            let hierarchy = storage.load_community_hierarchy(&repo, 14).await?;
             let repo_root = PathBuf::from(&repo.root_path);
             let obsidian_output =
                 obsidian_output.unwrap_or_else(|| repo_root.join("chaos-obsidian-vault"));
@@ -656,6 +662,7 @@ async fn main() -> Result<()> {
                 &features_dir,
                 all_features,
                 &repo_root,
+                Some(&hierarchy),
             )?;
             println!(
                 "{}",
@@ -669,7 +676,9 @@ async fn main() -> Result<()> {
                     },
                     "features_dir": features_dir,
                     "feature_pages": summary.feature_pages,
-                    "skipped_feature_pages": summary.skipped_feature_pages
+                    "skipped_feature_pages": summary.skipped_feature_pages,
+                    "community_notes": summary.community_notes,
+                    "feature_map_html": summary.feature_map_html
                 }))?
             );
         }

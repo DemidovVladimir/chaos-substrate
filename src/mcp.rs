@@ -461,12 +461,16 @@ async fn handle_tool_call(
                 .unwrap_or_else(|| repo_root.join("chaos-obsidian-vault"));
             let graph = storage.load_graph_export(&repo).await?;
             let summary = write_obsidian_vault(&output, &graph)?;
+            let hierarchy = storage.load_community_hierarchy(&repo, 14).await?;
+            let hier = crate::hierarchy_export::write_hierarchy(&output, &output, &hierarchy)?;
             Ok(tool_text(serde_json::to_string_pretty(&json!({
                 "output": summary.output,
                 "repo_id": repo.id,
                 "topics": summary.topics,
                 "node_notes": summary.node_notes,
-                "edges": summary.edges
+                "edges": summary.edges,
+                "community_notes": hier.community_notes,
+                "feature_map_html": hier.feature_map_html
             }))?))
         }
         "chaos_refresh" => {
@@ -494,12 +498,14 @@ async fn handle_tool_call(
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             let graph = storage.load_graph_export(&repo).await?;
+            let hierarchy = storage.load_community_hierarchy(&repo, 14).await?;
             let summary = refresh_project_exports(
                 &graph,
                 &obsidian_output,
                 &features_dir,
                 all_features,
                 &repo_root,
+                Some(&hierarchy),
             )?;
             Ok(tool_text(serde_json::to_string_pretty(&json!({
                 "repo_id": repo.id,
@@ -511,7 +517,9 @@ async fn handle_tool_call(
                 },
                 "features_dir": features_dir,
                 "feature_pages": summary.feature_pages,
-                "skipped_feature_pages": summary.skipped_feature_pages
+                "skipped_feature_pages": summary.skipped_feature_pages,
+                "community_notes": summary.community_notes,
+                "feature_map_html": summary.feature_map_html
             }))?))
         }
         "chaos_write_storyboard" => {

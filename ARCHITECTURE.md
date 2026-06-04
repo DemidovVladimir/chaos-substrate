@@ -37,6 +37,8 @@ embeddings (chunk content → vectors)  ──  src/embedding.rs
   ▼
 Postgres + pgvector  ──  src/storage.rs (sqlx)
       tables: repositories, analysis_runs, files, nodes, edges, chunks, embeddings
+      hierarchy (additive): communities, community_members, community_edges,
+                            subtree_hash rollup, community_embeddings
   │
   ▼
 hybrid retrieval  ──  src/query.rs
@@ -45,7 +47,7 @@ hybrid retrieval  ──  src/query.rs
   ▼
 outputs
   ├─ CLI results (JSON on stdout)              ──  src/main.rs
-  ├─ MCP tools (10)                            ──  src/mcp.rs
+  ├─ MCP tools (11)                            ──  src/mcp.rs
   ├─ interactive graph.html                    ──  src/graph_export.rs
   ├─ Obsidian vault                            ──  src/obsidian_export.rs
   └─ feature context + feature websites        ──  src/feature_context.rs, src/feature_export.rs
@@ -98,13 +100,53 @@ table. Migrations run via `sqlx::migrate!` and are tracked in `_sqlx_migrations`
 | Change the **plugin hook** behavior              | `src/hook.rs`                                                    |
 | Change **HTML generation / escaping**            | `src/export_util.rs`, `src/graph_export.rs` (feature pages: `src/feature_export.rs`) |
 | Change **Obsidian vault** output                 | `src/obsidian_export.rs`                                         |
+| Change **community detection** (L1 features)     | `src/community.rs`                                               |
+| Change the **Merkle rollup** (L2 blast radius)   | `src/merkle.rs`                                                  |
+| Change **community summaries** (L3)              | `src/community_summary.rs`                                       |
+| Change the **change-plan** tool                  | `src/change_plan.rs`                                             |
+| Change **god-node / feature-map export**         | `src/hierarchy_export.rs`                                        |
+
+## Hierarchical (Layered) Memory
+
+On top of the L0 multigraph, Chaos Substrate maintains an **additive, all-Rust hierarchy**. It is
+purely additive: a repository indexed before the hierarchy existed still answers `query`, `stats`,
+and `add` exactly as before.
+
+- **L0 — multigraph.** The base typed knowledge graph (nodes, edges, chunks, embeddings) described
+  above.
+- **L1 — communities / "god-nodes" / features.** A deterministic Louvain pass in `src/community.rs`
+  clusters L0 into features, persisted as a quotient graph in the `communities`,
+  `community_members`, and `community_edges` tables (`migrations/002_communities.sql`).
+- **L2 — Merkle rollup.** `src/merkle.rs` rolls each chunk's `content_hash` up into
+  file / community / repo `subtree_hash`es, which drive `chaos add`'s per-feature **blast radius**
+  (`migrations/003_subtree_hash.sql`).
+- **L3 — community summaries.** `src/community_summary.rs` produces hash-gated, embedded summaries
+  per community (`community_embeddings` table, `migrations/004_community_summary.sql`). The gate
+  means a no-change re-index makes **zero** summary embed calls.
+
+`src/change_plan.rs` powers the `chaos_change_plan` tool over these layers, and
+`src/hierarchy_export.rs` renders the god-node Obsidian notes and feature map. Accordingly,
+`chaos_refresh` / `chaos_obsidian` now also regenerate god-node community notes
+(`vault/Communities/*.md` + `Feature Map.md`) and an interactive
+`docs/features_memory/feature-map.html` straight from the persisted layers — with **no re-index and
+no embedder**.
 
 ## MCP Tools
 
-The stdio MCP server exposes exactly ten tools: `chaos_analyze`, `chaos_add`, `chaos_stats`,
+The stdio MCP server exposes exactly eleven tools: `chaos_analyze`, `chaos_add`, `chaos_stats`,
 `chaos_query`, `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`,
-`chaos_obsidian`, `chaos_refresh`, and `chaos_write_storyboard`. See the **MCP Tools** section of `README.md` for the
+`chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, and `chaos_change_plan`. See the **MCP Tools** section of `README.md` for the
 canonical reference of names, arguments, and intended usage.
+
+`chaos_change_plan` (CLI `chaos change-plan <repo> "<change>" [--since <ref>]`) decomposes a
+proposed change into the **features** (L1 communities / god-nodes) it spans, with a
+dependency-aware check order. It matches the change description against community summary
+embeddings (optionally also seeding from a real git diff via `since`), then ALWAYS writes an
+interactive Blade-Runner HTML plan to `docs/features_memory/<slug>-plan.html` and returns a compact
+JSON summary (per-feature label, confidence, check order, top symbols, HTML path). `chaos_query`
+also gained an optional `hierarchical` flag (CLI `query --hierarchical`) for top-down retrieval that
+matches feature (community) summaries first and returns the surfaced features alongside the chunk
+hits, falling back to flat search when no hierarchy exists. See the layered-memory section below.
 
 ## Hard Rules (non-negotiable)
 
