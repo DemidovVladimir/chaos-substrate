@@ -1010,7 +1010,11 @@ impl Storage {
                 (select count(*) from nodes) as nodes, \
                 (select count(*) from edges) as edges, \
                 (select count(*) from chunks) as chunks, \
-                (select count(*) from embeddings) as embeddings",
+                (select count(*) from embeddings) as embeddings, \
+                (select count(*) from communities) as communities, \
+                (select count(*) from community_members) as community_members, \
+                (select count(*) from community_edges) as community_edges, \
+                (select count(*) from community_embeddings) as community_embeddings",
         )
         .fetch_one(&self.pool)
         .await?;
@@ -1022,6 +1026,10 @@ impl Storage {
             "edges": row.get::<i64, _>("edges"),
             "chunks": row.get::<i64, _>("chunks"),
             "embeddings": row.get::<i64, _>("embeddings"),
+            "communities": row.get::<i64, _>("communities"),
+            "community_members": row.get::<i64, _>("community_members"),
+            "community_edges": row.get::<i64, _>("community_edges"),
+            "community_embeddings": row.get::<i64, _>("community_embeddings"),
         }))
     }
 
