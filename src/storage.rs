@@ -707,6 +707,200 @@ impl Storage {
         Ok(())
     }
 
+    // ---- L1/L3 top-down retrieval support (P4) ------------------------------
+
+    /// Cosine match of a query embedding against community summary embeddings —
+    /// the top-down entry point. Returns the best-matching god-nodes.
+    pub async fn community_semantic_search(
+        &self,
+        repo_id: Uuid,
+        provider: &str,
+        model_id: &str,
+        dimensions: usize,
+        query_embedding: &[f32],
+        limit: i64,
+    ) -> Result<Vec<CommunityMatch>> {
+        let literal = vector_literal(query_embedding);
+        let rows = sqlx::query(
+            r#"
+            select c.id, c.label, c.summary, c.member_count,
+                   1.0 - (ce.embedding <=> $5::vector) as score
+            from community_embeddings ce
+            join communities c on c.id = ce.community_id
+            where c.repo_id = $1 and ce.provider = $2 and ce.model_id = $3 and ce.dimensions = $4
+            order by ce.embedding <=> $5::vector
+            limit $6
+            "#,
+        )
+        .bind(repo_id)
+        .bind(provider)
+        .bind(model_id)
+        .bind(dimensions as i32)
+        .bind(literal)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(row_to_community_match).collect())
+    }
+
+    /// Briefs (no score) for a set of community ids — used to describe
+    /// diff-seeded communities that did not come from the embedding match.
+    pub async fn load_community_briefs(
+        &self,
+        repo_id: Uuid,
+        ids: &[Uuid],
+    ) -> Result<Vec<CommunityMatch>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"
+            select id, label, summary, member_count, 0.0::float8 as score
+            from communities
+            where repo_id = $1 and id = any($2)
+            order by member_count desc, id
+            "#,
+        )
+        .bind(repo_id)
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(row_to_community_match).collect())
+    }
+
+    /// Representative member symbols of a community (file nodes excluded).
+    pub async fn load_community_top_symbols(
+        &self,
+        community_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<(String, String, String)>> {
+        let rows = sqlx::query(
+            r#"
+            select n.name, n.kind, coalesce(f.path, '') as path
+            from community_members cm
+            join nodes n on n.id = cm.node_id
+            left join files f on f.id = n.file_id
+            where cm.community_id = $1 and n.kind <> 'file'
+            order by n.kind, n.name, n.stable_id
+            limit $2
+            "#,
+        )
+        .bind(community_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.get::<String, _>("name"),
+                    r.get::<String, _>("kind"),
+                    r.get::<String, _>("path"),
+                )
+            })
+            .collect())
+    }
+
+    /// Distinct communities whose members live in any of `paths` — the
+    /// communities a concrete diff directly touches.
+    pub async fn communities_for_files(
+        &self,
+        repo_id: Uuid,
+        paths: &[String],
+    ) -> Result<Vec<Uuid>> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"
+            select distinct cm.community_id
+            from community_members cm
+            join nodes n on n.id = cm.node_id
+            join files f on f.id = n.file_id
+            where f.repo_id = $1 and f.path = any($2)
+            "#,
+        )
+        .bind(repo_id)
+        .bind(paths)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| r.get::<Uuid, _>("community_id"))
+            .collect())
+    }
+
+    /// Map of node id -> the communities it belongs to, for a set of nodes.
+    /// Used by hierarchical retrieval to boost hits inside matched god-nodes.
+    pub async fn node_communities(
+        &self,
+        repo_id: Uuid,
+        node_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, Vec<Uuid>>> {
+        if node_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows = sqlx::query(
+            r#"
+            select cm.node_id, cm.community_id
+            from community_members cm
+            join communities c on c.id = cm.community_id
+            where c.repo_id = $1 and cm.node_id = any($2)
+            "#,
+        )
+        .bind(repo_id)
+        .bind(node_ids)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut map: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
+        for row in rows {
+            map.entry(row.get::<Uuid, _>("node_id"))
+                .or_default()
+                .push(row.get::<Uuid, _>("community_id"));
+        }
+        Ok(map)
+    }
+
+    /// Directed dependency links between the given communities, derived from L0
+    /// edge direction (an edge from a node in A to a node in B ⇒ A → B). Used to
+    /// topo-sort a change plan's check order. Returns `(src, dst, count)`.
+    pub async fn directed_community_links(
+        &self,
+        repo_id: Uuid,
+        ids: &[Uuid],
+    ) -> Result<Vec<(Uuid, Uuid, i64)>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"
+            select sc.community_id as src, tc.community_id as dst, count(*)::bigint as n
+            from edges e
+            join community_members sc on sc.node_id = e.source_node_id
+            join community_members tc on tc.node_id = e.target_node_id
+            where e.repo_id = $1
+              and sc.community_id = any($2) and tc.community_id = any($2)
+              and sc.community_id <> tc.community_id
+            group by sc.community_id, tc.community_id
+            order by src, dst
+            "#,
+        )
+        .bind(repo_id)
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.get::<Uuid, _>("src"),
+                    r.get::<Uuid, _>("dst"),
+                    r.get::<i64, _>("n"),
+                )
+            })
+            .collect())
+    }
+
     /// Row counts per persisted table, used to report what a clean removed.
     pub async fn table_counts(&self) -> Result<Value> {
         let row = sqlx::query(
@@ -1222,6 +1416,17 @@ impl Storage {
     }
 }
 
+/// A community matched during top-down retrieval / change planning.
+#[derive(Debug, Clone)]
+pub struct CommunityMatch {
+    pub id: Uuid,
+    pub label: String,
+    pub summary: Option<String>,
+    pub member_count: i32,
+    /// Cosine similarity to the query (0.0 for briefs not from the embedding match).
+    pub score: f64,
+}
+
 /// Deterministically-ordered inputs for an extractive community summary
 /// (see `src/community_summary.rs`).
 #[derive(Debug, Clone)]
@@ -1407,6 +1612,16 @@ fn row_to_edge(row: sqlx::postgres::PgRow) -> KnowledgeEdge {
         cost: row.get("cost"),
         confidence: row.get("confidence"),
         metadata: row.get("metadata"),
+    }
+}
+
+fn row_to_community_match(row: sqlx::postgres::PgRow) -> CommunityMatch {
+    CommunityMatch {
+        id: row.get("id"),
+        label: row.get("label"),
+        summary: row.get("summary"),
+        member_count: row.get("member_count"),
+        score: row.get("score"),
     }
 }
 
@@ -1945,6 +2160,83 @@ mod db_tests {
         .unwrap();
         assert_eq!(summarized, 0, "no summary text may be written on failure");
 
+        storage.purge_repository(repo.id).await.expect("purge");
+    }
+
+    /// P4 decomposition golden test: a description naming symbols from both
+    /// clusters spans both features; one naming a single cluster's symbols leads
+    /// with that feature. Determinism: same change ⇒ same feature set + order.
+    #[tokio::test]
+    async fn change_plan_decomposes_into_features() {
+        let Some(url) = db_url() else {
+            eprintln!("skip change_plan_decomposes: DATABASE_URL unset");
+            return;
+        };
+        let storage = Storage::connect(&url).await.expect("connect");
+        storage.migrate().await.expect("migrate");
+        let Some(embedder) = try_real_embedder().await else {
+            eprintln!("skip change_plan_decomposes: real embedder unavailable");
+            return;
+        };
+        let repo = index_two_clusters(&storage).await;
+        crate::community_summary::summarize_repo(&storage, embedder.as_ref(), repo.id)
+            .await
+            .expect("summarize");
+
+        let out = std::env::temp_dir().join(format!("plan-{}.html", Uuid::new_v4()));
+        let opts = crate::change_plan::ChangePlanOptions {
+            output_html: Some(out.clone()),
+            diff_since: None,
+            limit: 8,
+        };
+
+        // Mentions symbols from BOTH clusters ⇒ spans ≥2 features.
+        let both = crate::change_plan::run(
+            &storage,
+            embedder.as_ref(),
+            &repo.root_path,
+            "update functions c0_f0 c0_f1 c0_f2 and c1_f0 c1_f1 c1_f2 across a/a.rs and b/b.rs",
+            &opts,
+        )
+        .await
+        .expect("plan both");
+        assert!(out.exists(), "plan HTML must be written");
+        let n = both["feature_count"].as_u64().unwrap();
+        assert!(
+            n >= 2,
+            "a both-cluster change must span >=2 features, got {n}"
+        );
+
+        // Determinism: same change ⇒ identical feature set + order.
+        let again = crate::change_plan::run(
+            &storage,
+            embedder.as_ref(),
+            &repo.root_path,
+            "update functions c0_f0 c0_f1 c0_f2 and c1_f0 c1_f1 c1_f2 across a/a.rs and b/b.rs",
+            &opts,
+        )
+        .await
+        .expect("plan again");
+        let labels = |v: &serde_json::Value| -> Vec<String> {
+            v["features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f["label"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(labels(&both), labels(&again), "same change => same plan");
+
+        // Compact JSON discipline: the returned payload stays small (detail is
+        // in the HTML), bounded well under a feature_context-style dump.
+        let payload = serde_json::to_string(&both).unwrap();
+        assert!(
+            payload.len() < 8000,
+            "plan JSON must be compact, got {}",
+            payload.len()
+        );
+
+        let _ = std::fs::remove_file(&out);
         storage.purge_repository(repo.id).await.expect("purge");
     }
 }

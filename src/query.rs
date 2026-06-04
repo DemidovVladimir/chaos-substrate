@@ -15,6 +15,103 @@ pub struct QueryResponse {
     pub context_paths: Vec<ContextPath>,
 }
 
+/// A god-node (community) the query routed into — the top-down entry point.
+#[derive(Debug, Serialize)]
+pub struct CommunityRoute {
+    pub id: Uuid,
+    pub label: String,
+    pub member_count: i32,
+    pub score: f64,
+    pub summary: Option<String>,
+}
+
+/// Hierarchical (top-down) query result: the matched features first, then the
+/// chunk-level hits (boosted toward those features), then context paths.
+#[derive(Debug, Serialize)]
+pub struct HierarchicalResponse {
+    /// `"hierarchical"` when communities matched, `"flat-fallback"` otherwise.
+    pub mode: &'static str,
+    pub communities: Vec<CommunityRoute>,
+    pub hits: Vec<SearchHit>,
+    pub context_paths: Vec<ContextPath>,
+}
+
+/// Minimum cosine score for a community to count as a matched feature.
+const COMMUNITY_MATCH_FLOOR: f64 = 0.30;
+
+/// Top-down retrieval: match the query against community summary embeddings
+/// first, then run the flat hybrid search and boost hits whose node lives in a
+/// matched feature. Falls back to the flat path when no communities exist
+/// (additivity — a repo indexed before the hierarchy still answers).
+pub async fn query_repo_hierarchical(
+    storage: &Storage,
+    repo_id: Uuid,
+    embedder: &dyn Embedder,
+    query: &str,
+    limit: i64,
+) -> Result<HierarchicalResponse> {
+    let query_embedding = embedder.embed(query).await?;
+    let matches = storage
+        .community_semantic_search(
+            repo_id,
+            embedder.provider(),
+            embedder.model_id(),
+            embedder.dimensions(),
+            &query_embedding,
+            8,
+        )
+        .await?;
+    let routes: Vec<CommunityRoute> = matches
+        .iter()
+        .filter(|m| m.score >= COMMUNITY_MATCH_FLOOR && m.member_count >= 2)
+        .map(|m| CommunityRoute {
+            id: m.id,
+            label: m.label.clone(),
+            member_count: m.member_count,
+            score: m.score,
+            summary: m.summary.clone(),
+        })
+        .collect();
+
+    let flat = query_repo(storage, repo_id, embedder, query, limit).await?;
+    if routes.is_empty() {
+        return Ok(HierarchicalResponse {
+            mode: "flat-fallback",
+            communities: Vec::new(),
+            hits: flat.hits,
+            context_paths: flat.context_paths,
+        });
+    }
+
+    // Boost hits whose node belongs to a matched feature, then re-rank.
+    let top_ids: std::collections::HashSet<Uuid> = routes.iter().map(|r| r.id).collect();
+    let node_ids: Vec<Uuid> = flat.hits.iter().filter_map(|h| h.node_id).collect();
+    let membership = storage.node_communities(repo_id, &node_ids).await?;
+    let mut hits = flat.hits;
+    for hit in &mut hits {
+        if let Some(node_id) = hit.node_id {
+            if membership
+                .get(&node_id)
+                .is_some_and(|comms| comms.iter().any(|c| top_ids.contains(c)))
+            {
+                hit.score *= 1.5;
+            }
+        }
+    }
+    hits.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    Ok(HierarchicalResponse {
+        mode: "hierarchical",
+        communities: routes,
+        hits,
+        context_paths: flat.context_paths,
+    })
+}
+
 pub async fn query_repo(
     storage: &Storage,
     repo_id: Uuid,

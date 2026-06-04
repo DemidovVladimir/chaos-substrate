@@ -89,13 +89,14 @@ pub async fn run(config: Config) -> Result<()> {
                         },
                         {
                             "name": "chaos_query",
-                            "description": "Query persisted code knowledge memory with hybrid semantic, keyword, and graph context routing.",
+                            "description": "Query persisted code knowledge memory with hybrid semantic, keyword, and graph context routing. Set hierarchical=true for top-down retrieval: the query is matched against feature (L1 community) summaries first and the surfaced features are returned alongside chunk hits boosted toward them (falls back to flat search when the repo has no hierarchy).",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
                                     "repo": {"type": "string"},
                                     "question": {"type": "string"},
-                                    "limit": {"type": "integer", "default": 10}
+                                    "limit": {"type": "integer", "default": 10},
+                                    "hierarchical": {"type": "boolean", "default": false, "description": "Route through matched features first (top-down), then drill into chunks."}
                                 },
                                 "required": ["repo", "question"]
                             }
@@ -187,6 +188,21 @@ pub async fn run(config: Config) -> Result<()> {
                                     "manifest": {"type": "object", "description": "StoryboardManifest: {title, subtitle, audience, overall_confidence, personas[], stories[], frames[], outcomes[]}. NO code/file/line fields. Minimums: >=1 persona, >=2 stories, >=3 frames, >=1 outcome; every confidence in [0,1]; story.frame_ids and persona references must resolve. Each frame MAY include an optional `preview` showing the REAL client UI (not code): {\"kind\":\"image\",\"src\":\"previews/x.png\",\"alt\":\"...\",\"caption\":\"...\"} for a screenshot/clip you captured (offline, leaks nothing — preferred), or {\"kind\":\"iframe\",\"url\":\"http://localhost:5173/route\",\"caption\":\"...\"} to live-embed a running app route (only renders while that server is up). src/url must not use javascript:/vbscript:/data:text/html."}
                                 },
                                 "required": ["repo", "slug", "title", "manifest"]
+                            }
+                        },
+                        {
+                            "name": "chaos_change_plan",
+                            "description": "Decompose a proposed change into the FEATURES (L1 communities / god-nodes) it spans, with a dependency-aware check order — the top-down counterpart to flat retrieval. Matches the change description against community summary embeddings, optionally also seeding from a real git diff (`since`), then returns the set of features the change touches, each with its members, confidence, and a topo-sorted check order over the feature quotient graph. ALWAYS writes an interactive Blade-Runner HTML plan to docs/features_memory/<slug>-plan.html and returns a COMPACT JSON summary (counts + per-feature label/confidence/check_order/top symbols + the HTML path), so it won't flood your context. Use it to answer 'how many features does this change involve, and in what order should I check them?'. Requires the repo to be indexed (chaos_analyze/chaos_add build the hierarchy).",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo": {"type": "string"},
+                                    "change_description": {"type": "string", "description": "Plain-language description of the change to scope."},
+                                    "since": {"type": "string", "description": "Optional git ref (e.g. HEAD, main); also seeds the plan from the files actually changed vs this ref."},
+                                    "output_html": {"type": "string", "description": "Override the default docs/features_memory/<slug>-plan.html path."},
+                                    "limit": {"type": "integer", "default": 8, "description": "Max features to surface."}
+                                },
+                                "required": ["repo", "change_description"]
                             }
                         }
                     ]
@@ -301,12 +317,24 @@ async fn handle_tool_call(
                 .and_then(Value::as_str)
                 .context("question is required")?;
             let limit = args.get("limit").and_then(Value::as_i64).unwrap_or(10);
+            let hierarchical = args
+                .get("hierarchical")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let repo = storage
                 .find_repository(repo)
                 .await?
                 .context("repository is not indexed")?;
-            let answer = query_repo(storage, repo.id, embedder, question, limit).await?;
-            Ok(tool_text(serde_json::to_string_pretty(&answer)?))
+            if hierarchical {
+                let answer = crate::query::query_repo_hierarchical(
+                    storage, repo.id, embedder, question, limit,
+                )
+                .await?;
+                Ok(tool_text(serde_json::to_string_pretty(&answer)?))
+            } else {
+                let answer = query_repo(storage, repo.id, embedder, question, limit).await?;
+                Ok(tool_text(serde_json::to_string_pretty(&answer)?))
+            }
         }
         "chaos_feature_context" => {
             let repo = args
@@ -520,6 +548,26 @@ async fn handle_tool_call(
                 "output_html": path,
                 "manifest_embedded": true
             }))?))
+        }
+        "chaos_change_plan" => {
+            let repo = args
+                .get("repo")
+                .and_then(Value::as_str)
+                .context("repo is required")?;
+            let change = args
+                .get("change_description")
+                .and_then(Value::as_str)
+                .context("change_description is required")?;
+            let opts = crate::change_plan::ChangePlanOptions {
+                output_html: args
+                    .get("output_html")
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from),
+                diff_since: args.get("since").and_then(Value::as_str).map(String::from),
+                limit: args.get("limit").and_then(Value::as_u64).unwrap_or(8) as usize,
+            };
+            let summary = crate::change_plan::run(storage, embedder, repo, change, &opts).await?;
+            Ok(tool_text(serde_json::to_string_pretty(&summary)?))
         }
         _ => anyhow::bail!("unknown tool: {name}"),
     }

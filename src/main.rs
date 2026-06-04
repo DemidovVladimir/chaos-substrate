@@ -1,4 +1,5 @@
 mod add;
+mod change_plan;
 mod community;
 mod community_summary;
 mod config;
@@ -110,6 +111,10 @@ enum Commands {
         question: String,
         #[arg(long, default_value_t = 10)]
         limit: i64,
+        /// Top-down retrieval: route through matched features (L1 communities)
+        /// first, then drill into chunks. Falls back to flat when absent.
+        #[arg(long)]
+        hierarchical: bool,
     },
     /// Build an implementation context from Postgres retrieval and generated feature pages.
     FeatureContext {
@@ -142,6 +147,24 @@ enum Commands {
         feature_limit: usize,
         #[arg(long, default_value_t = 8)]
         nodes_per_feature: usize,
+    },
+    /// Decompose a change into the features (communities) it spans, with a
+    /// dependency-aware check order. Matches the description against community
+    /// summaries (and optionally a git diff), then writes an interactive plan
+    /// HTML into docs/features_memory and prints a compact JSON summary.
+    ChangePlan {
+        repo: String,
+        /// Plain-language description of the change.
+        change: String,
+        /// Also seed from files changed vs this git ref (e.g. HEAD, main).
+        #[arg(long)]
+        since: Option<String>,
+        /// Override the default docs/features_memory/<slug>-plan.html path.
+        #[arg(long)]
+        output_html: Option<PathBuf>,
+        /// Max features to surface.
+        #[arg(long, default_value_t = 8)]
+        limit: usize,
     },
     /// Render a client/user-facing interactive storyboard (UI/UX user stories,
     /// no code) from a storyboard manifest JSON file into
@@ -433,6 +456,7 @@ async fn main() -> Result<()> {
             repo,
             question,
             limit,
+            hierarchical,
         } => {
             let storage = Storage::connect(&config.storage.database_url).await?;
             let embedder = build_embedder(&config.embedding)?;
@@ -440,9 +464,21 @@ async fn main() -> Result<()> {
                 .find_repository(&repo)
                 .await?
                 .with_context(|| format!("repository is not indexed: {repo}"))?;
-            let response =
-                query_repo(&storage, repo.id, embedder.as_ref(), &question, limit).await?;
-            println!("{}", serde_json::to_string_pretty(&response)?);
+            if hierarchical {
+                let response = query::query_repo_hierarchical(
+                    &storage,
+                    repo.id,
+                    embedder.as_ref(),
+                    &question,
+                    limit,
+                )
+                .await?;
+                println!("{}", serde_json::to_string_pretty(&response)?);
+            } else {
+                let response =
+                    query_repo(&storage, repo.id, embedder.as_ref(), &question, limit).await?;
+                println!("{}", serde_json::to_string_pretty(&response)?);
+            }
         }
         Commands::FeatureContext {
             repo,
@@ -499,6 +535,24 @@ async fn main() -> Result<()> {
                 nodes_per_feature,
             };
             let summary = impact::run(&storage, embedder.as_ref(), &repo, &feature, &opts).await?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
+        Commands::ChangePlan {
+            repo,
+            change,
+            since,
+            output_html,
+            limit,
+        } => {
+            let storage = Storage::connect(&config.storage.database_url).await?;
+            let embedder = build_embedder(&config.embedding)?;
+            let opts = change_plan::ChangePlanOptions {
+                output_html,
+                diff_since: since,
+                limit,
+            };
+            let summary =
+                change_plan::run(&storage, embedder.as_ref(), &repo, &change, &opts).await?;
             println!("{}", serde_json::to_string_pretty(&summary)?);
         }
         Commands::Storyboard {

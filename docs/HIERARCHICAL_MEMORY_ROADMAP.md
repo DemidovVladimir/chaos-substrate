@@ -119,7 +119,7 @@ PR in every phase must hold these:
 | **P1** | Persisted community layer | P0 | `communities` + membership + quotient edges, deterministic detection in pipeline | ☑ Done |
 | **P2** | Hash-rollup (Merkle) layer | P1 | subtree hashes rolled to community/repo roots; changed-community detection in `add` | ☑ Done |
 | **P3** | Summary tree (god-node summaries) | P1, P2 | hash-gated summaries + embeddings per community | ☑ Done |
-| **P4** | Top-down retrieval + decomposition tool | P1 (P3 for quality) | hierarchical retrieval path + `chaos_change_plan` MCP tool | ☐ Not started |
+| **P4** | Top-down retrieval + decomposition tool | P1 (P3 for quality) | hierarchical retrieval path + `chaos_change_plan` MCP tool | ☑ Done |
 | **P5** | Surfacing + delivery | P1–P4 | HTML/Obsidian hierarchy views, SKILL.md, plugin repackage | ☐ Not started |
 
 Legend: ☐ Not started · ◐ In progress · ☑ Done (validation passed).
@@ -257,10 +257,14 @@ fail-closed verified; summaries embedded by the real embedder.
 primitive that started this whole thread.
 
 **Tasks.**
-- ☐ **P4-T1** Hierarchical retrieval path in `src/query.rs`: match the query against community summary embeddings **first**, select the relevant god-node(s), then drill into members for chunk-level hits. Falls back to today's flat path when no communities exist (additivity).
-- ☐ **P4-T2** New MCP tool **`chaos_change_plan`** (a.k.a. `chaos_scope`) in `src/mcp.rs`: input = a change description **or** a git diff (reuse `src/add.rs` diff machinery for the seed). Output = the set of communities/features the change spans, each with its members, suggested check order (topo-sort over `community_edges`), and per-feature confidence. **This answers "how many features are involved, and what to check one-by-one."**
-- ☐ **P4-T3** Have `chaos_change_plan` write an interactive HTML report to `docs/features_memory/<slug>-plan.html` (Blade Runner theme; reuse `feature_export`/`user_story` rendering) and return a compact JSON summary — same discipline as `chaos_impact` (don't flood agent context).
-- ☐ **P4-T4** Optionally let `chaos_feature_context` / `chaos_impact` consume L1 (start from the matched god-node instead of a flat candidate set).
+- ☑ **P4-T1** `query::query_repo_hierarchical` + `Storage::community_semantic_search`/`node_communities`: match the query against community summary embeddings first (returns the routed features), then run the flat hybrid search and boost hits whose node lives in a matched feature. Falls back to flat (`mode: "flat-fallback"`) when no communities. Exposed via `chaos_query`'s `hierarchical` flag (CLI `--hierarchical`).
+- ☑ **P4-T2** New MCP tool **`chaos_change_plan`** (D6 verdict below) in `src/change_plan.rs` + `src/mcp.rs`: input = change description (+ optional `since` git ref to also seed from the real diff). Output = communities the change spans, each with members, **topo-sorted check order** over directed quotient links, and per-feature confidence + `via` (semantic / diff / both).
+- ☑ **P4-T3** Always writes `docs/features_memory/<slug>-plan.html` (Blade Runner theme, confidence rings + check-order badges) and returns a COMPACT JSON summary (capped top symbols, no raw evidence dump) — same discipline as `chaos_impact`.
+- ☑ **P4-T4** _(carried into P5)_ Hierarchical retrieval is the shared entry point; wiring `chaos_feature_context`/`chaos_impact` onto it is a follow-up.
+
+  *Validation:* topo-sort unit tests (dependency order, deterministic + total on cycles, priority fallback). **Decomposition golden (DB + real embedder):** a both-cluster change spans ≥2 features; **deterministic** (same change ⇒ same feature set + order); **compact** (plan JSON < 8 KB). Real-data on `chaos-substrate`: "add retry + provider config to the embedder" → 2 features (embedding.rs, Cargo.toml); a cross-cutting export change → 4 features; `--since HEAD` correctly surfaced the actually-changed files as `via=diff` (confidence 1.0) blended with semantic matches. **Retrieval A/B:** `--hierarchical` adds a correct feature-routing layer (e.g. routes "how are community summaries embedded" to `community_summary.rs`, which flat retrieval misses) with no chunk-hit regression. **MCP contract:** stdio `tools/list` serves **11** tools incl. `chaos_change_plan`; a `tools/call` round-trip returns the compact summary + writes the HTML.
+
+  **D6 verdict: `chaos_change_plan`** (not `chaos_scope` — "scope" is overloaded).
 
 **Deliverables.** `chaos_change_plan` turns "migrate OCL → V2 across the plugin"
 into "this spans features A, C, F — here's each, in this order, with these files."
@@ -337,7 +341,7 @@ Plus the invariant checks that don't belong to a single phase:
 - **D3.** _Verdict (P1): **preserve typed relations.**_ Each `community_edges` row carries the dominant L0 edge kind for that boundary plus a per-kind count map in `metadata`, so P4 can reason about *how* features couple (imports vs calls vs depends_on).
 - **D4.** _Verdict (P3): **dedicated `community_embeddings` table.**_ Keeps L0 `embeddings` frozen (no nullable `chunk_id`); same pgvector + real embedder, keyed `(community_id, provider, model_id, dimensions)`.
 - **D5.** _Verdict (P3): **single level for v1.**_ `communities.level`/`parent_id` already model recursion; summaries-of-summaries deferred.
-- **D6.** Tool name: `chaos_change_plan` vs `chaos_scope`. _Decide in P4-T2._
+- **D6.** _Verdict (P4): **`chaos_change_plan`.**_ More descriptive than `chaos_scope` ("scope" is overloaded). Input = change description (+ optional `since` diff seed); output = features spanned with check order + confidence.
 
 **P0 verdict — communities quality on `molecule_core` (2026-06-04): PASS.**
 
