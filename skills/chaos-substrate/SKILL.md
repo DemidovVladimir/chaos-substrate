@@ -62,6 +62,26 @@ If MCP tools are available, prefer them over shelling out:
    deterministic feature pages in `docs/features_memory` from their embedded manifests. This lets an
    MCP-only agent refresh pages without shelling out to the CLI; run `chaos_analyze` or `chaos_add`
    first.
+10. Use `chaos_write_storyboard` to produce a CLIENT/USER-FACING explanation of a feature — a
+    UI/UX user-story page with NO code, meant to be handed to a stakeholder or end user as an
+    interactive presentation. You supply only a structured, code-free manifest: `personas`,
+    `stories` ("As a … I want … so that …" with plain-language `acceptance` criteria), `frames`
+    (clickable steps grouped into `stage` lanes, each with a `summary`, a click-to-reveal `detail`,
+    `user_value`, and an optional `ui_hint`), `outcomes`, and a `confidence` (0..1) on every
+    frame/story/outcome plus an `overall_confidence`. A frame may also carry an optional `preview`
+    that shows the REAL client UI (not code): `{"kind":"image","src":"previews/x.png","alt":"…",
+    "caption":"…"}` for a screenshot/clip you captured (offline, leaks nothing — preferred) or
+    `{"kind":"iframe","url":"http://localhost:5173/route","caption":"…"}` to live-embed a running
+    app route (renders only while that server is up). Chaos only embeds it — it never runs a browser;
+    capture the screenshot yourself (e.g. via the host or Playwright) or point at the user's running
+    dev server. The tool renders a fixed dark Blade Runner
+    page with click-a-frame detail and confidence rings, writes it to
+    `docs/features_memory/<slug>-story.html`, and embeds a `chaos-storyboard-manifest` for agentic
+    reads. Compose it from real understanding (run `chaos_feature_context`/`chaos_impact` first);
+    never invent UI that does not exist. This is the user-facing sibling of
+    `chaos_write_feature_website`: storyboard = users & experience (no code); feature website =
+    engineers, graph, architecture, and source. It mirrors the
+    `chaos storyboard <repo> --manifest <file.json>` CLI command.
 
 Treat `chaos_feature_context.warnings` as blocking for generated feature websites. If it says a
 filesystem path exists but no Postgres hits referenced it, or that docs exist but no docs were
@@ -234,7 +254,8 @@ Use a real Postgres database with pgvector for persistence tests. Use real OpenA
 - The process should be launched directly by the agent client.
 - Keep stdout protocol-clean; diagnostics should go to stderr or structured logging that does not corrupt MCP messages.
 - MCP tools are `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`, `chaos_feature_context`,
-  `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`, and `chaos_refresh`.
+  `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`, `chaos_refresh`, and
+  `chaos_write_storyboard`.
 - `chaos_add` incrementally indexes only git-changed files (or explicit `paths`), refreshes the
   Obsidian vault, and writes a feature/bug page in one call; use it instead of a full
   `chaos_analyze` after small edits.
@@ -257,3 +278,15 @@ Use a real Postgres database with pgvector for persistence tests. Use real OpenA
 - `chaos_refresh` regenerates the Obsidian vault and, with `all_features=true`, re-renders the
   deterministic feature pages in `docs/features_memory` from their embedded manifests without
   re-indexing; it lets an MCP-only agent refresh pages without shelling out to the CLI.
+- `chaos_write_storyboard` is the MCP-safe write path for a client/user-facing storyboard: a
+  code-free UI/UX user-story page (personas, "As a … I want … so that …" stories, clickable frames,
+  outcomes, and confidence rings) rendered in a fixed dark Blade Runner theme and written to
+  `docs/features_memory/<slug>-story.html` with an embedded `chaos-storyboard-manifest`. You pass a
+  structured manifest only (no HTML); Rust owns the styling. Manifest minimums: at least 1 persona,
+  2 stories, 3 frames, and 1 outcome; every `confidence` and `overall_confidence` in `[0,1]`; and
+  every `story.frame_ids`/persona reference must resolve. Each frame may add an optional `preview`
+  to embed the REAL UI — `image` (a screenshot/clip you captured; offline and private) or `iframe`
+  (a live embed of a running app route); `src`/`url` must not use `javascript:`/`data:text/html`.
+  It is user-facing — use
+  `chaos_write_feature_website` for the engineer-facing graph/architecture/code page. It mirrors the
+  `chaos storyboard <repo> --manifest <file.json>` CLI command.

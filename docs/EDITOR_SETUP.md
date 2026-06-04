@@ -216,7 +216,7 @@ After registering an editor:
    target/release/chaos --config chaos-substrate.toml query /path/to/repo "where is the request handler validated?"
    ```
 
-3. In the editor, confirm the nine MCP tools are listed: `chaos_analyze`, `chaos_add`,
+3. In the editor, confirm the ten MCP tools are listed: `chaos_analyze`, `chaos_add`,
    `chaos_stats`, `chaos_query`, `chaos_feature_context`, `chaos_impact`,
-   `chaos_write_feature_website`, `chaos_obsidian`, and `chaos_refresh`. See the
+   `chaos_write_feature_website`, `chaos_obsidian`, `chaos_refresh`, and `chaos_write_storyboard`. See the
    [MCP Tools](../README.md#mcp-tools) section of the README for what each tool does.

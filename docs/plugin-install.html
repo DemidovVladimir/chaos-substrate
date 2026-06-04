@@ -499,14 +499,14 @@
       Agents stop re-reading the repo on every task. Chaos Substrate indexes any codebase into
       a <strong>source-grounded knowledge graph + real embeddings</strong> stored in
       Postgres&nbsp;+&nbsp;pgvector — memory that survives process restarts. A single Rust binary.
-      A stdio MCP server. Nine tools.
+      A stdio MCP server. Ten tools.
 </p>
 
     <div class="hero-chips">
       <span class="chip chip-cyan"><span class="chip-dot"></span>Persistent Postgres&nbsp;+&nbsp;pgvector memory</span>
       <span class="chip chip-amber"><span class="chip-dot"></span>Source-grounded answers</span>
       <span class="chip chip-rose"><span class="chip-dot"></span>5 languages via real AST parsers</span>
-      <span class="chip chip-green"><span class="chip-dot"></span>MCP-native · 9 tools</span>
+      <span class="chip chip-green"><span class="chip-dot"></span>MCP-native · 10 tools</span>
     </div>
 
     <div class="hero-ctas">
@@ -522,7 +522,7 @@
     <div class="grid-3">
       <section>
         <h3>&#9678; Agent via MCP</h3>
-        <p>A stdio MCP server with 9 tools. Coding agents (Claude Code, Codex, Cursor, Windsurf, OpenCode) query durable code memory instead of re-reading files on every task.</p>
+        <p>A stdio MCP server with 10 tools. Coding agents (Claude Code, Codex, Cursor, Windsurf, OpenCode) query durable code memory instead of re-reading files on every task.</p>
         <p>Register once with <code>chaos setup</code>, then ask the agent to analyze and query. Skills + hooks also ship for Claude Code and Cursor.</p>
       </section>
       <section>
@@ -785,8 +785,8 @@ args    = ["--config", "/abs/chaos-substrate.toml", "mcp"]</code></pre>
   <div class="section-wrap">
     <div class="section-label">MCP tools</div>
     <section>
-      <h2>9 tools — the canonical tool surface</h2>
-      <p>The stdio MCP server speaks newline-delimited JSON-RPC (no <code>Content-Length</code> framing) and exposes exactly nine tools. Agents should prefer these when available; do not synthesize feature pages from <code>chaos_query</code> alone when <code>chaos_feature_context</code> and <code>chaos_write_feature_website</code> are available.</p>
+      <h2>10 tools — the canonical tool surface</h2>
+      <p>The stdio MCP server speaks newline-delimited JSON-RPC (no <code>Content-Length</code> framing) and exposes exactly ten tools. Agents should prefer these when available; do not synthesize feature pages from <code>chaos_query</code> alone when <code>chaos_feature_context</code> and <code>chaos_write_feature_website</code> are available.</p>
 
       <div class="tbl-wrap">
         <table>
@@ -852,6 +852,12 @@ args    = ["--config", "/abs/chaos-substrate.toml", "mcp"]</code></pre>
               <td>Regenerates project-local artifacts from the persisted index without re-indexing: rewrites the Obsidian vault and, with <code>all_features=true</code>, re-renders the deterministic feature pages in <code>docs/features_memory</code> from their embedded manifests.</td>
               <td><code>repo</code>, <code>obsidian_output</code>, <code>features_dir</code>, <code>all_features</code></td>
               <td>After <code>chaos_analyze</code> or <code>chaos_add</code>, to rebuild local docs/pages without re-embedding.</td>
+            </tr>
+            <tr>
+              <td>chaos_write_storyboard</td>
+              <td>Writes a client/user-facing storyboard — a code-free UI/UX user-story page (personas, "As a … I want … so that …" stories, clickable frames, outcomes, and confidence rings) rendered in a fixed dark Blade Runner theme to <code>docs/features_memory/&lt;slug&gt;-story.html</code>, with an embedded <code>chaos-storyboard-manifest</code>. You pass a structured, code-free manifest; Rust owns the styling. Each frame can embed the real UI via an optional <code>preview</code> (a captured screenshot/clip, or a live <code>iframe</code> of a running app route).</td>
+              <td><code>repo</code>, <code>slug</code>, <code>title</code>, <code>manifest</code></td>
+              <td>To hand a stakeholder or end user an interactive presentation of a feature with no code. User-facing sibling of <code>chaos_write_feature_website</code>.</td>
             </tr>
           </tbody>
         </table>
@@ -932,7 +938,7 @@ args    = ["--config", "/abs/chaos-substrate.toml", "mcp"]</code></pre>
           <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
         </div>
 
-        <p style="margin-top:12px;">In the editor, confirm all nine MCP tools are listed: <code>chaos_analyze</code>, <code>chaos_add</code>, <code>chaos_stats</code>, <code>chaos_query</code>, <code>chaos_feature_context</code>, <code>chaos_impact</code>, <code>chaos_write_feature_website</code>, <code>chaos_obsidian</code>, <code>chaos_refresh</code>.</p>
+        <p style="margin-top:12px;">In the editor, confirm all ten MCP tools are listed: <code>chaos_analyze</code>, <code>chaos_add</code>, <code>chaos_stats</code>, <code>chaos_query</code>, <code>chaos_feature_context</code>, <code>chaos_impact</code>, <code>chaos_write_feature_website</code>, <code>chaos_obsidian</code>, <code>chaos_refresh</code>, <code>chaos_write_storyboard</code>.</p>
       </section>
 
       <section>

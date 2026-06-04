@@ -29,9 +29,9 @@ chaos-substrate/
 - Codex reads `.codex-plugin/plugin.json`.
 - Claude Code reads `.claude-plugin/plugin.json` and `.claude-plugin/hooks/hooks.json`.
 - Both share the root `.mcp.json`, `skills/`, and `bin/chaos-agent`.
-- The shared MCP server exposes nine tools (`chaos_analyze`, `chaos_add`, `chaos_stats`,
+- The shared MCP server exposes ten tools (`chaos_analyze`, `chaos_add`, `chaos_stats`,
   `chaos_query`, `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`,
-  `chaos_obsidian`, `chaos_refresh`); see the [MCP Tools](../README.md#mcp-tools) section of the
+  `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`); see the [MCP Tools](../README.md#mcp-tools) section of the
   README for the reference.
 - The tool-use hooks (`.claude-plugin/hooks/hooks.json`, `.cursor/hooks.json`) run `chaos hook` to
   inject code-memory context on `Grep`, `Glob`, and `Bash`. The hook always exits 0, is a safe

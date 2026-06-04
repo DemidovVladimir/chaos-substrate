@@ -24,6 +24,7 @@ cargo run -- refresh /path/to/repo --all-features
 cargo run -- query /path/to/repo "question"
 cargo run -- feature-context /path/to/repo "task" --output-html out.html
 cargo run -- impact /path/to/repo "<feature>"
+cargo run -- storyboard /path/to/repo --manifest story.json   # render a client-facing user-story page
 cargo run -- graph /path/to/repo -o graph.html
 cargo run -- obsidian /path/to/repo -o vault
 cargo run -- setup --dry-run
@@ -46,6 +47,7 @@ Agents should prefer MCP tools when available:
 - `chaos_write_feature_website`: write an LLM-composed feature page with a manifest.
 - `chaos_obsidian`: export an already-indexed repository as an Obsidian vault from the persisted graph (run after `chaos_analyze`, which never writes files).
 - `chaos_refresh`: regenerate project-local artifacts (Obsidian vault, and with `all_features` the `docs/features_memory` pages) from the persisted index without re-indexing.
+- `chaos_write_storyboard`: write a CLIENT/USER-FACING storyboard — a code-free UI/UX user-story page (personas, "As a … I want … so that …" stories, clickable frames, outcomes, confidence rings) rendered in a fixed dark Blade Runner theme to `docs/features_memory/<slug>-story.html`. You pass a structured, code-free manifest only and Rust owns the styling. Each frame can embed the real UI via an optional `preview` (a captured screenshot/clip, or a live `iframe` of a running app route). This is the user-facing sibling of `chaos_write_feature_website` (which is for engineers: graph, architecture, code).
 
 Do not synthesize feature pages from `chaos_query` alone when `chaos_feature_context` and
 `chaos_write_feature_website` are available.

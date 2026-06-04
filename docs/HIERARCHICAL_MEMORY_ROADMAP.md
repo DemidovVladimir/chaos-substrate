@@ -1,0 +1,381 @@
+# Hierarchical Memory Roadmap — Layered Index (L0 / L1 / L2)
+
+> **Status:** Draft for review · **Last updated:** 2026-06-04 · **Owner:** _unassigned_
+>
+> This document is the single source of truth for evolving Chaos Substrate from a
+> flat multigraph into a **layered, hierarchical memory**. It is written to be
+> *distributable*: phases are independent enough to hand to different people,
+> every task has a stable ID, and every phase ships with its own validation gate
+> so execution can be tracked and verified, not just claimed.
+
+---
+
+## 1. TL;DR (the decision)
+
+Keep the multigraph as the **substrate (L0)**. Add two **derived layers on top**:
+
+- **L1 — Community / Feature layer.** Detect communities over L0; each becomes a
+  "god-node" (feature/chapter) with a summary + embedding; lift the edges into a
+  quotient graph so god-nodes correlate with each other. Converges on **GraphRAG**
+  (community summaries) and **RAPTOR** (recursive summary tree).
+- **L2 — Hash-rollup (Merkle) layer.** Roll the per-chunk / per-file `content_hash`
+  that already exists up to file → community → repo roots. Converges on **git /
+  Merkle** content addressing. Drives incremental re-index, O(log n) change
+  localization, and — critically — **gates L1 summary recomputation** so summaries
+  are cheap and stable.
+
+**This is additive, not a rewrite.** L0 stays exactly as-is. Retrieval *gains* a
+top-down entry point; `chaos add` *gains* feature precision. Nothing in the
+existing pipeline is removed.
+
+### The one idea that makes it work: two trees, not one
+
+The original proposal fused two structurally-identical but functionally-opposite
+trees under the name "Merkle." Separating them is the load-bearing insight:
+
+| | **Summary tree** (RAPTOR) | **Hash tree** (Merkle) |
+|---|---|---|
+| Root payload | LLM summary + embedding | hash of children's hashes |
+| Answers | *What* does feature X include? | *Did* feature X change, and where? |
+| Drives | top-down retrieval, "evidence" | incremental invalidation, cheap diff |
+| Semantic? | yes | no |
+
+Same shape, different payload. **L2 (hash tree) gates L1 (summary tree):** only
+re-summarize a community when its Merkle root changes. That is what makes
+nondeterministic, expensive LLM summaries affordable and stable across re-indexes.
+
+---
+
+## 2. Motivation
+
+Today retrieval is **bottom-up**: hybrid semantic + keyword + literal search over
+chunks, reranked, then expanded along graph edges (`src/query.rs:48-68`,
+`best_context_paths`). There is no **top-down** "which feature(s) does this request
+touch?" entry point. Consequences observed in practice:
+
+- A broad, cross-cutting change ("migrate OCL → V2 across a plugin") returns a flat
+  top-k candidate set. The reranker does its best, but it cannot tell you *how many
+  distinct features are involved* or decompose the work into a per-feature checklist.
+- `chaos add` re-indexes changed files, but has no notion of *which features* those
+  files belong to, so it cannot say "this touched features A, C, F — re-validate
+  those."
+
+The layered model turns "decompose this change into features, then check each one"
+into a native capability instead of an agent improvising over flat retrieval.
+
+---
+
+## 3. Current architecture (L0) — what already exists
+
+Grounded in the current tree, so contributors start from reality:
+
+- **Data model** (`src/models.rs`): `NodeKind` includes `Concept` (a flat node
+  today — a half-step toward god-nodes). `EdgeKind` already has `SimilarTo`,
+  `PrerequisiteFor`, `DependsOn`, `Mentions`, `Documents`. `KnowledgeEdge` carries
+  `cost` + `confidence` (weighted graph; see `src/weights.rs`,
+  `src/simple_graph_optimizer.rs`).
+- **The Merkle leaves already exist:** `SourceFile.content_hash` **and**
+  `KnowledgeChunk.content_hash` are persisted per row (`src/models.rs:135,172`).
+  What's missing is the *rollup* — there is no tree of hashes, only flat leaves.
+- **Retrieval is already graph-aware** (`src/query.rs`): semantic + keyword +
+  literal, merged/reranked, then edges loaded for hit nodes and context paths
+  computed. It is *bottom-up only*.
+- **Incremental already exists** (`src/add.rs`): git-diff → extract changed files →
+  merge into Postgres → refresh artifacts. No feature-level invalidation.
+- **Persistence** (`migrations/001_init.sql`): pgvector + pgcrypto; tables
+  `repositories, analysis_runs, files, nodes, edges, chunks, embeddings`. New layers
+  add **new** numbered migrations (`002_…`, `003_…`), never edit `001`.
+
+---
+
+## 4. Invariants (non-negotiable for every phase)
+
+These come from `CLAUDE.md` hard rules plus the project's determinism posture. Every
+PR in every phase must hold these:
+
+1. **Real embeddings only.** No mock/fake/random vectors. Summaries are embedded by
+   the same real OpenAI/Ollama embedder; if the embedder is unavailable, indexing
+   **fails** rather than fabricating.
+2. **Postgres/pgvector persistence.** No in-memory substitute for the index.
+3. **Runtime stays Rust.** Community detection, hashing, rollups — all Rust-side. No
+   Node/Python service. (Language extraction likewise stays Rust.)
+4. **MCP stays stdio**, newline-delimited JSON-RPC.
+5. **Determinism.** Same commit + same config ⇒ byte-identical L1 community
+   assignments and L2 hashes. LLM summaries are the *only* nondeterministic artifact,
+   and they are cached + gated by L2 so they don't perturb the rest.
+6. **Additive.** L0 schema and behavior are untouched. A repo indexed before L1/L2
+   exists must still `query`/`stats`/`add` without error (degrade gracefully when the
+   hierarchy is absent).
+7. **Generated HTML stays the dark "Blade Runner" theme**, Rust owns the template,
+   agent/LLM supplies data only.
+
+---
+
+## 5. Phase overview (tracking table)
+
+| Phase | Title | Depends on | Ships | Status |
+|------|-------|-----------|-------|--------|
+| **P0** | Read-only L1 spike (de-risk) | — | a throwaway/debug view of communities over the existing index | ☑ Done (verdict in §9) |
+| **P1** | Persisted community layer | P0 | `communities` + membership + quotient edges, deterministic detection in pipeline | ☐ Not started |
+| **P2** | Hash-rollup (Merkle) layer | P1 | subtree hashes rolled to community/repo roots; changed-community detection in `add` | ☐ Not started |
+| **P3** | Summary tree (god-node summaries) | P1, P2 | hash-gated LLM summaries + embeddings per community | ☐ Not started |
+| **P4** | Top-down retrieval + decomposition tool | P1 (P3 for quality) | hierarchical retrieval path + `chaos_change_plan` MCP tool | ☐ Not started |
+| **P5** | Surfacing + delivery | P1–P4 | HTML/Obsidian hierarchy views, SKILL.md, plugin repackage | ☐ Not started |
+
+Legend: ☐ Not started · ◐ In progress · ☑ Done (validation passed).
+
+Dependency DAG: `P0 → P1 → {P2, P4}`, `{P1,P2} → P3 → P4`, `P1..P4 → P5`.
+**Parallelizable once P1 lands:** P2 and the P4 *plumbing* can proceed in parallel;
+P3 needs P2 to gate on.
+
+---
+
+## 6. Phases (detailed)
+
+Each task has a stable ID (`P{n}-T{m}`) so it can become an issue/owner assignment.
+Check the box when the task's own acceptance criteria pass.
+
+### Phase 0 — Read-only L1 spike (de-risk before any schema change)
+
+**Goal.** Prove the feature decomposition is *good enough to build on* before
+touching the data model. Derive communities from the **already-persisted** L0 index
+for `molecule_core` (no migration, no re-index, non-destructive) and eyeball whether
+the god-nodes look like real features.
+
+**Tasks.**
+- ☑ **P0-T1** Hidden subcommand `chaos communities <repo> [--resolution] [--top]` loads nodes+edges from Postgres and runs detection in memory. No writes. (`src/main.rs`, `src/community.rs`, `Storage::load_all_nodes`/`load_all_edges`.)
+- ☑ **P0-T2** Deterministic multi-level **Louvain** over the weighted edge set (`confidence/cost`). **No RNG** — canonical `stable_id` order + smallest-representative tie-breaks. Determinism verified (byte-identical double-run).
+- ☑ **P0-T3** Emits per-community size, top member symbols, dominant language + language distribution, internal-edge counts, and a typed aggregated quotient-edge list.
+- ☑ **P0-T4** Ran against live `molecule_core`; captured `docs/features_memory/_spike-communities.json` (657 communities, modularity 0.894).
+
+**Deliverables.** A JSON dump + a short written judgement ("do these clusters read as
+features?") appended to this doc under §9 Decisions.
+
+**Validation.**
+- `cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test`
+- **Determinism:** run P0-T1 twice on the same index; `diff` the two JSON dumps → **identical**.
+- **Quality gate (manual, recorded):** ≥ ~70% of the top-N communities are
+  recognizable features/subsystems to someone who knows the repo. Record the verdict.
+
+**Exit criteria.** Communities are deterministic **and** the quality gate passes. If
+it fails, stop and revisit the detection approach (edge weighting, resolution
+parameter) before P1 — do **not** proceed to schema work on a bad clustering.
+
+---
+
+### Phase 1 — Persisted community / feature layer
+
+**Goal.** Make god-nodes first-class and durable.
+
+**Tasks.**
+- ☐ **P1-T1** Migration `002_communities.sql`: table `communities(id, repo_id, level int, parent_id uuid null, label text, member_count int, detection_params jsonb, created_at)`; table `community_members(community_id, node_id, weight)` — **many-to-many** to allow a node in multiple features (overlap/DAG, not a strict tree); table `community_edges(repo_id, source_community_id, target_community_id, kind, weight)` for the quotient graph. Indexes mirroring the `nodes`/`edges` pattern.
+- ☐ **P1-T2** Promote community detection from the P0 spike into `src/community.rs` as a pipeline stage; persist results via `src/storage.rs` (`upsert_communities`, `replace_community_members`, `upsert_community_edges`).
+- ☐ **P1-T3** Wire detection into the `analyze` flow (after nodes/edges are written) and recompute on full re-index. Decide membership representation: keep communities **separate** from `nodes` (recommended) rather than overloading `NodeKind` — record the choice in §9.
+- ☐ **P1-T4** Build the quotient graph: contract members, aggregate L0 edges (`DependsOn`/`Imports`/`Calls`/`SimilarTo`) into `community_edges` with summed/weighted strength.
+- ☐ **P1-T5** Extend `chaos_stats` + `cargo run -- stats` to report community counts and quotient-edge counts (so the layer is observable).
+
+**Deliverables.** A repo `analyze` now also produces a persisted community layer +
+quotient graph, visible in `stats`.
+
+**Validation.**
+- Standing gates (fmt/clippy/test).
+- **Schema:** `cargo run -- migrate` applies `002` cleanly on a fresh DB **and** on a DB already at `001` (idempotent, `if not exists`).
+- **Determinism:** `analyze` the same fixture twice → identical `communities` + `community_members` rows (compare via a stable `stats --json` digest).
+- **Additivity:** a repo indexed under `001` only still answers `query`/`stats`/`add` with no error (communities simply empty).
+- **Round-trip:** counts in `stats` equal counts directly queried from Postgres.
+- New unit/integration tests in `tests/` for detection determinism + membership overlap.
+
+**Exit criteria.** All validation green; a re-index never changes community
+assignments for unchanged code.
+
+---
+
+### Phase 2 — Hash-rollup (Merkle) layer
+
+**Goal.** Turn the existing flat `content_hash` leaves into a tree whose roots tell
+you, in O(log n), exactly what changed — and which **communities** that change
+touched.
+
+**Tasks.**
+- ☐ **P2-T1** Migration `003_subtree_hash.sql`: add `subtree_hash text` to `files`; add `subtree_hash text` to `communities`; add `repo_root_hash` to `repositories` (or `analysis_runs`).
+- ☐ **P2-T2** `src/merkle.rs`: deterministic rollup — chunk `content_hash` (leaves, already present) → file `subtree_hash` (hash of ordered child chunk hashes) → community `subtree_hash` (hash of ordered member-file/node hashes; **shared leaves across communities are expected** and fine) → repo root. Ordering must be canonical (sort by `stable_id`) so the hash is stable.
+- ☐ **P2-T3** Compute + persist rollups at the end of `analyze` and `add`.
+- ☐ **P2-T4** Make `chaos add` **feature-aware**: after merging changed files, recompute affected `subtree_hash`es and emit the set of **communities whose root changed** (the change's feature blast-radius). Surface this in the `add` result JSON and the generated feature page.
+- ☐ **P2-T5** Add a change-localization query: "between commit A and B (or working tree), which communities changed?" via root comparison.
+
+**Deliverables.** Every `add` reports the exact set of features it touched; root
+comparison answers "did feature X change?" without re-reading its contents.
+
+**Validation.**
+- Standing gates.
+- **Stability:** re-`analyze` unchanged code → every `subtree_hash` byte-identical to the prior run.
+- **Localization correctness (golden test):** edit one chunk in one file; assert *exactly* that file's hash, its ancestor community root(s), and the repo root change — **all siblings byte-identical**. A node shared by two communities flips **both** their roots (assert this explicitly).
+- **`add` blast-radius:** a fixture commit touching a known feature reports that feature (and only the genuinely-affected ones) in its changed-communities set.
+
+**Exit criteria.** Hashes stable for unchanged input; change set is exact (no false
+positives, no misses) on the golden fixtures.
+
+---
+
+### Phase 3 — Summary tree (god-node summaries), hash-gated
+
+**Goal.** Give each god-node a real "what this feature includes" summary +
+embedding — computed **only when its L2 root changed**.
+
+**Tasks.**
+- ☐ **P3-T1** Migration `004_community_summary.sql`: add `summary text`, `summary_hash text` (the L2 root the summary was computed from), and a summary-embedding linkage (reuse `embeddings` keyed to the community, or a `community_embeddings` table) to `communities`.
+- ☐ **P3-T2** `src/community_summary.rs`: build a RAPTOR-style summary per community from its member symbols/docs/snippets. Real LLM call; respect existing provider config.
+- ☐ **P3-T3** **Hash gate:** before summarizing, compare the community's current `subtree_hash` to its stored `summary_hash`. Equal ⇒ **skip** (reuse cached summary + embedding). Changed ⇒ recompute and update both. This is the mechanism that keeps summaries cheap and stable.
+- ☐ **P3-T4** Embed each summary with the **real** embedder; persist. Fail closed if the embedder is unavailable (invariant #1).
+- ☐ **P3-T5** Optional recursive level: summaries-of-summaries for parent communities (`level > 0`), same gating.
+
+**Deliverables.** Communities carry stable, cached, embedded summaries that only
+move when the underlying code moves.
+
+**Validation.**
+- Standing gates.
+- **Gate efficiency (the headline test):** index a repo; index again with **no changes** → assert **zero** LLM summary calls the second time (instrument a counter). Change one chunk → assert **only** the affected community/communities are re-summarized.
+- **Fail-closed:** with the embedder disabled, summary embedding **errors**; it never writes a placeholder vector (grep-proof: no fake-vector path).
+- **Quality (manual, recorded):** spot-check N summaries against ground truth; record verdict + any prompt adjustments. (Subjective — not a CI gate, but tracked here.)
+
+**Exit criteria.** Gate efficiency test passes (no-op re-index = no LLM calls);
+fail-closed verified; summaries embedded by the real embedder.
+
+---
+
+### Phase 4 — Top-down retrieval + the decomposition tool
+
+**Goal.** Add the missing **top-down** entry point and ship the decomposition
+primitive that started this whole thread.
+
+**Tasks.**
+- ☐ **P4-T1** Hierarchical retrieval path in `src/query.rs`: match the query against community summary embeddings **first**, select the relevant god-node(s), then drill into members for chunk-level hits. Falls back to today's flat path when no communities exist (additivity).
+- ☐ **P4-T2** New MCP tool **`chaos_change_plan`** (a.k.a. `chaos_scope`) in `src/mcp.rs`: input = a change description **or** a git diff (reuse `src/add.rs` diff machinery for the seed). Output = the set of communities/features the change spans, each with its members, suggested check order (topo-sort over `community_edges`), and per-feature confidence. **This answers "how many features are involved, and what to check one-by-one."**
+- ☐ **P4-T3** Have `chaos_change_plan` write an interactive HTML report to `docs/features_memory/<slug>-plan.html` (Blade Runner theme; reuse `feature_export`/`user_story` rendering) and return a compact JSON summary — same discipline as `chaos_impact` (don't flood agent context).
+- ☐ **P4-T4** Optionally let `chaos_feature_context` / `chaos_impact` consume L1 (start from the matched god-node instead of a flat candidate set).
+
+**Deliverables.** `chaos_change_plan` turns "migrate OCL → V2 across the plugin"
+into "this spans features A, C, F — here's each, in this order, with these files."
+
+**Validation.**
+- Standing gates.
+- **Decomposition golden test:** a fixture change known to span ≥2 features → the tool returns ≥2 communities with correct membership and a stable order. A single-feature change returns exactly one.
+- **Retrieval A/B:** on a curated question set, top-down retrieval matches or beats today's flat retrieval on relevance@k (record the comparison; no regression allowed).
+- **Context discipline:** the MCP tool returns compact JSON + an HTML path, not a raw evidence dump (assert payload size bound).
+- **Determinism:** same diff ⇒ same feature set + order.
+
+**Exit criteria.** Golden decomposition passes; retrieval shows no regression vs.
+flat; tool output is compact + writes the HTML.
+
+---
+
+### Phase 5 — Surfacing + delivery
+
+**Goal.** Make the hierarchy visible and ship it through the plugin convention.
+
+**Tasks.**
+- ☐ **P5-T1** Obsidian export (`src/obsidian_export.rs`): render god-node notes (one per community) with member links + quotient-edge links; add a top-level "feature map."
+- ☐ **P5-T2** Graph/feature HTML (`src/graph_export.rs` / `feature_export.rs`): a navigable feature map (communities as nodes, quotient edges between them, drill-down into members). Blade Runner theme.
+- ☐ **P5-T3** Update `chaos_refresh` to regenerate the hierarchy views from the persisted layers (no re-index).
+- ☐ **P5-T4** Docs: `SKILL.md` entry for `chaos_change_plan` + the hierarchy concept; update `ARCHITECTURE.md`, `RUNBOOK.md`, and any hardcoded tool-count references.
+- ☐ **P5-T5** Repackage the local-marketplace plugin per the delivery convention (version bump + `scripts/package-cowork-plugin`); keep tool-count docs in sync.
+
+**Validation.**
+- Standing gates.
+- **Render smoke:** vault + HTML open and navigate; god-node pages link correctly to members and to other features.
+- **Refresh-only:** `chaos_refresh` rebuilds hierarchy views from Postgres **without** re-indexing (assert no embedder calls).
+- **Delivery:** plugin installs from the local marketplace; `chaos_change_plan` is callable over MCP stdio; tool count in docs matches the served surface.
+
+**Exit criteria.** Hierarchy is browsable, regenerable via refresh, and shipped in
+the packaged plugin with docs in sync.
+
+---
+
+## 7. Cross-cutting validation (standing gates — every PR, every phase)
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+```
+
+Plus the invariant checks that don't belong to a single phase:
+
+- **No fake vectors:** CI grep/test ensures no code path writes a synthesized embedding.
+- **Additivity:** a smoke test indexes a repo with the hierarchy disabled and runs `query`/`stats`/`add` to prove graceful degradation.
+- **Determinism harness:** double-run `analyze` on a fixture and diff the persisted L1 assignments + L2 hashes.
+- **MCP contract:** stdio JSON-RPC round-trip test for any new/changed tool.
+
+---
+
+## 8. Risks & mitigations
+
+| Risk | Phase | Mitigation |
+|------|-------|-----------|
+| Communities don't read as real features | P0/P1 | P0 is a hard gate *before* schema work; tune edge weighting / resolution; record verdict |
+| Code features overlap → not a clean tree | P1/P2 | Membership is many-to-many (DAG); shared leaves flip multiple roots **by design** (= blast radius) |
+| LLM summary cost / nondeterminism | P3 | L2 hash-gate: summarize only changed communities; cache on `summary_hash` |
+| Embedder unavailable mid-index | P3 | Fail closed (invariant #1) — never a placeholder vector |
+| Hash instability from nondeterministic ordering | P2 | Canonical ordering (sort by `stable_id`) before hashing; determinism test |
+| Breaking existing consumers | all | Additive schema (`if not exists`), graceful degradation test |
+| Scope creep into a rewrite | all | L0 is frozen; every phase is a derived layer with its own exit gate |
+
+---
+
+## 9. Open decisions (resolve as we go — append verdicts here)
+
+- **D1.** Community detection algorithm + resolution (Leiden vs Louvain; default resolution). _Decide in P0._
+- **D2.** Represent god-nodes as rows in a new `communities` table (recommended) vs. as `nodes` with a new `NodeKind::Feature`. _Decide in P1-T3._
+- **D3.** Quotient-edge typing: collapse all L0 edge kinds into one weighted relation, or preserve typed relations between communities? _Decide in P1-T4._
+- **D4.** Summary embedding storage: reuse `embeddings` keyed to community vs. dedicated `community_embeddings`. _Decide in P3-T1._
+- **D5.** Recursive levels (summaries-of-summaries) in v1, or single level first? _Decide in P3-T5._
+- **D6.** Tool name: `chaos_change_plan` vs `chaos_scope`. _Decide in P4-T2._
+
+**P0 verdict — communities quality on `molecule_core` (2026-06-04): PASS.**
+
+Run: `chaos communities molecule_core` (deterministic multi-level Louvain, `src/community.rs`,
+resolution γ=1.0). Artifact: `docs/features_memory/_spike-communities.json`.
+
+- **Determinism:** two consecutive runs on the live 13.5k-node index produced **byte-identical**
+  JSON (`diff` clean). No RNG anywhere — canonical `stable_id` visit order + smallest-representative
+  tie-breaks. Confirmed twice. ✅
+- **Scale/quality:** 13,561 nodes / 20,995 considered edges → **modularity 0.894**, 5 Louvain levels,
+  657 communities of which **256 are multi-member "features"** (166 with ≥5 members) covering
+  **13,160 / 13,561 nodes (97%)**. The remaining 401 are singletons — genuinely *isolated* leaf nodes
+  (docs/config files with no symbols, single-use type aliases) whose only edge was the excluded
+  repository star.
+- **Quality gate (manual):** the top communities read **unambiguously** as real subsystems —
+  `IPNFT/CrowdSale` + crowdsale scripts (Solidity), `onchainlabs`/`LabNFT`, `IPNFT/Tokenizer` +
+  `AccessResolver`, `desci-infra` AppSync lambda resolvers, the `ds2` design-system component family,
+  `client-sdk`, `science.beach` skills-registry. Well above the ≥70% bar. ✅
+
+**Decisions taken in P0/P1 (see §9 D1–D6):**
+- **D1 — Algorithm/resolution.** Deterministic multi-level **Louvain** (not Leiden — simpler, fully
+  deterministic at this scale), **resolution γ = 1.0**. Edge coupling weight = `confidence / cost`
+  (clamped), summed per undirected pair — *not* the naive `1 − cost/max_cost`, which would zero out
+  `imports`/`calls` (the cross-file edges that define features) since max cost here is only ~0.35.
+  The **repository node is excluded** (a 2342-edge `contains` star that otherwise collapses the repo
+  into one blob). **No RNG** (stronger than "fixed-seed RNG"): canonical `stable_id` order + smallest-
+  representative tie-breaks.
+- **Persistence threshold (P1).** Persist communities of **size ≥ 2** (256 features); isolated nodes
+  carry no membership (the many-to-many schema permits zero memberships). Recorded in
+  `communities.detection_params`.
+
+---
+
+## 10. Glossary
+
+- **L0 / multigraph** — the existing node/edge/chunk graph; ground truth.
+- **L1 / god-node / community / feature** — a derived supernode grouping L0 nodes; for prose ("book") this is a *chapter*.
+- **Quotient graph** — graph of god-nodes; edges = aggregated cross-community L0 edges (the "correlations").
+- **L2 / Merkle root / subtree_hash** — content-addressed rollup of `content_hash` leaves; commits to everything beneath it.
+- **Hash gate** — recompute a summary/embedding only when its `subtree_hash` differs from the stored `summary_hash`.
+- **Summary tree vs hash tree** — same shape, different payload (semantic summary vs. integrity hash); L2 gates L1.
+
+---
+
+## 11. How to track this
+
+- Each `P{n}-T{m}` maps to one issue/PR. Check its box when **its** acceptance criteria pass.
+- A phase flips to ☑ in §5 only when **all** its tasks are checked **and** its phase-level validation is green.
+- Manual/subjective verdicts (P0 quality, P3 summary quality) are **recorded in §9**, not silently skipped — a green checkbox must correspond to a written verdict.

@@ -1,4 +1,5 @@
 mod add;
+mod community;
 mod config;
 mod embedding;
 mod export_util;
@@ -17,6 +18,7 @@ mod query;
 mod setup;
 mod simple_graph_optimizer;
 mod storage;
+mod user_story;
 mod weights;
 
 pub use config::Config;
@@ -139,6 +141,26 @@ enum Commands {
         #[arg(long, default_value_t = 8)]
         nodes_per_feature: usize,
     },
+    /// Render a client/user-facing interactive storyboard (UI/UX user stories,
+    /// no code) from a storyboard manifest JSON file into
+    /// docs/features_memory/<slug>-story.html. Agents normally compose the
+    /// manifest via the MCP `chaos_write_storyboard` tool; this CLI path renders
+    /// a manifest you already have on disk.
+    Storyboard {
+        repo: String,
+        /// Path to a storyboard manifest JSON file.
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Write to this exact path instead of docs/features_memory/<slug>-story.html.
+        #[arg(long)]
+        output_html: Option<PathBuf>,
+        /// Slug for the default output filename. Defaults to the manifest feature id or title.
+        #[arg(long)]
+        slug: Option<String>,
+        /// Page title override. Defaults to the manifest title.
+        #[arg(long)]
+        title: Option<String>,
+    },
     /// Export an indexed repository as an interactive standalone HTML graph.
     Graph {
         repo: String,
@@ -160,6 +182,19 @@ enum Commands {
         features_dir: Option<PathBuf>,
         #[arg(long)]
         all_features: bool,
+    },
+    /// Debug-only: detect L1 communities (god-nodes) over an indexed repo and
+    /// print them as JSON. Read-only; writes nothing. The P0 spike for the
+    /// hierarchical-memory layer.
+    #[command(hide = true)]
+    Communities {
+        repo: String,
+        /// Modularity resolution γ (default 1.0; higher = finer communities).
+        #[arg(long, default_value_t = 1.0)]
+        resolution: f64,
+        /// Cap the number of communities printed (largest first). 0 = all.
+        #[arg(long, default_value_t = 0)]
+        top: usize,
     },
     /// Run the stdio MCP server.
     Mcp,
@@ -440,6 +475,47 @@ async fn main() -> Result<()> {
             let summary = impact::run(&storage, embedder.as_ref(), &repo, &feature, &opts).await?;
             println!("{}", serde_json::to_string_pretty(&summary)?);
         }
+        Commands::Storyboard {
+            repo,
+            manifest,
+            output_html,
+            slug,
+            title,
+        } => {
+            let storage = Storage::connect(&config.storage.database_url).await?;
+            let repo = storage
+                .find_repository(&repo)
+                .await?
+                .with_context(|| format!("repository is not indexed: {repo}"))?;
+            let raw = std::fs::read_to_string(&manifest)
+                .with_context(|| format!("reading storyboard manifest {}", manifest.display()))?;
+            let manifest: user_story::StoryboardManifest =
+                serde_json::from_str(&raw).context("parsing storyboard manifest JSON")?;
+            let title = title.unwrap_or_else(|| manifest.title.clone());
+            let slug = slug.unwrap_or_else(|| {
+                if manifest.feature.id.trim().is_empty() {
+                    title.clone()
+                } else {
+                    manifest.feature.id.clone()
+                }
+            });
+            let output = match output_html {
+                Some(path) => user_story::write_storyboard_to(&path, &manifest, &title)?,
+                None => user_story::write_storyboard(
+                    std::path::Path::new(&repo.root_path),
+                    &manifest,
+                    &slug,
+                    &title,
+                )?,
+            };
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "output_html": output,
+                    "manifest_embedded": true
+                }))?
+            );
+        }
         Commands::Graph { repo, output } => {
             let storage = Storage::connect(&config.storage.database_url).await?;
             let repo = storage
@@ -514,6 +590,44 @@ async fn main() -> Result<()> {
                     "features_dir": features_dir,
                     "feature_pages": summary.feature_pages,
                     "skipped_feature_pages": summary.skipped_feature_pages
+                }))?
+            );
+        }
+        Commands::Communities {
+            repo,
+            resolution,
+            top,
+        } => {
+            let storage = Storage::connect(&config.storage.database_url).await?;
+            let repo = storage
+                .find_repository(&repo)
+                .await?
+                .with_context(|| format!("repository is not indexed: {repo}"))?;
+            let nodes = storage.load_all_nodes(repo.id).await?;
+            let edges = storage.load_all_edges(repo.id).await?;
+            let cfg = community::CommunityConfig { resolution };
+            let mut detection = community::detect_communities(repo.id, &nodes, &edges, &cfg);
+            // Largest communities first for human review; ties by id for stability.
+            detection
+                .communities
+                .sort_by(|a, b| b.size.cmp(&a.size).then(a.id.cmp(&b.id)));
+            if top > 0 {
+                detection.communities.truncate(top);
+            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "repo_id": repo.id,
+                    "repo": repo.name,
+                    "resolution": detection.resolution,
+                    "modularity": detection.modularity,
+                    "levels": detection.levels,
+                    "node_count": detection.node_count,
+                    "edge_count": detection.edge_count,
+                    "community_count": detection.communities.len(),
+                    "quotient_edge_count": detection.quotient_edges.len(),
+                    "communities": detection.communities,
+                    "quotient_edges": detection.quotient_edges,
                 }))?
             );
         }

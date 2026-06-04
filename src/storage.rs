@@ -550,6 +550,39 @@ impl Storage {
         Ok(rows.into_iter().map(row_to_search_hit).collect())
     }
 
+    /// Load every node for a repo in canonical `stable_id` order. Used by the
+    /// community-detection layer (L1), which must see the whole graph.
+    pub async fn load_all_nodes(&self, repo_id: Uuid) -> Result<Vec<KnowledgeNode>> {
+        let rows = sqlx::query(
+            r#"
+            select id, repo_id, file_id, kind, stable_id, name, line_start, line_end, metadata
+            from nodes
+            where repo_id = $1
+            order by stable_id, id
+            "#,
+        )
+        .bind(repo_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(row_to_node).collect())
+    }
+
+    /// Load every edge for a repo in a stable order. Used by L1 detection.
+    pub async fn load_all_edges(&self, repo_id: Uuid) -> Result<Vec<KnowledgeEdge>> {
+        let rows = sqlx::query(
+            r#"
+            select id, repo_id, source_node_id, target_node_id, kind, cost, confidence, metadata
+            from edges
+            where repo_id = $1
+            order by source_node_id, target_node_id, kind
+            "#,
+        )
+        .bind(repo_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(row_to_edge).collect())
+    }
+
     pub async fn load_edges_for_nodes(
         &self,
         repo_id: Uuid,
@@ -570,20 +603,7 @@ impl Storage {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(|row| KnowledgeEdge {
-                id: row.get("id"),
-                repo_id: row.get("repo_id"),
-                source_node_id: row.get("source_node_id"),
-                target_node_id: row.get("target_node_id"),
-                kind: serde_json::from_value(json!(row.get::<String, _>("kind")))
-                    .unwrap_or(crate::models::EdgeKind::Mentions),
-                cost: row.get("cost"),
-                confidence: row.get("confidence"),
-                metadata: row.get("metadata"),
-            })
-            .collect())
+        Ok(rows.into_iter().map(row_to_edge).collect())
     }
 
     pub async fn load_graph_export(&self, repo: &Repository) -> Result<GraphExport> {
@@ -874,6 +894,35 @@ async fn insert_chunk(
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+fn row_to_node(row: sqlx::postgres::PgRow) -> KnowledgeNode {
+    KnowledgeNode {
+        id: row.get("id"),
+        repo_id: row.get("repo_id"),
+        file_id: row.get("file_id"),
+        kind: serde_json::from_value(json!(row.get::<String, _>("kind")))
+            .unwrap_or(crate::models::NodeKind::Concept),
+        stable_id: row.get("stable_id"),
+        name: row.get("name"),
+        line_start: row.get("line_start"),
+        line_end: row.get("line_end"),
+        metadata: row.get("metadata"),
+    }
+}
+
+fn row_to_edge(row: sqlx::postgres::PgRow) -> KnowledgeEdge {
+    KnowledgeEdge {
+        id: row.get("id"),
+        repo_id: row.get("repo_id"),
+        source_node_id: row.get("source_node_id"),
+        target_node_id: row.get("target_node_id"),
+        kind: serde_json::from_value(json!(row.get::<String, _>("kind")))
+            .unwrap_or(crate::models::EdgeKind::Mentions),
+        cost: row.get("cost"),
+        confidence: row.get("confidence"),
+        metadata: row.get("metadata"),
+    }
 }
 
 fn row_to_chunk(row: sqlx::postgres::PgRow) -> KnowledgeChunk {

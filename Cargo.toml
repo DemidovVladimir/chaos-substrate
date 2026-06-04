@@ -1,6 +1,6 @@
 [package]
 name = "chaos-substrate"
-version = "0.6.0"
+version = "0.8.0"
 edition = "2021"
 license = "MIT"
 
@@ -42,7 +42,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 
 [dev-dependencies]
 lopdf = "0.38"

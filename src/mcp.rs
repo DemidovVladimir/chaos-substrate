@@ -174,6 +174,20 @@ pub async fn run(config: Config) -> Result<()> {
                                 },
                                 "required": ["repo"]
                             }
+                        },
+                        {
+                            "name": "chaos_write_storyboard",
+                            "description": "Write a CLIENT/USER-FACING interactive storyboard into docs/features_memory/<slug>-story.html: the feature explained from the UI/UX user-story perspective with NO code. You supply a structured, code-free manifest (personas; user stories as 'As a … I want … so that …' with plain-language acceptance criteria; clickable frames grouped into stages; outcomes; a confidence 0..1 on every frame/story/outcome plus an overall_confidence) and the tool renders a fixed dark Blade Runner page with click-a-frame detail and confidence rings. Use this for a stakeholder/end-user presentation; use chaos_write_feature_website instead for the engineer-facing graph/architecture/code page. Compose from real understanding (run chaos_feature_context / chaos_impact first); do not invent UI that does not exist.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo": {"type": "string"},
+                                    "slug": {"type": "string", "description": "Slug for the output filename docs/features_memory/<slug>-story.html."},
+                                    "title": {"type": "string", "description": "Page title; used when the manifest omits one."},
+                                    "manifest": {"type": "object", "description": "StoryboardManifest: {title, subtitle, audience, overall_confidence, personas[], stories[], frames[], outcomes[]}. NO code/file/line fields. Minimums: >=1 persona, >=2 stories, >=3 frames, >=1 outcome; every confidence in [0,1]; story.frame_ids and persona references must resolve. Each frame MAY include an optional `preview` showing the REAL client UI (not code): {\"kind\":\"image\",\"src\":\"previews/x.png\",\"alt\":\"...\",\"caption\":\"...\"} for a screenshot/clip you captured (offline, leaks nothing — preferred), or {\"kind\":\"iframe\",\"url\":\"http://localhost:5173/route\",\"caption\":\"...\"} to live-embed a running app route (only renders while that server is up). src/url must not use javascript:/vbscript:/data:text/html."}
+                                },
+                                "required": ["repo", "slug", "title", "manifest"]
+                            }
                         }
                     ]
                 }
@@ -470,6 +484,41 @@ async fn handle_tool_call(
                 "features_dir": features_dir,
                 "feature_pages": summary.feature_pages,
                 "skipped_feature_pages": summary.skipped_feature_pages
+            }))?))
+        }
+        "chaos_write_storyboard" => {
+            let repo = args
+                .get("repo")
+                .and_then(Value::as_str)
+                .context("repo is required")?;
+            let slug = args
+                .get("slug")
+                .and_then(Value::as_str)
+                .context("slug is required")?;
+            let title = args
+                .get("title")
+                .and_then(Value::as_str)
+                .context("title is required")?;
+            let manifest_value = args.get("manifest").context("manifest is required")?;
+            let manifest: crate::user_story::StoryboardManifest = serde_json::from_value(
+                manifest_value.clone(),
+            )
+            .context(
+                "manifest must match the storyboard schema (personas, stories, frames, outcomes)",
+            )?;
+            let repo = storage
+                .find_repository(repo)
+                .await?
+                .context("repository is not indexed")?;
+            let path = crate::user_story::write_storyboard(
+                Path::new(&repo.root_path),
+                &manifest,
+                slug,
+                title,
+            )?;
+            Ok(tool_text(serde_json::to_string_pretty(&json!({
+                "output_html": path,
+                "manifest_embedded": true
             }))?))
         }
         _ => anyhow::bail!("unknown tool: {name}"),

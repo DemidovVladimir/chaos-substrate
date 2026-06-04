@@ -78,8 +78,8 @@ install `chaos-substrate` from the `/plugin` UI. Full marketplace and Cowork-zip
 Inside Claude Code, verify the plugin loaded:
 
 - The skill is available as `/chaos-substrate:chaos-substrate`.
-- The nine MCP tools are listed: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
-  `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`, `chaos_refresh`.
+- The ten MCP tools are listed: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
+  `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`.
 - The hooks inject code-memory context on `Grep` / `Glob` / `Bash` (safe no-op if the DB or
   index is unavailable).
 
