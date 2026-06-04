@@ -698,13 +698,25 @@ async fn analyze_repo(
         .buffer_unordered(crate::EMBED_CONCURRENCY)
         .try_collect::<()>()
         .await?;
+        // L1: derive + persist the community layer from the written graph.
+        let detection = crate::community::detect_and_persist(
+            storage,
+            repo.id,
+            &crate::community::CommunityConfig::default(),
+        )
+        .await?;
+        let feature_communities = detection.communities.iter().filter(|c| c.size >= 2).count();
         Result::<_, anyhow::Error>::Ok(json!({
             "repo_id": repo.id,
             "files": result.files.len(),
             "nodes": result.nodes.len(),
             "edges": result.edges.len(),
             "chunks": result.chunks.len(),
-            "embedded_chunks": missing.len()
+            "embedded_chunks": missing.len(),
+            "communities": detection.communities.len(),
+            "feature_communities": feature_communities,
+            "quotient_edges": detection.quotient_edges.len(),
+            "modularity": detection.modularity
         }))
     }
     .await;

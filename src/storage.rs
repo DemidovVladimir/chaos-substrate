@@ -260,6 +260,100 @@ impl Storage {
         Ok(())
     }
 
+    /// Replace the entire persisted L1 community layer for a repo with a fresh
+    /// detection result, in one transaction. Wiping `communities` cascades to
+    /// `community_members` and `community_edges`. Community ids and the partition
+    /// are deterministic (see `src/community.rs`), so re-running on unchanged
+    /// code reproduces the same logical layer.
+    pub async fn replace_communities(
+        &self,
+        repo_id: Uuid,
+        detection: &crate::community::CommunityDetection,
+        detection_params: &Value,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("delete from communities where repo_id = $1")
+            .bind(repo_id)
+            .execute(&mut *tx)
+            .await?;
+
+        for community in &detection.communities {
+            sqlx::query(
+                r#"
+                insert into communities
+                    (id, repo_id, level, parent_id, label, member_count, detection_params, created_at, updated_at)
+                values ($1, $2, $3, null, $4, $5, $6, now(), now())
+                "#,
+            )
+            .bind(community.id)
+            .bind(repo_id)
+            .bind(0i32)
+            .bind(&community.label)
+            .bind(community.size as i32)
+            .bind(detection_params)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        // Bulk-insert memberships via UNNEST (one row per (community, node)).
+        let mut community_ids: Vec<Uuid> = Vec::new();
+        let mut node_ids: Vec<Uuid> = Vec::new();
+        let mut weights: Vec<f64> = Vec::new();
+        for community in &detection.communities {
+            for &node_id in &community.member_node_ids {
+                community_ids.push(community.id);
+                node_ids.push(node_id);
+                weights.push(1.0);
+            }
+        }
+        if !community_ids.is_empty() {
+            sqlx::query(
+                r#"
+                insert into community_members (community_id, node_id, weight)
+                select * from unnest($1::uuid[], $2::uuid[], $3::float8[])
+                on conflict do nothing
+                "#,
+            )
+            .bind(&community_ids)
+            .bind(&node_ids)
+            .bind(&weights)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        for edge in &detection.quotient_edges {
+            // Deterministic edge id from its (already-deterministic) endpoints.
+            let edge_id = Uuid::new_v5(
+                &crate::community::COMMUNITY_NAMESPACE,
+                format!(
+                    "{repo_id}:edge:{}:{}",
+                    edge.source_community_id, edge.target_community_id
+                )
+                .as_bytes(),
+            );
+            sqlx::query(
+                r#"
+                insert into community_edges
+                    (id, repo_id, source_community_id, target_community_id, kind, weight, edge_count, metadata)
+                values ($1, $2, $3, $4, $5, $6, $7, $8)
+                "#,
+            )
+            .bind(edge_id)
+            .bind(repo_id)
+            .bind(edge.source_community_id)
+            .bind(edge.target_community_id)
+            .bind(&edge.kind)
+            .bind(edge.weight)
+            .bind(edge.edge_count as i32)
+            .bind(json!({ "kind_counts": edge.kind_counts }))
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Row counts per persisted table, used to report what a clean removed.
     pub async fn table_counts(&self) -> Result<Value> {
         let row = sqlx::query(
@@ -314,6 +408,22 @@ impl Storage {
         .fetch_one(&self.pool)
         .await?;
 
+        // L1 hierarchy counts. Communities are 0 for a repo indexed before the
+        // hierarchy layer existed (additive degradation). `feature_communities`
+        // are the multi-member ones; singletons are isolated leaf nodes.
+        let hierarchy = sqlx::query(
+            r#"
+            select
+                (select count(*) from communities where repo_id = $1) as communities,
+                (select count(*) from communities where repo_id = $1 and member_count >= 2) as feature_communities,
+                (select count(*) from community_edges where repo_id = $1) as quotient_edges,
+                (select coalesce(max(member_count), 0)::bigint from communities where repo_id = $1) as largest_community
+            "#,
+        )
+        .bind(repo_id)
+        .fetch_one(&self.pool)
+        .await?;
+
         Ok(json!({
             "repo": {
                 "id": repo.id,
@@ -330,6 +440,12 @@ impl Storage {
                 "chunks_missing_embeddings": totals.get::<i64, _>("chunks_missing_embeddings"),
                 "split_chunks": totals.get::<i64, _>("split_chunks"),
                 "nodes_with_chunk": totals.get::<i64, _>("nodes_with_chunk"),
+            },
+            "hierarchy": {
+                "communities": hierarchy.get::<i64, _>("communities"),
+                "feature_communities": hierarchy.get::<i64, _>("feature_communities"),
+                "quotient_edges": hierarchy.get::<i64, _>("quotient_edges"),
+                "largest_community": hierarchy.get::<i64, _>("largest_community"),
             },
             "files_by_language": self.group_counts(repo_id, "files", "language").await?,
             "nodes_by_kind": self.group_counts(repo_id, "nodes", "kind").await?,
@@ -950,5 +1066,187 @@ fn row_to_search_hit(row: sqlx::postgres::PgRow) -> SearchHit {
         score: row.get("score"),
         content: row.get("content"),
         metadata: row.get("metadata"),
+    }
+}
+
+/// DB-backed integration tests for the persisted hierarchy layers. They run
+/// only when `DATABASE_URL` is set (so the embedder-free CI path skips them) and
+/// always operate on a throwaway repo path, purged at the end. They need no
+/// embedder — community detection and Merkle rollup are embedder-free.
+#[cfg(test)]
+mod db_tests {
+    use super::*;
+    use crate::community::{detect_and_persist, CommunityConfig};
+    use crate::models::{
+        EdgeKind, ExtractionResult, KnowledgeEdge, KnowledgeNode, Language, NodeKind, SourceFile,
+    };
+    use std::path::Path;
+
+    fn db_url() -> Option<String> {
+        std::env::var("DATABASE_URL").ok()
+    }
+
+    fn func(repo_id: Uuid, file_id: Uuid, file: &str, name: &str) -> KnowledgeNode {
+        KnowledgeNode {
+            id: Uuid::new_v4(),
+            repo_id,
+            file_id: Some(file_id),
+            kind: NodeKind::Function,
+            stable_id: format!("{file}:function:{name}"),
+            name: name.into(),
+            line_start: Some(1),
+            line_end: Some(5),
+            metadata: json!({ "language": "rust" }),
+        }
+    }
+
+    fn src_file(repo_id: Uuid, path: &str) -> SourceFile {
+        SourceFile {
+            id: Uuid::new_v4(),
+            repo_id,
+            commit_sha: Some("testsha".into()),
+            path: path.into(),
+            language: Language::Rust,
+            content: format!("// {path}\n"),
+            content_hash: crate::extractor::hash(path),
+            line_count: 1,
+        }
+    }
+
+    /// Two dense clusters joined by a single weak edge ⇒ two communities.
+    fn two_cluster_fixture(repo_id: Uuid) -> ExtractionResult {
+        let mut result = ExtractionResult::empty();
+        result.nodes.push(KnowledgeNode {
+            id: Uuid::new_v4(),
+            repo_id,
+            file_id: None,
+            kind: NodeKind::Repository,
+            stable_id: "repo".into(),
+            name: "fixture".into(),
+            line_start: None,
+            line_end: None,
+            metadata: json!({}),
+        });
+        let mut funcs = Vec::new();
+        for (ci, file) in ["a/a.rs", "b/b.rs"].iter().enumerate() {
+            let f = src_file(repo_id, file);
+            let fid = f.id;
+            result.files.push(f);
+            for k in 0..3 {
+                let nd = func(repo_id, fid, file, &format!("c{ci}_f{k}"));
+                funcs.push((ci, nd.id));
+                result.nodes.push(nd);
+            }
+        }
+        // Dense intra-cluster edges.
+        for ci in 0..2 {
+            let ids: Vec<Uuid> = funcs
+                .iter()
+                .filter(|(c, _)| *c == ci)
+                .map(|(_, id)| *id)
+                .collect();
+            for a in 0..ids.len() {
+                for b in (a + 1)..ids.len() {
+                    result.edges.push(KnowledgeEdge {
+                        id: Uuid::new_v4(),
+                        repo_id,
+                        source_node_id: ids[a],
+                        target_node_id: ids[b],
+                        kind: EdgeKind::Calls,
+                        cost: 0.1,
+                        confidence: 1.0,
+                        metadata: json!({}),
+                    });
+                }
+            }
+        }
+        result
+    }
+
+    /// Stable per-run digest: (label, sorted member stable_ids), independent of
+    /// regenerated node UUIDs.
+    fn partition_digest(det: &crate::community::CommunityDetection) -> Vec<String> {
+        let mut rows: Vec<String> = det
+            .communities
+            .iter()
+            .map(|c| format!("{}|{}", c.label, c.member_stable_ids.join(",")))
+            .collect();
+        rows.sort();
+        rows
+    }
+
+    #[tokio::test]
+    async fn community_layer_round_trip_and_stable() {
+        let Some(url) = db_url() else {
+            eprintln!("skip community_layer_round_trip_and_stable: DATABASE_URL unset");
+            return;
+        };
+        let storage = Storage::connect(&url).await.expect("connect");
+        storage.migrate().await.expect("migrate");
+
+        let repo_path = format!("/tmp/chaos-test-{}", Uuid::new_v4());
+        let repo = storage
+            .upsert_repository(Path::new(&repo_path), Some("testsha"))
+            .await
+            .expect("repo");
+
+        let result = two_cluster_fixture(repo.id);
+        storage
+            .replace_repo_index(repo.id, &result)
+            .await
+            .expect("index");
+
+        let det1 = detect_and_persist(&storage, repo.id, &CommunityConfig::default())
+            .await
+            .expect("detect");
+        assert!(
+            det1.communities.len() >= 2,
+            "two clusters => >=2 communities"
+        );
+
+        // Round-trip: stats counts == direct SQL == detection.
+        let stats = storage.repo_stats(&repo).await.expect("stats");
+        let stats_comm = stats["hierarchy"]["communities"].as_i64().unwrap();
+        let sql_comm: i64 =
+            sqlx::query_scalar("select count(*) from communities where repo_id = $1")
+                .bind(repo.id)
+                .fetch_one(&storage.pool)
+                .await
+                .unwrap();
+        assert_eq!(stats_comm, sql_comm);
+        assert_eq!(stats_comm as usize, det1.communities.len());
+
+        let sql_members: i64 = sqlx::query_scalar(
+            "select count(*) from community_members cm \
+             join communities c on c.id = cm.community_id where c.repo_id = $1",
+        )
+        .bind(repo.id)
+        .fetch_one(&storage.pool)
+        .await
+        .unwrap();
+        let expected_members: usize = det1
+            .communities
+            .iter()
+            .map(|c| c.member_node_ids.len())
+            .sum();
+        assert_eq!(sql_members as usize, expected_members);
+
+        // Re-detect after a full re-index: same logical partition (node UUIDs
+        // change, but the stable_id-level digest must not).
+        let result2 = two_cluster_fixture(repo.id);
+        storage
+            .replace_repo_index(repo.id, &result2)
+            .await
+            .expect("reindex");
+        let det2 = detect_and_persist(&storage, repo.id, &CommunityConfig::default())
+            .await
+            .expect("detect2");
+        assert_eq!(
+            partition_digest(&det1),
+            partition_digest(&det2),
+            "community partition must be stable across re-index"
+        );
+
+        storage.purge_repository(repo.id).await.expect("purge");
     }
 }

@@ -343,13 +343,22 @@ async fn main() -> Result<()> {
                 .buffer_unordered(EMBED_CONCURRENCY)
                 .try_collect::<()>()
                 .await?;
-                Result::<_, anyhow::Error>::Ok((result, missing.len()))
+                // L1: derive + persist the community layer from the written graph.
+                let detection = community::detect_and_persist(
+                    &storage,
+                    repo.id,
+                    &community::CommunityConfig::default(),
+                )
+                .await?;
+                Result::<_, anyhow::Error>::Ok((result, missing.len(), detection))
             }
             .await;
 
             match outcome {
-                Ok((result, embedded)) => {
+                Ok((result, embedded, detection)) => {
                     storage.finish_analysis(run_id, "completed", None).await?;
+                    let feature_communities =
+                        detection.communities.iter().filter(|c| c.size >= 2).count();
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&json!({
@@ -358,7 +367,11 @@ async fn main() -> Result<()> {
                             "nodes": result.nodes.len(),
                             "edges": result.edges.len(),
                             "chunks": result.chunks.len(),
-                            "embedded_chunks": embedded
+                            "embedded_chunks": embedded,
+                            "communities": detection.communities.len(),
+                            "feature_communities": feature_communities,
+                            "quotient_edges": detection.quotient_edges.len(),
+                            "modularity": detection.modularity
                         }))?
                     );
                 }

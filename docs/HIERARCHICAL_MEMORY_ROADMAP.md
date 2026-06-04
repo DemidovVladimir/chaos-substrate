@@ -116,7 +116,7 @@ PR in every phase must hold these:
 | Phase | Title | Depends on | Ships | Status |
 |------|-------|-----------|-------|--------|
 | **P0** | Read-only L1 spike (de-risk) | — | a throwaway/debug view of communities over the existing index | ☑ Done (verdict in §9) |
-| **P1** | Persisted community layer | P0 | `communities` + membership + quotient edges, deterministic detection in pipeline | ☐ Not started |
+| **P1** | Persisted community layer | P0 | `communities` + membership + quotient edges, deterministic detection in pipeline | ☑ Done |
 | **P2** | Hash-rollup (Merkle) layer | P1 | subtree hashes rolled to community/repo roots; changed-community detection in `add` | ☐ Not started |
 | **P3** | Summary tree (god-node summaries) | P1, P2 | hash-gated LLM summaries + embeddings per community | ☐ Not started |
 | **P4** | Top-down retrieval + decomposition tool | P1 (P3 for quality) | hierarchical retrieval path + `chaos_change_plan` MCP tool | ☐ Not started |
@@ -168,11 +168,13 @@ parameter) before P1 — do **not** proceed to schema work on a bad clustering.
 **Goal.** Make god-nodes first-class and durable.
 
 **Tasks.**
-- ☐ **P1-T1** Migration `002_communities.sql`: table `communities(id, repo_id, level int, parent_id uuid null, label text, member_count int, detection_params jsonb, created_at)`; table `community_members(community_id, node_id, weight)` — **many-to-many** to allow a node in multiple features (overlap/DAG, not a strict tree); table `community_edges(repo_id, source_community_id, target_community_id, kind, weight)` for the quotient graph. Indexes mirroring the `nodes`/`edges` pattern.
-- ☐ **P1-T2** Promote community detection from the P0 spike into `src/community.rs` as a pipeline stage; persist results via `src/storage.rs` (`upsert_communities`, `replace_community_members`, `upsert_community_edges`).
-- ☐ **P1-T3** Wire detection into the `analyze` flow (after nodes/edges are written) and recompute on full re-index. Decide membership representation: keep communities **separate** from `nodes` (recommended) rather than overloading `NodeKind` — record the choice in §9.
-- ☐ **P1-T4** Build the quotient graph: contract members, aggregate L0 edges (`DependsOn`/`Imports`/`Calls`/`SimilarTo`) into `community_edges` with summed/weighted strength.
-- ☐ **P1-T5** Extend `chaos_stats` + `cargo run -- stats` to report community counts and quotient-edge counts (so the layer is observable).
+- ☑ **P1-T1** Migration `002_communities.sql`: `communities`, `community_members` (many-to-many), `community_edges` (typed quotient graph with `edge_count`). All `if not exists`; applies on a DB at `001`.
+- ☑ **P1-T2** Detection promoted to `src/community.rs::detect_and_persist`; persisted via `Storage::replace_communities` (one transaction, deterministic UUIDv5 ids, UNNEST bulk member insert).
+- ☑ **P1-T3** Wired into `analyze` (CLI + MCP) and recomputed on full re-index; **D2 verdict: separate `communities` table** (no `NodeKind` overload). Recompute also runs in `chaos add`.
+- ☑ **P1-T4** Quotient graph: cross-community L0 edges aggregated per boundary with summed coupling weight, edge count, and dominant kind. **D3 verdict: preserve typed relations** (dominant kind + per-kind counts in metadata).
+- ☑ **P1-T5** `chaos_stats` + `cargo run -- stats` now report `hierarchy.{communities, feature_communities, quotient_edges, largest_community}`.
+
+  *Validation:* migration idempotent on DB-at-001 ✅; additivity (pre-hierarchy `molecule_core` → 0 communities, `query`/`stats` still work) ✅; real-data round-trip on `chaos-substrate` (stats == direct SQL == detection: 52/51/26) ✅; **partition digest byte-identical across two full re-indexes** ✅; unit tests (clique split, determinism, quotient aggregation, repo-node exclusion, file-overlap) + a DB-backed round-trip/stability test (gated on `DATABASE_URL`) ✅.
 
 **Deliverables.** A repo `analyze` now also produces a persisted community layer +
 quotient graph, visible in `stats`.
@@ -325,8 +327,8 @@ Plus the invariant checks that don't belong to a single phase:
 ## 9. Open decisions (resolve as we go — append verdicts here)
 
 - **D1.** Community detection algorithm + resolution (Leiden vs Louvain; default resolution). _Decide in P0._
-- **D2.** Represent god-nodes as rows in a new `communities` table (recommended) vs. as `nodes` with a new `NodeKind::Feature`. _Decide in P1-T3._
-- **D3.** Quotient-edge typing: collapse all L0 edge kinds into one weighted relation, or preserve typed relations between communities? _Decide in P1-T4._
+- **D2.** _Verdict (P1): **separate `communities` table.**_ God-nodes are rows in `communities` (+ `community_members`, `community_edges`), not `nodes` with a `NodeKind::Feature`. Keeps L0 frozen and supports many-to-many membership without perturbing existing node queries.
+- **D3.** _Verdict (P1): **preserve typed relations.**_ Each `community_edges` row carries the dominant L0 edge kind for that boundary plus a per-kind count map in `metadata`, so P4 can reason about *how* features couple (imports vs calls vs depends_on).
 - **D4.** Summary embedding storage: reuse `embeddings` keyed to community vs. dedicated `community_embeddings`. _Decide in P3-T1._
 - **D5.** Recursive levels (summaries-of-summaries) in v1, or single level first? _Decide in P3-T5._
 - **D6.** Tool name: `chaos_change_plan` vs `chaos_scope`. _Decide in P4-T2._

@@ -130,12 +130,24 @@ pub async fn run(
         "chunks": result.chunks.len(),
     });
 
-    // 3. Merge into the index and embed only the new/changed chunks.
+    // 3. Merge into the index, embed only the new/changed chunks, and recompute
+    //    the L1 community layer from the updated graph (deterministic).
     let run_id = storage.begin_analysis(repo.id, commit.as_deref()).await?;
-    let embedded = match merge_and_embed(storage, embedder, repo.id, &changed_rel, &result).await {
-        Ok(embedded) => {
+    let indexed = async {
+        let embedded = merge_and_embed(storage, embedder, repo.id, &changed_rel, &result).await?;
+        let detection = crate::community::detect_and_persist(
+            storage,
+            repo.id,
+            &crate::community::CommunityConfig::default(),
+        )
+        .await?;
+        Result::<_, anyhow::Error>::Ok((embedded, detection))
+    }
+    .await;
+    let (embedded, detection) = match indexed {
+        Ok(value) => {
             storage.finish_analysis(run_id, "completed", None).await?;
-            embedded
+            value
         }
         Err(err) => {
             storage
@@ -144,6 +156,7 @@ pub async fn run(
             return Err(err);
         }
     };
+    let feature_communities = detection.communities.iter().filter(|c| c.size >= 2).count();
 
     // 4. Classify + title the addition.
     let kind = resolve_kind(&repo_root, opts)?;
@@ -196,6 +209,11 @@ pub async fn run(
         "changed_files": changed_rel,
         "indexed": counts,
         "embedded_chunks": embedded,
+        "communities": {
+            "total": detection.communities.len(),
+            "feature_communities": feature_communities,
+            "quotient_edges": detection.quotient_edges.len(),
+        },
         "obsidian": obsidian,
         "page": page,
     }))

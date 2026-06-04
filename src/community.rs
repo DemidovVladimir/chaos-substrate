@@ -30,13 +30,20 @@
 //! a single community.
 
 use crate::models::{KnowledgeEdge, KnowledgeNode};
+use crate::storage::Storage;
+use anyhow::Result;
 use serde::Serialize;
+use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
 use uuid::Uuid;
 
+/// Detection algorithm/version recorded in `communities.detection_params`, so a
+/// future tuning change is visible and re-detect can be forced.
+pub const DETECTION_VERSION: i64 = 1;
+
 /// Fixed namespace for deterministic community UUIDv5 derivation. Generated
 /// once and pinned; must never change or community ids would churn.
-const COMMUNITY_NAMESPACE: Uuid = Uuid::from_bytes([
+pub(crate) const COMMUNITY_NAMESPACE: Uuid = Uuid::from_bytes([
     0x9e, 0x4f, 0x1a, 0x77, 0x2c, 0x38, 0x4b, 0x6d, 0xa1, 0x0c, 0x5e, 0x82, 0x3f, 0x91, 0xd4, 0x6a,
 ]);
 
@@ -130,6 +137,31 @@ fn node_language(node: &KnowledgeNode) -> Option<String> {
         .get("language")
         .and_then(|v| v.as_str())
         .map(str::to_string)
+}
+
+/// Load the persisted L0 graph for a repo, detect communities, and replace the
+/// persisted L1 layer. Returns the detection so callers can report counts.
+/// Runs against the database (source of truth) so it is correct for both full
+/// `analyze` (fresh node ids) and incremental `add` (remapped node ids).
+pub async fn detect_and_persist(
+    storage: &Storage,
+    repo_id: Uuid,
+    config: &CommunityConfig,
+) -> Result<CommunityDetection> {
+    let nodes = storage.load_all_nodes(repo_id).await?;
+    let edges = storage.load_all_edges(repo_id).await?;
+    let detection = detect_communities(repo_id, &nodes, &edges, config);
+    let params = json!({
+        "algorithm": "louvain",
+        "resolution": detection.resolution,
+        "version": DETECTION_VERSION,
+        "levels": detection.levels,
+        "modularity": detection.modularity,
+    });
+    storage
+        .replace_communities(repo_id, &detection, &params)
+        .await?;
+    Ok(detection)
 }
 
 /// Detect communities over the L0 graph. Pure and deterministic.
@@ -797,6 +829,71 @@ mod tests {
         let qe = &det.quotient_edges[0];
         assert_eq!(qe.edge_count, 3);
         assert_eq!(qe.kind, "calls"); // 2 calls vs 1 depends_on
+    }
+
+    /// A single *file* whose symbols couple to different clusters lands in
+    /// multiple communities — the file-level overlap that drives L2 blast
+    /// radius even though the node partition itself is disjoint.
+    #[test]
+    fn file_overlaps_multiple_communities() {
+        let mut nodes = Vec::new();
+        for m in 0..4 {
+            nodes.push(node(
+                &format!("xmod/f{m}:function:x{m}"),
+                NodeKind::Function,
+                "rust",
+            ));
+        }
+        for m in 0..4 {
+            nodes.push(node(
+                &format!("ymod/f{m}:function:y{m}"),
+                NodeKind::Function,
+                "rust",
+            ));
+        }
+        // Two symbols of the SAME file, each glued to a different cluster.
+        let func_a = node("shared/F.rs:function:funcA", NodeKind::Function, "rust");
+        let func_b = node("shared/F.rs:function:funcB", NodeKind::Function, "rust");
+        nodes.push(func_a.clone());
+        nodes.push(func_b.clone());
+
+        let mut edges = Vec::new();
+        for a in 0..4 {
+            for b in (a + 1)..4 {
+                edges.push(edge(nodes[a].id, nodes[b].id, EdgeKind::Calls, 0.1, 1.0));
+                edges.push(edge(
+                    nodes[4 + a].id,
+                    nodes[4 + b].id,
+                    EdgeKind::Calls,
+                    0.1,
+                    1.0,
+                ));
+            }
+        }
+        // funcA -> all of X ; funcB -> all of Y.
+        for a in 0..4 {
+            edges.push(edge(func_a.id, nodes[a].id, EdgeKind::Calls, 0.1, 1.0));
+            edges.push(edge(func_b.id, nodes[4 + a].id, EdgeKind::Calls, 0.1, 1.0));
+        }
+
+        let det = detect_communities(Uuid::nil(), &nodes, &edges, &CommunityConfig::default());
+        // Which communities contain a node from file "shared/F.rs"?
+        let mut files_to_comms: std::collections::BTreeMap<
+            String,
+            std::collections::BTreeSet<Uuid>,
+        > = std::collections::BTreeMap::new();
+        for c in &det.communities {
+            for sid in &c.member_stable_ids {
+                let file = sid.split(':').next().unwrap_or("").to_string();
+                files_to_comms.entry(file).or_default().insert(c.id);
+            }
+        }
+        let shared = files_to_comms.get("shared/F.rs").expect("file present");
+        assert!(
+            shared.len() >= 2,
+            "file shared/F.rs should overlap >=2 communities, got {}",
+            shared.len()
+        );
     }
 
     /// The repository node and its star edges are excluded.
