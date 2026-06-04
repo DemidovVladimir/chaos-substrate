@@ -371,6 +371,17 @@ resolution γ=1.0). Artifact: `docs/features_memory/_spike-communities.json`.
   The **repository node is excluded** (a 2342-edge `contains` star that otherwise collapses the repo
   into one blob). **No RNG** (stronger than "fixed-seed RNG"): canonical `stable_id` order + smallest-
   representative tie-breaks.
+
+  _Leiden vs Louvain, revisited with data (2026-06-04):_ Leiden's sole substantive advantage over
+  Louvain is **guaranteed internally-connected communities** (Traag et al. 2019); its other wins
+  (marginally higher modularity, faster convergence) are non-issues here (modularity 0.894, ~4s on
+  13.5k nodes). We measured internal connectivity of every feature community: **0 disconnected**
+  (256/256 on `molecule_core`, 28/28 on `chaos-substrate`) — code edges (`contains`/`imports`/`calls`)
+  plus excluding the repo star yield connected features by construction. So Leiden would add a
+  randomized refinement phase (fighting our byte-identical-across-reindex determinism invariant, on
+  which the P2/P3 gates depend) for **no measured benefit**. **Verdict: stay on deterministic Louvain.**
+  If a future repo's topology ever produces a disconnected community, the cheap fully-deterministic
+  fix is a connected-components post-split — not a Leiden rewrite.
 - **Persistence threshold (P1).** Persist communities of **size ≥ 2** (256 features); isolated nodes
   carry no membership (the many-to-many schema permits zero memberships). Recorded in
   `communities.detection_params`.
