@@ -12,6 +12,7 @@ mod hook;
 mod impact;
 mod lang;
 mod mcp;
+mod merkle;
 mod models;
 mod obsidian_export;
 mod query;
@@ -350,12 +351,14 @@ async fn main() -> Result<()> {
                     &community::CommunityConfig::default(),
                 )
                 .await?;
-                Result::<_, anyhow::Error>::Ok((result, missing.len(), detection))
+                // L2: roll the content-hash leaves up to file/community/repo roots.
+                let merkle = merkle::compute_and_persist(&storage, repo.id).await?;
+                Result::<_, anyhow::Error>::Ok((result, missing.len(), detection, merkle))
             }
             .await;
 
             match outcome {
-                Ok((result, embedded, detection)) => {
+                Ok((result, embedded, detection, merkle)) => {
                     storage.finish_analysis(run_id, "completed", None).await?;
                     let feature_communities =
                         detection.communities.iter().filter(|c| c.size >= 2).count();
@@ -371,7 +374,8 @@ async fn main() -> Result<()> {
                             "communities": detection.communities.len(),
                             "feature_communities": feature_communities,
                             "quotient_edges": detection.quotient_edges.len(),
-                            "modularity": detection.modularity
+                            "modularity": detection.modularity,
+                            "repo_root_hash": merkle.repo_root_hash
                         }))?
                     );
                 }

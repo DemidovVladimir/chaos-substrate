@@ -354,6 +354,168 @@ impl Storage {
         Ok(())
     }
 
+    // ---- L2 Merkle rollup support -------------------------------------------
+
+    /// Ordered chunk `content_hash` leaves per file (the Merkle leaves). Returns
+    /// one row per file (left join, so chunk-less files appear with an empty
+    /// list), with chunks in canonical order so the rolled hash is stable.
+    pub async fn load_file_chunk_hashes(
+        &self,
+        repo_id: Uuid,
+    ) -> Result<Vec<(Uuid, String, Vec<String>)>> {
+        let rows = sqlx::query(
+            r#"
+            select f.id as file_id, f.path as path, c.content_hash as chunk_hash
+            from files f
+            left join chunks c on c.file_id = f.id
+            where f.repo_id = $1
+            order by f.path, f.id,
+                     c.line_start nulls first, c.line_end nulls first,
+                     c.chunk_type nulls first, c.content_hash nulls first
+            "#,
+        )
+        .bind(repo_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut out: Vec<(Uuid, String, Vec<String>)> = Vec::new();
+        for row in rows {
+            let file_id: Uuid = row.get("file_id");
+            let path: String = row.get("path");
+            let chunk_hash: Option<String> = row.get("chunk_hash");
+            match out.last_mut() {
+                Some((last_id, _, hashes)) if *last_id == file_id => {
+                    if let Some(h) = chunk_hash {
+                        hashes.push(h);
+                    }
+                }
+                _ => {
+                    let mut hashes = Vec::new();
+                    if let Some(h) = chunk_hash {
+                        hashes.push(h);
+                    }
+                    out.push((file_id, path, hashes));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Distinct member file ids per community (a file is shared across
+    /// communities when its symbols are — that overlap is the blast radius).
+    pub async fn load_community_member_files(
+        &self,
+        repo_id: Uuid,
+    ) -> Result<Vec<(Uuid, Vec<Uuid>)>> {
+        let rows = sqlx::query(
+            r#"
+            select cm.community_id as community_id,
+                   array_agg(distinct n.file_id) as file_ids
+            from community_members cm
+            join communities co on co.id = cm.community_id
+            join nodes n on n.id = cm.node_id
+            where co.repo_id = $1 and n.file_id is not null
+            group by cm.community_id
+            "#,
+        )
+        .bind(repo_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let community_id: Uuid = row.get("community_id");
+                let file_ids: Vec<Uuid> = row.get("file_ids");
+                (community_id, file_ids)
+            })
+            .collect())
+    }
+
+    /// Persist file-level subtree hashes (bulk UNNEST update).
+    pub async fn update_file_subtree_hashes(&self, hashes: &[(Uuid, String)]) -> Result<()> {
+        if hashes.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<Uuid> = hashes.iter().map(|(id, _)| *id).collect();
+        let vals: Vec<String> = hashes.iter().map(|(_, h)| h.clone()).collect();
+        sqlx::query(
+            r#"
+            update files as f set subtree_hash = v.hash
+            from (select * from unnest($1::uuid[], $2::text[]) as t(id, hash)) v
+            where f.id = v.id
+            "#,
+        )
+        .bind(&ids)
+        .bind(&vals)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Persist community-level subtree hashes (bulk UNNEST update).
+    pub async fn update_community_subtree_hashes(&self, hashes: &[(Uuid, String)]) -> Result<()> {
+        if hashes.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<Uuid> = hashes.iter().map(|(id, _)| *id).collect();
+        let vals: Vec<String> = hashes.iter().map(|(_, h)| h.clone()).collect();
+        sqlx::query(
+            r#"
+            update communities as c set subtree_hash = v.hash, updated_at = now()
+            from (select * from unnest($1::uuid[], $2::text[]) as t(id, hash)) v
+            where c.id = v.id
+            "#,
+        )
+        .bind(&ids)
+        .bind(&vals)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Persist the repo root hash.
+    pub async fn update_repo_root_hash(&self, repo_id: Uuid, hash: &str) -> Result<()> {
+        sqlx::query(
+            "update repositories set repo_root_hash = $2, updated_at = now() where id = $1",
+        )
+        .bind(repo_id)
+        .bind(hash)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Current repo root hash (None if never computed).
+    pub async fn get_repo_root_hash(&self, repo_id: Uuid) -> Result<Option<String>> {
+        Ok(
+            sqlx::query_scalar("select repo_root_hash from repositories where id = $1")
+                .bind(repo_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten(),
+        )
+    }
+
+    /// Map of community id -> current subtree hash (only communities that have
+    /// one). Used to diff before/after for `add` blast radius and P3 gating.
+    pub async fn load_community_hashes(&self, repo_id: Uuid) -> Result<HashMap<Uuid, String>> {
+        let rows = sqlx::query(
+            "select id, subtree_hash from communities where repo_id = $1 and subtree_hash is not null",
+        )
+        .bind(repo_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.get::<Uuid, _>("id"),
+                    row.get::<String, _>("subtree_hash"),
+                )
+            })
+            .collect())
+    }
+
     /// Row counts per persisted table, used to report what a clean removed.
     pub async fn table_counts(&self) -> Result<Value> {
         let row = sqlx::query(
@@ -417,7 +579,9 @@ impl Storage {
                 (select count(*) from communities where repo_id = $1) as communities,
                 (select count(*) from communities where repo_id = $1 and member_count >= 2) as feature_communities,
                 (select count(*) from community_edges where repo_id = $1) as quotient_edges,
-                (select coalesce(max(member_count), 0)::bigint from communities where repo_id = $1) as largest_community
+                (select coalesce(max(member_count), 0)::bigint from communities where repo_id = $1) as largest_community,
+                (select count(*) from communities where repo_id = $1 and subtree_hash is not null) as hashed_communities,
+                (select repo_root_hash from repositories where id = $1) as repo_root_hash
             "#,
         )
         .bind(repo_id)
@@ -446,6 +610,8 @@ impl Storage {
                 "feature_communities": hierarchy.get::<i64, _>("feature_communities"),
                 "quotient_edges": hierarchy.get::<i64, _>("quotient_edges"),
                 "largest_community": hierarchy.get::<i64, _>("largest_community"),
+                "hashed_communities": hierarchy.get::<i64, _>("hashed_communities"),
+                "repo_root_hash": hierarchy.get::<Option<String>, _>("repo_root_hash"),
             },
             "files_by_language": self.group_counts(repo_id, "files", "language").await?,
             "nodes_by_kind": self.group_counts(repo_id, "nodes", "kind").await?,
@@ -1078,7 +1244,8 @@ mod db_tests {
     use super::*;
     use crate::community::{detect_and_persist, CommunityConfig};
     use crate::models::{
-        EdgeKind, ExtractionResult, KnowledgeEdge, KnowledgeNode, Language, NodeKind, SourceFile,
+        EdgeKind, ExtractionResult, KnowledgeChunk, KnowledgeEdge, KnowledgeNode, Language,
+        NodeKind, SourceFile,
     };
     use std::path::Path;
 
@@ -1134,8 +1301,24 @@ mod db_tests {
             result.files.push(f);
             for k in 0..3 {
                 let nd = func(repo_id, fid, file, &format!("c{ci}_f{k}"));
-                funcs.push((ci, nd.id));
+                let node_id = nd.id;
+                funcs.push((ci, node_id));
                 result.nodes.push(nd);
+                // One chunk per symbol, with distinct content ⇒ distinct,
+                // non-empty file subtree hashes for the Merkle rollup.
+                let content = format!("fn {file}::c{ci}_f{k} body");
+                result.chunks.push(KnowledgeChunk {
+                    id: Uuid::new_v4(),
+                    repo_id,
+                    file_id: Some(fid),
+                    node_id: Some(node_id),
+                    chunk_type: "function".into(),
+                    content_hash: crate::extractor::hash(&content),
+                    content,
+                    line_start: Some(k * 6 + 1),
+                    line_end: Some(k * 6 + 5),
+                    metadata: json!({}),
+                });
             }
         }
         // Dense intra-cluster edges.
@@ -1161,6 +1344,36 @@ mod db_tests {
             }
         }
         result
+    }
+
+    async fn load_file_hashes(storage: &Storage, repo_id: Uuid) -> HashMap<String, Option<String>> {
+        let rows = sqlx::query("select path, subtree_hash from files where repo_id = $1")
+            .bind(repo_id)
+            .fetch_all(&storage.pool)
+            .await
+            .unwrap();
+        rows.into_iter()
+            .map(|r| {
+                (
+                    r.get::<String, _>("path"),
+                    r.get::<Option<String>, _>("subtree_hash"),
+                )
+            })
+            .collect()
+    }
+
+    async fn community_of_file(storage: &Storage, repo_id: Uuid, path: &str) -> Uuid {
+        sqlx::query_scalar::<_, Uuid>(
+            "select distinct cm.community_id from community_members cm \
+             join nodes n on n.id = cm.node_id \
+             join files f on f.id = n.file_id \
+             where f.repo_id = $1 and f.path = $2 limit 1",
+        )
+        .bind(repo_id)
+        .bind(path)
+        .fetch_one(&storage.pool)
+        .await
+        .unwrap()
     }
 
     /// Stable per-run digest: (label, sorted member stable_ids), independent of
@@ -1245,6 +1458,140 @@ mod db_tests {
             partition_digest(&det1),
             partition_digest(&det2),
             "community partition must be stable across re-index"
+        );
+
+        storage.purge_repository(repo.id).await.expect("purge");
+    }
+
+    /// Golden change-localization test: editing one chunk in one file flips
+    /// exactly that file's hash, its community root(s), and the repo root —
+    /// every sibling byte-identical.
+    #[tokio::test]
+    async fn merkle_localizes_a_single_chunk_change() {
+        let Some(url) = db_url() else {
+            eprintln!("skip merkle_localizes_a_single_chunk_change: DATABASE_URL unset");
+            return;
+        };
+        let storage = Storage::connect(&url).await.expect("connect");
+        storage.migrate().await.expect("migrate");
+        let repo_path = format!("/tmp/chaos-test-{}", Uuid::new_v4());
+        let repo = storage
+            .upsert_repository(Path::new(&repo_path), Some("testsha"))
+            .await
+            .expect("repo");
+
+        let result = two_cluster_fixture(repo.id);
+        storage
+            .replace_repo_index(repo.id, &result)
+            .await
+            .expect("index");
+        detect_and_persist(&storage, repo.id, &CommunityConfig::default())
+            .await
+            .expect("detect");
+        let m1 = crate::merkle::compute_and_persist(&storage, repo.id)
+            .await
+            .expect("merkle1");
+
+        let before_files = load_file_hashes(&storage, repo.id).await;
+
+        // Which community owns a/a.rs, and which does not.
+        let comm_a = community_of_file(&storage, repo.id, "a/a.rs").await;
+        let comm_b = community_of_file(&storage, repo.id, "b/b.rs").await;
+        assert_ne!(comm_a, comm_b, "two files must be in two communities");
+
+        // Edit exactly one chunk of a/a.rs.
+        sqlx::query(
+            "update chunks set content_hash = 'CHANGED-CHUNK' \
+             where id = (select c.id from chunks c join files f on f.id = c.file_id \
+                        where f.repo_id = $1 and f.path = 'a/a.rs' order by c.content_hash limit 1)",
+        )
+        .bind(repo.id)
+        .execute(&storage.pool)
+        .await
+        .unwrap();
+
+        let m2 = crate::merkle::compute_and_persist(&storage, repo.id)
+            .await
+            .expect("merkle2");
+        let after_files = load_file_hashes(&storage, repo.id).await;
+
+        // The edited file moved; its sibling did not.
+        assert_ne!(
+            before_files["a/a.rs"], after_files["a/a.rs"],
+            "edited file hash must change"
+        );
+        assert_eq!(
+            before_files["b/b.rs"], after_files["b/b.rs"],
+            "sibling file hash must be byte-identical"
+        );
+        // The repo root moved.
+        assert_ne!(
+            m1.repo_root_hash, m2.repo_root_hash,
+            "repo root must change"
+        );
+        // The ancestor community moved; the unaffected one did not.
+        assert_ne!(
+            m1.community_hashes[&comm_a], m2.community_hashes[&comm_a],
+            "community owning the edited file must change"
+        );
+        assert_eq!(
+            m1.community_hashes[&comm_b], m2.community_hashes[&comm_b],
+            "unaffected community must be byte-identical"
+        );
+
+        storage.purge_repository(repo.id).await.expect("purge");
+    }
+
+    /// Re-rolling unchanged content reproduces every hash byte-for-byte.
+    #[tokio::test]
+    async fn merkle_is_stable_for_unchanged_content() {
+        let Some(url) = db_url() else {
+            eprintln!("skip merkle_is_stable_for_unchanged_content: DATABASE_URL unset");
+            return;
+        };
+        let storage = Storage::connect(&url).await.expect("connect");
+        storage.migrate().await.expect("migrate");
+        let repo_path = format!("/tmp/chaos-test-{}", Uuid::new_v4());
+        let repo = storage
+            .upsert_repository(Path::new(&repo_path), Some("testsha"))
+            .await
+            .expect("repo");
+
+        storage
+            .replace_repo_index(repo.id, &two_cluster_fixture(repo.id))
+            .await
+            .expect("index");
+        detect_and_persist(&storage, repo.id, &CommunityConfig::default())
+            .await
+            .expect("detect");
+        let m1 = crate::merkle::compute_and_persist(&storage, repo.id)
+            .await
+            .expect("m1");
+
+        // Full re-index of identical content, then re-roll.
+        storage
+            .replace_repo_index(repo.id, &two_cluster_fixture(repo.id))
+            .await
+            .expect("reindex");
+        detect_and_persist(&storage, repo.id, &CommunityConfig::default())
+            .await
+            .expect("detect2");
+        let m2 = crate::merkle::compute_and_persist(&storage, repo.id)
+            .await
+            .expect("m2");
+
+        assert_eq!(
+            m1.repo_root_hash, m2.repo_root_hash,
+            "repo root must be byte-identical for unchanged content"
+        );
+        // Community hashes match by-value (ids are deterministic too).
+        let mut h1: Vec<String> = m1.community_hashes.values().cloned().collect();
+        let mut h2: Vec<String> = m2.community_hashes.values().cloned().collect();
+        h1.sort();
+        h2.sort();
+        assert_eq!(
+            h1, h2,
+            "community hashes must be stable for unchanged content"
         );
 
         storage.purge_repository(repo.id).await.expect("purge");

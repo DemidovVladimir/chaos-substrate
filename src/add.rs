@@ -130,8 +130,15 @@ pub async fn run(
         "chunks": result.chunks.len(),
     });
 
-    // 3. Merge into the index, embed only the new/changed chunks, and recompute
-    //    the L1 community layer from the updated graph (deterministic).
+    // 3. Merge into the index, embed only the new/changed chunks, recompute the
+    //    L1 community layer, and roll the L2 hashes. Capture the prior community
+    //    hashes + repo root first so we can report this change's feature blast
+    //    radius (the communities whose Merkle root moved).
+    let before_hashes = storage
+        .load_community_hashes(repo.id)
+        .await
+        .unwrap_or_default();
+    let before_root = storage.get_repo_root_hash(repo.id).await.unwrap_or(None);
     let run_id = storage.begin_analysis(repo.id, commit.as_deref()).await?;
     let indexed = async {
         let embedded = merge_and_embed(storage, embedder, repo.id, &changed_rel, &result).await?;
@@ -141,10 +148,11 @@ pub async fn run(
             &crate::community::CommunityConfig::default(),
         )
         .await?;
-        Result::<_, anyhow::Error>::Ok((embedded, detection))
+        let merkle = crate::merkle::compute_and_persist(storage, repo.id).await?;
+        Result::<_, anyhow::Error>::Ok((embedded, detection, merkle))
     }
     .await;
-    let (embedded, detection) = match indexed {
+    let (embedded, detection, merkle) = match indexed {
         Ok(value) => {
             storage.finish_analysis(run_id, "completed", None).await?;
             value
@@ -157,6 +165,31 @@ pub async fn run(
         }
     };
     let feature_communities = detection.communities.iter().filter(|c| c.size >= 2).count();
+
+    // Feature blast radius: which communities' roots moved (vs. before the add).
+    // First-ever add reports all communities (everything is new).
+    let label_by_id: HashMap<Uuid, String> = detection
+        .communities
+        .iter()
+        .map(|c| (c.id, c.label.clone()))
+        .collect();
+    let size_by_id: HashMap<Uuid, usize> = detection
+        .communities
+        .iter()
+        .map(|c| (c.id, c.size))
+        .collect();
+    let changed_ids = crate::merkle::changed_communities(&before_hashes, &merkle.community_hashes);
+    let changed_communities: Vec<Value> = changed_ids
+        .iter()
+        .filter(|id| size_by_id.get(*id).copied().unwrap_or(0) >= 2)
+        .map(|id| {
+            json!({
+                "id": id,
+                "label": label_by_id.get(id),
+                "size": size_by_id.get(id),
+            })
+        })
+        .collect();
 
     // 4. Classify + title the addition.
     let kind = resolve_kind(&repo_root, opts)?;
@@ -213,6 +246,13 @@ pub async fn run(
             "total": detection.communities.len(),
             "feature_communities": feature_communities,
             "quotient_edges": detection.quotient_edges.len(),
+        },
+        "blast_radius": {
+            "changed_feature_count": changed_communities.len(),
+            "changed_communities": changed_communities,
+            "root_hash_before": before_root,
+            "root_hash_after": merkle.repo_root_hash,
+            "root_changed": before_root.as_deref() != Some(merkle.repo_root_hash.as_str()),
         },
         "obsidian": obsidian,
         "page": page,

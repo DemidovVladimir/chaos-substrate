@@ -705,6 +705,8 @@ async fn analyze_repo(
             &crate::community::CommunityConfig::default(),
         )
         .await?;
+        // L2: roll the content-hash leaves up to file/community/repo roots.
+        let merkle = crate::merkle::compute_and_persist(storage, repo.id).await?;
         let feature_communities = detection.communities.iter().filter(|c| c.size >= 2).count();
         Result::<_, anyhow::Error>::Ok(json!({
             "repo_id": repo.id,
@@ -716,7 +718,8 @@ async fn analyze_repo(
             "communities": detection.communities.len(),
             "feature_communities": feature_communities,
             "quotient_edges": detection.quotient_edges.len(),
-            "modularity": detection.modularity
+            "modularity": detection.modularity,
+            "repo_root_hash": merkle.repo_root_hash
         }))
     }
     .await;

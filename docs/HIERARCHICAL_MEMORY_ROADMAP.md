@@ -117,7 +117,7 @@ PR in every phase must hold these:
 |------|-------|-----------|-------|--------|
 | **P0** | Read-only L1 spike (de-risk) | — | a throwaway/debug view of communities over the existing index | ☑ Done (verdict in §9) |
 | **P1** | Persisted community layer | P0 | `communities` + membership + quotient edges, deterministic detection in pipeline | ☑ Done |
-| **P2** | Hash-rollup (Merkle) layer | P1 | subtree hashes rolled to community/repo roots; changed-community detection in `add` | ☐ Not started |
+| **P2** | Hash-rollup (Merkle) layer | P1 | subtree hashes rolled to community/repo roots; changed-community detection in `add` | ☑ Done |
 | **P3** | Summary tree (god-node summaries) | P1, P2 | hash-gated LLM summaries + embeddings per community | ☐ Not started |
 | **P4** | Top-down retrieval + decomposition tool | P1 (P3 for quality) | hierarchical retrieval path + `chaos_change_plan` MCP tool | ☐ Not started |
 | **P5** | Surfacing + delivery | P1–P4 | HTML/Obsidian hierarchy views, SKILL.md, plugin repackage | ☐ Not started |
@@ -199,11 +199,13 @@ you, in O(log n), exactly what changed — and which **communities** that change
 touched.
 
 **Tasks.**
-- ☐ **P2-T1** Migration `003_subtree_hash.sql`: add `subtree_hash text` to `files`; add `subtree_hash text` to `communities`; add `repo_root_hash` to `repositories` (or `analysis_runs`).
-- ☐ **P2-T2** `src/merkle.rs`: deterministic rollup — chunk `content_hash` (leaves, already present) → file `subtree_hash` (hash of ordered child chunk hashes) → community `subtree_hash` (hash of ordered member-file/node hashes; **shared leaves across communities are expected** and fine) → repo root. Ordering must be canonical (sort by `stable_id`) so the hash is stable.
-- ☐ **P2-T3** Compute + persist rollups at the end of `analyze` and `add`.
-- ☐ **P2-T4** Make `chaos add` **feature-aware**: after merging changed files, recompute affected `subtree_hash`es and emit the set of **communities whose root changed** (the change's feature blast-radius). Surface this in the `add` result JSON and the generated feature page.
-- ☐ **P2-T5** Add a change-localization query: "between commit A and B (or working tree), which communities changed?" via root comparison.
+- ☑ **P2-T1** Migration `003_subtree_hash.sql`: `files.subtree_hash`, `communities.subtree_hash`, `repositories.repo_root_hash` (+ indexes). Additive.
+- ☑ **P2-T2** `src/merkle.rs`: deterministic rollup — chunk `content_hash` → file `subtree_hash` (canonically ordered chunk hashes) → community `subtree_hash` (member-file hashes ordered by path; **shared files flip multiple communities** by design) → repo root (all file hashes ordered by path). `sha256` via `extractor::hash`.
+- ☑ **P2-T3** `merkle::compute_and_persist` runs at the end of `analyze` (CLI + MCP) and `add`; `stats` now reports `hashed_communities` + `repo_root_hash`.
+- ☑ **P2-T4** `chaos add` is feature-aware: captures community hashes before the merge, diffs after, and emits `blast_radius { changed_feature_count, changed_communities[], root_hash_before/after, root_changed }`.
+- ☑ **P2-T5** Change-localization primitives: `Storage::get_repo_root_hash` + `merkle::changed_communities` diff; `add --since <ref>` reports the blast radius of working-tree-vs-ref.
+
+  *Validation:* migration idempotent; **golden localization** (DB test) — editing one chunk flips exactly that file + its community + repo root, every sibling byte-identical; **stability** — re-rolling unchanged content reproduces every hash byte-for-byte; real-data `add` blast radius on `chaos-substrate` correctly reported exactly the `src/graph.rs` feature for a function-body edit, and **nothing** for a comment/`const`-only edit (the Merkle commits to *indexed chunks*, so changes outside any chunk are correctly treated as no knowledge change — this is the gating property P3 relies on).
 
 **Deliverables.** Every `add` reports the exact set of features it touched; root
 comparison answers "did feature X change?" without re-reading its contents.
