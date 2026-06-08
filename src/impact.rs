@@ -16,9 +16,11 @@ use crate::{
     embedding::Embedder,
     export_util::escape_script_json,
     feature_context::{
-        build_feature_context_warnings, load_feature_matches, FeatureContextResponse,
+        build_feature_context_warnings, feature_context_provenance, load_feature_matches,
+        FeatureContextResponse,
     },
     models::SearchHit,
+    provenance::{source, Breadcrumb},
     query::query_feature_context_repo,
     storage::Storage,
 };
@@ -80,15 +82,28 @@ pub async fn run(
     let warnings = build_feature_context_warnings(feature, &repo_root, &postgres);
     let feature_matches =
         load_feature_matches(feature, &features_dir, feature_limit, nodes_per_feature)?;
-    let response = FeatureContextResponse {
+    let provenance = feature_context_provenance(&postgres, &features_dir, &feature_matches);
+    let mut response = FeatureContextResponse {
         task: feature.to_string(),
         postgres,
         features_dir,
         warnings,
         feature_matches,
+        provenance,
     };
 
     let summary = ImpactSummary::from_response(&response);
+    // Record the final aggregation step (retrieval hits → affected files/symbols).
+    response.provenance.push(Breadcrumb::new(
+        source::GRAPH,
+        "impact_summary",
+        format!(
+            "aggregated {} retrieval hit(s) → {} affected file(s), {} symbol(s)",
+            response.postgres.hits.len(),
+            summary.affected_file_count,
+            summary.affected_symbol_count
+        ),
+    ));
 
     let output = opts.output_html.clone().unwrap_or_else(|| {
         repo_root
@@ -107,6 +122,7 @@ pub async fn run(
         "feature": feature,
         "output_html": output,
         "impact": summary,
+        "provenance": response.provenance,
         "warnings": response.warnings,
     }))
 }
@@ -283,6 +299,7 @@ fn write_impact_html(
     let data = json!({
         "task": response.task,
         "impact": summary,
+        "provenance": response.provenance,
         "warnings": response.warnings,
         "feature_matches": response.feature_matches,
         "hits": response.postgres.hits,
@@ -290,7 +307,17 @@ fn write_impact_html(
     let json = serde_json::to_string(&data)?;
     fs::write(
         path,
-        IMPACT_HTML.replace("__DATA__", &escape_script_json(&json)),
+        IMPACT_HTML
+            .replace("__THEME__", crate::theme::THEME_CSS)
+            .replace(
+                "__BRAND_TOPBAR__",
+                &crate::theme::render_brand(&crate::theme::Brand::default(), "topbar"),
+            )
+            .replace(
+                "__BRAND_FOOTER__",
+                &crate::theme::render_brand(&crate::theme::Brand::default(), "footer"),
+            )
+            .replace("__DATA__", &escape_script_json(&json)),
     )?;
     Ok(())
 }
@@ -302,27 +329,41 @@ const IMPACT_HTML: &str = r##"<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Feature Impact</title>
 <style>
-:root{--bg:#07080d;--panel:#10131d;--ink:#f5f7fb;--muted:#8d9ab8;--line:#293047;--cyan:#32e6ff;--pink:#ff3d9a;--amber:#ffb000;--green:#3cff98;--red:#ff5a4e}
-*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 16% 0%,rgba(50,230,255,.18),transparent 28%),radial-gradient(circle at 82% 10%,rgba(255,61,154,.16),transparent 24%),linear-gradient(180deg,#090a12,#05060a);color:var(--ink);font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
-header{padding:30px 34px 22px;border-bottom:1px solid var(--line);background:linear-gradient(90deg,rgba(16,19,29,.94),rgba(16,19,29,.72))}
-h1{margin:0 0 6px;font-size:clamp(28px,4vw,48px);text-shadow:0 0 28px rgba(50,230,255,.28)}
-.muted{color:var(--muted);line-height:1.5}.sub{color:var(--muted);max-width:1100px;margin-top:8px;font-size:14px}
-main{padding:18px;display:grid;gap:18px}
-.panel{background:linear-gradient(180deg,rgba(21,25,39,.96),rgba(12,14,22,.96));border:1px solid var(--line);border-radius:8px;box-shadow:0 22px 80px rgba(0,0,0,.45);padding:16px}
-h2{margin:0 0 12px;font-size:18px}h3{margin:14px 0 8px;font-size:14px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+__THEME__
+/* ===== impact components (light editorial) ===== */
+.lede{color:var(--fg-secondary);line-height:1.5;margin-top:6px}
+.sub{color:var(--fg-tertiary);max-width:64ch;margin-top:10px;font:var(--type-body-sm);line-height:1.55}
+.sub b{color:var(--fg-secondary);font-weight:500}
+main{padding:40px 0 8px;display:grid;gap:24px}
+.panel{background:var(--color-surface-0);border:var(--border-hairline);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);padding:24px}
+.panel h2{font:var(--type-h4);color:var(--color-ink-700);margin:0 0 16px;letter-spacing:-.01em}
+.panel h3{font:var(--type-overline-sm);margin:16px 0 8px;color:var(--fg-tertiary);text-transform:uppercase;letter-spacing:.12em}
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:6px}
-.stat{border:1px solid var(--line);border-radius:8px;background:#0b0e16;padding:12px}.stat b{display:block;font-size:26px}.stat span{color:var(--muted);font-size:12px}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}@media(max-width:900px){.grid2{grid-template-columns:1fr}}
-.row{display:flex;justify-content:space-between;gap:10px;align-items:center;border:1px solid var(--line);border-radius:7px;background:#0b0e16;padding:9px 11px;margin-top:7px;font-size:13px;overflow-wrap:anywhere}
-.row .meta{color:var(--muted);font-size:12px;white-space:nowrap}
-.tag{display:inline-block;border-radius:999px;padding:2px 8px;font-size:11px;font-weight:800;text-transform:uppercase}.tag.code{color:#05060a;background:var(--cyan)}.tag.docs{color:#05060a;background:var(--amber)}
-.item{border:1px solid var(--line);border-radius:7px;background:#0b0e16;padding:12px;margin-top:10px}.item strong{color:var(--cyan)}.item.doc strong{color:var(--amber)}.item.warn{border-color:rgba(255,176,0,.45)}.item.warn strong{color:var(--amber)}
-pre{margin:10px 0 0;padding:14px;border-radius:8px;background:#030409;color:#d8e2ff;overflow:auto;font-size:12px;line-height:1.48;border:1px solid #242a3d;max-height:340px}
-.pill{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:3px 8px;margin:4px 5px 0 0;color:var(--cyan);font-size:12px}
+.stat{border:var(--border-hairline);border-radius:var(--radius-md);background:var(--color-surface-2);padding:14px 16px}
+.stat b{display:block;font:var(--type-h2);font-family:var(--font-display);color:var(--color-ink-700);line-height:1.1}
+.stat span{color:var(--fg-tertiary);font:var(--type-body-xs)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:24px}@media(max-width:900px){.grid2{grid-template-columns:1fr}}
+.row{display:flex;justify-content:space-between;gap:10px;align-items:center;border:var(--border-hairline);border-radius:var(--radius-sm);background:var(--color-surface-1);padding:10px 12px;margin-top:8px;font:var(--type-body-sm);overflow-wrap:anywhere}
+.row .meta{color:var(--fg-tertiary);font:var(--type-body-xs);font-family:var(--font-mono);white-space:nowrap}
+.row strong{color:var(--color-ink-700);font-weight:500}
+.tag{display:inline-block;border-radius:var(--radius-pill);padding:2px 9px;font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.06em}
+.tag.code{color:var(--color-blue-700);background:var(--color-blue-100)}
+.tag.docs{color:var(--color-purple-500);background:var(--color-purple-100)}
+.item{border:var(--border-hairline);border-radius:var(--radius-md);background:var(--color-surface-1);padding:16px;margin-top:12px}
+.item strong{color:var(--color-blue-700);font-weight:500}
+.item.doc strong{color:var(--color-purple-500)}
+.item.warn{border-color:var(--color-blue-300);background:var(--color-blue-50)}.item.warn strong{color:var(--color-blue-700)}
+.item .muted{color:var(--fg-tertiary);font:var(--type-body-sm);margin:2px 0}
+pre{margin:12px 0 0;padding:16px;border-radius:var(--radius-md);background:var(--color-surface-3);color:var(--color-ink-700);overflow:auto;font:var(--type-body-xs);font-family:var(--font-mono);line-height:1.55;border:var(--border-soft);max-height:340px}
+pre code{background:none;padding:0;border-radius:0}
+.pill{display:inline-block;border:var(--border-hairline);border-radius:var(--radius-pill);padding:4px 10px;margin:5px 6px 0 0;color:var(--color-blue-700);background:var(--color-blue-50);font:var(--type-body-xs)}
+.muted{color:var(--fg-tertiary);line-height:1.5}
 </style>
 </head>
 <body data-chaos-impact>
-<header><h1>Feature Impact</h1><div id="task" class="muted"></div><div class="sub">Existing files and symbols this feature touches &mdash; the codebase as it is <b>today, before this feature</b>. Verify the alignment, then implement against these nodes.</div></header>
+<div class="topbar"><div class="wrap">__BRAND_TOPBAR__<span class="crumb">Impact<span class="sep">&rsaquo;</span><b>report</b></span><span class="sp"></span><span class="pilltag">Feature impact</span></div></div>
+<header class="hero"><div class="wrap" style="display:block;padding:48px 32px"><div class="eyebrow">Feature impact</div><h1>Feature Impact</h1><div id="task" class="lede"></div><div class="sub">Existing files and symbols this feature touches &mdash; the codebase as it is <b>today, before this feature</b>. Verify the alignment, then implement against these nodes.</div></div></header>
+<div class="wrap">
 <main>
 <section class="panel" data-impact-summary><h2>Impact summary</h2>
 <div id="stats" class="stats"></div>
@@ -331,10 +372,13 @@ pre{margin:10px 0 0;padding:14px;border-radius:8px;background:#030409;color:#d8e
 <div><h3>Existing symbols affected</h3><div id="symbols"></div></div>
 </div>
 </section>
+<section class="panel"><h2>How this was generated</h2><div class="muted" style="margin-bottom:8px">Provenance breadcrumbs &mdash; where each piece of this report came from.</div><div id="provenance"></div></section>
 <section class="panel"><h2>Warnings</h2><div id="warnings"></div></section>
 <section class="panel"><h2>Feature matches</h2><div id="features"></div></section>
 <section class="panel"><h2>Retrieval evidence</h2><div id="hits"></div></section>
 </main>
+</div>
+<footer><div class="wrap">__BRAND_FOOTER__<span class="sp"></span><span class="meta">generated by Chaos Substrate</span></div></footer>
 <script type="application/json" id="chaos-impact-data">__DATA__</script>
 <script>
 (function(){
@@ -342,7 +386,11 @@ var D=JSON.parse(document.getElementById("chaos-impact-data").textContent);
 var I=D.impact||{};
 function esc(v){return String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;");}
 function isDoc(h){var m=h&&h.metadata||{};return m.source_priority==="supplemental"||m.kind==="documentation";}
+function retrievedTags(h){var m=(h&&h.metadata&&h.metadata.retrieved_by)||[];return m.map(function(x){return '<span class="tag">'+esc(x)+'</span>';}).join("");}
 document.getElementById("task").textContent=D.task||"";
+var prov=document.getElementById("provenance");
+(D.provenance||[]).forEach(function(c){var el=document.createElement("div");el.className="item";el.innerHTML='<strong>'+esc(c.source)+'</strong> <span class="tag">'+esc(c.method)+'</span><div class="muted">'+esc(c.detail)+(c.locator?' &middot; <code>'+esc(c.locator)+'</code>':'')+'</div>';prov.appendChild(el);});
+if(!prov.children.length)prov.innerHTML='<div class="muted">No breadcrumbs recorded.</div>';
 var stat=[["affected_file_count","files affected"],["affected_symbol_count","symbols affected"],["code_hits","code hits"],["doc_hits","doc hits"],["warnings","warnings"]];
 document.getElementById("stats").innerHTML=stat.map(function(s){return '<div class="stat"><b>'+(I[s[0]]||0)+'</b><span>'+s[1]+'</span></div>';}).join("");
 var files=document.getElementById("files");
@@ -358,7 +406,7 @@ var features=document.getElementById("features");
 (D.feature_matches||[]).forEach(function(f){var el=document.createElement("div");el.className="item";el.innerHTML='<strong>'+esc((f.feature&&f.feature.title)||f.title)+'</strong><div class="muted">'+esc(f.feature&&f.feature.domain)+' &middot; score '+f.score+' &middot; '+esc(f.page)+'</div>'+(f.modes||[]).map(function(m){return '<span class="pill">'+esc(m.title)+'</span>';}).join("")+(f.matched_nodes||[]).map(function(n){return '<div class="row"><span><strong>'+esc(n.label)+'</strong><br><span class="meta">'+esc(n.file)+' : '+esc(n.lines)+'</span></span><span class="meta">'+esc(n.group)+'</span></div>';}).join("");features.appendChild(el);});
 if(!features.children.length)features.innerHTML='<div class="muted">No generated feature manifests matched. Impact is derived from retrieval evidence below.</div>';
 var hits=document.getElementById("hits");
-(D.hits||[]).forEach(function(h){var el=document.createElement("div");el.className="item"+(isDoc(h)?" doc":"");el.innerHTML='<strong>'+esc(h.file_path||"unknown file")+'</strong><div class="muted">'+(isDoc(h)?"docs":"code")+' &middot; lines '+esc(h.line_start)+'-'+esc(h.line_end)+' &middot; score '+(h.score||0).toFixed(3)+'</div><pre><code>'+esc(h.content)+'</code></pre>';hits.appendChild(el);});
+(D.hits||[]).forEach(function(h){var el=document.createElement("div");el.className="item"+(isDoc(h)?" doc":"");el.innerHTML='<strong>'+esc(h.file_path||"unknown file")+'</strong><div class="muted">'+(isDoc(h)?"docs":"code")+' '+retrievedTags(h)+' &middot; lines '+esc(h.line_start)+'-'+esc(h.line_end)+' &middot; score '+(h.score||0).toFixed(3)+'</div><pre><code>'+esc(h.content)+'</code></pre>';hits.appendChild(el);});
 if(!hits.children.length)hits.innerHTML='<div class="muted">No retrieval hits.</div>';
 })();
 </script>
@@ -397,6 +445,7 @@ mod tests {
             features_dir: PathBuf::from("/tmp/x"),
             warnings,
             feature_matches: vec![],
+            provenance: vec![],
         }
     }
 

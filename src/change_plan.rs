@@ -14,6 +14,8 @@
 use crate::{
     embedding::Embedder,
     export_util::escape_script_json,
+    feature_context::load_feature_matches,
+    provenance::{source, Breadcrumb},
     storage::{CommunityMatch, Storage},
 };
 use anyhow::{Context, Result};
@@ -52,11 +54,16 @@ pub struct PlannedFeature {
     pub member_count: i32,
     /// 0..1 — cosine match (semantic), 1.0 (diff-touched), or the stronger of both.
     pub confidence: f64,
-    /// How it was surfaced: "semantic", "diff", or "both".
+    /// How it was surfaced, as a `+`-joined set of sources: e.g. `"semantic"`,
+    /// `"diff"`, `"manifest"`, `"semantic+diff"`.
     pub via: String,
     /// 1-based position in the suggested check order.
     pub check_order: usize,
     pub top_symbols: Vec<PlannedSymbol>,
+    /// Breadcrumbs: how this feature was matched (cosine score, git diff, prior
+    /// feature page correlation).
+    #[serde(default)]
+    pub matched_by: Vec<Breadcrumb>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -105,6 +112,11 @@ pub async fn run(
         );
     }
 
+    let semantic_count = semantic
+        .iter()
+        .filter(|m| m.member_count >= 2 && m.score >= MIN_SEMANTIC_SCORE)
+        .count();
+
     // 2. Optional diff seeding: communities the actual change touches.
     let mut diff_ids: HashSet<Uuid> = HashSet::new();
     if let Some(since) = &opts.diff_since {
@@ -120,15 +132,45 @@ pub async fn run(
         }
     }
 
-    // 3. Union semantic + diff into one scored set (feature communities only).
+    // 2b. Prior-manifest seeding: correlate the change against previously
+    //     generated feature pages (token match), then map their files onto
+    //     communities so a curated existing feature deepens the decomposition.
+    let features_dir = repo_root.join("docs/features_memory");
+    let manifest_matches =
+        load_feature_matches(change, &features_dir, limit.max(3), 24).unwrap_or_default();
+    let mut manifest_files: Vec<String> = manifest_matches
+        .iter()
+        .flat_map(|m| m.matched_nodes.iter())
+        .filter(|n| !n.file.is_empty())
+        .map(|n| n.file.clone())
+        .collect();
+    manifest_files.sort();
+    manifest_files.dedup();
+    let manifest_pages: Vec<String> = manifest_matches.iter().map(|m| m.title.clone()).collect();
+    let mut manifest_ids: HashSet<Uuid> = HashSet::new();
+    if !manifest_files.is_empty() {
+        for id in storage
+            .communities_for_files(repo.id, &manifest_files)
+            .await?
+        {
+            manifest_ids.insert(id);
+        }
+    }
+
+    // 3. Union semantic + diff + manifest into one scored set (feature
+    //    communities only).
     let diff_briefs = storage
         .load_community_briefs(repo.id, &diff_ids.iter().copied().collect::<Vec<_>>())
+        .await?;
+    let manifest_briefs = storage
+        .load_community_briefs(repo.id, &manifest_ids.iter().copied().collect::<Vec<_>>())
         .await?;
 
     struct Acc {
         m: CommunityMatch,
         semantic: f64,
         via_diff: bool,
+        via_manifest: bool,
     }
     let mut by_id: HashMap<Uuid, Acc> = HashMap::new();
     for m in semantic {
@@ -140,6 +182,7 @@ pub async fn run(
             Acc {
                 semantic: m.score,
                 via_diff: false,
+                via_manifest: false,
                 m,
             },
         );
@@ -154,27 +197,79 @@ pub async fn run(
             .or_insert(Acc {
                 semantic: 0.0,
                 via_diff: true,
+                via_manifest: false,
+                m,
+            });
+    }
+    for m in manifest_briefs {
+        if m.member_count < 2 {
+            continue;
+        }
+        by_id
+            .entry(m.id)
+            .and_modify(|a| a.via_manifest = true)
+            .or_insert(Acc {
+                semantic: 0.0,
+                via_diff: false,
+                via_manifest: true,
                 m,
             });
     }
 
-    // 4. Rank by confidence, cap to limit.
-    let mut ranked: Vec<(Uuid, f64, String, CommunityMatch)> = by_id
+    // 4. Rank by confidence, cap to limit. A diff-touched feature is certain
+    //    (1.0); a prior-manifest correlation is decent evidence (≥ 0.55 floor);
+    //    otherwise the cosine score stands.
+    let mut ranked: Vec<(Uuid, f64, String, Vec<Breadcrumb>, CommunityMatch)> = by_id
         .into_values()
         .map(|a| {
-            let confidence = if a.via_diff { 1.0 } else { a.semantic };
-            let via = match (a.semantic >= MIN_SEMANTIC_SCORE, a.via_diff) {
-                (true, true) => "both",
-                (false, true) => "diff",
-                _ => "semantic",
+            let manifest_floor = if a.via_manifest { 0.55 } else { 0.0 };
+            let confidence = if a.via_diff {
+                1.0
+            } else {
+                a.semantic.max(manifest_floor)
             };
-            (a.m.id, confidence, via.to_string(), a.m)
+            let mut sources: Vec<&str> = Vec::new();
+            let mut matched_by: Vec<Breadcrumb> = Vec::new();
+            if a.semantic >= MIN_SEMANTIC_SCORE {
+                sources.push("semantic");
+                matched_by.push(Breadcrumb::new(
+                    source::EMBEDDING,
+                    "community_semantic_search",
+                    format!(
+                        "cosine {:.2} vs the community summary embedding",
+                        a.semantic
+                    ),
+                ));
+            }
+            if a.via_diff {
+                sources.push("diff");
+                matched_by.push(Breadcrumb::new(
+                    source::GIT,
+                    "communities_for_files",
+                    format!(
+                        "touched by the git diff vs `{}`",
+                        opts.diff_since.as_deref().unwrap_or("ref")
+                    ),
+                ));
+            }
+            if a.via_manifest {
+                sources.push("manifest");
+                matched_by.push(Breadcrumb::new(
+                    source::MANIFEST,
+                    "load_feature_matches",
+                    "files overlap a previously generated feature page",
+                ));
+            }
+            if sources.is_empty() {
+                sources.push("semantic");
+            }
+            (a.m.id, confidence, sources.join("+"), matched_by, a.m)
         })
         .collect();
     ranked.sort_by(|x, y| {
         y.1.partial_cmp(&x.1)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(y.3.member_count.cmp(&x.3.member_count))
+            .then(y.4.member_count.cmp(&x.4.member_count))
             .then(x.0.cmp(&y.0))
     });
     ranked.truncate(limit);
@@ -195,7 +290,7 @@ pub async fn run(
 
     // 6. Assemble features (in check order).
     let mut features: Vec<PlannedFeature> = Vec::new();
-    for (id, confidence, via, m) in &ranked {
+    for (id, confidence, via, matched_by, m) in &ranked {
         let symbols = storage
             .load_community_top_symbols(*id, HTML_SYMBOLS)
             .await?;
@@ -211,9 +306,52 @@ pub async fn run(
                 .into_iter()
                 .map(|(name, kind, file)| PlannedSymbol { name, kind, file })
                 .collect(),
+            matched_by: matched_by.clone(),
         });
     }
     features.sort_by(|a, b| a.check_order.cmp(&b.check_order));
+
+    // Artifact-level breadcrumbs: how the whole plan was decomposed.
+    let mut provenance = vec![Breadcrumb::new(
+        source::EMBEDDING,
+        "community_semantic_search",
+        format!(
+            "matched the change text against community summary embeddings → {semantic_count} feature(s) (cosine ≥ {MIN_SEMANTIC_SCORE:.2})"
+        ),
+    )];
+    if let Some(since) = &opts.diff_since {
+        provenance.push(Breadcrumb::new(
+            source::GIT,
+            "communities_for_files",
+            format!(
+                "seeded from files changed vs `{since}` → {} community(ies)",
+                diff_ids.len()
+            ),
+        ));
+    }
+    if !manifest_matches.is_empty() {
+        provenance.push(
+            Breadcrumb::new(
+                source::MANIFEST,
+                "load_feature_matches",
+                format!(
+                    "correlated {} prior feature page(s) [{}] → {} community(ies)",
+                    manifest_matches.len(),
+                    manifest_pages.join(", "),
+                    manifest_ids.len()
+                ),
+            )
+            .with_locator(features_dir.display().to_string()),
+        );
+    }
+    provenance.push(Breadcrumb::new(
+        source::GRAPH,
+        "topo_sort",
+        format!(
+            "ordered {} feature(s) by the quotient dependency graph",
+            features.len()
+        ),
+    ));
 
     // 7. Always write the HTML report.
     let output = opts.output_html.clone().unwrap_or_else(|| {
@@ -224,7 +362,7 @@ pub async fn run(
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
-    write_change_plan_html(&output, change, &features, &warnings)?;
+    write_change_plan_html(&output, change, &features, &warnings, &provenance)?;
 
     // 8. Compact JSON return (full detail stays in the HTML).
     let compact_features: Vec<Value> = features
@@ -248,6 +386,7 @@ pub async fn run(
         "change": change,
         "feature_count": features.len(),
         "features": compact_features,
+        "provenance": provenance,
         "output_html": output,
         "warnings": warnings,
     }))
@@ -359,17 +498,29 @@ fn write_change_plan_html(
     change: &str,
     features: &[PlannedFeature],
     warnings: &[String],
+    provenance: &[Breadcrumb],
 ) -> Result<()> {
     let data = json!({
         "change": change,
         "feature_count": features.len(),
         "features": features,
+        "provenance": provenance,
         "warnings": warnings,
     });
     let json = serde_json::to_string(&data)?;
     fs::write(
         path,
-        PLAN_HTML.replace("__DATA__", &escape_script_json(&json)),
+        PLAN_HTML
+            .replace("__THEME__", crate::theme::THEME_CSS)
+            .replace(
+                "__BRAND_TOPBAR__",
+                &crate::theme::render_brand(&crate::theme::Brand::default(), "topbar"),
+            )
+            .replace(
+                "__BRAND_FOOTER__",
+                &crate::theme::render_brand(&crate::theme::Brand::default(), "footer"),
+            )
+            .replace("__DATA__", &escape_script_json(&json)),
     )?;
     Ok(())
 }
@@ -381,37 +532,72 @@ const PLAN_HTML: &str = r##"<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Change Plan</title>
 <style>
-:root{--bg:#07080d;--panel:#10131d;--ink:#f5f7fb;--muted:#8d9ab8;--line:#293047;--cyan:#32e6ff;--pink:#ff3d9a;--amber:#ffb000;--green:#3cff98;--red:#ff5a4e}
-*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 16% 0%,rgba(50,230,255,.18),transparent 28%),radial-gradient(circle at 82% 10%,rgba(255,61,154,.16),transparent 24%),linear-gradient(180deg,#090a12,#05060a);color:var(--ink);font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
-header{padding:30px 34px 22px;border-bottom:1px solid var(--line);background:linear-gradient(90deg,rgba(16,19,29,.94),rgba(16,19,29,.72))}
-h1{margin:0 0 6px;font-size:clamp(28px,4vw,48px);text-shadow:0 0 28px rgba(50,230,255,.28)}
-.muted{color:var(--muted);line-height:1.5}.sub{color:var(--muted);max-width:1100px;margin-top:8px;font-size:14px}
-main{padding:18px;display:grid;gap:18px}
-.panel{background:linear-gradient(180deg,rgba(21,25,39,.96),rgba(12,14,22,.96));border:1px solid var(--line);border-radius:8px;box-shadow:0 22px 80px rgba(0,0,0,.45);padding:16px}
-h2{margin:0 0 12px;font-size:18px}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:6px}
-.stat{border:1px solid var(--line);border-radius:8px;background:#0b0e16;padding:12px}.stat b{display:block;font-size:26px}.stat span{color:var(--muted);font-size:12px}
-.feature{border:1px solid var(--line);border-radius:8px;background:#0b0e16;padding:14px;margin-top:12px;position:relative}
-.feature h3{margin:0 0 4px;font-size:16px;color:var(--cyan)}
-.order{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;background:var(--cyan);color:#05060a;font-weight:800;margin-right:8px;font-size:13px}
-.ring{position:absolute;top:14px;right:14px;font-weight:800;font-size:13px;padding:3px 9px;border-radius:999px;border:1px solid var(--line)}
-.ring.hi{color:var(--green);border-color:rgba(60,255,152,.5)}.ring.mid{color:var(--amber);border-color:rgba(255,176,0,.5)}.ring.lo{color:var(--muted)}
-.via{display:inline-block;border-radius:999px;padding:2px 8px;font-size:11px;font-weight:800;text-transform:uppercase;margin-left:6px}
-.via.semantic{color:#05060a;background:var(--cyan)}.via.diff{color:#05060a;background:var(--pink)}.via.both{color:#05060a;background:var(--green)}
-.summary{color:var(--muted);font-size:13px;margin:8px 0;white-space:pre-wrap;max-height:120px;overflow:auto}
-.sym{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:3px 8px;margin:4px 5px 0 0;color:var(--ink);font-size:12px}
-.sym .k{color:var(--muted);font-size:10px}
-.item.warn{border:1px solid rgba(255,176,0,.45);border-radius:7px;background:#0b0e16;padding:12px;margin-top:10px}.item.warn strong{color:var(--amber)}
+__THEME__
+/* ===== change-plan components (light editorial) ===== */
+header.plan{background:var(--bg-sky-soft);border-bottom:var(--border-hairline)}
+header.plan .wrap{padding:48px 32px 36px}
+header.plan .eyebrow{font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.16em;color:var(--color-blue-700);margin-bottom:16px;display:flex;align-items:center;gap:10px}
+header.plan .eyebrow::before{content:"";width:22px;height:1px;background:var(--color-blue-500);display:inline-block}
+header.plan h1{font:var(--type-display-lg);letter-spacing:-.01em;color:var(--color-ink-700);margin:0 0 10px}
+#change{font:var(--type-body-lg);color:var(--color-ink-500);line-height:1.5}
+.sub{color:var(--color-ink-400);max-width:72ch;margin-top:14px;font:var(--type-body-sm);line-height:1.6}
+.sub b{color:var(--color-ink-600);font-weight:500}
+main{padding:40px 0 64px;display:grid;gap:24px}
+.panel{background:var(--color-surface-0);border:var(--border-hairline);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);padding:24px}
+h2{font:var(--type-h4);color:var(--color-ink-700);margin:0 0 16px}
+.muted{color:var(--fg-tertiary);line-height:1.5}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px;margin-bottom:2px}
+.stat{border:var(--border-hairline);border-radius:var(--radius-md);background:var(--color-surface-2);padding:18px}
+.stat b{display:block;font:var(--type-h2);font-family:var(--font-display);color:var(--color-ink-700);line-height:1}
+.stat span{display:block;color:var(--fg-tertiary);font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.08em;margin-top:8px}
+.feature{border:var(--border-hairline);border-radius:var(--radius-lg);background:var(--color-surface-0);padding:20px 22px;margin-top:14px;position:relative;box-shadow:var(--shadow-xs)}
+.feature::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:var(--radius-lg) 0 0 var(--radius-lg);background:var(--color-blue-400)}
+.feature h3{margin:0 0 4px;font:var(--type-h5);color:var(--color-ink-700);display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.order{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:var(--radius-md);background:var(--color-ink-600);color:#fff;font:var(--type-overline-sm);font-family:var(--font-mono);font-weight:500}
+.ring{position:absolute;top:18px;right:18px;font:var(--type-body-xs);font-family:var(--font-mono);font-weight:500;padding:4px 11px;border-radius:var(--radius-pill);border:var(--border-hairline);background:var(--color-surface-1)}
+.ring.hi{color:#007f76;border-color:rgba(0,200,187,.4);background:rgba(0,200,187,.1)}
+.ring.mid{color:var(--color-blue-700);border-color:var(--color-blue-300);background:var(--color-blue-50)}
+.ring.lo{color:var(--fg-tertiary)}
+.via{display:inline-flex;align-items:center;border-radius:var(--radius-pill);padding:3px 10px;font:var(--type-overline-sm);font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.06em}
+.via{margin-right:6px}
+.via.semantic{color:var(--color-blue-700);background:var(--color-blue-100)}
+.via.diff{color:var(--color-purple-500);background:var(--color-purple-100)}
+.via.manifest{color:rgb(176,124,15);background:rgba(176,124,15,.12)}
+.via.both{color:#007f76;background:rgba(0,200,187,.12)}
+.matched{margin-top:10px;display:grid;gap:4px}
+.matched div{color:var(--color-ink-500);font:var(--type-body-xs);line-height:1.5}
+.matched b{color:var(--color-ink-700);font-weight:500;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.04em;font-size:10px}
+.summary{color:var(--color-ink-500);font:var(--type-body-sm);line-height:1.6;margin:10px 0;white-space:pre-wrap;max-height:130px;overflow:auto}
+.sym{display:inline-flex;align-items:center;gap:6px;border:var(--border-hairline);border-radius:var(--radius-pill);padding:4px 11px;margin:6px 6px 0 0;color:var(--color-ink-500);font:500 12px/1 var(--font-body);background:var(--color-surface-1)}
+.sym .k{color:var(--fg-tertiary);font-family:var(--font-mono);font-size:10px;text-transform:uppercase;letter-spacing:.04em}
+.item.warn{border:1px solid var(--color-blue-300);border-radius:var(--radius-md);background:var(--color-blue-50);padding:14px 16px;margin-top:12px}
+.item.warn strong{color:var(--color-blue-700);font:var(--type-h6);display:block;margin-bottom:4px}
+.item.warn div{color:var(--color-ink-500);font:var(--type-body-sm);line-height:1.5}
 </style>
 </head>
 <body data-chaos-change-plan>
-<header><h1>Change Plan</h1><div id="change" class="muted"></div>
-<div class="sub">The features this change spans, in a suggested <b>check order</b> (dependencies first, derived from the feature quotient graph). Each feature is a community of related symbols with a confidence and how it was surfaced (semantic match, the actual diff, or both).</div></header>
+<div class="topbar"><div class="wrap">__BRAND_TOPBAR__<span class="crumb">Change plan<span class="sep">&rsaquo;</span><b>features</b></span><span class="sp"></span><span class="pilltag">Change plan</span></div></div>
+
+<header class="plan">
+  <div class="wrap">
+    <div class="eyebrow">Change plan</div>
+    <h1>Change Plan</h1>
+    <div id="change"></div>
+    <div class="sub">The features this change spans, in a suggested <b>check order</b> (dependencies first, derived from the feature quotient graph). Each feature is a community of related symbols with a confidence and how it was surfaced (semantic match, the actual diff, or both).</div>
+  </div>
+</header>
+
 <main>
-<section class="panel"><div id="stats" class="stats"></div></section>
-<section class="panel" data-plan-features><h2>Features to check, in order</h2><div id="features"></div></section>
-<section class="panel"><h2>Warnings</h2><div id="warnings"></div></section>
+  <div class="wrap">
+    <section class="panel"><div id="stats" class="stats"></div></section>
+    <section class="panel" data-plan-features><h2>Features to check, in order</h2><div id="features"></div></section>
+    <section class="panel" data-plan-provenance><h2>How this was generated</h2><div class="muted" style="margin-bottom:10px">Provenance breadcrumbs &mdash; the steps that produced this decomposition.</div><div id="provenance"></div></section>
+    <section class="panel"><h2>Warnings</h2><div id="warnings"></div></section>
+  </div>
 </main>
+
+<footer><div class="wrap">__BRAND_FOOTER__<span class="sp"></span><span class="meta">generated by Chaos Substrate</span></div></footer>
+
 <script type="application/json" id="chaos-plan-data">__DATA__</script>
 <script>
 (function(){
@@ -428,15 +614,20 @@ F.forEach(function(f){
   var cls=conf>=75?"hi":conf>=45?"mid":"lo";
   var el=document.createElement("div");el.className="feature";
   var syms=(f.top_symbols||[]).map(function(s){return '<span class="sym">'+esc(s.name)+' <span class="k">'+esc(s.kind)+'</span></span>';}).join("");
+  var via=(f.via||"").split("+").filter(Boolean).map(function(v){return '<span class="via '+esc(v)+'">'+esc(v)+'</span>';}).join("");
+  var matched=(f.matched_by||[]).map(function(c){return '<div><b>'+esc(c.source)+'</b> '+esc(c.detail)+'</div>';}).join("");
   el.innerHTML='<div class="ring '+cls+'">'+conf+'%</div>'+
-    '<h3><span class="order">'+(f.check_order||"?")+'</span>'+esc(f.label)+
-    '<span class="via '+esc(f.via)+'">'+esc(f.via)+'</span></h3>'+
+    '<h3><span class="order">'+(f.check_order||"?")+'</span>'+esc(f.label)+via+'</h3>'+
     '<div class="muted">'+f.member_count+' symbols</div>'+
     (f.summary?'<div class="summary">'+esc(f.summary)+'</div>':'')+
-    '<div>'+syms+'</div>';
+    '<div>'+syms+'</div>'+
+    (matched?'<div class="matched">'+matched+'</div>':'');
   host.appendChild(el);
 });
 if(!host.children.length)host.innerHTML='<div class="muted">No features matched this change. Ensure the repo is indexed (chaos_analyze) so communities + summaries exist, and try a more specific description.</div>';
+var prov=document.getElementById("provenance");
+(D.provenance||[]).forEach(function(c){var el=document.createElement("div");el.className="matched";el.innerHTML='<div><b>'+esc(c.source)+'</b> '+esc(c.method)+'</div><div class="muted">'+esc(c.detail)+(c.locator?' &middot; '+esc(c.locator):'')+'</div>';prov.appendChild(el);});
+if(!prov.children.length)prov.innerHTML='<div class="muted">No breadcrumbs recorded.</div>';
 var w=document.getElementById("warnings");
 (D.warnings||[]).forEach(function(x){var el=document.createElement("div");el.className="item warn";el.innerHTML='<strong>Note</strong><div>'+esc(x)+'</div>';w.appendChild(el);});
 if(!w.children.length)w.innerHTML='<div class="muted">No warnings.</div>';

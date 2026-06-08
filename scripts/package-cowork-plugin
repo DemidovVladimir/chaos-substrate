@@ -25,10 +25,11 @@ zip -qr "$OUT" \
   .mcp.json \
   bin \
   skills \
-  scripts/chaos-agent \
+  scripts/chaos \
   scripts/package-cowork-plugin \
   target/release/chaos \
   src \
+  assets \
   migrations \
   Cargo.toml \
   Cargo.lock \

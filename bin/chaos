@@ -12,4 +12,4 @@ while [ -L "$SOURCE" ]; do
   fi
 done
 ROOT="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
-exec "$ROOT/scripts/chaos-agent" "$@"
+exec "$ROOT/scripts/chaos" "$@"

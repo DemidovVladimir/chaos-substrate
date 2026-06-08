@@ -6,6 +6,7 @@ use crate::{
 };
 use anyhow::Result;
 use serde::Serialize;
+use serde_json::Value;
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -182,15 +183,60 @@ async fn retrieve_query_hits(
             candidate_limit,
         )
         .await?;
-    let keyword_hits = storage
+    tag_retrieved_by(&mut hits, "semantic");
+    let mut keyword_hits = storage
         .keyword_search(repo_id, query, candidate_limit)
         .await?;
+    tag_retrieved_by(&mut keyword_hits, "keyword");
     merge_hits(&mut hits, keyword_hits);
     for term in literal_search_terms(query).into_iter().take(10) {
-        let literal_hits = storage.literal_search(repo_id, &term, 12).await?;
+        let mut literal_hits = storage.literal_search(repo_id, &term, 12).await?;
+        tag_retrieved_by(&mut literal_hits, "literal");
         merge_hits(&mut hits, literal_hits);
     }
     Ok(hits)
+}
+
+/// Stamp every hit's metadata with the retrieval method that produced it
+/// (`semantic` / `keyword` / `literal`), so downstream artifacts can show *how*
+/// each hit was found. Additive — appended into `metadata.retrieved_by`.
+fn tag_retrieved_by(hits: &mut [SearchHit], method: &str) {
+    for hit in hits.iter_mut() {
+        add_retrieved_by(&mut hit.metadata, method);
+    }
+}
+
+/// Append `method` to `metadata.retrieved_by` (creating the array if needed),
+/// de-duplicating. Leaves non-object, non-null metadata untouched so chunk
+/// metadata is never clobbered.
+fn add_retrieved_by(metadata: &mut Value, method: &str) {
+    if metadata.is_null() {
+        *metadata = Value::Object(serde_json::Map::new());
+    }
+    let Some(obj) = metadata.as_object_mut() else {
+        return;
+    };
+    let arr = obj
+        .entry("retrieved_by")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if let Some(list) = arr.as_array_mut() {
+        let value = Value::String(method.to_string());
+        if !list.contains(&value) {
+            list.push(value);
+        }
+    }
+}
+
+/// Union an incoming `retrieved_by` array into `metadata` (used when the same
+/// chunk surfaces from more than one retrieval method and the hits are merged).
+fn union_retrieved_into(metadata: &mut Value, incoming: &Value) {
+    if let Some(methods) = incoming.as_array() {
+        for method in methods {
+            if let Some(name) = method.as_str() {
+                add_retrieved_by(metadata, name);
+            }
+        }
+    }
 }
 
 fn merge_hits(base: &mut Vec<SearchHit>, keyword: Vec<SearchHit>) {
@@ -200,8 +246,11 @@ fn merge_hits(base: &mut Vec<SearchHit>, keyword: Vec<SearchHit>) {
         .map(|(idx, hit)| (hit.chunk_id, idx))
         .collect();
     for mut hit in keyword {
-        if let Some(idx) = seen.get(&hit.chunk_id) {
-            base[*idx].score += hit.score.max(0.0) * 0.25;
+        if let Some(idx) = seen.get(&hit.chunk_id).copied() {
+            base[idx].score += hit.score.max(0.0) * 0.25;
+            if let Some(incoming) = hit.metadata.get("retrieved_by").cloned() {
+                union_retrieved_into(&mut base[idx].metadata, &incoming);
+            }
         } else {
             hit.score *= 0.75;
             seen.insert(hit.chunk_id, base.len());
@@ -218,10 +267,15 @@ fn merge_hits(base: &mut Vec<SearchHit>, keyword: Vec<SearchHit>) {
 fn merge_duplicate_hits(hits: &mut Vec<SearchHit>) {
     let mut merged: HashMap<Uuid, SearchHit> = HashMap::new();
     for hit in hits.drain(..) {
+        let score = hit.score;
+        let incoming = hit.metadata.get("retrieved_by").cloned();
         merged
             .entry(hit.chunk_id)
             .and_modify(|existing| {
-                existing.score = existing.score.max(hit.score) + hit.score.max(0.0) * 0.12;
+                existing.score = existing.score.max(score) + score.max(0.0) * 0.12;
+                if let Some(ref incoming) = incoming {
+                    union_retrieved_into(&mut existing.metadata, incoming);
+                }
             })
             .or_insert(hit);
     }
@@ -584,6 +638,28 @@ mod tests {
         assert!(!terms.contains(&"docs".to_string()));
         assert!(!terms.contains(&"documentation".to_string()));
         assert!(!terms.contains(&"architecture".to_string()));
+    }
+
+    #[test]
+    fn tags_retrieval_methods_and_dedups() {
+        let mut hits = vec![hit(json!({"kind": "function"}), 0.5)];
+        tag_retrieved_by(&mut hits, "semantic");
+        add_retrieved_by(&mut hits[0].metadata, "keyword");
+        add_retrieved_by(&mut hits[0].metadata, "semantic"); // duplicate ignored
+
+        let methods = hits[0]
+            .metadata
+            .get("retrieved_by")
+            .and_then(|v| v.as_array())
+            .unwrap();
+        assert_eq!(methods.len(), 2);
+        assert!(methods.iter().any(|m| m.as_str() == Some("semantic")));
+        assert!(methods.iter().any(|m| m.as_str() == Some("keyword")));
+        // Existing chunk metadata is preserved.
+        assert_eq!(
+            hits[0].metadata.get("kind").and_then(|v| v.as_str()),
+            Some("function")
+        );
     }
 
     fn hit(metadata: serde_json::Value, score: f64) -> SearchHit {

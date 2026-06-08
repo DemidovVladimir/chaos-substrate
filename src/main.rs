@@ -18,10 +18,12 @@ mod mcp;
 mod merkle;
 mod models;
 mod obsidian_export;
+mod provenance;
 mod query;
 mod setup;
 mod simple_graph_optimizer;
 mod storage;
+mod theme;
 mod user_story;
 mod weights;
 
@@ -32,8 +34,8 @@ use clap::{Parser, Subcommand};
 use embedding::build_embedder;
 use extractor::{current_commit, RustRepositoryExtractor};
 use feature_context::{
-    build_feature_context_warnings, load_feature_matches, write_feature_context_html,
-    FeatureContextResponse,
+    build_feature_context_warnings, feature_context_provenance, load_feature_matches,
+    write_feature_context_html, FeatureContextResponse,
 };
 use feature_export::refresh_project_exports;
 use futures::{StreamExt, TryStreamExt};
@@ -186,6 +188,10 @@ enum Commands {
         /// Page title override. Defaults to the manifest title.
         #[arg(long)]
         title: Option<String>,
+        /// Apply a shipped brand preset by name (e.g. "molecule") — fills the
+        /// logo/hero/company for any fields the manifest leaves empty.
+        #[arg(long)]
+        brand_preset: Option<String>,
     },
     /// Export an indexed repository as an interactive standalone HTML graph.
     Graph {
@@ -505,12 +511,14 @@ async fn main() -> Result<()> {
             let warnings = build_feature_context_warnings(&task, &repo_root, &postgres);
             let feature_matches =
                 load_feature_matches(&task, &features_dir, feature_limit, nodes_per_feature)?;
+            let provenance = feature_context_provenance(&postgres, &features_dir, &feature_matches);
             let response = FeatureContextResponse {
                 task,
                 postgres,
                 features_dir,
                 warnings,
                 feature_matches,
+                provenance,
             };
             if let Some(output_html) = output_html {
                 write_feature_context_html(&output_html, &response)?;
@@ -562,6 +570,7 @@ async fn main() -> Result<()> {
             output_html,
             slug,
             title,
+            brand_preset,
         } => {
             let storage = Storage::connect(&config.storage.database_url).await?;
             let repo = storage
@@ -570,8 +579,11 @@ async fn main() -> Result<()> {
                 .with_context(|| format!("repository is not indexed: {repo}"))?;
             let raw = std::fs::read_to_string(&manifest)
                 .with_context(|| format!("reading storyboard manifest {}", manifest.display()))?;
-            let manifest: user_story::StoryboardManifest =
+            let mut manifest: user_story::StoryboardManifest =
                 serde_json::from_str(&raw).context("parsing storyboard manifest JSON")?;
+            if let Some(preset) = brand_preset {
+                manifest.brand_preset = preset;
+            }
             let title = title.unwrap_or_else(|| manifest.title.clone());
             let slug = slug.unwrap_or_else(|| {
                 if manifest.feature.id.trim().is_empty() {

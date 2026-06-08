@@ -209,7 +209,17 @@ pub fn write_feature_map_html(path: &Path, hierarchy: &CommunityHierarchy) -> Re
     }
     fs::write(
         path,
-        FEATURE_MAP_HTML.replace("__DATA__", &escape_script_json(&json)),
+        FEATURE_MAP_HTML
+            .replace("__THEME__", crate::theme::THEME_CSS)
+            .replace(
+                "__BRAND_TOPBAR__",
+                &crate::theme::render_brand(&crate::theme::Brand::default(), "topbar"),
+            )
+            .replace(
+                "__BRAND_FOOTER__",
+                &crate::theme::render_brand(&crate::theme::Brand::default(), "footer"),
+            )
+            .replace("__DATA__", &escape_script_json(&json)),
     )?;
     Ok(())
 }
@@ -243,32 +253,35 @@ const FEATURE_MAP_HTML: &str = r##"<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Feature Map</title>
 <style>
-:root{--bg:#07080d;--panel:#10131d;--ink:#f5f7fb;--muted:#8d9ab8;--line:#293047;--cyan:#32e6ff;--pink:#ff3d9a;--amber:#ffb000;--green:#3cff98}
-*{box-sizing:border-box}html,body{height:100%}body{margin:0;background:radial-gradient(circle at 16% 0%,rgba(50,230,255,.16),transparent 28%),radial-gradient(circle at 82% 8%,rgba(255,61,154,.14),transparent 24%),linear-gradient(180deg,#090a12,#05060a);color:var(--ink);font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
-.app{display:grid;grid-template-columns:300px 1fr 360px;height:100vh}
-.panel{overflow:auto;padding:16px;border-right:1px solid var(--line);background:rgba(16,19,29,.6)}
-.details{border-right:0;border-left:1px solid var(--line)}
-h1{margin:0 0 4px;font-size:18px;text-shadow:0 0 20px rgba(50,230,255,.25)}
-.muted{color:var(--muted);font-size:12px;line-height:1.5}
-.feat{border:1px solid var(--line);border-radius:7px;background:#0b0e16;padding:9px 10px;margin-top:8px;cursor:pointer;font-size:13px}
-.feat:hover,.feat.sel{border-color:var(--cyan);box-shadow:0 0 16px rgba(50,230,255,.15)}
-.feat b{color:var(--cyan)}.feat .m{color:var(--muted);font-size:11px}
-#stage{position:relative;overflow:hidden}
+__THEME__
+/* ===== feature map components (light editorial) ===== */
+.app{display:grid;grid-template-columns:300px 1fr 360px;height:calc(100vh - 64px);min-height:520px;border-top:var(--border-hairline)}
+.panel{overflow:auto;padding:20px;border-right:var(--border-hairline);background:var(--color-surface-1)}
+.details{border-right:0;border-left:var(--border-hairline);background:var(--bg-page)}
+.map-title{font:var(--type-h4);color:var(--color-ink-700);margin:0 0 6px;letter-spacing:-.01em}
+.muted{color:var(--fg-tertiary);font:var(--type-body-sm);line-height:1.5}
+.feat{border:var(--border-hairline);border-radius:var(--radius-md);background:var(--bg-page);padding:11px 13px;margin-top:10px;cursor:pointer;font:var(--type-body-sm);box-shadow:var(--shadow-xs);transition:border-color .15s,box-shadow .15s}
+.feat:hover,.feat.sel{border-color:var(--color-blue-400);box-shadow:var(--shadow-sm)}
+.feat.sel{border-color:var(--color-blue-700);box-shadow:0 0 0 1px var(--color-blue-700),var(--shadow-sm)}
+.feat b{color:var(--color-blue-700);font-weight:500}.feat .m{color:var(--fg-tertiary);font:var(--type-body-xs);margin-top:2px}
+#stage{position:relative;overflow:hidden;background:var(--bg-page)}
 svg{width:100%;height:100%;display:block}
-.node{cursor:pointer}.node circle{transition:stroke-width .1s}
-.node:hover circle,.node.sel circle{stroke:#fff;stroke-width:2.5}
-.elabel,.nlabel{font-size:10px;fill:var(--muted)}
-.nlabel{fill:var(--ink);font-size:11px}
-h2{font-size:15px;margin:0 0 8px;color:var(--cyan)}
-pre{white-space:pre-wrap;background:#030409;border:1px solid #242a3d;border-radius:8px;padding:12px;font-size:12px;color:#d8e2ff;max-height:240px;overflow:auto}
-.sym{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:3px 8px;margin:4px 5px 0 0;font-size:12px}.sym .k{color:var(--muted);font-size:10px}
-.pill{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:2px 8px;margin:3px 4px 0 0;color:var(--cyan);font-size:11px;cursor:pointer}
+.node{cursor:pointer}.node circle{transition:stroke-width .1s,stroke .1s}
+.node:hover circle,.node.sel circle{stroke:var(--color-blue-700);stroke-width:2.5}
+.elabel,.nlabel{font-size:10px;fill:var(--fg-tertiary)}
+.nlabel{fill:var(--color-ink-600);font-size:11px;font-family:var(--font-body)}
+.map-sec{font:var(--type-h6);margin:0 0 8px;color:var(--color-blue-700);font-weight:500}
+pre{white-space:pre-wrap;background:var(--color-surface-2);border:var(--border-soft);border-radius:var(--radius-md);padding:14px;font:var(--type-body-sm);font-family:var(--font-mono);color:var(--color-ink-600);max-height:240px;overflow:auto}
+.sym{display:inline-block;border:var(--border-hairline);border-radius:var(--radius-pill);padding:4px 10px;margin:4px 5px 0 0;font:var(--type-body-xs);background:var(--color-surface-1);color:var(--color-ink-500)}.sym .k{color:var(--fg-tertiary);font-size:10px}
+.pill{display:inline-block;border:1px solid var(--color-blue-100);border-radius:var(--radius-pill);padding:3px 10px;margin:3px 4px 0 0;color:var(--color-blue-700);background:var(--color-blue-50);font:var(--type-body-xs);cursor:pointer;transition:border-color .15s,background .15s}
+.pill:hover{border-color:var(--color-blue-400);background:var(--color-blue-100)}
 </style>
 </head>
 <body data-chaos-feature-map>
+<div class="topbar"><div class="wrap">__BRAND_TOPBAR__<span class="crumb">Feature map<span class="sep">&rsaquo;</span><b>features</b></span><span class="sp"></span><span class="pilltag">Feature map</span></div></div>
 <div class="app">
   <aside class="panel">
-    <h1>Feature Map</h1>
+    <h1 class="map-title">Feature Map</h1>
     <div id="repo" class="muted"></div>
     <div id="list"></div>
   </aside>
@@ -277,6 +290,7 @@ pre{white-space:pre-wrap;background:#030409;border:1px solid #242a3d;border-radi
     <div id="detail"><div class="muted">Select a feature to inspect its summary, members, and connections.</div></div>
   </aside>
 </div>
+<footer><div class="wrap">__BRAND_FOOTER__<span class="sp"></span><span class="meta">generated by Chaos Substrate</span></div></footer>
 <script type="application/json" id="chaos-feature-map-data">__DATA__</script>
 <script>
 (function(){
@@ -297,9 +311,9 @@ var maxW=Math.max(1,Math.max.apply(null,E.map(function(e){return e.weight;})||[1
 var NS="http://www.w3.org/2000/svg";
 function el(n,a){var e=document.createElementNS(NS,n);for(var k in a)e.setAttribute(k,a[k]);return e;}
 // edges
-E.forEach(function(e){var s=pos[e.source],t=pos[e.target];if(!s||!t)return;var ln=el("line",{x1:s.x,y1:s.y,x2:t.x,y2:t.y,stroke:"#32e6ff",["stroke-opacity"]:(0.08+0.5*e.weight/maxW).toFixed(3),["stroke-width"]:Math.max(0.6,2.5*e.weight/maxW)});ln.dataset.s=e.source;ln.dataset.t=e.target;svg.appendChild(ln);});
+E.forEach(function(e){var s=pos[e.source],t=pos[e.target];if(!s||!t)return;var ln=el("line",{x1:s.x,y1:s.y,x2:t.x,y2:t.y,stroke:"#84b2e9",["stroke-opacity"]:(0.18+0.6*e.weight/maxW).toFixed(3),["stroke-width"]:Math.max(0.6,2.5*e.weight/maxW)});ln.dataset.s=e.source;ln.dataset.t=e.target;svg.appendChild(ln);});
 // nodes
-C.forEach(function(c){var p=pos[c.id];var g=el("g",{class:"node"});g.dataset.id=c.id;var r=7+18*Math.sqrt(c.member_count/maxM);g.appendChild(el("circle",{cx:p.x,cy:p.y,r:r,fill:"#10131d",stroke:"#32e6ff",["stroke-width"]:1.4}));var tx=el("text",{x:p.x,y:p.y-r-4,["text-anchor"]:"middle",class:"nlabel"});tx.textContent=(c.label||"").slice(0,22);g.appendChild(tx);g.addEventListener("click",function(){select(c.id);});svg.appendChild(g);});
+C.forEach(function(c){var p=pos[c.id];var g=el("g",{class:"node"});g.dataset.id=c.id;var r=7+18*Math.sqrt(c.member_count/maxM);g.appendChild(el("circle",{cx:p.x,cy:p.y,r:r,fill:"#e9f1fa",stroke:"#4475a0",["stroke-width"]:1.4}));var tx=el("text",{x:p.x,y:p.y-r-4,["text-anchor"]:"middle",class:"nlabel"});tx.textContent=(c.label||"").slice(0,22);g.appendChild(tx);g.addEventListener("click",function(){select(c.id);});svg.appendChild(g);});
 var list=document.getElementById("list");
 C.slice().sort(function(a,b){return b.member_count-a.member_count;}).forEach(function(c){var d=document.createElement("div");d.className="feat";d.dataset.id=c.id;d.innerHTML='<b>'+esc(c.label)+'</b><div class="m">'+c.member_count+' symbols</div>';d.addEventListener("click",function(){select(c.id);});list.appendChild(d);});
 function neighbors(id){var n=[];E.forEach(function(e){if(e.source===id&&byId[e.target])n.push([e.target,e.kind,e.weight]);if(e.target===id&&byId[e.source])n.push([e.source,e.kind,e.weight]);});return n;}
@@ -307,14 +321,14 @@ function select(id){
   var c=byId[id];if(!c)return;
   Array.prototype.forEach.call(document.querySelectorAll(".node"),function(g){g.classList.toggle("sel",g.dataset.id===id);});
   Array.prototype.forEach.call(document.querySelectorAll(".feat"),function(g){g.classList.toggle("sel",g.dataset.id===id);});
-  Array.prototype.forEach.call(document.querySelectorAll("line"),function(l){var on=l.dataset.s===id||l.dataset.t===id;l.setAttribute("stroke",on?"#ff3d9a":"#32e6ff");l.setAttribute("stroke-opacity",on?"0.9":"0.1");});
+  Array.prototype.forEach.call(document.querySelectorAll("line"),function(l){var on=l.dataset.s===id||l.dataset.t===id;l.setAttribute("stroke",on?"#1b589c":"#84b2e9");l.setAttribute("stroke-opacity",on?"0.85":"0.22");});
   var nb=neighbors(id).sort(function(a,b){return b[2]-a[2];});
   var seen={};var nbHtml=nb.filter(function(x){if(seen[x[0]])return false;seen[x[0]]=1;return true;}).map(function(x){return '<span class="pill" data-go="'+x[0]+'">'+esc(byId[x[0]].label)+'</span>';}).join("");
   var syms=(c.top_members||[]).map(function(m){return '<span class="sym">'+esc(m[0])+' <span class="k">'+esc(m[1])+'</span></span>';}).join("");
-  document.getElementById("detail").innerHTML='<h2>'+esc(c.label)+'</h2><div class="muted">'+c.member_count+' symbols</div>'+
+  document.getElementById("detail").innerHTML='<h2 class="map-sec">'+esc(c.label)+'</h2><div class="muted">'+c.member_count+' symbols</div>'+
     (c.summary?'<pre>'+esc(c.summary)+'</pre>':'')+
-    '<h2 style="margin-top:14px">Members</h2><div>'+(syms||'<span class="muted">—</span>')+'</div>'+
-    '<h2 style="margin-top:14px">Connected features</h2><div>'+(nbHtml||'<span class="muted">none</span>')+'</div>';
+    '<h2 class="map-sec" style="margin-top:14px">Members</h2><div>'+(syms||'<span class="muted">—</span>')+'</div>'+
+    '<h2 class="map-sec" style="margin-top:14px">Connected features</h2><div>'+(nbHtml||'<span class="muted">none</span>')+'</div>';
   Array.prototype.forEach.call(document.querySelectorAll("[data-go]"),function(p){p.addEventListener("click",function(){select(p.dataset.go);});});
 }
 if(C.length)select(C[0].id);

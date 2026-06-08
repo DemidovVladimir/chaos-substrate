@@ -2,8 +2,8 @@ use crate::{
     embedding::{build_embedder, Embedder},
     extractor::{current_commit, RustRepositoryExtractor},
     feature_context::{
-        build_feature_context_warnings, load_feature_matches, write_feature_context_html,
-        FeatureContextResponse,
+        build_feature_context_warnings, feature_context_provenance, load_feature_matches,
+        write_feature_context_html, FeatureContextResponse,
     },
     feature_export::refresh_project_exports,
     obsidian_export::write_obsidian_vault,
@@ -60,7 +60,7 @@ pub async fn run(config: Config) -> Result<()> {
                         },
                         {
                             "name": "chaos_add",
-                            "description": "Incrementally index the files changed in git (or an explicit path list), refresh the Obsidian vault, and write an interactive feature/bug page into docs/features_memory — in one shot. Detects changes from the working tree by default (no file list needed); pass `since` for a committed range or `paths` to index specific files (code, Markdown/Notion exports, PDFs). Auto-classifies feature vs bug; override with `kind` and `message`.",
+                            "description": "Incrementally index the files changed in git (or an explicit path list), refresh the Obsidian vault, and write an interactive feature/bug page into docs/features_memory — in one shot. Detects changes from the working tree by default (no file list needed); pass `since` for a committed range or `paths` to index specific files (code, Markdown/Notion exports, PDFs). Auto-classifies feature vs bug; override with `kind` and `message`. The page records PROVENANCE breadcrumbs (how it was generated: git diff, AST/language extraction, Postgres graph load, file reads, manifest correlation) plus per-node evidence, and CORRELATES the change with previously generated feature pages by shared files/symbols (surfaced as related_features + a correlation claim) so a new extraction understands the existing features it overlaps.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
@@ -103,7 +103,7 @@ pub async fn run(config: Config) -> Result<()> {
                         },
                         {
                             "name": "chaos_feature_context",
-                            "description": "Build focused implementation context for a feature or task. Reads Postgres retrieval plus generated feature-memory manifests and returns warnings when expected paths/docs are missing. Use this before composing any feature website; treat warnings as blockers before writing.",
+                            "description": "Build focused implementation context for a feature or task. Reads Postgres retrieval plus generated feature-memory manifests and returns warnings when expected paths/docs are missing. Use this before composing any feature website; treat warnings as blockers before writing. Each retrieval hit is tagged with its retrieval method (semantic/keyword/literal), each feature match carries the prior page's own provenance, and the response includes top-level provenance breadcrumbs (how the evidence was gathered).",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
@@ -120,7 +120,7 @@ pub async fn run(config: Config) -> Result<()> {
                         },
                         {
                             "name": "chaos_impact",
-                            "description": "Build a feature-vs-existing-code impact report for an indexed repo and ALWAYS write an interactive HTML (impact summary + evidence) into docs/features_memory. Returns a COMPACT summary — counts plus the existing files/symbols the feature touches, warnings, and the HTML path — and keeps the full evidence in the HTML only (so it won't flood your context like a raw feature_context dump). Use to see how a proposed feature maps onto the codebase as it exists today.",
+                            "description": "Build a feature-vs-existing-code impact report for an indexed repo and ALWAYS write an interactive HTML (impact summary + evidence) into docs/features_memory. Returns a COMPACT summary — counts plus the existing files/symbols the feature touches, warnings, the HTML path, and PROVENANCE breadcrumbs (how the report was generated: hybrid retrieval with a per-method hit breakdown, manifests scanned, aggregation) — and keeps the full evidence in the HTML only (so it won't flood your context like a raw feature_context dump). Use to see how a proposed feature maps onto the codebase as it exists today.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
@@ -178,21 +178,21 @@ pub async fn run(config: Config) -> Result<()> {
                         },
                         {
                             "name": "chaos_write_storyboard",
-                            "description": "Write a CLIENT/USER-FACING interactive storyboard into docs/features_memory/<slug>-story.html: the feature explained from the UI/UX user-story perspective with NO code. You supply a structured, code-free manifest (personas; user stories as 'As a … I want … so that …' with plain-language acceptance criteria; clickable frames grouped into stages; outcomes; a confidence 0..1 on every frame/story/outcome plus an overall_confidence) and the tool renders a fixed dark Blade Runner page with click-a-frame detail and confidence rings. Use this for a stakeholder/end-user presentation; use chaos_write_feature_website instead for the engineer-facing graph/architecture/code page. Compose from real understanding (run chaos_feature_context / chaos_impact first); do not invent UI that does not exist.",
+                            "description": "Write a CLIENT/USER-FACING interactive 'Feature guide' into docs/features_memory/<slug>-story.html: the feature explained from the UI/UX user-story perspective with NO code, rendered as a light editorial scrollytelling page (Access-Control lineage). You supply a structured, code-free manifest (personas as role cards; user stories as 'As a … I want … so that …' with plain-language acceptance criteria; clickable frames grouped into stages that render as an alternating step-by-step walkthrough; outcomes). It supports OPTIONAL branding (`brand`, `hero_image`), an optional permission `matrix`, an agent-style `callout`, and an end-of-page interactive `game`, and adds scroll-unlock gamification (a sticky progress HUD, per-stage 'cleared' badges, a completion reward). Confidence values are OPTIONAL metadata and are NOT shown to the end user. Each walkthrough step pairs with a device mockup built from the frame's `preview` — a REAL captured screenshot or a live app route; Chaos cannot synthesise the client's screens, so a frame with no `preview` renders an honest 'add a screenshot' placeholder. ASK the user/developer to capture real screenshots (or point you at a running route) rather than inventing UI. Use this for a stakeholder/end-user presentation; use chaos_write_feature_website instead for the engineer-facing graph/architecture/code page. Compose from real understanding (run chaos_feature_context / chaos_impact first); do not invent UI that does not exist.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
                                     "repo": {"type": "string"},
                                     "slug": {"type": "string", "description": "Slug for the output filename docs/features_memory/<slug>-story.html."},
                                     "title": {"type": "string", "description": "Page title; used when the manifest omits one."},
-                                    "manifest": {"type": "object", "description": "StoryboardManifest: {title, subtitle, audience, overall_confidence, personas[], stories[], frames[], outcomes[]}. NO code/file/line fields. Minimums: >=1 persona, >=2 stories, >=3 frames, >=1 outcome; every confidence in [0,1]; story.frame_ids and persona references must resolve. Each frame MAY include an optional `preview` showing the REAL client UI (not code): {\"kind\":\"image\",\"src\":\"previews/x.png\",\"alt\":\"...\",\"caption\":\"...\"} for a screenshot/clip you captured (offline, leaks nothing — preferred), or {\"kind\":\"iframe\",\"url\":\"http://localhost:5173/route\",\"caption\":\"...\"} to live-embed a running app route (only renders while that server is up). src/url must not use javascript:/vbscript:/data:text/html."}
+                                    "manifest": {"type": "object", "description": "StoryboardManifest: {title, subtitle, audience, overall_confidence, personas[], stories[], frames[], outcomes[]}. NO code/file/line fields. Minimums: >=1 persona, >=2 stories, >=3 frames, >=1 outcome; every confidence in [0,1]; story.frame_ids and persona references must resolve. Each frame MAY include an optional `preview` showing the REAL client UI (not code): {\"kind\":\"image\",\"src\":\"previews/x.png\",\"alt\":\"...\",\"caption\":\"...\"} for a screenshot/clip you captured (offline, leaks nothing — preferred), or {\"kind\":\"iframe\",\"url\":\"http://localhost:5173/route\",\"caption\":\"...\"} to live-embed a running app route (only renders while that server is up). src/url must not use javascript:/vbscript:/data:text/html. OPTIONAL (all backward-compatible) for the richer Access-Control look: a top-level `brand_preset` name (e.g. \"molecule\") that fills logo/hero/company from a preset shipped inside Chaos — available to every install, no local files — for any `brand`/`hero_image` fields you leave empty (explicit values win); `hero_image` (banner src — relative/http(s)/data:image) and `brand` {name,tagline,logo_src,href} to set branding yourself; per-persona `who`, `icon` (one of eye|file|crown|agent|key|user|users|shield|lock|clock|doc|grant|revoke|bolt|flag), `includes`, and `tier` (>0 places it on the role ladder, higher = more authority); a top-level `matrix` {columns:[role names], rows:[{capability, allowed:[bool per column]}], caption} for the permission table; a `callout` {kicker,heading,intro,title,body,points[]} for an agent-style highlight band; and a `game` {kicker,heading,intro,instructions,rounds:[{prompt,context:[chips],options:[{label,correct,explain}]}],win_message} for the end-of-page click-to-check mini-game (each round needs >=2 options and >=1 marked correct)."}
                                 },
                                 "required": ["repo", "slug", "title", "manifest"]
                             }
                         },
                         {
                             "name": "chaos_change_plan",
-                            "description": "Decompose a proposed change into the FEATURES (L1 communities / god-nodes) it spans, with a dependency-aware check order — the top-down counterpart to flat retrieval. Matches the change description against community summary embeddings, optionally also seeding from a real git diff (`since`), then returns the set of features the change touches, each with its members, confidence, and a topo-sorted check order over the feature quotient graph. ALWAYS writes an interactive Blade-Runner HTML plan to docs/features_memory/<slug>-plan.html and returns a COMPACT JSON summary (counts + per-feature label/confidence/check_order/top symbols + the HTML path), so it won't flood your context. Use it to answer 'how many features does this change involve, and in what order should I check them?'. Requires the repo to be indexed (chaos_analyze/chaos_add build the hierarchy).",
+                            "description": "Decompose a proposed change into the FEATURES (L1 communities / god-nodes) it spans, with a dependency-aware check order — the top-down counterpart to flat retrieval. Matches the change description against community summary embeddings, ALSO seeding from a real git diff (`since`) AND from previously generated feature pages it correlates with (shared files → communities), so a curated existing feature deepens the decomposition. Each feature reports how it was surfaced via `+`-joined sources (semantic/diff/manifest) plus matched_by breadcrumbs, and the plan carries top-level provenance breadcrumbs. ALWAYS writes an interactive HTML plan to docs/features_memory/<slug>-plan.html and returns a COMPACT JSON summary (counts + per-feature label/confidence/via/check_order/top symbols + provenance + the HTML path), so it won't flood your context. Use it to answer 'how many features does this change involve, and in what order should I check them?'. Requires the repo to be indexed (chaos_analyze/chaos_add build the hierarchy).",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
@@ -369,12 +369,14 @@ async fn handle_tool_call(
             let warnings = build_feature_context_warnings(task, &repo_root, &postgres);
             let feature_matches =
                 load_feature_matches(task, &features_dir, feature_limit, nodes_per_feature)?;
+            let provenance = feature_context_provenance(&postgres, &features_dir, &feature_matches);
             let response = FeatureContextResponse {
                 task: task.to_string(),
                 postgres,
                 features_dir,
                 warnings,
                 feature_matches,
+                provenance,
             };
             let output_html = args.get("output_html").and_then(Value::as_str);
             if let Some(output_html) = output_html {
