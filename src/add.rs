@@ -13,12 +13,13 @@ use crate::{
     embedding::Embedder,
     extractor::{current_commit, RustRepositoryExtractor},
     feature_context::{
-        FeatureClaim, FeatureContextEdge, FeatureContextNode, FeatureDefinition, FeatureEvidence,
-        FeatureManifest, FeatureMode, FeatureStoryStep,
+        correlate_feature_manifests, FeatureClaim, FeatureContextEdge, FeatureContextNode,
+        FeatureDefinition, FeatureEvidence, FeatureManifest, FeatureMode, FeatureStoryStep,
     },
     feature_export::render_feature_website,
     graph_export::{GraphExport, GraphExportNode},
     obsidian_export::write_obsidian_vault,
+    provenance::{source, Breadcrumb},
     storage::Storage,
     Config,
 };
@@ -26,7 +27,7 @@ use anyhow::{bail, Result};
 use futures::{StreamExt, TryStreamExt};
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -38,6 +39,8 @@ use uuid::Uuid;
 const MAX_PAGE_NODES: usize = 16;
 /// Maximum source lines embedded per node snippet.
 const MAX_SNIPPET_LINES: usize = 120;
+/// Maximum prior feature pages correlated to a change.
+const MAX_RELATED_FEATURES: usize = 6;
 
 /// Options for [`run`], shared by the CLI and MCP surfaces.
 #[derive(Debug, Default, Clone)]
@@ -130,12 +133,33 @@ pub async fn run(
         "chunks": result.chunks.len(),
     });
 
-    // 3. Merge into the index and embed only the new/changed chunks.
+    // 3. Merge into the index, embed only the new/changed chunks, recompute the
+    //    L1 community layer, and roll the L2 hashes. Capture the prior community
+    //    hashes + repo root first so we can report this change's feature blast
+    //    radius (the communities whose Merkle root moved).
+    let before_hashes = storage
+        .load_community_hashes(repo.id)
+        .await
+        .unwrap_or_default();
+    let before_root = storage.get_repo_root_hash(repo.id).await.unwrap_or(None);
     let run_id = storage.begin_analysis(repo.id, commit.as_deref()).await?;
-    let embedded = match merge_and_embed(storage, embedder, repo.id, &changed_rel, &result).await {
-        Ok(embedded) => {
+    let indexed = async {
+        let embedded = merge_and_embed(storage, embedder, repo.id, &changed_rel, &result).await?;
+        let detection = crate::community::detect_and_persist(
+            storage,
+            repo.id,
+            &crate::community::CommunityConfig::default(),
+        )
+        .await?;
+        let merkle = crate::merkle::compute_and_persist(storage, repo.id).await?;
+        let summary = crate::community_summary::summarize_repo(storage, embedder, repo.id).await?;
+        Result::<_, anyhow::Error>::Ok((embedded, detection, merkle, summary))
+    }
+    .await;
+    let (embedded, detection, merkle, summary) = match indexed {
+        Ok(value) => {
             storage.finish_analysis(run_id, "completed", None).await?;
-            embedded
+            value
         }
         Err(err) => {
             storage
@@ -144,6 +168,32 @@ pub async fn run(
             return Err(err);
         }
     };
+    let feature_communities = detection.communities.iter().filter(|c| c.size >= 2).count();
+
+    // Feature blast radius: which communities' roots moved (vs. before the add).
+    // First-ever add reports all communities (everything is new).
+    let label_by_id: HashMap<Uuid, String> = detection
+        .communities
+        .iter()
+        .map(|c| (c.id, c.label.clone()))
+        .collect();
+    let size_by_id: HashMap<Uuid, usize> = detection
+        .communities
+        .iter()
+        .map(|c| (c.id, c.size))
+        .collect();
+    let changed_ids = crate::merkle::changed_communities(&before_hashes, &merkle.community_hashes);
+    let changed_communities: Vec<Value> = changed_ids
+        .iter()
+        .filter(|id| size_by_id.get(*id).copied().unwrap_or(0) >= 2)
+        .map(|id| {
+            json!({
+                "id": id,
+                "label": label_by_id.get(id),
+                "size": size_by_id.get(id),
+            })
+        })
+        .collect();
 
     // 4. Classify + title the addition.
     let kind = resolve_kind(&repo_root, opts)?;
@@ -160,11 +210,17 @@ pub async fn run(
             .clone()
             .unwrap_or_else(|| repo_root.join("chaos-obsidian-vault"));
         let summary = write_obsidian_vault(&output, &graph)?;
+        // Regenerate the god-node notes + feature map from the persisted layers.
+        let hierarchy = storage.load_community_hierarchy(&repo, 14).await?;
+        let features_dir = repo_root.join("docs/features_memory");
+        let hier = crate::hierarchy_export::write_hierarchy(&output, &features_dir, &hierarchy)?;
         json!({
             "output": summary.output,
             "topics": summary.topics,
             "node_notes": summary.node_notes,
             "edges": summary.edges,
+            "community_notes": hier.community_notes,
+            "feature_map_html": hier.feature_map_html,
         })
     };
 
@@ -185,6 +241,14 @@ pub async fn run(
             "slug": slug,
             "nodes": manifest.nodes.len(),
             "edges": manifest.edges.len(),
+            "provenance_steps": manifest.provenance.len(),
+            "related_features": manifest.related_features.iter().map(|c| json!({
+                "page": c.page,
+                "title": c.title,
+                "shared_files": c.shared_files.len(),
+                "shared_symbols": c.shared_symbols.len(),
+                "score": c.score,
+            })).collect::<Vec<_>>(),
         })
     };
 
@@ -196,6 +260,23 @@ pub async fn run(
         "changed_files": changed_rel,
         "indexed": counts,
         "embedded_chunks": embedded,
+        "communities": {
+            "total": detection.communities.len(),
+            "feature_communities": feature_communities,
+            "quotient_edges": detection.quotient_edges.len(),
+            "summaries": {
+                "summarized": summary.summarized,
+                "skipped": summary.skipped,
+                "embed_calls": summary.embed_calls,
+            },
+        },
+        "blast_radius": {
+            "changed_feature_count": changed_communities.len(),
+            "changed_communities": changed_communities,
+            "root_hash_before": before_root,
+            "root_hash_after": merkle.repo_root_hash,
+            "root_changed": before_root.as_deref() != Some(merkle.repo_root_hash.as_str()),
+        },
         "obsidian": obsidian,
         "page": page,
     }))
@@ -522,7 +603,7 @@ fn build_manifest(
                 label: humanize(&edge.kind),
                 kind: edge.kind.clone(),
                 evidence: FeatureEvidence {
-                    source: "knowledge-graph".into(),
+                    source: source::GRAPH.into(),
                     method: "persisted-edge".into(),
                     notes: format!("confidence {:.0}%", edge.confidence * 100.0),
                 },
@@ -554,7 +635,7 @@ fn build_manifest(
                     label: "part of this change".into(),
                     kind: "mentions".into(),
                     evidence: FeatureEvidence {
-                        source: "git-diff".into(),
+                        source: source::GIT.into(),
                         method: "co-changed".into(),
                         notes: "indexed together by chaos add".into(),
                     },
@@ -571,7 +652,101 @@ fn build_manifest(
         .map(|node| node.name.clone())
         .collect();
 
-    let claims = vec![
+    // Correlate this change with previously generated feature pages so the new
+    // page surfaces the existing features it overlaps (shared files / symbols),
+    // and so its provenance can record the correlation. Excludes its own slug.
+    let slug = safe_slug(&format!("{kind}-{title}"));
+    let features_dir = repo_root.join("docs/features_memory");
+    let correlate_files: HashSet<String> = changed_rel.iter().cloned().collect();
+    let correlate_symbols: HashSet<String> = changed
+        .iter()
+        .filter(|node| node.kind != "file")
+        .map(|node| node.name.clone())
+        .collect();
+    let related_features = correlate_feature_manifests(
+        &features_dir,
+        &correlate_files,
+        &correlate_symbols,
+        &slug,
+        MAX_RELATED_FEATURES,
+    )
+    .unwrap_or_default();
+
+    // Artifact-level breadcrumbs: how this page was generated, in order.
+    let languages: BTreeSet<String> = changed
+        .iter()
+        .filter_map(|node| node.metadata.get("language").and_then(Value::as_str))
+        .map(|lang| lang.to_string())
+        .collect();
+    let snippet_reads = nodes.iter().filter(|node| !node.code.is_empty()).count();
+    let mut provenance = vec![Breadcrumb::new(
+        source::GIT,
+        "git diff",
+        format!(
+            "detected {} changed file(s): {file_list}",
+            changed_rel.len()
+        ),
+    )];
+    if !languages.is_empty() {
+        provenance.push(Breadcrumb::new(
+            source::AST,
+            "language extraction",
+            format!(
+                "parsed symbols via {} extractor(s)",
+                languages.iter().cloned().collect::<Vec<_>>().join(", ")
+            ),
+        ));
+    }
+    provenance.push(Breadcrumb::new(
+        source::POSTGRES,
+        "load_graph_export",
+        format!(
+            "merged graph: {} node(s), {} edge(s)",
+            graph.nodes.len(),
+            graph.edges.len()
+        ),
+    ));
+    provenance.push(Breadcrumb::new(
+        source::GRAPH,
+        "neighbor selection",
+        format!(
+            "{} changed symbol(s) + {} graph neighbor(s) one edge away",
+            changed.len(),
+            neighbors.len()
+        ),
+    ));
+    if snippet_reads > 0 {
+        provenance.push(Breadcrumb::new(
+            source::FILE,
+            "read_snippet",
+            format!("read {snippet_reads} source snippet(s) from the working tree"),
+        ));
+    }
+    provenance.push(if related_features.is_empty() {
+        Breadcrumb::new(
+            source::MANIFEST,
+            "correlate_feature_manifests",
+            "no prior feature pages correlated",
+        )
+        .with_locator(features_dir.display().to_string())
+    } else {
+        Breadcrumb::new(
+            source::MANIFEST,
+            "correlate_feature_manifests",
+            format!(
+                "correlated {} prior feature page(s): {}",
+                related_features.len(),
+                related_features
+                    .iter()
+                    .map(|c| c.page.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )
+        .with_locator(features_dir.display().to_string())
+    });
+
+    let mut claims = vec![
         FeatureClaim {
             id: "claim-changed".into(),
             title: format!(
@@ -610,6 +785,25 @@ fn build_manifest(
             },
         },
     ];
+    if !related_features.is_empty() {
+        claims.push(FeatureClaim {
+            id: "claim-correlates".into(),
+            title: format!(
+                "Correlates with {} existing feature(s)",
+                related_features.len()
+            ),
+            body: format!(
+                "Shares files or symbols with: {}.",
+                related_features
+                    .iter()
+                    .map(|c| c.title.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            confidence: 0.8,
+            node_ids: changed_mids.clone(),
+        });
+    }
 
     let modes = vec![
         FeatureMode {
@@ -633,7 +827,7 @@ fn build_manifest(
         .filter(|n| n.kind == "test")
         .map(|n| manifest_id(n.id))
         .collect();
-    let story = vec![
+    let mut story = vec![
         FeatureStoryStep {
             id: "story-what".into(),
             title: "What changed".into(),
@@ -672,8 +866,24 @@ fn build_manifest(
             edge_ids: Vec::new(),
         },
     ];
+    if !related_features.is_empty() {
+        story.push(FeatureStoryStep {
+            id: "story-related".into(),
+            title: "Related existing features".into(),
+            body: format!(
+                "This change overlaps {} previously documented feature(s): {}. Open those pages to see how they connect.",
+                related_features.len(),
+                related_features
+                    .iter()
+                    .map(|c| c.title.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            node_ids: changed_mids.clone(),
+            edge_ids: Vec::new(),
+        });
+    }
 
-    let slug = safe_slug(&format!("{kind}-{title}"));
     FeatureManifest {
         schema_version: "chaos-add-1".into(),
         feature: FeatureDefinition {
@@ -703,6 +913,8 @@ fn build_manifest(
         nodes,
         edges,
         story,
+        provenance,
+        related_features,
     }
 }
 
@@ -719,6 +931,29 @@ fn graph_node_to_feature(
     } else {
         read_snippet(repo_root, &file, node.line_start, node.line_end)
     };
+    let lang = node
+        .metadata
+        .get("language")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    // Per-node breadcrumb: the kind/language extracted, chunk count, and the
+    // file:line range whose source snippet was read for this node.
+    let notes = {
+        let lang_part = if lang.is_empty() {
+            String::new()
+        } else {
+            format!("{lang} · ")
+        };
+        let loc = if file.is_empty() {
+            String::new()
+        } else {
+            format!(" · {file}:{lines}")
+        };
+        format!(
+            "{}{} · {} chunk(s){}",
+            lang_part, node.kind, node.chunk_count, loc
+        )
+    };
     FeatureContextNode {
         id: node.id.to_string(),
         label: node.name.chars().take(48).collect(),
@@ -734,12 +969,16 @@ fn graph_node_to_feature(
         code,
         evidence: FeatureEvidence {
             source: if changed {
-                "git-diff".into()
+                source::GIT.into()
             } else {
-                "knowledge-graph".into()
+                source::GRAPH.into()
             },
-            method: "chaos add".into(),
-            notes: format!("{} · {} chunk(s)", node.kind, node.chunk_count),
+            method: if changed {
+                "chaos add · git diff + AST".into()
+            } else {
+                "chaos add · graph neighbor".into()
+            },
+            notes,
         },
         confidence: if changed { 0.95 } else { 0.7 },
     }

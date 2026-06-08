@@ -286,6 +286,16 @@ fn validate_dimensions(embedding: &[f32], expected: usize) -> Result<()> {
             expected
         );
     }
+    // Fail closed on non-finite values: `vector_literal` would otherwise coerce
+    // NaN/Inf to 0, silently persisting a degraded "placeholder-ish" vector.
+    // A real embedder never returns these, so erroring is the correct posture
+    // (invariant: no fabricated vectors).
+    if let Some(pos) = embedding.iter().position(|v| !v.is_finite()) {
+        anyhow::bail!(
+            "embedder returned a non-finite value ({}) at index {pos}; refusing to store a degraded vector",
+            embedding[pos]
+        );
+    }
     Ok(())
 }
 
@@ -314,5 +324,24 @@ fn ensure_success(
         Err(EmbedAttemptError::transient(err))
     } else {
         Err(EmbedAttemptError::permanent(err))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_dimensions, vector_literal};
+
+    #[test]
+    fn rejects_non_finite_vectors() {
+        assert!(validate_dimensions(&[0.1, 0.2, 0.3], 3).is_ok());
+        assert!(validate_dimensions(&[0.1, f32::NAN, 0.3], 3).is_err());
+        assert!(validate_dimensions(&[0.1, f32::INFINITY, 0.3], 3).is_err());
+        assert!(validate_dimensions(&[1.0, 2.0], 3).is_err()); // wrong length
+    }
+
+    #[test]
+    fn vector_literal_formats_finite_values() {
+        // (Finite values only — non-finite are rejected before this is reached.)
+        assert_eq!(vector_literal(&[1.0, 2.5]), "[1,2.5]");
     }
 }

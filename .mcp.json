@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "chaos-substrate": {
-      "command": "./bin/chaos-agent",
+      "command": "./bin/chaos",
       "args": ["mcp"],
       "env": {
         "DATABASE_URL": "postgres://chaos:chaos@localhost:54329/chaos_substrate"

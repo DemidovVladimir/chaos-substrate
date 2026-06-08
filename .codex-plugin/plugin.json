@@ -1,7 +1,7 @@
 {
   "name": "chaos-substrate",
-  "version": "0.6.0",
-  "description": "Agent guidance, MCP tools, and wrappers for indexing projects, querying code memory, and generating feature-context explanations.",
+  "version": "0.9.4",
+  "description": "Agent guidance, MCP tools, and wrappers for indexing projects, querying code memory, decomposing changes into features over a layered hierarchy, generating feature-context explanations, and composing client-facing feature storyboards with real-UI previews.",
   "author": {
     "name": "Chaos Substrate"
   },

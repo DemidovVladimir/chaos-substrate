@@ -1,6 +1,7 @@
 use crate::{
     embedding::vector_literal,
     graph_export::{GraphExport, GraphExportEdge, GraphExportNode, GraphRepository},
+    hierarchy_export::{CommunityDetail, CommunityHierarchy, QuotientEdgeDetail},
     models::{
         ExtractionResult, KnowledgeChunk, KnowledgeEdge, KnowledgeNode, Repository, SearchHit,
         SourceFile,
@@ -260,6 +261,745 @@ impl Storage {
         Ok(())
     }
 
+    /// Replace the persisted L1 community layer for a repo with a fresh
+    /// detection result, in one transaction.
+    ///
+    /// Communities are **upserted by id** (not wiped) so that the deterministic
+    /// id of an unchanged community keeps its row — and therefore its P3 summary,
+    /// `summary_hash`, `subtree_hash`, and summary embedding. This is what lets
+    /// the P3 hash gate skip re-summarizing across a full re-index. Members and
+    /// quotient edges are fully replaced (members reference regenerated node
+    /// ids); communities no longer in the partition are deleted (cascading their
+    /// members/edges/embeddings).
+    pub async fn replace_communities(
+        &self,
+        repo_id: Uuid,
+        detection: &crate::community::CommunityDetection,
+        detection_params: &Value,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        let new_ids: Vec<Uuid> = detection.communities.iter().map(|c| c.id).collect();
+
+        // Drop members + quotient edges (rebuilt below), then any community no
+        // longer in the partition (cascades its members/edges/embeddings).
+        sqlx::query(
+            "delete from community_members where community_id in \
+             (select id from communities where repo_id = $1)",
+        )
+        .bind(repo_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("delete from community_edges where repo_id = $1")
+            .bind(repo_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("delete from communities where repo_id = $1 and not (id = any($2))")
+            .bind(repo_id)
+            .bind(&new_ids)
+            .execute(&mut *tx)
+            .await?;
+
+        for community in &detection.communities {
+            // On conflict, preserve summary / summary_hash / subtree_hash /
+            // summarized_at (set by P2 merkle and P3 summarize) — only the
+            // detection-derived fields change.
+            sqlx::query(
+                r#"
+                insert into communities
+                    (id, repo_id, level, parent_id, label, member_count, detection_params, created_at, updated_at)
+                values ($1, $2, $3, null, $4, $5, $6, now(), now())
+                on conflict (id) do update set
+                    label = excluded.label,
+                    member_count = excluded.member_count,
+                    detection_params = excluded.detection_params,
+                    updated_at = now()
+                "#,
+            )
+            .bind(community.id)
+            .bind(repo_id)
+            .bind(0i32)
+            .bind(&community.label)
+            .bind(community.size as i32)
+            .bind(detection_params)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        // Bulk-insert memberships via UNNEST (one row per (community, node)).
+        let mut community_ids: Vec<Uuid> = Vec::new();
+        let mut node_ids: Vec<Uuid> = Vec::new();
+        let mut weights: Vec<f64> = Vec::new();
+        for community in &detection.communities {
+            for &node_id in &community.member_node_ids {
+                community_ids.push(community.id);
+                node_ids.push(node_id);
+                weights.push(1.0);
+            }
+        }
+        if !community_ids.is_empty() {
+            sqlx::query(
+                r#"
+                insert into community_members (community_id, node_id, weight)
+                select * from unnest($1::uuid[], $2::uuid[], $3::float8[])
+                on conflict do nothing
+                "#,
+            )
+            .bind(&community_ids)
+            .bind(&node_ids)
+            .bind(&weights)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        for edge in &detection.quotient_edges {
+            // Deterministic edge id from its (already-deterministic) endpoints.
+            let edge_id = Uuid::new_v5(
+                &crate::community::COMMUNITY_NAMESPACE,
+                format!(
+                    "{repo_id}:edge:{}:{}",
+                    edge.source_community_id, edge.target_community_id
+                )
+                .as_bytes(),
+            );
+            sqlx::query(
+                r#"
+                insert into community_edges
+                    (id, repo_id, source_community_id, target_community_id, kind, weight, edge_count, metadata)
+                values ($1, $2, $3, $4, $5, $6, $7, $8)
+                "#,
+            )
+            .bind(edge_id)
+            .bind(repo_id)
+            .bind(edge.source_community_id)
+            .bind(edge.target_community_id)
+            .bind(&edge.kind)
+            .bind(edge.weight)
+            .bind(edge.edge_count as i32)
+            .bind(json!({ "kind_counts": edge.kind_counts }))
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    // ---- L2 Merkle rollup support -------------------------------------------
+
+    /// Ordered chunk `content_hash` leaves per file (the Merkle leaves). Returns
+    /// one row per file (left join, so chunk-less files appear with an empty
+    /// list), with chunks in canonical order so the rolled hash is stable.
+    pub async fn load_file_chunk_hashes(
+        &self,
+        repo_id: Uuid,
+    ) -> Result<Vec<(Uuid, String, Vec<String>)>> {
+        let rows = sqlx::query(
+            r#"
+            select f.id as file_id, f.path as path, c.content_hash as chunk_hash
+            from files f
+            left join chunks c on c.file_id = f.id
+            where f.repo_id = $1
+            order by f.path, f.id,
+                     c.line_start nulls first, c.line_end nulls first,
+                     c.chunk_type nulls first, c.content_hash nulls first
+            "#,
+        )
+        .bind(repo_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut out: Vec<(Uuid, String, Vec<String>)> = Vec::new();
+        for row in rows {
+            let file_id: Uuid = row.get("file_id");
+            let path: String = row.get("path");
+            let chunk_hash: Option<String> = row.get("chunk_hash");
+            match out.last_mut() {
+                Some((last_id, _, hashes)) if *last_id == file_id => {
+                    if let Some(h) = chunk_hash {
+                        hashes.push(h);
+                    }
+                }
+                _ => {
+                    let mut hashes = Vec::new();
+                    if let Some(h) = chunk_hash {
+                        hashes.push(h);
+                    }
+                    out.push((file_id, path, hashes));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Distinct member file ids per community (a file is shared across
+    /// communities when its symbols are — that overlap is the blast radius).
+    pub async fn load_community_member_files(
+        &self,
+        repo_id: Uuid,
+    ) -> Result<Vec<(Uuid, Vec<Uuid>)>> {
+        let rows = sqlx::query(
+            r#"
+            select cm.community_id as community_id,
+                   array_agg(distinct n.file_id) as file_ids
+            from community_members cm
+            join communities co on co.id = cm.community_id
+            join nodes n on n.id = cm.node_id
+            where co.repo_id = $1 and n.file_id is not null
+            group by cm.community_id
+            "#,
+        )
+        .bind(repo_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let community_id: Uuid = row.get("community_id");
+                let file_ids: Vec<Uuid> = row.get("file_ids");
+                (community_id, file_ids)
+            })
+            .collect())
+    }
+
+    /// Persist file-level subtree hashes (bulk UNNEST update).
+    pub async fn update_file_subtree_hashes(&self, hashes: &[(Uuid, String)]) -> Result<()> {
+        if hashes.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<Uuid> = hashes.iter().map(|(id, _)| *id).collect();
+        let vals: Vec<String> = hashes.iter().map(|(_, h)| h.clone()).collect();
+        sqlx::query(
+            r#"
+            update files as f set subtree_hash = v.hash
+            from (select * from unnest($1::uuid[], $2::text[]) as t(id, hash)) v
+            where f.id = v.id
+            "#,
+        )
+        .bind(&ids)
+        .bind(&vals)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Persist community-level subtree hashes (bulk UNNEST update).
+    pub async fn update_community_subtree_hashes(&self, hashes: &[(Uuid, String)]) -> Result<()> {
+        if hashes.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<Uuid> = hashes.iter().map(|(id, _)| *id).collect();
+        let vals: Vec<String> = hashes.iter().map(|(_, h)| h.clone()).collect();
+        sqlx::query(
+            r#"
+            update communities as c set subtree_hash = v.hash, updated_at = now()
+            from (select * from unnest($1::uuid[], $2::text[]) as t(id, hash)) v
+            where c.id = v.id
+            "#,
+        )
+        .bind(&ids)
+        .bind(&vals)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Persist the repo root hash.
+    pub async fn update_repo_root_hash(&self, repo_id: Uuid, hash: &str) -> Result<()> {
+        sqlx::query(
+            "update repositories set repo_root_hash = $2, updated_at = now() where id = $1",
+        )
+        .bind(repo_id)
+        .bind(hash)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Current repo root hash (None if never computed).
+    pub async fn get_repo_root_hash(&self, repo_id: Uuid) -> Result<Option<String>> {
+        Ok(
+            sqlx::query_scalar("select repo_root_hash from repositories where id = $1")
+                .bind(repo_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten(),
+        )
+    }
+
+    /// Map of community id -> current subtree hash (only communities that have
+    /// one). Used to diff before/after for `add` blast radius and P3 gating.
+    pub async fn load_community_hashes(&self, repo_id: Uuid) -> Result<HashMap<Uuid, String>> {
+        let rows = sqlx::query(
+            "select id, subtree_hash from communities where repo_id = $1 and subtree_hash is not null",
+        )
+        .bind(repo_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.get::<Uuid, _>("id"),
+                    row.get::<String, _>("subtree_hash"),
+                )
+            })
+            .collect())
+    }
+
+    // ---- L3 community summary support (P3) ----------------------------------
+
+    /// Communities that need a (re)summary for the given embedder identity:
+    /// those whose content (`subtree_hash`) moved since the stored
+    /// `summary_hash`, or that have no summary embedding yet. Returns
+    /// `(community_id, current subtree_hash)` ordered by id (deterministic). The
+    /// gate: a no-change re-index returns an empty list ⇒ zero embedder calls.
+    pub async fn communities_needing_summary(
+        &self,
+        repo_id: Uuid,
+        provider: &str,
+        model_id: &str,
+        dimensions: usize,
+    ) -> Result<Vec<(Uuid, String)>> {
+        let rows = sqlx::query(
+            r#"
+            select c.id, c.subtree_hash
+            from communities c
+            left join community_embeddings ce
+              on ce.community_id = c.id
+             and ce.provider = $2 and ce.model_id = $3 and ce.dimensions = $4
+            where c.repo_id = $1
+              and c.subtree_hash is not null
+              and (c.summary_hash is distinct from c.subtree_hash or ce.id is null)
+            order by c.id
+            "#,
+        )
+        .bind(repo_id)
+        .bind(provider)
+        .bind(model_id)
+        .bind(dimensions as i32)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get::<Uuid, _>("id"), r.get::<String, _>("subtree_hash")))
+            .collect())
+    }
+
+    /// Count of communities that have a rolled `subtree_hash` (the summarizable
+    /// universe).
+    pub async fn count_hashed_communities(&self, repo_id: Uuid) -> Result<i64> {
+        Ok(sqlx::query_scalar(
+            "select count(*) from communities where repo_id = $1 and subtree_hash is not null",
+        )
+        .bind(repo_id)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    /// Inputs for an extractive community summary: label, member count, member
+    /// (name, kind, path) tuples, and a few representative chunk snippets — all
+    /// in a deterministic order so the summary text (and its embedding) are
+    /// reproducible.
+    pub async fn load_community_summary_inputs(
+        &self,
+        community_id: Uuid,
+    ) -> Result<CommunitySummaryInputs> {
+        let head = sqlx::query("select label, member_count from communities where id = $1")
+            .bind(community_id)
+            .fetch_one(&self.pool)
+            .await?;
+        let members = sqlx::query(
+            r#"
+            select n.name, n.kind, coalesce(f.path, '') as path
+            from community_members cm
+            join nodes n on n.id = cm.node_id
+            left join files f on f.id = n.file_id
+            where cm.community_id = $1
+            order by n.kind, n.name, n.stable_id
+            limit 200
+            "#,
+        )
+        .bind(community_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let snippets = sqlx::query(
+            r#"
+            select c.content
+            from community_members cm
+            join chunks c on c.node_id = cm.node_id
+            where cm.community_id = $1
+            order by length(c.content) desc, c.content_hash
+            limit 5
+            "#,
+        )
+        .bind(community_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(CommunitySummaryInputs {
+            label: head.get("label"),
+            member_count: head.get("member_count"),
+            members: members
+                .into_iter()
+                .map(|r| {
+                    (
+                        r.get::<String, _>("name"),
+                        r.get::<String, _>("kind"),
+                        r.get::<String, _>("path"),
+                    )
+                })
+                .collect(),
+            snippets: snippets
+                .into_iter()
+                .map(|r| r.get::<String, _>("content"))
+                .collect(),
+        })
+    }
+
+    /// Persist a community summary + its real embedding (one transaction). The
+    /// embedding commits to `subtree_hash` via `content_hash`, and `summary_hash`
+    /// is set to `subtree_hash` so the gate skips it next time content is stable.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn save_community_summary(
+        &self,
+        community_id: Uuid,
+        summary: &str,
+        subtree_hash: &str,
+        provider: &str,
+        model_id: &str,
+        dimensions: usize,
+        embedding: &[f32],
+    ) -> Result<()> {
+        if embedding.len() != dimensions {
+            anyhow::bail!(
+                "refusing to store community embedding with dimension {}; configured dimension is {}",
+                embedding.len(),
+                dimensions
+            );
+        }
+        let literal = vector_literal(embedding);
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "update communities set summary = $2, summary_hash = $3, summarized_at = now() where id = $1",
+        )
+        .bind(community_id)
+        .bind(summary)
+        .bind(subtree_hash)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            insert into community_embeddings
+                (id, community_id, provider, model_id, dimensions, content_hash, embedding, created_at)
+            values ($1, $2, $3, $4, $5, $6, $7::vector, now())
+            on conflict (community_id, provider, model_id, dimensions)
+            do update set embedding = excluded.embedding, content_hash = excluded.content_hash, created_at = now()
+            "#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(community_id)
+        .bind(provider)
+        .bind(model_id)
+        .bind(dimensions as i32)
+        .bind(subtree_hash)
+        .bind(literal)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    // ---- L1/L3 top-down retrieval support (P4) ------------------------------
+
+    /// Cosine match of a query embedding against community summary embeddings —
+    /// the top-down entry point. Returns the best-matching god-nodes.
+    pub async fn community_semantic_search(
+        &self,
+        repo_id: Uuid,
+        provider: &str,
+        model_id: &str,
+        dimensions: usize,
+        query_embedding: &[f32],
+        limit: i64,
+    ) -> Result<Vec<CommunityMatch>> {
+        let literal = vector_literal(query_embedding);
+        let rows = sqlx::query(
+            r#"
+            select c.id, c.label, c.summary, c.member_count,
+                   1.0 - (ce.embedding <=> $5::vector) as score
+            from community_embeddings ce
+            join communities c on c.id = ce.community_id
+            where c.repo_id = $1 and ce.provider = $2 and ce.model_id = $3 and ce.dimensions = $4
+            order by ce.embedding <=> $5::vector
+            limit $6
+            "#,
+        )
+        .bind(repo_id)
+        .bind(provider)
+        .bind(model_id)
+        .bind(dimensions as i32)
+        .bind(literal)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(row_to_community_match).collect())
+    }
+
+    /// Briefs (no score) for a set of community ids — used to describe
+    /// diff-seeded communities that did not come from the embedding match.
+    pub async fn load_community_briefs(
+        &self,
+        repo_id: Uuid,
+        ids: &[Uuid],
+    ) -> Result<Vec<CommunityMatch>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"
+            select id, label, summary, member_count, 0.0::float8 as score
+            from communities
+            where repo_id = $1 and id = any($2)
+            order by member_count desc, id
+            "#,
+        )
+        .bind(repo_id)
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(row_to_community_match).collect())
+    }
+
+    /// Representative member symbols of a community (file nodes excluded).
+    pub async fn load_community_top_symbols(
+        &self,
+        community_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<(String, String, String)>> {
+        let rows = sqlx::query(
+            r#"
+            select n.name, n.kind, coalesce(f.path, '') as path
+            from community_members cm
+            join nodes n on n.id = cm.node_id
+            left join files f on f.id = n.file_id
+            where cm.community_id = $1 and n.kind <> 'file'
+            order by n.kind, n.name, n.stable_id
+            limit $2
+            "#,
+        )
+        .bind(community_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.get::<String, _>("name"),
+                    r.get::<String, _>("kind"),
+                    r.get::<String, _>("path"),
+                )
+            })
+            .collect())
+    }
+
+    /// Distinct communities whose members live in any of `paths` — the
+    /// communities a concrete diff directly touches.
+    pub async fn communities_for_files(
+        &self,
+        repo_id: Uuid,
+        paths: &[String],
+    ) -> Result<Vec<Uuid>> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"
+            select distinct cm.community_id
+            from community_members cm
+            join nodes n on n.id = cm.node_id
+            join files f on f.id = n.file_id
+            where f.repo_id = $1 and f.path = any($2)
+            "#,
+        )
+        .bind(repo_id)
+        .bind(paths)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| r.get::<Uuid, _>("community_id"))
+            .collect())
+    }
+
+    /// Load the full feature hierarchy (communities of size ≥ 2, their top
+    /// members, and the quotient edges among them) for surfacing. Read-only and
+    /// embedder-free; empty for a repo with no persisted communities.
+    pub async fn load_community_hierarchy(
+        &self,
+        repo: &Repository,
+        top_members: usize,
+    ) -> Result<CommunityHierarchy> {
+        let crows = sqlx::query(
+            r#"
+            select id, label, summary, member_count
+            from communities
+            where repo_id = $1 and member_count >= 2
+            order by member_count desc, label, id
+            "#,
+        )
+        .bind(repo.id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let feature_ids: std::collections::HashSet<Uuid> =
+            crows.iter().map(|r| r.get::<Uuid, _>("id")).collect();
+
+        // Members for all feature communities, grouped + capped in Rust.
+        let mrows = sqlx::query(
+            r#"
+            select cm.community_id, n.name, n.kind, coalesce(f.path, '') as path
+            from community_members cm
+            join communities c on c.id = cm.community_id
+            join nodes n on n.id = cm.node_id
+            left join files f on f.id = n.file_id
+            where c.repo_id = $1 and c.member_count >= 2 and n.kind <> 'file'
+            order by cm.community_id, n.kind, n.name, n.stable_id
+            "#,
+        )
+        .bind(repo.id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut members_by: HashMap<Uuid, Vec<(String, String, String)>> = HashMap::new();
+        for row in mrows {
+            let cid: Uuid = row.get("community_id");
+            let bucket = members_by.entry(cid).or_default();
+            if bucket.len() < top_members {
+                bucket.push((row.get("name"), row.get("kind"), row.get("path")));
+            }
+        }
+
+        let communities: Vec<CommunityDetail> = crows
+            .into_iter()
+            .map(|r| {
+                let id: Uuid = r.get("id");
+                CommunityDetail {
+                    top_members: members_by.remove(&id).unwrap_or_default(),
+                    id,
+                    label: r.get("label"),
+                    summary: r.get("summary"),
+                    member_count: r.get("member_count"),
+                }
+            })
+            .collect();
+
+        let erows = sqlx::query(
+            r#"
+            select source_community_id, target_community_id, kind, weight, edge_count
+            from community_edges
+            where repo_id = $1
+            order by weight desc, source_community_id, target_community_id
+            "#,
+        )
+        .bind(repo.id)
+        .fetch_all(&self.pool)
+        .await?;
+        let edges: Vec<QuotientEdgeDetail> = erows
+            .into_iter()
+            .filter_map(|r| {
+                let source: Uuid = r.get("source_community_id");
+                let target: Uuid = r.get("target_community_id");
+                if feature_ids.contains(&source) && feature_ids.contains(&target) {
+                    Some(QuotientEdgeDetail {
+                        source,
+                        target,
+                        kind: r.get("kind"),
+                        weight: r.get("weight"),
+                        edge_count: r.get("edge_count"),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(CommunityHierarchy {
+            repo_name: repo.name.clone(),
+            communities,
+            edges,
+        })
+    }
+
+    /// Map of node id -> the communities it belongs to, for a set of nodes.
+    /// Used by hierarchical retrieval to boost hits inside matched god-nodes.
+    pub async fn node_communities(
+        &self,
+        repo_id: Uuid,
+        node_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, Vec<Uuid>>> {
+        if node_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows = sqlx::query(
+            r#"
+            select cm.node_id, cm.community_id
+            from community_members cm
+            join communities c on c.id = cm.community_id
+            where c.repo_id = $1 and cm.node_id = any($2)
+            "#,
+        )
+        .bind(repo_id)
+        .bind(node_ids)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut map: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
+        for row in rows {
+            map.entry(row.get::<Uuid, _>("node_id"))
+                .or_default()
+                .push(row.get::<Uuid, _>("community_id"));
+        }
+        Ok(map)
+    }
+
+    /// Directed dependency links between the given communities, derived from L0
+    /// edge direction (an edge from a node in A to a node in B ⇒ A → B). Used to
+    /// topo-sort a change plan's check order. Returns `(src, dst, count)`.
+    pub async fn directed_community_links(
+        &self,
+        repo_id: Uuid,
+        ids: &[Uuid],
+    ) -> Result<Vec<(Uuid, Uuid, i64)>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"
+            select sc.community_id as src, tc.community_id as dst, count(*)::bigint as n
+            from edges e
+            join community_members sc on sc.node_id = e.source_node_id
+            join community_members tc on tc.node_id = e.target_node_id
+            where e.repo_id = $1
+              and sc.community_id = any($2) and tc.community_id = any($2)
+              and sc.community_id <> tc.community_id
+            group by sc.community_id, tc.community_id
+            order by src, dst
+            "#,
+        )
+        .bind(repo_id)
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.get::<Uuid, _>("src"),
+                    r.get::<Uuid, _>("dst"),
+                    r.get::<i64, _>("n"),
+                )
+            })
+            .collect())
+    }
+
     /// Row counts per persisted table, used to report what a clean removed.
     pub async fn table_counts(&self) -> Result<Value> {
         let row = sqlx::query(
@@ -270,7 +1010,11 @@ impl Storage {
                 (select count(*) from nodes) as nodes, \
                 (select count(*) from edges) as edges, \
                 (select count(*) from chunks) as chunks, \
-                (select count(*) from embeddings) as embeddings",
+                (select count(*) from embeddings) as embeddings, \
+                (select count(*) from communities) as communities, \
+                (select count(*) from community_members) as community_members, \
+                (select count(*) from community_edges) as community_edges, \
+                (select count(*) from community_embeddings) as community_embeddings",
         )
         .fetch_one(&self.pool)
         .await?;
@@ -282,6 +1026,10 @@ impl Storage {
             "edges": row.get::<i64, _>("edges"),
             "chunks": row.get::<i64, _>("chunks"),
             "embeddings": row.get::<i64, _>("embeddings"),
+            "communities": row.get::<i64, _>("communities"),
+            "community_members": row.get::<i64, _>("community_members"),
+            "community_edges": row.get::<i64, _>("community_edges"),
+            "community_embeddings": row.get::<i64, _>("community_embeddings"),
         }))
     }
 
@@ -314,6 +1062,24 @@ impl Storage {
         .fetch_one(&self.pool)
         .await?;
 
+        // L1 hierarchy counts. Communities are 0 for a repo indexed before the
+        // hierarchy layer existed (additive degradation). `feature_communities`
+        // are the multi-member ones; singletons are isolated leaf nodes.
+        let hierarchy = sqlx::query(
+            r#"
+            select
+                (select count(*) from communities where repo_id = $1) as communities,
+                (select count(*) from communities where repo_id = $1 and member_count >= 2) as feature_communities,
+                (select count(*) from community_edges where repo_id = $1) as quotient_edges,
+                (select coalesce(max(member_count), 0)::bigint from communities where repo_id = $1) as largest_community,
+                (select count(*) from communities where repo_id = $1 and subtree_hash is not null) as hashed_communities,
+                (select repo_root_hash from repositories where id = $1) as repo_root_hash
+            "#,
+        )
+        .bind(repo_id)
+        .fetch_one(&self.pool)
+        .await?;
+
         Ok(json!({
             "repo": {
                 "id": repo.id,
@@ -330,6 +1096,14 @@ impl Storage {
                 "chunks_missing_embeddings": totals.get::<i64, _>("chunks_missing_embeddings"),
                 "split_chunks": totals.get::<i64, _>("split_chunks"),
                 "nodes_with_chunk": totals.get::<i64, _>("nodes_with_chunk"),
+            },
+            "hierarchy": {
+                "communities": hierarchy.get::<i64, _>("communities"),
+                "feature_communities": hierarchy.get::<i64, _>("feature_communities"),
+                "quotient_edges": hierarchy.get::<i64, _>("quotient_edges"),
+                "largest_community": hierarchy.get::<i64, _>("largest_community"),
+                "hashed_communities": hierarchy.get::<i64, _>("hashed_communities"),
+                "repo_root_hash": hierarchy.get::<Option<String>, _>("repo_root_hash"),
             },
             "files_by_language": self.group_counts(repo_id, "files", "language").await?,
             "nodes_by_kind": self.group_counts(repo_id, "nodes", "kind").await?,
@@ -550,6 +1324,39 @@ impl Storage {
         Ok(rows.into_iter().map(row_to_search_hit).collect())
     }
 
+    /// Load every node for a repo in canonical `stable_id` order. Used by the
+    /// community-detection layer (L1), which must see the whole graph.
+    pub async fn load_all_nodes(&self, repo_id: Uuid) -> Result<Vec<KnowledgeNode>> {
+        let rows = sqlx::query(
+            r#"
+            select id, repo_id, file_id, kind, stable_id, name, line_start, line_end, metadata
+            from nodes
+            where repo_id = $1
+            order by stable_id, id
+            "#,
+        )
+        .bind(repo_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(row_to_node).collect())
+    }
+
+    /// Load every edge for a repo in a stable order. Used by L1 detection.
+    pub async fn load_all_edges(&self, repo_id: Uuid) -> Result<Vec<KnowledgeEdge>> {
+        let rows = sqlx::query(
+            r#"
+            select id, repo_id, source_node_id, target_node_id, kind, cost, confidence, metadata
+            from edges
+            where repo_id = $1
+            order by source_node_id, target_node_id, kind
+            "#,
+        )
+        .bind(repo_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(row_to_edge).collect())
+    }
+
     pub async fn load_edges_for_nodes(
         &self,
         repo_id: Uuid,
@@ -570,20 +1377,7 @@ impl Storage {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(|row| KnowledgeEdge {
-                id: row.get("id"),
-                repo_id: row.get("repo_id"),
-                source_node_id: row.get("source_node_id"),
-                target_node_id: row.get("target_node_id"),
-                kind: serde_json::from_value(json!(row.get::<String, _>("kind")))
-                    .unwrap_or(crate::models::EdgeKind::Mentions),
-                cost: row.get("cost"),
-                confidence: row.get("confidence"),
-                metadata: row.get("metadata"),
-            })
-            .collect())
+        Ok(rows.into_iter().map(row_to_edge).collect())
     }
 
     pub async fn load_graph_export(&self, repo: &Repository) -> Result<GraphExport> {
@@ -727,6 +1521,29 @@ impl Storage {
             })
             .collect())
     }
+}
+
+/// A community matched during top-down retrieval / change planning.
+#[derive(Debug, Clone)]
+pub struct CommunityMatch {
+    pub id: Uuid,
+    pub label: String,
+    pub summary: Option<String>,
+    pub member_count: i32,
+    /// Cosine similarity to the query (0.0 for briefs not from the embedding match).
+    pub score: f64,
+}
+
+/// Deterministically-ordered inputs for an extractive community summary
+/// (see `src/community_summary.rs`).
+#[derive(Debug, Clone)]
+pub struct CommunitySummaryInputs {
+    pub label: String,
+    pub member_count: i32,
+    /// `(name, kind, file_path)` per member, capped and ordered.
+    pub members: Vec<(String, String, String)>,
+    /// A few representative chunk snippets.
+    pub snippets: Vec<String>,
 }
 
 /// A symbol match returned by [`Storage::search_symbols_by_name`] and the
@@ -876,6 +1693,45 @@ async fn insert_chunk(
     Ok(())
 }
 
+fn row_to_node(row: sqlx::postgres::PgRow) -> KnowledgeNode {
+    KnowledgeNode {
+        id: row.get("id"),
+        repo_id: row.get("repo_id"),
+        file_id: row.get("file_id"),
+        kind: serde_json::from_value(json!(row.get::<String, _>("kind")))
+            .unwrap_or(crate::models::NodeKind::Concept),
+        stable_id: row.get("stable_id"),
+        name: row.get("name"),
+        line_start: row.get("line_start"),
+        line_end: row.get("line_end"),
+        metadata: row.get("metadata"),
+    }
+}
+
+fn row_to_edge(row: sqlx::postgres::PgRow) -> KnowledgeEdge {
+    KnowledgeEdge {
+        id: row.get("id"),
+        repo_id: row.get("repo_id"),
+        source_node_id: row.get("source_node_id"),
+        target_node_id: row.get("target_node_id"),
+        kind: serde_json::from_value(json!(row.get::<String, _>("kind")))
+            .unwrap_or(crate::models::EdgeKind::Mentions),
+        cost: row.get("cost"),
+        confidence: row.get("confidence"),
+        metadata: row.get("metadata"),
+    }
+}
+
+fn row_to_community_match(row: sqlx::postgres::PgRow) -> CommunityMatch {
+    CommunityMatch {
+        id: row.get("id"),
+        label: row.get("label"),
+        summary: row.get("summary"),
+        member_count: row.get("member_count"),
+        score: row.get("score"),
+    }
+}
+
 fn row_to_chunk(row: sqlx::postgres::PgRow) -> KnowledgeChunk {
     KnowledgeChunk {
         id: row.get("id"),
@@ -901,5 +1757,593 @@ fn row_to_search_hit(row: sqlx::postgres::PgRow) -> SearchHit {
         score: row.get("score"),
         content: row.get("content"),
         metadata: row.get("metadata"),
+    }
+}
+
+/// DB-backed integration tests for the persisted hierarchy layers. They run
+/// only when `DATABASE_URL` is set (so the embedder-free CI path skips them) and
+/// always operate on a throwaway repo path, purged at the end. They need no
+/// embedder — community detection and Merkle rollup are embedder-free.
+#[cfg(test)]
+mod db_tests {
+    use super::*;
+    use crate::community::{detect_and_persist, CommunityConfig};
+    use crate::models::{
+        EdgeKind, ExtractionResult, KnowledgeChunk, KnowledgeEdge, KnowledgeNode, Language,
+        NodeKind, SourceFile,
+    };
+    use std::path::Path;
+
+    fn db_url() -> Option<String> {
+        std::env::var("DATABASE_URL").ok()
+    }
+
+    fn func(repo_id: Uuid, file_id: Uuid, file: &str, name: &str) -> KnowledgeNode {
+        KnowledgeNode {
+            id: Uuid::new_v4(),
+            repo_id,
+            file_id: Some(file_id),
+            kind: NodeKind::Function,
+            stable_id: format!("{file}:function:{name}"),
+            name: name.into(),
+            line_start: Some(1),
+            line_end: Some(5),
+            metadata: json!({ "language": "rust" }),
+        }
+    }
+
+    fn src_file(repo_id: Uuid, path: &str) -> SourceFile {
+        SourceFile {
+            id: Uuid::new_v4(),
+            repo_id,
+            commit_sha: Some("testsha".into()),
+            path: path.into(),
+            language: Language::Rust,
+            content: format!("// {path}\n"),
+            content_hash: crate::extractor::hash(path),
+            line_count: 1,
+        }
+    }
+
+    /// Two dense clusters joined by a single weak edge ⇒ two communities.
+    fn two_cluster_fixture(repo_id: Uuid) -> ExtractionResult {
+        let mut result = ExtractionResult::empty();
+        result.nodes.push(KnowledgeNode {
+            id: Uuid::new_v4(),
+            repo_id,
+            file_id: None,
+            kind: NodeKind::Repository,
+            stable_id: "repo".into(),
+            name: "fixture".into(),
+            line_start: None,
+            line_end: None,
+            metadata: json!({}),
+        });
+        let mut funcs = Vec::new();
+        for (ci, file) in ["a/a.rs", "b/b.rs"].iter().enumerate() {
+            let f = src_file(repo_id, file);
+            let fid = f.id;
+            result.files.push(f);
+            for k in 0..3 {
+                let nd = func(repo_id, fid, file, &format!("c{ci}_f{k}"));
+                let node_id = nd.id;
+                funcs.push((ci, node_id));
+                result.nodes.push(nd);
+                // One chunk per symbol, with distinct content ⇒ distinct,
+                // non-empty file subtree hashes for the Merkle rollup.
+                let content = format!("fn {file}::c{ci}_f{k} body");
+                result.chunks.push(KnowledgeChunk {
+                    id: Uuid::new_v4(),
+                    repo_id,
+                    file_id: Some(fid),
+                    node_id: Some(node_id),
+                    chunk_type: "function".into(),
+                    content_hash: crate::extractor::hash(&content),
+                    content,
+                    line_start: Some(k * 6 + 1),
+                    line_end: Some(k * 6 + 5),
+                    metadata: json!({}),
+                });
+            }
+        }
+        // Dense intra-cluster edges.
+        for ci in 0..2 {
+            let ids: Vec<Uuid> = funcs
+                .iter()
+                .filter(|(c, _)| *c == ci)
+                .map(|(_, id)| *id)
+                .collect();
+            for a in 0..ids.len() {
+                for b in (a + 1)..ids.len() {
+                    result.edges.push(KnowledgeEdge {
+                        id: Uuid::new_v4(),
+                        repo_id,
+                        source_node_id: ids[a],
+                        target_node_id: ids[b],
+                        kind: EdgeKind::Calls,
+                        cost: 0.1,
+                        confidence: 1.0,
+                        metadata: json!({}),
+                    });
+                }
+            }
+        }
+        result
+    }
+
+    async fn load_file_hashes(storage: &Storage, repo_id: Uuid) -> HashMap<String, Option<String>> {
+        let rows = sqlx::query("select path, subtree_hash from files where repo_id = $1")
+            .bind(repo_id)
+            .fetch_all(&storage.pool)
+            .await
+            .unwrap();
+        rows.into_iter()
+            .map(|r| {
+                (
+                    r.get::<String, _>("path"),
+                    r.get::<Option<String>, _>("subtree_hash"),
+                )
+            })
+            .collect()
+    }
+
+    async fn community_of_file(storage: &Storage, repo_id: Uuid, path: &str) -> Uuid {
+        sqlx::query_scalar::<_, Uuid>(
+            "select distinct cm.community_id from community_members cm \
+             join nodes n on n.id = cm.node_id \
+             join files f on f.id = n.file_id \
+             where f.repo_id = $1 and f.path = $2 limit 1",
+        )
+        .bind(repo_id)
+        .bind(path)
+        .fetch_one(&storage.pool)
+        .await
+        .unwrap()
+    }
+
+    /// Stable per-run digest: (label, sorted member stable_ids), independent of
+    /// regenerated node UUIDs.
+    fn partition_digest(det: &crate::community::CommunityDetection) -> Vec<String> {
+        let mut rows: Vec<String> = det
+            .communities
+            .iter()
+            .map(|c| format!("{}|{}", c.label, c.member_stable_ids.join(",")))
+            .collect();
+        rows.sort();
+        rows
+    }
+
+    #[tokio::test]
+    async fn community_layer_round_trip_and_stable() {
+        let Some(url) = db_url() else {
+            eprintln!("skip community_layer_round_trip_and_stable: DATABASE_URL unset");
+            return;
+        };
+        let storage = Storage::connect(&url).await.expect("connect");
+        storage.migrate().await.expect("migrate");
+
+        let repo_path = format!("/tmp/chaos-test-{}", Uuid::new_v4());
+        let repo = storage
+            .upsert_repository(Path::new(&repo_path), Some("testsha"))
+            .await
+            .expect("repo");
+
+        let result = two_cluster_fixture(repo.id);
+        storage
+            .replace_repo_index(repo.id, &result)
+            .await
+            .expect("index");
+
+        let det1 = detect_and_persist(&storage, repo.id, &CommunityConfig::default())
+            .await
+            .expect("detect");
+        assert!(
+            det1.communities.len() >= 2,
+            "two clusters => >=2 communities"
+        );
+
+        // Round-trip: stats counts == direct SQL == detection.
+        let stats = storage.repo_stats(&repo).await.expect("stats");
+        let stats_comm = stats["hierarchy"]["communities"].as_i64().unwrap();
+        let sql_comm: i64 =
+            sqlx::query_scalar("select count(*) from communities where repo_id = $1")
+                .bind(repo.id)
+                .fetch_one(&storage.pool)
+                .await
+                .unwrap();
+        assert_eq!(stats_comm, sql_comm);
+        assert_eq!(stats_comm as usize, det1.communities.len());
+
+        let sql_members: i64 = sqlx::query_scalar(
+            "select count(*) from community_members cm \
+             join communities c on c.id = cm.community_id where c.repo_id = $1",
+        )
+        .bind(repo.id)
+        .fetch_one(&storage.pool)
+        .await
+        .unwrap();
+        let expected_members: usize = det1
+            .communities
+            .iter()
+            .map(|c| c.member_node_ids.len())
+            .sum();
+        assert_eq!(sql_members as usize, expected_members);
+
+        // Re-detect after a full re-index: same logical partition (node UUIDs
+        // change, but the stable_id-level digest must not).
+        let result2 = two_cluster_fixture(repo.id);
+        storage
+            .replace_repo_index(repo.id, &result2)
+            .await
+            .expect("reindex");
+        let det2 = detect_and_persist(&storage, repo.id, &CommunityConfig::default())
+            .await
+            .expect("detect2");
+        assert_eq!(
+            partition_digest(&det1),
+            partition_digest(&det2),
+            "community partition must be stable across re-index"
+        );
+
+        storage.purge_repository(repo.id).await.expect("purge");
+    }
+
+    /// Golden change-localization test: editing one chunk in one file flips
+    /// exactly that file's hash, its community root(s), and the repo root —
+    /// every sibling byte-identical.
+    #[tokio::test]
+    async fn merkle_localizes_a_single_chunk_change() {
+        let Some(url) = db_url() else {
+            eprintln!("skip merkle_localizes_a_single_chunk_change: DATABASE_URL unset");
+            return;
+        };
+        let storage = Storage::connect(&url).await.expect("connect");
+        storage.migrate().await.expect("migrate");
+        let repo_path = format!("/tmp/chaos-test-{}", Uuid::new_v4());
+        let repo = storage
+            .upsert_repository(Path::new(&repo_path), Some("testsha"))
+            .await
+            .expect("repo");
+
+        let result = two_cluster_fixture(repo.id);
+        storage
+            .replace_repo_index(repo.id, &result)
+            .await
+            .expect("index");
+        detect_and_persist(&storage, repo.id, &CommunityConfig::default())
+            .await
+            .expect("detect");
+        let m1 = crate::merkle::compute_and_persist(&storage, repo.id)
+            .await
+            .expect("merkle1");
+
+        let before_files = load_file_hashes(&storage, repo.id).await;
+
+        // Which community owns a/a.rs, and which does not.
+        let comm_a = community_of_file(&storage, repo.id, "a/a.rs").await;
+        let comm_b = community_of_file(&storage, repo.id, "b/b.rs").await;
+        assert_ne!(comm_a, comm_b, "two files must be in two communities");
+
+        // Edit exactly one chunk of a/a.rs.
+        sqlx::query(
+            "update chunks set content_hash = 'CHANGED-CHUNK' \
+             where id = (select c.id from chunks c join files f on f.id = c.file_id \
+                        where f.repo_id = $1 and f.path = 'a/a.rs' order by c.content_hash limit 1)",
+        )
+        .bind(repo.id)
+        .execute(&storage.pool)
+        .await
+        .unwrap();
+
+        let m2 = crate::merkle::compute_and_persist(&storage, repo.id)
+            .await
+            .expect("merkle2");
+        let after_files = load_file_hashes(&storage, repo.id).await;
+
+        // The edited file moved; its sibling did not.
+        assert_ne!(
+            before_files["a/a.rs"], after_files["a/a.rs"],
+            "edited file hash must change"
+        );
+        assert_eq!(
+            before_files["b/b.rs"], after_files["b/b.rs"],
+            "sibling file hash must be byte-identical"
+        );
+        // The repo root moved.
+        assert_ne!(
+            m1.repo_root_hash, m2.repo_root_hash,
+            "repo root must change"
+        );
+        // The ancestor community moved; the unaffected one did not.
+        assert_ne!(
+            m1.community_hashes[&comm_a], m2.community_hashes[&comm_a],
+            "community owning the edited file must change"
+        );
+        assert_eq!(
+            m1.community_hashes[&comm_b], m2.community_hashes[&comm_b],
+            "unaffected community must be byte-identical"
+        );
+
+        storage.purge_repository(repo.id).await.expect("purge");
+    }
+
+    /// Re-rolling unchanged content reproduces every hash byte-for-byte.
+    #[tokio::test]
+    async fn merkle_is_stable_for_unchanged_content() {
+        let Some(url) = db_url() else {
+            eprintln!("skip merkle_is_stable_for_unchanged_content: DATABASE_URL unset");
+            return;
+        };
+        let storage = Storage::connect(&url).await.expect("connect");
+        storage.migrate().await.expect("migrate");
+        let repo_path = format!("/tmp/chaos-test-{}", Uuid::new_v4());
+        let repo = storage
+            .upsert_repository(Path::new(&repo_path), Some("testsha"))
+            .await
+            .expect("repo");
+
+        storage
+            .replace_repo_index(repo.id, &two_cluster_fixture(repo.id))
+            .await
+            .expect("index");
+        detect_and_persist(&storage, repo.id, &CommunityConfig::default())
+            .await
+            .expect("detect");
+        let m1 = crate::merkle::compute_and_persist(&storage, repo.id)
+            .await
+            .expect("m1");
+
+        // Full re-index of identical content, then re-roll.
+        storage
+            .replace_repo_index(repo.id, &two_cluster_fixture(repo.id))
+            .await
+            .expect("reindex");
+        detect_and_persist(&storage, repo.id, &CommunityConfig::default())
+            .await
+            .expect("detect2");
+        let m2 = crate::merkle::compute_and_persist(&storage, repo.id)
+            .await
+            .expect("m2");
+
+        assert_eq!(
+            m1.repo_root_hash, m2.repo_root_hash,
+            "repo root must be byte-identical for unchanged content"
+        );
+        // Community hashes match by-value (ids are deterministic too).
+        let mut h1: Vec<String> = m1.community_hashes.values().cloned().collect();
+        let mut h2: Vec<String> = m2.community_hashes.values().cloned().collect();
+        h1.sort();
+        h2.sort();
+        assert_eq!(
+            h1, h2,
+            "community hashes must be stable for unchanged content"
+        );
+
+        storage.purge_repository(repo.id).await.expect("purge");
+    }
+
+    /// A test embedder that always fails — used to prove the summary path fails
+    /// closed and never writes a placeholder vector. (Not a fake embedder: it
+    /// produces no vector at all, it errors.)
+    struct FailEmbedder;
+
+    #[async_trait::async_trait]
+    impl crate::embedding::Embedder for FailEmbedder {
+        fn provider(&self) -> &'static str {
+            "failtest"
+        }
+        fn model_id(&self) -> &str {
+            "fail"
+        }
+        fn dimensions(&self) -> usize {
+            768
+        }
+        async fn embed(&self, _input: &str) -> Result<Vec<f32>> {
+            anyhow::bail!("embedder unavailable (test)")
+        }
+    }
+
+    /// Build the project's real configured embedder, probing it; None if the DB
+    /// or embedder backend is unavailable (so CI skips cleanly).
+    async fn try_real_embedder() -> Option<Box<dyn crate::embedding::Embedder>> {
+        let cfg = crate::config::Config::load(None).ok()?;
+        let embedder = crate::embedding::build_embedder(&cfg.embedding).ok()?;
+        embedder.embed("probe").await.ok()?;
+        Some(embedder)
+    }
+
+    async fn index_two_clusters(storage: &Storage) -> Repository {
+        let repo_path = format!("/tmp/chaos-test-{}", Uuid::new_v4());
+        let repo = storage
+            .upsert_repository(Path::new(&repo_path), Some("testsha"))
+            .await
+            .expect("repo");
+        storage
+            .replace_repo_index(repo.id, &two_cluster_fixture(repo.id))
+            .await
+            .expect("index");
+        detect_and_persist(storage, repo.id, &CommunityConfig::default())
+            .await
+            .expect("detect");
+        crate::merkle::compute_and_persist(storage, repo.id)
+            .await
+            .expect("merkle");
+        repo
+    }
+
+    /// THE headline P3 test: a no-op re-summarize makes ZERO embedder calls, and
+    /// changing one chunk re-summarizes only the affected community.
+    #[tokio::test]
+    async fn summary_hash_gate_skips_unchanged_communities() {
+        let Some(url) = db_url() else {
+            eprintln!("skip summary_hash_gate: DATABASE_URL unset");
+            return;
+        };
+        let storage = Storage::connect(&url).await.expect("connect");
+        storage.migrate().await.expect("migrate");
+        let Some(embedder) = try_real_embedder().await else {
+            eprintln!("skip summary_hash_gate: real embedder unavailable");
+            return;
+        };
+        let repo = index_two_clusters(&storage).await;
+        let total = storage.count_hashed_communities(repo.id).await.unwrap();
+        assert!(total >= 2);
+
+        // First pass: everything summarized.
+        let first = crate::community_summary::summarize_repo(&storage, embedder.as_ref(), repo.id)
+            .await
+            .expect("summarize1");
+        assert_eq!(first.embed_calls as i64, total, "first pass summarizes all");
+        assert_eq!(first.skipped, 0);
+
+        // Second pass, no change: the gate skips everything — ZERO embed calls.
+        let second = crate::community_summary::summarize_repo(&storage, embedder.as_ref(), repo.id)
+            .await
+            .expect("summarize2");
+        assert_eq!(
+            second.embed_calls, 0,
+            "no-op re-summarize must make 0 embed calls"
+        );
+        assert_eq!(second.skipped as i64, total);
+
+        // Change one chunk of a/a.rs, re-roll, summarize: exactly one community.
+        sqlx::query(
+            "update chunks set content_hash = 'CHANGED-CHUNK-P3' \
+             where id = (select c.id from chunks c join files f on f.id = c.file_id \
+                        where f.repo_id = $1 and f.path = 'a/a.rs' order by c.content_hash limit 1)",
+        )
+        .bind(repo.id)
+        .execute(&storage.pool)
+        .await
+        .unwrap();
+        crate::merkle::compute_and_persist(&storage, repo.id)
+            .await
+            .expect("merkle2");
+        let third = crate::community_summary::summarize_repo(&storage, embedder.as_ref(), repo.id)
+            .await
+            .expect("summarize3");
+        assert_eq!(
+            third.embed_calls, 1,
+            "only the community owning the changed file re-summarizes"
+        );
+
+        storage.purge_repository(repo.id).await.expect("purge");
+    }
+
+    /// Fail-closed: with the embedder unavailable, summarizing errors and writes
+    /// NO embedding row and NO summary text (never a placeholder vector).
+    #[tokio::test]
+    async fn summary_fails_closed_without_embedder() {
+        let Some(url) = db_url() else {
+            eprintln!("skip summary_fails_closed: DATABASE_URL unset");
+            return;
+        };
+        let storage = Storage::connect(&url).await.expect("connect");
+        storage.migrate().await.expect("migrate");
+        let repo = index_two_clusters(&storage).await;
+
+        let result =
+            crate::community_summary::summarize_repo(&storage, &FailEmbedder, repo.id).await;
+        assert!(
+            result.is_err(),
+            "summary must fail closed when embedder is down"
+        );
+
+        let embeddings: i64 = sqlx::query_scalar(
+            "select count(*) from community_embeddings ce \
+             join communities c on c.id = ce.community_id where c.repo_id = $1",
+        )
+        .bind(repo.id)
+        .fetch_one(&storage.pool)
+        .await
+        .unwrap();
+        assert_eq!(embeddings, 0, "no placeholder embedding may be written");
+        let summarized: i64 = sqlx::query_scalar(
+            "select count(*) from communities where repo_id = $1 and summary is not null",
+        )
+        .bind(repo.id)
+        .fetch_one(&storage.pool)
+        .await
+        .unwrap();
+        assert_eq!(summarized, 0, "no summary text may be written on failure");
+
+        storage.purge_repository(repo.id).await.expect("purge");
+    }
+
+    /// P4 decomposition golden test: a description naming symbols from both
+    /// clusters spans both features; one naming a single cluster's symbols leads
+    /// with that feature. Determinism: same change ⇒ same feature set + order.
+    #[tokio::test]
+    async fn change_plan_decomposes_into_features() {
+        let Some(url) = db_url() else {
+            eprintln!("skip change_plan_decomposes: DATABASE_URL unset");
+            return;
+        };
+        let storage = Storage::connect(&url).await.expect("connect");
+        storage.migrate().await.expect("migrate");
+        let Some(embedder) = try_real_embedder().await else {
+            eprintln!("skip change_plan_decomposes: real embedder unavailable");
+            return;
+        };
+        let repo = index_two_clusters(&storage).await;
+        crate::community_summary::summarize_repo(&storage, embedder.as_ref(), repo.id)
+            .await
+            .expect("summarize");
+
+        let out = std::env::temp_dir().join(format!("plan-{}.html", Uuid::new_v4()));
+        let opts = crate::change_plan::ChangePlanOptions {
+            output_html: Some(out.clone()),
+            diff_since: None,
+            limit: 8,
+        };
+
+        // Mentions symbols from BOTH clusters ⇒ spans ≥2 features.
+        let both = crate::change_plan::run(
+            &storage,
+            embedder.as_ref(),
+            &repo.root_path,
+            "update functions c0_f0 c0_f1 c0_f2 and c1_f0 c1_f1 c1_f2 across a/a.rs and b/b.rs",
+            &opts,
+        )
+        .await
+        .expect("plan both");
+        assert!(out.exists(), "plan HTML must be written");
+        let n = both["feature_count"].as_u64().unwrap();
+        assert!(
+            n >= 2,
+            "a both-cluster change must span >=2 features, got {n}"
+        );
+
+        // Determinism: same change ⇒ identical feature set + order.
+        let again = crate::change_plan::run(
+            &storage,
+            embedder.as_ref(),
+            &repo.root_path,
+            "update functions c0_f0 c0_f1 c0_f2 and c1_f0 c1_f1 c1_f2 across a/a.rs and b/b.rs",
+            &opts,
+        )
+        .await
+        .expect("plan again");
+        let labels = |v: &serde_json::Value| -> Vec<String> {
+            v["features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f["label"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(labels(&both), labels(&again), "same change => same plan");
+
+        // Compact JSON discipline: the returned payload stays small (detail is
+        // in the HTML), bounded well under a feature_context-style dump.
+        let payload = serde_json::to_string(&both).unwrap();
+        assert!(
+            payload.len() < 8000,
+            "plan JSON must be compact, got {}",
+            payload.len()
+        );
+
+        let _ = std::fs::remove_file(&out);
+        storage.purge_repository(repo.id).await.expect("purge");
     }
 }

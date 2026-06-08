@@ -8,18 +8,18 @@ BIN="${CHAOS_BIN:-$ROOT/target/release/chaos}"
 usage() {
   cat <<'USAGE'
 Usage:
-  chaos-agent bootstrap
-  chaos-agent install-agent [bin-dir]
-  chaos-agent doctor
-  chaos-agent ollama-setup
-  chaos-agent onboard <repo-path>
-  chaos-agent project-instructions <repo-path>
-  chaos-agent init <repo-path>
-  chaos-agent update <repo-path>
-  chaos-agent context <repo-path> <task>
-  chaos-agent explain <repo-path> <feature-or-task>
-  chaos-agent claude-code-add [local|project|user] [claude-project-dir]
-  chaos-agent mcp
+  chaos bootstrap
+  chaos install-agent [bin-dir]
+  chaos doctor
+  chaos ollama-setup
+  chaos onboard <repo-path>
+  chaos project-instructions <repo-path>
+  chaos init <repo-path>
+  chaos update <repo-path>
+  chaos context <repo-path> <task>
+  chaos explain <repo-path> <feature-or-task>
+  chaos claude-code-add [local|project|user] [claude-project-dir]
+  chaos mcp
 
 Environment:
   CHAOS_CONFIG     Path to chaos-substrate.toml. Defaults to this repo's config.
@@ -122,10 +122,10 @@ start_ollama() {
 install_agent() {
   bin_dir="${1:-${CHAOS_AGENT_BIN_DIR:-$HOME/.local/bin}}"
   mkdir -p "$bin_dir"
-  ln -sf "$ROOT/bin/chaos-agent" "$bin_dir/chaos-agent"
+  ln -sf "$ROOT/bin/chaos" "$bin_dir/chaos"
   cat <<INSTALL
-Installed chaos-agent:
-  $bin_dir/chaos-agent -> $ROOT/bin/chaos-agent
+Installed chaos:
+  $bin_dir/chaos -> $ROOT/bin/chaos
 
 If this directory is not on PATH, add:
   export PATH="$bin_dir:\$PATH"
@@ -148,15 +148,15 @@ append_managed_section() {
 
 Use Chaos Substrate before non-trivial architecture, security, feature, or refactor work.
 
-- Prefer \`chaos-agent update "\$PWD"\` after code changes or before deep investigation.
-- Use \`chaos-agent context "\$PWD" "<task>"\` before implementation work.
-- Use \`chaos-agent explain "\$PWD" "<feature>"\` to generate a focused static feature page.
+- Prefer \`chaos update "\$PWD"\` after code changes or before deep investigation.
+- Use \`chaos context "\$PWD" "<task>"\` before implementation work.
+- Use \`chaos explain "\$PWD" "<feature>"\` to generate a focused static feature page.
 - If MCP tools are available, use \`chaos_analyze\` to index and \`chaos_query\` for focused questions.
 - Treat source code as higher priority than docs if they disagree.
 - Read generated feature manifests in \`docs/features_memory/*.html\`; do not scan the whole docs tree.
 - Feature-map story steps must use explicit \`node_ids\` and optional \`edge_ids\`, not graph expansion.
 
-This section is intentionally portable. It assumes \`chaos-agent\` is on PATH.
+This section is intentionally portable. It assumes \`chaos\` is on PATH.
 <!-- chaos-substrate:end -->
 EOF
   printf 'Wrote Chaos Substrate section to %s (%s)\n' "$file" "$title"
@@ -184,7 +184,7 @@ Install Ollama:
   Linux:           curl -fsSL https://ollama.com/install.sh | sh
 
 After installing, start Ollama and rerun:
-  chaos-agent ollama-setup
+  chaos ollama-setup
 OLLAMA
     return 1
   fi
@@ -208,8 +208,8 @@ OLLAMA
 Ollama embedding model is ready.
 
 Use the local Ollama config:
-  CHAOS_CONFIG=chaos-substrate.local.toml chaos-agent doctor
-  CHAOS_CONFIG=chaos-substrate.local.toml chaos-agent init /absolute/path/to/project
+  CHAOS_CONFIG=chaos-substrate.local.toml chaos doctor
+  CHAOS_CONFIG=chaos-substrate.local.toml chaos init /absolute/path/to/project
 OLLAMA
 }
 
@@ -353,7 +353,7 @@ case "$cmd" in
 Claude Code CLI is not installed or is not on PATH.
 
 Install Claude Code first, then rerun:
-  chaos-agent claude-code-add local
+  chaos claude-code-add local
 CLAUDE
       exit 1
     fi
