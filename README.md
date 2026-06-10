@@ -223,6 +223,7 @@ without this manifest.
 | --- | --- |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System design: extraction, storage, retrieval, and the MCP surface. |
 | [RUNBOOK.md](RUNBOOK.md) | Canonical ops command reference for running, indexing, and maintaining. |
+| [CHANGELOG.md](CHANGELOG.md) | Release notes — what changed in each version and what to know when upgrading. |
 | [llms.txt](llms.txt) | Machine-readable project summary for LLMs. |
 | [docs/QUICKSTART_CLAUDE.md](docs/QUICKSTART_CLAUDE.md) | End-to-end onboarding for Claude Code: Rust install → bootstrap → plugin → index → feature page. |
 | [docs/EDITOR_SETUP.md](docs/EDITOR_SETUP.md) | Canonical per-editor install (Claude Code / Codex / Cursor / Windsurf / OpenCode). |
