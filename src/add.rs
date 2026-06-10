@@ -24,7 +24,6 @@ use crate::{
     Config,
 };
 use anyhow::{bail, Result};
-use futures::{StreamExt, TryStreamExt};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
@@ -252,6 +251,11 @@ pub async fn run(
         })
     };
 
+    // P6: keep the project layer fresh — relink every project containing this
+    // repo (hash-gated, so an add whose root hash didn't move relinks nothing;
+    // empty array when the repo is in no project).
+    let projects = crate::project::relink_projects_for_repo(storage, repo.id).await;
+
     Ok(json!({
         "status": "indexed",
         "repo_id": repo.id,
@@ -260,6 +264,7 @@ pub async fn run(
         "changed_files": changed_rel,
         "indexed": counts,
         "embedded_chunks": embedded,
+        "projects": projects,
         "communities": {
             "total": detection.communities.len(),
             "feature_communities": feature_communities,
@@ -268,6 +273,7 @@ pub async fn run(
                 "summarized": summary.summarized,
                 "skipped": summary.skipped,
                 "embed_calls": summary.embed_calls,
+                "reused_from_cache": summary.reused,
             },
         },
         "blast_radius": {
@@ -302,23 +308,7 @@ async fn merge_and_embed(
             embedder.dimensions(),
         )
         .await?;
-    futures::stream::iter(missing.iter().map(|chunk| async move {
-        let embedding = embedder.embed(&chunk.content).await?;
-        storage
-            .insert_embedding(
-                chunk,
-                embedder.provider(),
-                embedder.model_id(),
-                embedder.dimensions(),
-                &embedding,
-            )
-            .await?;
-        Result::<_, anyhow::Error>::Ok(())
-    }))
-    .buffer_unordered(crate::EMBED_CONCURRENCY)
-    .try_collect::<()>()
-    .await?;
-    Ok(missing.len())
+    crate::embedding::embed_missing_chunks(storage, embedder, &missing).await
 }
 
 // ---------------------------------------------------------------------------

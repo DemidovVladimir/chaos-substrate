@@ -7,7 +7,7 @@
 //! each with its members, a dependency-aware **check order** (topo-sort over the
 //! quotient graph), and a confidence.
 //!
-//! Like `chaos_impact`, it ALWAYS writes an interactive Blade-Runner HTML report
+//! Like `chaos_impact`, it ALWAYS writes an interactive HTML report (light editorial theme)
 //! and returns a COMPACT JSON summary, so an agent calling it over MCP doesn't
 //! get its context flooded.
 

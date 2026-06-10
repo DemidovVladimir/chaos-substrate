@@ -4,9 +4,11 @@ database_url = "postgres://chaos:chaos@localhost:54329/chaos_substrate"
 [embedding]
 # Real embedders only. No mock or random vectors exist in runtime code.
 # Local default (no API key). Requires Ollama running with the model pulled:
-#   ollama pull nomic-embed-text   (or: scripts/chaos-agent ollama-setup)
+#   ollama pull embeddinggemma   (or: bin/chaos ollama-setup)
+# EmbeddingGemma (Google, 308M, 768 dims) is the strongest small local model
+# for code; nomic-embed-text (also 768 dims) works as a lighter alternative.
 provider = "ollama"
-model = "nomic-embed-text"
+model = "embeddinggemma"
 dimensions = 768
 base_url = "http://localhost:11434"
 

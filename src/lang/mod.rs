@@ -5,12 +5,15 @@
 //! the byte-offset→line index and the per-file extraction context — lives here.
 
 use crate::{
-    extractor::{chunk_for_node, edge, import_stable_id, is_bare_module_specifier, slice_lines},
+    extractor::{
+        chunk_for_node, edge, import_stable_id, is_bare_module_specifier, is_external_import,
+        slice_lines,
+    },
     models::{EdgeKind, ExtractionResult, KnowledgeNode, NodeKind, SourceFile},
     weights::EdgeWeight,
 };
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 pub(crate) mod javascript;
@@ -70,6 +73,12 @@ pub(crate) struct FileExtraction<'a> {
     pub symbol_names: &'a mut HashMap<String, Uuid>,
     pub result: &'a mut ExtractionResult,
     pub calls: &'a mut Vec<CallSite>,
+    /// The repo's own workspace package names, for JS/TS only. When `Some`, an
+    /// import that resolves outside the repo (a third-party `node_modules`
+    /// package) is dropped instead of becoming a god-node feature. `None` for
+    /// languages where we can't yet tell internal-absolute from third-party
+    /// imports (Python, Solidity) — those keep every import, unchanged.
+    pub workspace_packages: Option<&'a HashSet<String>>,
 }
 
 impl<'a> FileExtraction<'a> {
@@ -171,6 +180,18 @@ impl<'a> FileExtraction<'a> {
         import_weight: EdgeWeight,
         offset: usize,
     ) {
+        // Drop third-party (node_modules) imports from the graph entirely: they
+        // form and name giant "features" (a shared `import:bare:react` hub glues
+        // every file that imports react into one blob and gets picked as its
+        // label). The repo's real dependency list still lives in the package.json
+        // dependency nodes. Only applied when we have the workspace package set
+        // (JS/TS); internal/workspace imports fall through and are kept.
+        if let Some(workspace) = self.workspace_packages {
+            if is_external_import(module, workspace) {
+                return;
+            }
+        }
+
         let line = self.lines.line(offset) as i32;
         let is_bare = is_bare_module_specifier(module);
 

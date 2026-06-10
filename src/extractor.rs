@@ -92,6 +92,10 @@ impl RustRepositoryExtractor {
 
         let mut symbol_names: HashMap<String, Uuid> = HashMap::new();
         let mut calls: Vec<crate::lang::CallSite> = Vec::new();
+        // The repo's own workspace package names, so JS/TS extraction can tell an
+        // internal workspace import (kept) from a third-party node_modules one
+        // (dropped, so it doesn't form or name a god-node feature).
+        let workspace_packages = self.workspace_package_names(root);
         for path in paths {
             let rel = path
                 .strip_prefix(root)
@@ -183,6 +187,7 @@ impl RustRepositoryExtractor {
                     language,
                     &mut symbol_names,
                     &mut calls,
+                    &workspace_packages,
                     &mut result,
                 )?;
             }
@@ -209,6 +214,39 @@ impl RustRepositoryExtractor {
             .map(|entry| entry.into_path())
             .filter(|path| is_indexable_path(path))
             .collect()
+    }
+
+    /// Collect the repo's own workspace package names — the `name` field of every
+    /// `package.json` in the tree (`node_modules` is already excluded by
+    /// `skip_dirs`). This is how we tell an internal workspace import
+    /// (`@moleculexyz/ds2`, kept) from a third-party one (`react`, dropped). Always
+    /// scans the whole repo, even on an incremental `add`, so the classification is
+    /// stable regardless of which files changed.
+    fn workspace_package_names(&self, root: &Path) -> HashSet<String> {
+        let skip_dirs = self.indexing.skip_dirs.clone();
+        let mut builder = WalkBuilder::new(root);
+        builder.hidden(false).filter_entry(move |entry| {
+            let name = entry.file_name().to_string_lossy();
+            !skip_dirs.iter().any(|skip| skip == &name)
+        });
+        let mut names = HashSet::new();
+        for entry in builder.build().filter_map(Result::ok) {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) != Some("package.json") {
+                continue;
+            }
+            let Ok(content) = fs::read_to_string(path) else {
+                continue;
+            };
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(name) = json.get("name").and_then(|v| v.as_str()) {
+                    if !name.is_empty() {
+                        names.insert(name.to_string());
+                    }
+                }
+            }
+        }
+        names
     }
 
     fn extract_markdown_file(
@@ -796,6 +834,7 @@ impl RustRepositoryExtractor {
         language: Language,
         symbol_names: &mut HashMap<String, Uuid>,
         calls: &mut Vec<crate::lang::CallSite>,
+        workspace_packages: &HashSet<String>,
         result: &mut ExtractionResult,
     ) -> Result<()> {
         let (file, file_node_id) = begin_file(
@@ -817,6 +856,10 @@ impl RustRepositoryExtractor {
             symbol_names,
             result,
             calls,
+            // JS/TS is the one language where we can reliably separate internal
+            // workspace imports from third-party ones, so it gets the set; the
+            // others pass None and keep every import (no regression).
+            workspace_packages: Some(workspace_packages),
         };
         crate::lang::javascript::extract(&mut ctx)?;
 
@@ -854,6 +897,7 @@ impl RustRepositoryExtractor {
             symbol_names,
             result,
             calls,
+            workspace_packages: None,
         };
         crate::lang::solidity::extract(&mut ctx)?;
         Ok(())
@@ -890,6 +934,7 @@ impl RustRepositoryExtractor {
             symbol_names,
             result,
             calls,
+            workspace_packages: None,
         };
         crate::lang::python::extract(&mut ctx)?;
         Ok(())
@@ -1531,6 +1576,52 @@ pub(crate) fn is_bare_module_specifier(module: &str) -> bool {
         && !module.starts_with('/')
         && !module.starts_with("~/")
         && !module.starts_with("@/")
+}
+
+/// The npm "package" portion of an import specifier — what you'd find in
+/// `node_modules`. `@scope/name/sub` → `@scope/name`; `name/sub` → `name`. Used to
+/// match an import against the repo's own workspace package names.
+pub(crate) fn import_package_portion(module: &str) -> &str {
+    if let Some(rest) = module.strip_prefix('@') {
+        // Scoped: keep `@scope/name` (the first two segments).
+        match rest.split('/').nth(1) {
+            Some(_) => {
+                let mut slashes = 0;
+                let end = module
+                    .char_indices()
+                    .find(|(_, c)| {
+                        if *c == '/' {
+                            slashes += 1;
+                        }
+                        slashes == 2
+                    })
+                    .map(|(i, _)| i)
+                    .unwrap_or(module.len());
+                &module[..end]
+            }
+            None => module,
+        }
+    } else {
+        module.split('/').next().unwrap_or(module)
+    }
+}
+
+/// Whether a JavaScript/TypeScript import points **outside** the repo — a
+/// third-party `node_modules` package the user can already learn about from their
+/// package manager. Relative paths (`./`, `../`), root (`/`), and the common
+/// internal aliases (`@/`, `~/`) are internal; a *bare* specifier is internal only
+/// when its package portion is one of the repo's own workspace packages (e.g.
+/// `@moleculexyz/ds2`), and external otherwise (`react`, `viem`, `@anthropic-ai/sdk`).
+///
+/// External imports are dropped from the knowledge graph so they don't form or
+/// name god-node "features"; the repo's real dependency list still lives in the
+/// `package.json` dependency nodes.
+pub(crate) fn is_external_import(module: &str, workspace_packages: &HashSet<String>) -> bool {
+    if !is_bare_module_specifier(module) {
+        return false;
+    }
+    let pkg = import_package_portion(module);
+    !workspace_packages.contains(pkg) && !workspace_packages.contains(module)
 }
 
 fn quote_use(item: &syn::ItemUse) -> String {
@@ -2331,16 +2422,25 @@ def login(user):
     }
 
     #[test]
-    fn deduplicates_bare_js_import_targets() {
+    fn drops_external_imports_keeps_internal_and_workspace() {
         let dir = tempfile::tempdir().unwrap();
+        // A workspace package: its package.json name marks `@acme/ui` as internal.
+        fs::create_dir_all(dir.path().join("packages/ui")).unwrap();
+        fs::write(
+            dir.path().join("packages/ui/package.json"),
+            r#"{"name":"@acme/ui"}"#,
+        )
+        .unwrap();
+        // Two app files importing: a third-party pkg (react), a workspace pkg
+        // (@acme/ui), and a relative module (./helper).
         fs::write(
             dir.path().join("a.ts"),
-            "import React from \"react\";\nimport helper from \"./helper\";\n",
+            "import React from \"react\";\nimport { Button } from \"@acme/ui\";\nimport helper from \"./helper\";\n",
         )
         .unwrap();
         fs::write(
             dir.path().join("b.ts"),
-            "import React from \"react\";\nimport other from \"./helper\";\n",
+            "import React from \"react\";\nimport { Card } from \"@acme/ui/card\";\nimport other from \"./helper\";\n",
         )
         .unwrap();
 
@@ -2349,19 +2449,45 @@ def login(user):
             .extract(dir.path(), Uuid::new_v4(), Some("test".into()))
             .unwrap();
 
-        let react_nodes = result
-            .nodes
-            .iter()
-            .filter(|node| node.kind == NodeKind::Dependency && node.name == "react")
-            .count();
-        let helper_nodes = result
-            .nodes
-            .iter()
-            .filter(|node| node.kind == NodeKind::Dependency && node.name == "./helper")
-            .count();
+        let count = |name: &str| {
+            result
+                .nodes
+                .iter()
+                .filter(|n| n.kind == NodeKind::Dependency && n.name == name)
+                .count()
+        };
+        // External (node_modules) import is dropped entirely — no feature node.
+        assert_eq!(count("react"), 0, "external `react` should be dropped");
+        // Workspace package import is kept (deduped to one shared bare node) — it's
+        // the user's own code, a legitimate feature relationship.
+        assert_eq!(count("@acme/ui"), 1, "workspace `@acme/ui` kept");
+        assert_eq!(count("@acme/ui/card"), 1, "workspace subpath kept");
+        // Relative imports are kept, one per importing file.
+        assert_eq!(count("./helper"), 2, "relative `./helper` kept per file");
+    }
 
-        assert_eq!(react_nodes, 1);
-        assert_eq!(helper_nodes, 2);
+    #[test]
+    fn external_import_classification() {
+        let ws: HashSet<String> = ["@acme/ui".to_string(), "shared-lib".to_string()]
+            .into_iter()
+            .collect();
+        // Third-party → external (dropped).
+        assert!(is_external_import("react", &ws));
+        assert!(is_external_import("@anthropic-ai/sdk", &ws));
+        assert!(is_external_import("next/navigation", &ws));
+        // Workspace packages (and their subpaths) → internal.
+        assert!(!is_external_import("@acme/ui", &ws));
+        assert!(!is_external_import("@acme/ui/card", &ws));
+        assert!(!is_external_import("shared-lib/util", &ws));
+        // Relative / alias / root → always internal.
+        assert!(!is_external_import("./foo", &ws));
+        assert!(!is_external_import("../bar", &ws));
+        assert!(!is_external_import("@/app/x", &ws));
+        assert!(!is_external_import("~/lib/y", &ws));
+        // Package-portion extraction.
+        assert_eq!(import_package_portion("@scope/name/sub"), "@scope/name");
+        assert_eq!(import_package_portion("name/sub/deep"), "name");
+        assert_eq!(import_package_portion("react"), "react");
     }
 
     #[test]

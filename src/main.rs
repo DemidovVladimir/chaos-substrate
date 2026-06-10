@@ -2,27 +2,33 @@ mod add;
 mod change_plan;
 mod community;
 mod community_summary;
+mod components;
 mod config;
 mod embedding;
 mod export_util;
 mod extractor;
 mod feature_context;
 mod feature_export;
+mod feature_inventory;
 mod graph;
 mod graph_export;
 mod hierarchy_export;
 mod hook;
 mod impact;
 mod lang;
+mod layering;
+mod linker;
 mod mcp;
 mod merkle;
 mod models;
 mod obsidian_export;
+mod project;
 mod provenance;
 mod query;
 mod setup;
 mod simple_graph_optimizer;
 mod storage;
+mod struct_features;
 mod theme;
 mod user_story;
 mod weights;
@@ -38,7 +44,6 @@ use feature_context::{
     write_feature_context_html, FeatureContextResponse,
 };
 use feature_export::refresh_project_exports;
-use futures::{StreamExt, TryStreamExt};
 use graph_export::write_graph_html;
 use obsidian_export::write_obsidian_vault;
 use query::{query_feature_context_repo, query_repo};
@@ -48,12 +53,12 @@ use storage::Storage;
 use tracing::warn;
 use tracing_subscriber::EnvFilter;
 
-/// Maximum number of embedding requests in flight at once.
-pub(crate) const EMBED_CONCURRENCY: usize = 8;
-
 #[derive(Parser)]
 #[command(name = "chaos")]
 #[command(about = "Persistent code knowledge memory for agents")]
+// `chaos help` is our agent-oriented guide (see [`print_agent_help`]), not
+// clap's built-in alias for `--help` — the flag form still works everywhere.
+#[command(disable_help_subcommand = true)]
 struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
@@ -63,15 +68,32 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Agent-friendly guide: every command with what it's for, typical
+    /// workflows, and copy-paste examples. Needs no database or config — safe
+    /// to run from anywhere. `chaos help <command>` shows that command's full
+    /// flags.
+    Help {
+        /// Optional command name for focused help (e.g. `chaos help analyze`).
+        command: Option<String>,
+    },
     /// Apply database migrations.
     Migrate,
     /// Verify database and embedder configuration.
     Doctor,
     /// Wipe the persisted index. With no argument clears every repository;
-    /// pass a repo path/name to clear only that repository.
+    /// pass a repo path/name to clear only that repository. The database is
+    /// always wiped; pass --artifacts to ALSO delete the generated files on
+    /// disk (chaos-obsidian-vault/, docs/features_memory/, and — when clearing
+    /// everything — the project workspaces under ~/.chaos/projects), so a
+    /// validation run can start truly clean.
     Clean {
         /// Optional repository path or name to clear; omit to clear everything.
         repo: Option<String>,
+        /// Also delete generated artifacts from disk (vault, feature pages,
+        /// project workspaces). Off by default — feature pages are often
+        /// committed to git as durable feature memory.
+        #[arg(long)]
+        artifacts: bool,
     },
     /// Analyze and persist a repository knowledge graph and embeddings.
     Analyze { repo_path: PathBuf },
@@ -169,6 +191,69 @@ enum Commands {
         #[arg(long, default_value_t = 8)]
         limit: usize,
     },
+    /// Explain the CORE COMPONENTS of a big area (the step before feature
+    /// extraction). Given an area like "OCL" (or nothing, for a repo-level
+    /// overview) it surfaces the communities that make up the area as
+    /// components, shows how they connect, and proposes a read order — then
+    /// writes an interactive HTML overview into docs/features_memory and prints
+    /// a compact JSON summary.
+    Components {
+        repo: String,
+        /// Area/subsystem to explain (e.g. "OCL"). Omit for a repo-level overview.
+        area: Option<String>,
+        /// Override the default docs/features_memory/<slug>-components.html path.
+        #[arg(long)]
+        output_html: Option<PathBuf>,
+        /// Max components to surface.
+        #[arg(long, default_value_t = 8)]
+        limit: usize,
+        /// Representative members (symbols/files) loaded per component.
+        #[arg(long, default_value_t = 12)]
+        top_members: usize,
+    },
+    /// List ALL god-node features (L1 communities), grouped by journey layer.
+    /// The optional filter is auto-detected: a path / real directory → folder
+    /// scope; a layer word (client/ui/api/core/contracts) → that journey layer;
+    /// anything else → a topic match; nothing → the whole repo. Forces available
+    /// via --layer/--folder/--topic. Writes an interactive HTML inventory into
+    /// docs/features_memory and prints a compact JSON summary. Exhaustive (no
+    /// curation) — the counterpart to `components`' ordered overview.
+    Features {
+        /// Repository to list (omit when using --project).
+        repo: Option<String>,
+        /// Optional filter, auto-detected as folder / layer / topic.
+        filter: Option<String>,
+        /// List features across ALL repos of this project instead of one repo
+        /// (cards are tagged with repo aliases and cross-repo links; the HTML
+        /// goes to the project workspace).
+        #[arg(long)]
+        project: Option<String>,
+        /// Force a layer filter (entry|interface|core|foundation, or a synonym
+        /// like client/api/contracts).
+        #[arg(long)]
+        layer: Option<String>,
+        /// Force a folder filter (features with code under this path).
+        #[arg(long)]
+        folder: Option<String>,
+        /// Force a topic (semantic + keyword) filter.
+        #[arg(long)]
+        topic: Option<String>,
+        /// Override the default docs/features_memory/<slug>-features.html path.
+        #[arg(long)]
+        output_html: Option<PathBuf>,
+        /// Cap features surfaced; 0 = all (the default — this listing is exhaustive).
+        #[arg(long, default_value_t = 0)]
+        limit: usize,
+    },
+    /// Manage cross-repository projects: group indexed repos (client, backend,
+    /// contracts, infra, …) under one name and maintain feature→feature
+    /// cross-repo links between them. Links refresh automatically after
+    /// analyze/add (hash-gated), so the project layer follows the same layered
+    /// pipeline as L1–L3.
+    Project {
+        #[command(subcommand)]
+        action: ProjectAction,
+    },
     /// Render a client/user-facing interactive storyboard (UI/UX user stories,
     /// no code) from a storyboard manifest JSON file into
     /// docs/features_memory/<slug>-story.html. Agents normally compose the
@@ -215,6 +300,16 @@ enum Commands {
         #[arg(long)]
         all_features: bool,
     },
+    /// Debug-only: PROTOTYPE structure-first feature extraction over a folder,
+    /// printed side-by-side with the current Louvain communities. Read-only; runs
+    /// off the existing index (no re-analyze). A spike to evaluate deriving
+    /// features from project structure instead of import-graph clustering.
+    #[command(hide = true)]
+    StructFeatures {
+        repo: String,
+        /// Folder to analyze (e.g. `desci-infra`, `desci-ecosystem`).
+        folder: String,
+    },
     /// Debug-only: detect L1 communities (god-nodes) over an indexed repo and
     /// print them as JSON. Read-only; writes nothing. The P0 spike for the
     /// hierarchical-memory layer.
@@ -248,6 +343,33 @@ enum Commands {
         /// Output format: "claude" (default) or "cursor".
         #[arg(long)]
         format: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProjectAction {
+    /// Create a project (idempotent).
+    Create { name: String },
+    /// Attach an already-indexed repository to a project and link it against
+    /// the existing members.
+    AddRepo {
+        project: String,
+        repo: String,
+        /// Project-scoped alias (client/backend/contracts/infra/…). Defaults
+        /// to the repository name.
+        #[arg(long)]
+        alias: Option<String>,
+    },
+    /// List all projects with their member repos and link counts.
+    List,
+    /// Show a project's members, link staleness, links by kind, and embedder
+    /// consistency.
+    Status { project: String },
+    /// Re-detect cross-repo links (hash-gated; --force overrides the gate).
+    Relink {
+        project: String,
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -292,9 +414,17 @@ async fn main() -> Result<()> {
         std::process::exit(0);
     }
 
+    // `help` must work from any directory with no config, database, or
+    // embedder — it's how agents discover the tool, often before any setup.
+    if let Commands::Help { ref command } = cli.command {
+        print_agent_help(command.as_deref())?;
+        return Ok(());
+    }
+
     let config = Config::load(cli.config.as_deref())?;
 
     match cli.command {
+        Commands::Help { .. } => unreachable!("Help handled by early-exit block"),
         Commands::Migrate => {
             let storage = Storage::connect(&config.storage.database_url).await?;
             storage.migrate().await?;
@@ -318,23 +448,9 @@ async fn main() -> Result<()> {
                 }))?
             );
         }
-        Commands::Clean { repo } => {
+        Commands::Clean { repo, artifacts } => {
             let storage = Storage::connect(&config.storage.database_url).await?;
-            let summary = if let Some(repo) = repo {
-                let repository = storage
-                    .find_repository(&repo)
-                    .await?
-                    .with_context(|| format!("repository is not indexed: {repo}"))?;
-                storage.purge_repository(repository.id).await?;
-                json!({
-                    "cleared": "repository",
-                    "root_path": repository.root_path,
-                    "repo_id": repository.id,
-                })
-            } else {
-                let removed = storage.clear_all().await?;
-                json!({ "cleared": "all", "removed": removed })
-            };
+            let summary = run_clean(&storage, repo.as_deref(), artifacts).await?;
             println!("{}", serde_json::to_string_pretty(&summary)?);
         }
         Commands::Analyze { repo_path } => {
@@ -348,7 +464,10 @@ async fn main() -> Result<()> {
             let outcome = async {
                 let extractor = RustRepositoryExtractor::new(config.indexing.clone());
                 let result = extractor.extract(&repo_path, repo.id, commit)?;
-                storage.replace_repo_index(repo.id, &result).await?;
+                // Embeddings for unchanged content survive the wipe (restored by
+                // content hash inside the replace transaction) — only genuinely
+                // new/changed chunks are left to embed.
+                let reused = storage.replace_repo_index(repo.id, &result).await?;
                 let missing = storage
                     .chunks_missing_embeddings(
                         repo.id,
@@ -357,24 +476,7 @@ async fn main() -> Result<()> {
                         embedder.dimensions(),
                     )
                     .await?;
-                let embedder_ref = embedder.as_ref();
-                let storage_ref = &storage;
-                futures::stream::iter(missing.iter().map(|chunk| async move {
-                    let embedding = embedder_ref.embed(&chunk.content).await?;
-                    storage_ref
-                        .insert_embedding(
-                            chunk,
-                            embedder_ref.provider(),
-                            embedder_ref.model_id(),
-                            embedder_ref.dimensions(),
-                            &embedding,
-                        )
-                        .await?;
-                    Result::<_, anyhow::Error>::Ok(())
-                }))
-                .buffer_unordered(EMBED_CONCURRENCY)
-                .try_collect::<()>()
-                .await?;
+                embedding::embed_missing_chunks(&storage, embedder.as_ref(), &missing).await?;
                 // L1: derive + persist the community layer from the written graph.
                 let detection = community::detect_and_persist(
                     &storage,
@@ -387,13 +489,23 @@ async fn main() -> Result<()> {
                 // L3: hash-gated community summaries, embedded by the real embedder.
                 let summary =
                     community_summary::summarize_repo(&storage, embedder.as_ref(), repo.id).await?;
-                Result::<_, anyhow::Error>::Ok((result, missing.len(), detection, merkle, summary))
+                Result::<_, anyhow::Error>::Ok((
+                    result,
+                    reused,
+                    missing.len(),
+                    detection,
+                    merkle,
+                    summary,
+                ))
             }
             .await;
 
             match outcome {
-                Ok((result, embedded, detection, merkle, summary)) => {
+                Ok((result, reused_embeddings, embedded, detection, merkle, summary)) => {
                     storage.finish_analysis(run_id, "completed", None).await?;
+                    // P6: keep the project layer fresh — relink every project
+                    // containing this repo (hash-gated; empty when none).
+                    let projects = project::relink_projects_for_repo(&storage, repo.id).await;
                     let feature_communities =
                         detection.communities.iter().filter(|c| c.size >= 2).count();
                     println!(
@@ -405,6 +517,7 @@ async fn main() -> Result<()> {
                             "edges": result.edges.len(),
                             "chunks": result.chunks.len(),
                             "embedded_chunks": embedded,
+                            "reused_embeddings": reused_embeddings,
                             "communities": detection.communities.len(),
                             "feature_communities": feature_communities,
                             "quotient_edges": detection.quotient_edges.len(),
@@ -413,8 +526,10 @@ async fn main() -> Result<()> {
                             "summaries": {
                                 "summarized": summary.summarized,
                                 "skipped": summary.skipped,
-                                "embed_calls": summary.embed_calls
-                            }
+                                "embed_calls": summary.embed_calls,
+                                "reused_from_cache": summary.reused
+                            },
+                            "projects": projects
                         }))?
                     );
                 }
@@ -482,8 +597,10 @@ async fn main() -> Result<()> {
                 .await?;
                 println!("{}", serde_json::to_string_pretty(&response)?);
             } else {
-                let response =
+                let mut response =
                     query_repo(&storage, repo.id, embedder.as_ref(), &question, limit).await?;
+                // Return-only surface: excerpt chunk contents.
+                query::cap_hits_for_return(&mut response.hits);
                 println!("{}", serde_json::to_string_pretty(&response)?);
             }
         }
@@ -512,7 +629,7 @@ async fn main() -> Result<()> {
             let feature_matches =
                 load_feature_matches(&task, &features_dir, feature_limit, nodes_per_feature)?;
             let provenance = feature_context_provenance(&postgres, &features_dir, &feature_matches);
-            let response = FeatureContextResponse {
+            let mut response = FeatureContextResponse {
                 task,
                 postgres,
                 features_dir,
@@ -521,8 +638,10 @@ async fn main() -> Result<()> {
                 provenance,
             };
             if let Some(output_html) = output_html {
+                // The HTML keeps the FULL evidence; the printed JSON gets excerpts.
                 write_feature_context_html(&output_html, &response)?;
             }
+            feature_context::cap_response_for_return(&mut response);
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Commands::Impact {
@@ -562,6 +681,88 @@ async fn main() -> Result<()> {
             };
             let summary =
                 change_plan::run(&storage, embedder.as_ref(), &repo, &change, &opts).await?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
+        Commands::Components {
+            repo,
+            area,
+            output_html,
+            limit,
+            top_members,
+        } => {
+            let storage = Storage::connect(&config.storage.database_url).await?;
+            let embedder = build_embedder(&config.embedding)?;
+            let opts = components::ComponentsOptions {
+                output_html,
+                limit,
+                top_members,
+            };
+            let summary =
+                components::run(&storage, embedder.as_ref(), &repo, area.as_deref(), &opts).await?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
+        Commands::Features {
+            repo,
+            filter,
+            project,
+            layer,
+            folder,
+            topic,
+            output_html,
+            limit,
+        } => {
+            let storage = Storage::connect(&config.storage.database_url).await?;
+            // Only a topic filter needs the embedder; layer/folder/whole-repo
+            // listing stays embedder-free, so a missing/misconfigured embedder
+            // should not block them (it just degrades a topic match to keywords).
+            let embedder = build_embedder(&config.embedding).ok();
+            let opts = feature_inventory::FeatureInventoryOptions {
+                output_html,
+                limit,
+                layer,
+                folder,
+                topic,
+            };
+            let summary = match (&project, &repo) {
+                (Some(project), _) => {
+                    feature_inventory::run_project(
+                        &storage,
+                        embedder.as_deref(),
+                        project,
+                        filter.as_deref(),
+                        &opts,
+                    )
+                    .await?
+                }
+                (None, Some(repo)) => {
+                    feature_inventory::run(
+                        &storage,
+                        embedder.as_deref(),
+                        repo,
+                        filter.as_deref(),
+                        &opts,
+                    )
+                    .await?
+                }
+                (None, None) => anyhow::bail!("pass a repo, or --project <name>"),
+            };
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
+        Commands::Project { action } => {
+            let storage = Storage::connect(&config.storage.database_url).await?;
+            let summary = match action {
+                ProjectAction::Create { name } => project::create(&storage, &name).await?,
+                ProjectAction::AddRepo {
+                    project,
+                    repo,
+                    alias,
+                } => project::add_repo(&storage, &project, &repo, alias.as_deref()).await?,
+                ProjectAction::List => project::list(&storage).await?,
+                ProjectAction::Status { project } => project::status(&storage, &project).await?,
+                ProjectAction::Relink { project, force } => {
+                    project::relink(&storage, &project, force).await?
+                }
+            };
             println!("{}", serde_json::to_string_pretty(&summary)?);
         }
         Commands::Storyboard {
@@ -694,6 +895,10 @@ async fn main() -> Result<()> {
                 }))?
             );
         }
+        Commands::StructFeatures { repo, folder } => {
+            let storage = Storage::connect(&config.storage.database_url).await?;
+            struct_features::run(&storage, &repo, &folder).await?;
+        }
         Commands::Communities {
             repo,
             resolution,
@@ -744,4 +949,132 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The `chaos help` guide. The command list is generated from clap's own
+/// metadata (names + first doc line), so it can never drift from the real
+/// CLI; only the workflow examples below it are curated.
+fn print_agent_help(topic: Option<&str>) -> Result<()> {
+    use clap::CommandFactory;
+    let mut root = Cli::command();
+
+    if let Some(topic) = topic {
+        let Some(sub) = root.find_subcommand_mut(topic) else {
+            anyhow::bail!("unknown command `{topic}` — run `chaos help` for the full list");
+        };
+        print!("{}", sub.render_long_help());
+        return Ok(());
+    }
+
+    println!(
+        "Chaos Substrate {} — persistent code knowledge memory for agents\n",
+        env!("CARGO_PKG_VERSION")
+    );
+    println!("USAGE: chaos [--config <PATH>] <command> [args]\n");
+    println!(
+        "When this repo is registered as an MCP server, prefer the chaos_* MCP tools —\n\
+         same engine, structured returns. This CLI is the standalone surface.\n"
+    );
+
+    println!("COMMANDS");
+    for sub in root.get_subcommands() {
+        if sub.is_hide_set() {
+            continue;
+        }
+        let about = sub.get_about().map(|a| a.to_string()).unwrap_or_default();
+        // First sentence only — the full text is one `chaos help <command>` away.
+        let brief = match about.find(". ") {
+            Some(i) => &about[..i + 1],
+            None => about.as_str(),
+        };
+        println!("  {:<18} {brief}", sub.get_name());
+    }
+
+    println!(
+        "\nTYPICAL WORKFLOWS\n\
+         \x20 first index       chaos migrate && chaos doctor && chaos analyze /path/to/repo\n\
+         \x20 after editing     chaos add /path/to/repo -m \"what changed\"\n\
+         \x20 ask a question    chaos query /path/to/repo \"how does auth work?\" --hierarchical\n\
+         \x20 grasp a big area  chaos components /path/to/repo \"payments\"\n\
+         \x20 list features     chaos features /path/to/repo client\n\
+         \x20 scope a change    chaos change-plan /path/to/repo \"add rate limiting\" --since main\n\
+         \x20 cross-repo        chaos project create app && chaos project add-repo app /repo --alias backend\n\
+         \x20                   chaos features --project app\n\
+         \x20 fresh start       chaos clean --artifacts\n\
+         \nDETAILS\n\
+         \x20 chaos help <command>   full flags for one command (same as chaos <command> --help)\n\
+         \x20 RUNBOOK.md             complete ops reference · README.md  MCP tool reference\n\
+         \x20 Config: chaos-substrate.toml or DATABASE_URL/CHAOS_EMBED_* env. A real embedder\n\
+         \x20 (OpenAI/Ollama) is required for analyze/add/query; never fake vectors."
+    );
+    Ok(())
+}
+
+/// Wipe the persisted index — one repository, or everything — optionally
+/// deleting the generated files on disk too. Shared by the `chaos clean` CLI
+/// arm and the `chaos_clean` MCP tool.
+pub(crate) async fn run_clean(
+    storage: &Storage,
+    repo: Option<&str>,
+    artifacts: bool,
+) -> Result<serde_json::Value> {
+    if let Some(repo) = repo {
+        let repository = storage
+            .find_repository(repo)
+            .await?
+            .with_context(|| format!("repository is not indexed: {repo}"))?;
+        let removed_artifacts = if artifacts {
+            remove_generated_artifacts(std::path::Path::new(&repository.root_path))
+        } else {
+            Vec::new()
+        };
+        storage.purge_repository(repository.id).await?;
+        Ok(json!({
+            "cleared": "repository",
+            "root_path": repository.root_path,
+            "repo_id": repository.id,
+            "artifacts_removed": removed_artifacts,
+        }))
+    } else {
+        // Collect artifact locations BEFORE the wipe (the rows are the only
+        // record of where the repos and project workspaces live).
+        let mut removed_artifacts: Vec<String> = Vec::new();
+        if artifacts {
+            for repository in storage.list_repositories().await? {
+                removed_artifacts.extend(remove_generated_artifacts(std::path::Path::new(
+                    &repository.root_path,
+                )));
+            }
+            for proj in storage.list_projects().await? {
+                let workspace = project::project_workspace_dir(&proj.name);
+                if workspace.is_dir() && std::fs::remove_dir_all(&workspace).is_ok() {
+                    removed_artifacts.push(workspace.display().to_string());
+                }
+            }
+        }
+        let removed = storage.clear_all().await?;
+        Ok(json!({
+            "cleared": "all",
+            "removed": removed,
+            "artifacts_removed": removed_artifacts,
+        }))
+    }
+}
+
+/// Delete the generated artifacts Chaos writes inside a repository — exactly
+/// the two deterministic homes (`chaos-obsidian-vault/` and
+/// `docs/features_memory/`), never anything else. Returns the paths actually
+/// removed. Exports written to caller-chosen paths (`graph -o`, explicit
+/// `--output-html`) are not tracked and must be removed by hand.
+fn remove_generated_artifacts(repo_root: &std::path::Path) -> Vec<String> {
+    let mut removed = Vec::new();
+    for dir in [
+        repo_root.join("chaos-obsidian-vault"),
+        repo_root.join("docs/features_memory"),
+    ] {
+        if dir.is_dir() && std::fs::remove_dir_all(&dir).is_ok() {
+            removed.push(dir.display().to_string());
+        }
+    }
+    removed
 }

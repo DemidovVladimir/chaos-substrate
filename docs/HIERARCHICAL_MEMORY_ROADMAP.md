@@ -2,6 +2,11 @@
 
 > **Status:** ✅ Implemented (P0–P5 all green) · **Last updated:** 2026-06-04 · **Owner:** _unassigned_
 >
+> **Historical document.** Tool counts, versions, and theme references below reflect the state
+> when each phase shipped. Current state (0.12.0): **seventeen** MCP tools (incl. `chaos_components`,
+> `chaos_features`, `chaos_project`), all generated HTML in the **light editorial** theme, plus the
+> P6 cross-repository project layer — see [CHANGELOG.md](../CHANGELOG.md) and the README.
+>
 > This document is the single source of truth for evolving Chaos Substrate from a
 > flat multigraph into a **layered, hierarchical memory**. It is written to be
 > *distributable*: phases are independent enough to hand to different people,

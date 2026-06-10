@@ -40,7 +40,7 @@ target/release/chaos setup --scope project   # Claude Code: project scope via cl
 For a shareable project-scoped `.mcp.json` in a target repository, use the wrapper instead:
 
 ```bash
-scripts/chaos-agent claude-code-add project /absolute/path/to/target-repo
+bin/chaos claude-code-add project /absolute/path/to/target-repo
 ```
 
 `setup` is idempotent: rerunning it re-writes the chaos-substrate entry with the current values;
@@ -58,7 +58,7 @@ manual blocks below are for editors `setup` cannot detect, or when you want to w
 | OpenCode    | yes | no     | no    | yes                       |
 
 Skills ship via the plugin packages (`.claude-plugin` for Claude Code, `.codex-plugin` for Codex).
-Hooks ship for Claude Code and Cursor (see [Hooks](#hooks)). All five editors get the same nine MCP
+Hooks ship for Claude Code and Cursor (see [Hooks](#hooks)). All five editors get the same seventeen MCP
 tools; see the [MCP Tools](../README.md#mcp-tools) section of the README for the tool reference.
 
 ## Prerequisites
@@ -67,8 +67,8 @@ tools; see the [MCP Tools](../README.md#mcp-tools) section of the README for the
    `pgvector/pgvector:pg16` on host port `54329` with
    `DATABASE_URL=postgres://chaos:chaos@localhost:54329/chaos_substrate`.
 2. **An embedder.** The example config (`chaos-substrate.example.toml`) defaults to local Ollama
-   (`nomic-embed-text`, 768 dims, `http://localhost:11434`) — no API key needed. Ollama must be
-   running and the model pulled (`ollama pull nomic-embed-text`). For OpenAI instead, uncomment the
+   (`embeddinggemma`, 768 dims, `http://localhost:11434`) — no API key needed. Ollama must be
+   running and the model pulled (`ollama pull embeddinggemma`). For OpenAI instead, uncomment the
    `open_ai` block in your config and set `OPENAI_API_KEY` (`text-embedding-3-small`, 1536 dims).
    Analysis fails closed if no real embedder is reachable.
 3. **Build the release binary:**
@@ -98,9 +98,9 @@ In every block below, replace `<abs>` with the absolute path to your Chaos Subst
 Use the wrapper, which builds the binary if needed and runs `claude mcp add` with the right scope:
 
 ```bash
-scripts/chaos-agent claude-code-add local                       # private, machine-local
-scripts/chaos-agent claude-code-add project /absolute/path/to/target-repo   # shareable .mcp.json
-scripts/chaos-agent claude-code-add user                        # user-level config
+bin/chaos claude-code-add local                       # private, machine-local
+bin/chaos claude-code-add project /absolute/path/to/target-repo   # shareable .mcp.json
+bin/chaos claude-code-add user                        # user-level config
 ```
 
 Or register directly with the Claude Code CLI:
@@ -216,7 +216,8 @@ After registering an editor:
    target/release/chaos --config chaos-substrate.toml query /path/to/repo "where is the request handler validated?"
    ```
 
-3. In the editor, confirm the ten MCP tools are listed: `chaos_analyze`, `chaos_add`,
+3. In the editor, confirm the seventeen MCP tools are listed: `chaos_analyze`, `chaos_add`,
    `chaos_stats`, `chaos_query`, `chaos_feature_context`, `chaos_impact`,
-   `chaos_write_feature_website`, `chaos_obsidian`, `chaos_refresh`, and `chaos_write_storyboard`. See the
+   `chaos_write_feature_website`, `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`,
+   `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`, `chaos_clean`, and `chaos_graph`. See the
    [MCP Tools](../README.md#mcp-tools) section of the README for what each tool does.

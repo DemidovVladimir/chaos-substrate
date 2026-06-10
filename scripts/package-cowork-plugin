@@ -25,7 +25,6 @@ zip -qr "$OUT" \
   .mcp.json \
   bin \
   skills \
-  scripts/chaos \
   scripts/package-cowork-plugin \
   target/release/chaos \
   src \

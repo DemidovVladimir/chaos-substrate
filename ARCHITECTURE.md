@@ -32,13 +32,15 @@ edge cost / confidence weighting  ──  src/weights.rs
   │
   ▼
 embeddings (chunk content → vectors)  ──  src/embedding.rs
-  │   OpenAI text-embedding-3-small (1536d) OR Ollama nomic-embed-text (768d)
+  │   OpenAI text-embedding-3-small (1536d) OR Ollama embeddinggemma (768d)
   │   FAIL-CLOSED: no real embedder ⇒ analysis fails (never fake/random vectors)
   ▼
 Postgres + pgvector  ──  src/storage.rs (sqlx)
       tables: repositories, analysis_runs, files, nodes, edges, chunks, embeddings
       hierarchy (additive): communities, community_members, community_edges,
-                            subtree_hash rollup, community_embeddings
+                            subtree_hash rollup, community_embeddings,
+                            community_summary_cache
+      projects (additive):  projects, project_repos, cross_repo_links
   │
   ▼
 hybrid retrieval  ──  src/query.rs
@@ -47,7 +49,7 @@ hybrid retrieval  ──  src/query.rs
   ▼
 outputs
   ├─ CLI results (JSON on stdout)              ──  src/main.rs
-  ├─ MCP tools (11)                            ──  src/mcp.rs
+  ├─ MCP tools (17)                            ──  src/mcp.rs
   ├─ interactive graph.html                    ──  src/graph_export.rs
   ├─ Obsidian vault                            ──  src/obsidian_export.rs
   └─ feature context + feature websites        ──  src/feature_context.rs, src/feature_export.rs
@@ -80,9 +82,11 @@ resolution is name-based.
 
 Each analysis is bracketed by an `analysis_runs` row (`begin_analysis` → `finish_analysis` with
 `completed`/`failed`). `storage.replace_repo_index` swaps in the freshly extracted nodes/edges/
-chunks for the repo, then chunks **missing embeddings** for the active provider/model/dimensions
-are embedded with bounded concurrency (`EMBED_CONCURRENCY = 8`) and written to the `embeddings`
-table. Migrations run via `sqlx::migrate!` and are tracked in `_sqlx_migrations`.
+chunks for the repo while **preserving embeddings by content hash** (unchanged content costs zero
+embedder calls; the output reports `reused_embeddings`). Chunks still missing embeddings for the
+active provider/model/dimensions are then embedded in **batched requests** (16 texts per call,
+`embedding::embed_missing_chunks`) and written to the `embeddings` table. Migrations run via
+`sqlx::migrate!` and are tracked in `_sqlx_migrations`.
 
 ## Where to Change What
 
@@ -131,18 +135,29 @@ and `add` exactly as before.
 `docs/features_memory/feature-map.html` straight from the persisted layers — with **no re-index and
 no embedder**.
 
+- **P6 — cross-repository projects.** A **project** (`src/project.rs`,
+  `migrations/005_projects.sql`) groups indexed repositories (client, backend, smart contracts,
+  infra, …) and maintains **feature→feature cross-repo links** between their L1 communities,
+  detected by the linkers in `src/linker.rs` (`package_dep` / `abi` / `http_route`,
+  consumer → provider) purely from the persisted index. Links attach at L1 — never L0, whose
+  FK-protected schema stays frozen — and follow the same hash-gated pipeline as L3: every
+  `analyze`/`add` ends by relinking the repo's projects, gated by the L2 `repo_root_hash`
+  (`project_repos.linked_repo_hash`), so a no-change re-index relinks nothing. The project-wide
+  `chaos_features` inventory (every member's features, repo-tagged and cross-link-annotated) is
+  written to the project workspace (`~/.chaos/projects/<slug>/` or `$CHAOS_PROJECT_DIR`).
+
 ## MCP Tools
 
-The stdio MCP server exposes exactly eleven tools: `chaos_analyze`, `chaos_add`, `chaos_stats`,
+The stdio MCP server exposes exactly seventeen tools: `chaos_analyze`, `chaos_add`, `chaos_stats`,
 `chaos_query`, `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`,
-`chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, and `chaos_change_plan`. See the **MCP Tools** section of `README.md` for the
+`chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`, `chaos_clean`, and `chaos_graph`. See the **MCP Tools** section of `README.md` for the
 canonical reference of names, arguments, and intended usage.
 
 `chaos_change_plan` (CLI `chaos change-plan <repo> "<change>" [--since <ref>]`) decomposes a
 proposed change into the **features** (L1 communities / god-nodes) it spans, with a
 dependency-aware check order. It matches the change description against community summary
 embeddings (optionally also seeding from a real git diff via `since`), then ALWAYS writes an
-interactive Blade-Runner HTML plan to `docs/features_memory/<slug>-plan.html` and returns a compact
+interactive HTML plan (light editorial theme) to `docs/features_memory/<slug>-plan.html` and returns a compact
 JSON summary (per-feature label, confidence, check order, top symbols, HTML path). `chaos_query`
 also gained an optional `hierarchical` flag (CLI `query --hierarchical`) for top-down retrieval that
 matches feature (community) summaries first and returns the surfaced features alongside the chunk

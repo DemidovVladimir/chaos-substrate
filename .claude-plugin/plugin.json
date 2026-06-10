@@ -1,7 +1,7 @@
 {
   "name": "chaos-substrate",
   "description": "Persistent code knowledge memory with MCP tools for indexing, querying, feature context, change-plan decomposition over a layered feature hierarchy, feature explanation pages, and client-facing interactive feature guides (Access-Control-style scrollytelling with real-UI previews and an end mini-game).",
-  "version": "0.9.4",
+  "version": "0.12.0",
   "author": {
     "name": "Chaos Substrate"
   },

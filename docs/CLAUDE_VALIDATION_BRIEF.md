@@ -82,7 +82,7 @@ Supported extracted knowledge:
 - `.codex-plugin/plugin.json` - Codex plugin metadata
 - `.claude-plugin/plugin.json` - Claude Code plugin metadata
 - `.mcp.json` - shared plugin MCP server definition
-- `bin/chaos-agent` - plugin-safe wrapper entrypoint
+- `bin/chaos` - plugin-safe wrapper entrypoint
 - `skills/chaos-substrate/SKILL.md` - agent guidance
 
 ## Validation Commands
@@ -136,6 +136,9 @@ Use a small real repository containing Rust, Solidity, TypeScript, JavaScript, o
 ```sh
 docker compose up -d
 cargo run -- --config chaos-substrate.local.toml migrate
+# optional fresh start: wipe the DB AND the generated files (vault, feature
+# pages, project workspaces) so nothing from a previous run can leak in
+cargo run -- --config chaos-substrate.local.toml clean --artifacts
 cargo run -- --config chaos-substrate.local.toml analyze /path/to/repo
 cargo run -- --config chaos-substrate.local.toml add /path/to/repo
 cargo run -- --config chaos-substrate.local.toml stats /path/to/repo
@@ -163,6 +166,41 @@ Expected behavior:
   `nodes`, `edges`, story-step scopes, evidence, and confidence.
 - Re-running `query` after restarting the process still uses persisted data.
 - If the embedder is unavailable, analyze/query should fail rather than produce fake vectors.
+
+### 0.12.0 additions — token efficiency and the project layer
+
+```sh
+# Zero-cost re-analyze: run analyze TWICE on the same unchanged repo.
+cargo run -- --config chaos-substrate.local.toml analyze /path/to/repo
+cargo run -- --config chaos-substrate.local.toml analyze /path/to/repo
+
+# Cross-repo project layer (use two indexed repos).
+cargo run -- --config chaos-substrate.local.toml project create demo
+cargo run -- --config chaos-substrate.local.toml project add-repo demo /path/to/repo --alias backend
+cargo run -- --config chaos-substrate.local.toml project add-repo demo /path/to/other --alias client
+cargo run -- --config chaos-substrate.local.toml project relink demo
+cargo run -- --config chaos-substrate.local.toml project status demo
+cargo run -- --config chaos-substrate.local.toml features --project demo
+```
+
+Expected behavior:
+
+- The SECOND `analyze` of an unchanged repo reports `embedded_chunks: 0`,
+  `reused_embeddings: <all chunks>`, and `summaries.embed_calls: 0` — a full re-index of
+  unchanged content makes ZERO embedder calls (embeddings are preserved by content hash;
+  L3 summaries are hash-gated, with `summaries.reused_from_cache` covering community-ID churn).
+- After a one-file edit, `analyze` re-embeds ONLY that file's chunks and re-summarizes only the
+  affected community.
+- `project relink` runs once after `add-repo`, then a second `relink` returns
+  `status: "up_to_date"` (the L2 hash gate); `analyze`/`add` on a member repo end with a
+  `projects` relink report. Cross-repo links carry `kind` (`package_dep`/`abi`/`http_route`),
+  evidence, and provenance breadcrumbs.
+- `features --project` writes one journey-layered HTML inventory to the project workspace
+  (`~/.chaos/projects/<slug>/` or `$CHAOS_PROJECT_DIR`), with cards tagged by repo alias.
+- `query`/`feature_context` tool RETURNS contain excerpted chunk contents (an explicit
+  `[+N chars in the indexed chunk]` marker past 800 chars); generated HTML keeps full evidence.
+- `chaos_write_feature_website` called with manifest only (no `html`) renders the interactive
+  page itself and reports `rendered_by: "chaos (manifest-driven)"`.
 
 ## Persistence Checks
 
@@ -226,9 +264,9 @@ Chaos Substrate should become a modular code-to-knowledge memory system:
 - Call edges are file-scoped heuristics; cross-file call resolution is name-based, not type-resolved.
 - No Go/Kubernetes/Terraform adapter yet.
 - No full integration test with a real embedder was run unless the validator provides OpenAI or Ollama.
-- MCP has a focused tool surface of eleven tools: `chaos_analyze`, `chaos_add`, `chaos_stats`,
+- MCP has a focused tool surface of seventeen tools: `chaos_analyze`, `chaos_add`, `chaos_stats`,
   `chaos_query`, `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`,
-  `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, and `chaos_change_plan`.
+  `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`, `chaos_clean`, and `chaos_graph`.
 
 ## Pass Criteria
 

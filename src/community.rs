@@ -164,6 +164,17 @@ pub async fn detect_and_persist(
     Ok(detection)
 }
 
+/// A package-manifest *declared dependency* aggregate node (from `package.json` /
+/// `Cargo.toml`), as opposed to a real code symbol or a source-level import. These
+/// carry no feature signal on their own, so they're excluded from community
+/// formation (but kept in the graph for search). Source imports use
+/// `import:bare:…` / `…:import:…` stable_ids and are NOT matched here.
+fn is_manifest_dependency(node: &KnowledgeNode) -> bool {
+    node.kind == crate::models::NodeKind::Dependency
+        && (node.stable_id.contains(":npm:dependency:")
+            || node.stable_id.contains(":cargo:dependency:"))
+}
+
 /// Detect communities over the L0 graph. Pure and deterministic.
 pub fn detect_communities(
     repo_id: Uuid,
@@ -171,10 +182,17 @@ pub fn detect_communities(
     edges: &[KnowledgeEdge],
     config: &CommunityConfig,
 ) -> CommunityDetection {
-    // 1. Index non-repository nodes in canonical stable_id order.
+    // 1. Index nodes that can form a feature, in canonical stable_id order. The
+    //    repository root is excluded, and so are package-manifest *declared
+    //    dependency* aggregate nodes (`…:npm:dependency:…` / `…:cargo:dependency:…`)
+    //    — those are just the package.json / Cargo.toml dependency list and, left
+    //    in, make every manifest its own meaningless "feature" (the package.json
+    //    roots in the Unknown bucket). They stay in the graph as searchable nodes
+    //    and chunks; they're only kept out of community formation.
     let mut indexed: Vec<&KnowledgeNode> = nodes
         .iter()
         .filter(|n| n.kind != crate::models::NodeKind::Repository)
+        .filter(|n| !is_manifest_dependency(n))
         .collect();
     indexed.sort_by(|a, b| a.stable_id.cmp(&b.stable_id).then(a.id.cmp(&b.id)));
 
@@ -699,6 +717,45 @@ mod tests {
             confidence: conf,
             metadata: json!({}),
         }
+    }
+
+    /// Package-manifest dependency aggregate nodes are kept out of community
+    /// formation (so a `package.json` never becomes a "feature"), while source
+    /// imports and real symbols still cluster.
+    #[test]
+    fn manifest_dependencies_excluded_from_communities() {
+        // A manifest dependency aggregate node vs. a source-import node.
+        let manifest_dep = node(
+            "packages/ui/package.json:npm:dependency:react",
+            NodeKind::Dependency,
+            "json",
+        );
+        let source_import = node("import:bare:@acme/ui", NodeKind::Dependency, "typescript");
+        assert!(is_manifest_dependency(&manifest_dep));
+        assert!(!is_manifest_dependency(&source_import));
+
+        // Two real symbols + a manifest dep node, all wired together. Only the two
+        // symbols should form the community; the manifest dep is excluded.
+        let a = node("file/a.ts:fn:a", NodeKind::Function, "typescript");
+        let b = node("file/a.ts:fn:b", NodeKind::Function, "typescript");
+        let nodes = vec![a.clone(), b.clone(), manifest_dep.clone()];
+        let edges = vec![
+            edge(a.id, b.id, EdgeKind::Calls, 1.0, 1.0),
+            edge(a.id, manifest_dep.id, EdgeKind::DependsOn, 1.0, 1.0),
+        ];
+        let det = detect_communities(Uuid::nil(), &nodes, &edges, &CommunityConfig::default());
+        let members: Vec<&str> = det
+            .communities
+            .iter()
+            .flat_map(|c| c.top_members.iter())
+            .map(|m| m.stable_id.as_str())
+            .collect();
+        assert!(members.contains(&"file/a.ts:fn:a"));
+        assert!(members.contains(&"file/a.ts:fn:b"));
+        assert!(
+            !members.iter().any(|m| m.contains(":npm:dependency:")),
+            "manifest dependency must not be a community member"
+        );
     }
 
     /// Three disjoint cliques ⇒ exactly three communities.

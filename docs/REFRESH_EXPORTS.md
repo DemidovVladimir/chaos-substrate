@@ -30,7 +30,7 @@ Default outputs:
 
 - `/absolute/path/to/repo/chaos-obsidian-vault`
 
-Feature context pages generated with `feature-context --output-html` use dark, neon static websites.
+Feature context pages generated with `feature-context --output-html` use the shared light editorial theme.
 They are standalone HTML files and can be opened directly in a browser.
 
 Each generated feature page also embeds a machine-readable manifest:
@@ -53,9 +53,9 @@ graph automatically, because that turns a local flow step into an unreadable nei
 For plugin/MCP workflows, generate feature pages by first calling `chaos_feature_context`, then
 having the LLM compose the page and manifest, then calling `chaos_write_feature_website`.
 
-The MCP server exposes eleven tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
+The MCP server exposes seventeen tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
 `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
-`chaos_refresh`, `chaos_write_storyboard`, and `chaos_change_plan`.
+`chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`, `chaos_clean`, and `chaos_graph`.
 
 Both `chaos refresh` and `chaos obsidian` are now also available as MCP tools, so an agent can
 regenerate the Obsidian vault (`chaos_obsidian`) or refresh the vault and feature pages

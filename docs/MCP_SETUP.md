@@ -44,7 +44,7 @@ When using the Codex or Claude plugin package, prefer the bundled root `.mcp.jso
 {
   "mcpServers": {
     "chaos-substrate": {
-      "command": "./bin/chaos-agent",
+      "command": "./bin/chaos",
       "args": ["mcp"]
     }
   }
@@ -78,14 +78,14 @@ Example shape (launch the release binary directly, never `cargo run`):
 For Claude Code, prefer:
 
 ```sh
-chaos-agent claude-code-add local /absolute/path/to/repo
+chaos claude-code-add local /absolute/path/to/repo
 ```
 
-Use `chaos-agent claude-code-add project` to create a project-scoped `.mcp.json` that can be shared
+Use `chaos claude-code-add project` to create a project-scoped `.mcp.json` that can be shared
 with a team. Pass the target project path to avoid relying on the current working directory:
 
 ```sh
-chaos-agent claude-code-add project /absolute/path/to/repo
+chaos claude-code-add project /absolute/path/to/repo
 ```
 
 See `docs/CLAUDE_CODE_COWORK.md`.

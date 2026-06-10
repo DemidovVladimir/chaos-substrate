@@ -29,9 +29,8 @@ chaos-substrate/
 ├── .agents/plugins/marketplace.json    # marketplace Codex reads
 ├── .claude-plugin/marketplace.json     # marketplace Claude Code reads
 ├── .mcp.json
-├── bin/chaos-agent
-├── skills/chaos-substrate/SKILL.md
-└── scripts/chaos-agent
+├── bin/chaos
+└── skills/chaos-substrate/SKILL.md
 ```
 
 ## 2. Bootstrap Local Services
@@ -39,11 +38,11 @@ chaos-substrate/
 From the Chaos Substrate checkout:
 
 ```bash
-CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent bootstrap
+CHAOS_CONFIG=chaos-substrate.local.toml bin/chaos bootstrap
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-`bootstrap` installs `chaos-agent`, starts Postgres, runs migrations, verifies the configured
+`bootstrap` installs `chaos`, starts Postgres, runs migrations, verifies the configured
 embedder, and starts/pulls Ollama resources when the active config uses Ollama.
 
 ## 3. Install Or Enable In Codex
@@ -137,13 +136,13 @@ Claude Code reads:
 .claude-plugin/hooks/hooks.json
 skills/chaos-substrate/SKILL.md
 .mcp.json
-bin/chaos-agent
+bin/chaos
 ```
 
-To register only the MCP server (no plugin), or for the `scripts/chaos-agent claude-code-add` and
+To register only the MCP server (no plugin), or for the `bin/chaos claude-code-add` and
 `claude mcp add` commands, see [docs/EDITOR_SETUP.md](EDITOR_SETUP.md). The shared MCP server exposes
-eleven tools (`chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`, `chaos_feature_context`,
-`chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`); see the [MCP Tools](../README.md#mcp-tools) section of the README for the
+seventeen tools (`chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`, `chaos_feature_context`,
+`chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`, `chaos_clean`, `chaos_graph`); see the [MCP Tools](../README.md#mcp-tools) section of the README for the
 tool reference.
 
 ## 6. Use From A Project
@@ -158,7 +157,7 @@ Generate a feature explanation website for authorization and RBAC.
 Find the implementation context I need before changing authorization and RBAC.
 ```
 
-The plugin skill decides when to call `chaos-agent onboard`, `update`, `context`, or `explain`.
+The plugin skill decides when to call `chaos onboard`, `update`, `context`, or `explain`.
 Those commands are implementation details, not the normal human interface.
 When MCP is available, the plugin should prefer `chaos_analyze`, `chaos_query`, and
 `chaos_feature_context` over shell commands. For feature websites, the agent should first use
@@ -169,8 +168,8 @@ architecture and flow sections, code context, evidence/uncertainty, and a popula
 Use the CLI directly only when you want to debug or run the workflow without an agent:
 
 ```bash
-chaos-agent onboard "$PWD"
-chaos-agent explain "$PWD" "authorization and RBAC"
+chaos onboard "$PWD"
+chaos explain "$PWD" "authorization and RBAC"
 ```
 
 Generated project artifacts stay under `chaos-obsidian-vault/` and `docs/features_memory/`.
