@@ -153,6 +153,48 @@ If MCP tools are available, prefer them over shelling out:
     breadcrumbs, check order, top symbols, top-level `provenance`, and the HTML path. The full plan
     lives only in the HTML, so it will not flood an agent context. It mirrors the
     `chaos change-plan <repo> "<change>" [--since <ref>]` CLI command.
+12. Use `chaos_components` to explain the CORE COMPONENTS of a big area — the orientation step
+    BEFORE feature extraction. An area like "OCL" is bigger than a single feature (it spans several
+    L1 communities); pass an `area` (or omit it for a repo-level overview) and it surfaces those
+    communities as COMPONENTS, each with its L3 summary, key symbols/files, languages, and a
+    quotient-graph ROLE (entry/interface/core/foundation), plus how they connect and a
+    dependency-first READ ORDER. It matches the area against community summary embeddings AND
+    community labels (path-derived, so a directory-named area is caught) and correlates it with
+    previously generated feature pages (shared files → `related_features`). It ALWAYS writes an
+    interactive HTML overview to `docs/features_memory/<slug>-components.html` (embedding a
+    `chaos-components-manifest` an agent can extract) and returns a COMPACT JSON summary. Use it to
+    understand a large subsystem before drilling into any single feature, then follow up with
+    `chaos_feature_context` / `chaos_write_feature_website` per component. It mirrors the
+    `chaos components <repo> ["<area>"]` CLI command.
+13. Use `chaos_features` to list ALL god-node FEATURES (L1 communities) that match a filter, grouped
+    by journey layer (entry → interface → core → foundation) — the EXHAUSTIVE, uncurated counterpart
+    to `chaos_components`. Where `chaos_components` curates and orders ONE area, `chaos_features`
+    answers "give me EVERY feature [in this layer / under this folder / about this topic]". The single
+    `filter` is AUTO-DETECTED: a path or real directory → FOLDER scope; a single layer word like
+    `client`/`ui`/`api`/`core`/`contracts` → that journey LAYER (so "all client features" = every
+    entry-layer feature); anything else → a TOPIC match (summary cosine + label/summary keywords);
+    omit it for the whole repo. Force the interpretation with `layer`/`folder`/`topic`. Only a topic
+    filter needs the embedder; layer/folder/whole-repo listing is embedder-free. It ALWAYS writes an
+    interactive HTML inventory to `docs/features_memory/<slug>-features.html` (embedding a
+    `chaos-features-manifest` an agent can extract) and returns a COMPACT JSON summary (resolved
+    filter + how detected, per-layer + language counts, per-feature label/role/folders/symbols/
+    `matched_by`, provenance). It mirrors the `chaos features <repo> ["<filter>"]` CLI command.
+    Pass `project` instead of `repo` to list features across EVERY repo of a project in one
+    journey-layered inventory — each card tagged with its repo alias and annotated with the
+    project's cross-repo links; the HTML goes to the project workspace
+    (`$CHAOS_PROJECT_DIR/<slug>/` or `~/.chaos/projects/<slug>/`).
+14. Use `chaos_project` to work ACROSS REPOSITORIES. A project is a named set of indexed repos
+    (client, backend, smart contracts, infra, …); Chaos detects FEATURE→FEATURE CROSS-REPO LINKS
+    between members from the persisted index (consumer → provider): `package_dep` (one repo imports
+    a package the other publishes), `abi` (client/backend code references a Solidity contract defined
+    in the contracts repo), `http_route` (a fetch/axios call path matches a route registered in
+    another repo). Links attach at the feature (L1) level, carry evidence + provenance breadcrumbs,
+    and refresh AUTOMATICALLY after `chaos_analyze`/`chaos_add` on any member — gated by the L2 repo
+    root hash, so a no-change re-index relinks nothing. Actions: `create` (idempotent), `add_repo`
+    (attach an INDEXED repo under an alias like client/backend/contracts; links it immediately),
+    `list`, `status` (members, staleness, links by kind, embedder consistency), `relink` (manual,
+    `force` overrides the gate). All member repos must share ONE embedder config; `status` warns on
+    mismatch. It mirrors the `chaos project create|add-repo|list|status|relink` CLI commands.
 
 Treat `chaos_feature_context.warnings` as blocking for generated feature websites. If it says a
 filesystem path exists but no Postgres hits referenced it, or that docs exist but no docs were
@@ -324,9 +366,9 @@ Use a real Postgres database with pgvector for persistence tests. Use real OpenA
 - MCP transport is stdio.
 - The process should be launched directly by the agent client.
 - Keep stdout protocol-clean; diagnostics should go to stderr or structured logging that does not corrupt MCP messages.
-- The MCP server exposes ELEVEN tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
+- The MCP server exposes THIRTEEN tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
   `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
-  `chaos_refresh`, `chaos_write_storyboard`, and `chaos_change_plan`.
+  `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, and `chaos_project`.
 - `chaos_add` incrementally indexes only git-changed files (or explicit `paths`), refreshes the
   Obsidian vault, and writes a feature/bug page in one call; use it instead of a full
   `chaos_analyze` after small edits. The page carries provenance breadcrumbs and correlates the
@@ -389,3 +431,28 @@ Use a real Postgres database with pgvector for persistence tests. Use real OpenA
   symbols, top-level `provenance`, and the HTML path — keeping the full plan in the HTML only so it
   will not flood an agent context. It mirrors the `chaos change-plan <repo> "<change>"
   [--since <ref>]` CLI command.
+- `chaos_components` explains the CORE COMPONENTS of a big area — the orientation step BEFORE feature
+  extraction. An area like "OCL" spans several L1 communities; given an `area` (or none, for a
+  repo-level overview) it surfaces those communities as COMPONENTS, each with its L3 summary, key
+  symbols/files, languages, and a quotient-graph ROLE (entry/interface/core/foundation), plus how
+  they connect and a dependency-first READ ORDER. It matches the area against community summary
+  embeddings AND community labels (path-derived, so a directory-named area is caught) and correlates
+  it with previously generated feature pages (`related_features`). It ALWAYS writes an interactive
+  HTML overview to `docs/features_memory/<slug>-components.html` (embedding a
+  `chaos-components-manifest` an agent can extract) and returns a COMPACT JSON summary — component
+  count, per-component label/role/read_order/top symbols/`matched_by`, relationships, related pages,
+  top-level `provenance`, and the HTML path — keeping the full overview in the HTML only. Use it to
+  understand a large subsystem before drilling into any single feature. It mirrors the
+  `chaos components <repo> ["<area>"]` CLI command.
+- `chaos_features` lists ALL god-node FEATURES (L1 communities) that match a filter, grouped by
+  journey layer (entry → interface → core → foundation) — the EXHAUSTIVE, uncurated counterpart to
+  `chaos_components`. The single `filter` is AUTO-DETECTED: a path or real directory → FOLDER scope
+  (features whose code lives under it); a single layer word like `client`/`ui`/`api`/`core`/
+  `contracts` → that journey LAYER (so "all client features" = every entry-layer feature); anything
+  else → a TOPIC match (summary cosine + label/summary keywords); omit it for the whole repo. Force
+  the interpretation with `layer`/`folder`/`topic`. Only a topic filter needs the embedder. It ALWAYS
+  writes an interactive HTML inventory to `docs/features_memory/<slug>-features.html` (embedding a
+  `chaos-features-manifest` an agent can extract) and returns a COMPACT JSON summary — resolved filter
+  + how detected, total, per-layer + language counts, per-feature label/role/member_count/folders/top
+  symbols/`matched_by`, top-level `provenance`, and the HTML path. It mirrors the
+  `chaos features <repo> ["<filter>"]` CLI command.

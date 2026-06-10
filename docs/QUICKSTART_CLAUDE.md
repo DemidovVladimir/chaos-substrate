@@ -78,8 +78,8 @@ install `chaos-substrate` from the `/plugin` UI. Full marketplace and Cowork-zip
 Inside Claude Code, verify the plugin loaded:
 
 - The skill is available as `/chaos-substrate:chaos-substrate`.
-- The eleven MCP tools are listed: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
-  `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`.
+- The fourteen MCP tools are listed: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
+  `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`.
 - The hooks inject code-memory context on `Grep` / `Glob` / `Bash` (safe no-op if the DB or
   index is unavailable).
 
@@ -185,4 +185,4 @@ Deeper references:
 - [EDITOR_SETUP.md](EDITOR_SETUP.md) — canonical per-editor MCP registration.
 - [CLAUDE_MCP_INSTALL.md](CLAUDE_MCP_INSTALL.md) — Claude Desktop config and a longer MCP walkthrough.
 - [PLUGIN_INSTALL.md](PLUGIN_INSTALL.md) — plugin package, marketplace, and Cowork zip.
-- README → [MCP Tools](../README.md#mcp-tools) — the eleven-tool reference.
+- README → [MCP Tools](../README.md#mcp-tools) — the twelve-tool reference.

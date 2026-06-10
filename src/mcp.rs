@@ -204,6 +204,54 @@ pub async fn run(config: Config) -> Result<()> {
                                 },
                                 "required": ["repo", "change_description"]
                             }
+                        },
+                        {
+                            "name": "chaos_components",
+                            "description": "Explain the CORE COMPONENTS of a big area — the orientation step BEFORE feature extraction. An area like 'OCL' is bigger than one feature: it spans several L1 communities. Given an `area` description (or none, for a repo-level overview) this zooms out one level and surfaces the communities that make up the area as COMPONENTS, each with its L3 summary, key symbols/files, languages, and a quotient-graph ROLE (entry/interface/core/foundation), plus how the components connect and a dependency-first READ ORDER so an agent understands the subsystem before drilling into any single feature. ALWAYS writes an interactive HTML overview to docs/features_memory/<slug>-components.html (with the manifest embedded under id=\"chaos-components-manifest\" so an agent can extract it) and returns a COMPACT JSON summary (counts, per-component label/role/read_order/top symbols/matched_by, relationships, related prior feature pages, PROVENANCE breadcrumbs, and the HTML path) so it won't flood your context. Also correlates the area with previously generated feature pages by shared files. Requires the repo to be indexed (chaos_analyze/chaos_add build the hierarchy).",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo": {"type": "string"},
+                                    "area": {"type": "string", "description": "Area/subsystem to explain (e.g. 'OCL', 'access control layer'). Omit for a repo-level overview of the core components."},
+                                    "output_html": {"type": "string", "description": "Override the default docs/features_memory/<slug>-components.html path."},
+                                    "limit": {"type": "integer", "default": 8, "description": "Max components to surface."},
+                                    "top_members": {"type": "integer", "default": 12, "description": "Representative members (symbols/files) loaded per component."}
+                                },
+                                "required": ["repo"]
+                            }
+                        },
+                        {
+                            "name": "chaos_features",
+                            "description": "List ALL god-node FEATURES (L1 communities) that match a filter, grouped by where each sits in the user journey (entry → interface → core → foundation). This is the EXHAUSTIVE inventory counterpart to chaos_components: where chaos_components gives a curated, capped, ordered read-through of ONE area, chaos_features answers 'give me EVERY feature [in this layer / under this folder / about this topic]' with no curation and no cap. The single `filter` is AUTO-DETECTED — a path or a real directory name → FOLDER scope (features whose code lives under it); a single layer word like client/ui/api/core/contracts → that journey LAYER (so 'client features' means every entry-layer feature); anything else → a TOPIC match (summary-embedding cosine + label/summary keywords); omit it for the whole repo. Force the interpretation with `layer`/`folder`/`topic`. Only a topic filter needs the embedder; layer/folder/whole-repo listing is embedder-free. ALWAYS writes an interactive HTML inventory to docs/features_memory/<slug>-features.html (manifest embedded under id=\"chaos-features-manifest\") and returns a COMPACT JSON summary (resolved filter + how detected, total, per-layer counts, language counts, per-feature label/role/member_count/folders/top symbols/matched_by, PROVENANCE breadcrumbs, the HTML path). Requires the repo to be indexed (chaos_analyze/chaos_add build the hierarchy).",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo": {"type": "string", "description": "Repository to list. Omit when passing `project`."},
+                                    "project": {"type": "string", "description": "List features across ALL repos of this PROJECT instead of one repo: every member repo's features in one journey-layered inventory, each card tagged with its repo alias (client/backend/contracts/…) and annotated with the project's cross-repo links (→ backend:auth-api (http_route)). The HTML goes to the project workspace (~/.chaos/projects/<slug>/ or $CHAOS_PROJECT_DIR)."},
+                                    "filter": {"type": "string", "description": "Auto-detected filter: a path/dir → folder; a layer word (client/ui/api/core/contracts) → layer; else a topic. Omit for the whole repo/project."},
+                                    "layer": {"type": "string", "description": "Force a layer filter: entry|interface|core|foundation (or a synonym like client/api/contracts)."},
+                                    "folder": {"type": "string", "description": "Force a folder filter: features with code under this path."},
+                                    "topic": {"type": "string", "description": "Force a topic (semantic + keyword) filter."},
+                                    "output_html": {"type": "string", "description": "Override the default docs/features_memory/<slug>-features.html path."},
+                                    "limit": {"type": "integer", "default": 0, "description": "Cap features surfaced; 0 = all (default — exhaustive)."}
+                                },
+                                "required": []
+                            }
+                        },
+                        {
+                            "name": "chaos_project",
+                            "description": "Manage CROSS-REPOSITORY projects — the layer above single-repo memory. A project is a named set of indexed repositories (client, backend, smart contracts, infra, …); Chaos detects FEATURE→FEATURE CROSS-REPO LINKS between members from the persisted index (consumer → provider): `package_dep` (one repo imports a package the other publishes), `abi` (client/backend code references a Solidity contract defined in the contracts repo), `http_route` (a fetch/axios call path matches a route registered in another repo). Links attach at the feature (L1 community) level, carry evidence + provenance breadcrumbs, and refresh AUTOMATICALLY after chaos_analyze/chaos_add on any member (gated by the L2 repo root hash, like L3 summaries — a no-change re-index relinks nothing). Actions: `create` (idempotent), `add_repo` (attach an INDEXED repo under an alias like client/backend/contracts; links it immediately), `list`, `status` (members, link staleness vs current root hashes, links by kind, embedder consistency), `relink` (manual re-detect; `force` overrides the gate). Use chaos_features with `project` to list every member repo's features in one journey-layered, cross-link-annotated inventory.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "action": {"type": "string", "enum": ["create", "add_repo", "list", "status", "relink"], "description": "What to do."},
+                                    "project": {"type": "string", "description": "Project name (required for every action except list)."},
+                                    "repo": {"type": "string", "description": "Repository path or name to attach (add_repo)."},
+                                    "alias": {"type": "string", "description": "Project-scoped alias for the repo (client/backend/contracts/infra/…). Defaults to the repo name."},
+                                    "force": {"type": "boolean", "default": false, "description": "relink: re-detect even when no member's root hash moved."}
+                                },
+                                "required": ["action"]
+                            }
                         }
                     ]
                 }
@@ -579,6 +627,91 @@ async fn handle_tool_call(
             let summary = crate::change_plan::run(storage, embedder, repo, change, &opts).await?;
             Ok(tool_text(serde_json::to_string_pretty(&summary)?))
         }
+        "chaos_components" => {
+            let repo = args
+                .get("repo")
+                .and_then(Value::as_str)
+                .context("repo is required")?;
+            let area = args.get("area").and_then(Value::as_str);
+            let opts = crate::components::ComponentsOptions {
+                output_html: args
+                    .get("output_html")
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from),
+                limit: args.get("limit").and_then(Value::as_u64).unwrap_or(8) as usize,
+                top_members: args
+                    .get("top_members")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(12) as usize,
+            };
+            let summary = crate::components::run(storage, embedder, repo, area, &opts).await?;
+            Ok(tool_text(serde_json::to_string_pretty(&summary)?))
+        }
+        "chaos_features" => {
+            let repo = args.get("repo").and_then(Value::as_str);
+            let project = args.get("project").and_then(Value::as_str);
+            let filter = args.get("filter").and_then(Value::as_str);
+            let opts = crate::feature_inventory::FeatureInventoryOptions {
+                output_html: args
+                    .get("output_html")
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from),
+                limit: args.get("limit").and_then(Value::as_u64).unwrap_or(0) as usize,
+                layer: args.get("layer").and_then(Value::as_str).map(String::from),
+                folder: args.get("folder").and_then(Value::as_str).map(String::from),
+                topic: args.get("topic").and_then(Value::as_str).map(String::from),
+            };
+            let summary = match (project, repo) {
+                (Some(project), _) => {
+                    crate::feature_inventory::run_project(
+                        storage,
+                        Some(embedder),
+                        project,
+                        filter,
+                        &opts,
+                    )
+                    .await?
+                }
+                (None, Some(repo)) => {
+                    crate::feature_inventory::run(storage, Some(embedder), repo, filter, &opts)
+                        .await?
+                }
+                (None, None) => anyhow::bail!("pass `repo` or `project`"),
+            };
+            Ok(tool_text(serde_json::to_string_pretty(&summary)?))
+        }
+        "chaos_project" => {
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .context("action is required: create | add_repo | list | status | relink")?;
+            let name = || {
+                args.get("project")
+                    .and_then(Value::as_str)
+                    .context("project is required")
+            };
+            let summary = match action {
+                "create" => crate::project::create(storage, name()?).await?,
+                "add_repo" => {
+                    let repo = args
+                        .get("repo")
+                        .and_then(Value::as_str)
+                        .context("repo is required")?;
+                    let alias = args.get("alias").and_then(Value::as_str);
+                    crate::project::add_repo(storage, name()?, repo, alias).await?
+                }
+                "list" => crate::project::list(storage).await?,
+                "status" => crate::project::status(storage, name()?).await?,
+                "relink" => {
+                    let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
+                    crate::project::relink(storage, name()?, force).await?
+                }
+                other => anyhow::bail!(
+                    "unknown action `{other}` — use create | add_repo | list | status | relink"
+                ),
+            };
+            Ok(tool_text(serde_json::to_string_pretty(&summary)?))
+        }
         _ => anyhow::bail!("unknown tool: {name}"),
     }
 }
@@ -767,8 +900,11 @@ async fn analyze_repo(
         let merkle = crate::merkle::compute_and_persist(storage, repo.id).await?;
         // L3: hash-gated community summaries, embedded by the real embedder.
         let summary = crate::community_summary::summarize_repo(storage, embedder, repo.id).await?;
+        // P6: relink every project containing this repo (hash-gated).
+        let projects = crate::project::relink_projects_for_repo(storage, repo.id).await;
         let feature_communities = detection.communities.iter().filter(|c| c.size >= 2).count();
         Result::<_, anyhow::Error>::Ok(json!({
+            "projects": projects,
             "repo_id": repo.id,
             "files": result.files.len(),
             "nodes": result.nodes.len(),

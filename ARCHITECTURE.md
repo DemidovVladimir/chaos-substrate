@@ -131,11 +131,22 @@ and `add` exactly as before.
 `docs/features_memory/feature-map.html` straight from the persisted layers — with **no re-index and
 no embedder**.
 
+- **P6 — cross-repository projects.** A **project** (`src/project.rs`,
+  `migrations/005_projects.sql`) groups indexed repositories (client, backend, smart contracts,
+  infra, …) and maintains **feature→feature cross-repo links** between their L1 communities,
+  detected by the linkers in `src/linker.rs` (`package_dep` / `abi` / `http_route`,
+  consumer → provider) purely from the persisted index. Links attach at L1 — never L0, whose
+  FK-protected schema stays frozen — and follow the same hash-gated pipeline as L3: every
+  `analyze`/`add` ends by relinking the repo's projects, gated by the L2 `repo_root_hash`
+  (`project_repos.linked_repo_hash`), so a no-change re-index relinks nothing. The project-wide
+  `chaos_features` inventory (every member's features, repo-tagged and cross-link-annotated) is
+  written to the project workspace (`~/.chaos/projects/<slug>/` or `$CHAOS_PROJECT_DIR`).
+
 ## MCP Tools
 
-The stdio MCP server exposes exactly eleven tools: `chaos_analyze`, `chaos_add`, `chaos_stats`,
+The stdio MCP server exposes exactly fourteen tools: `chaos_analyze`, `chaos_add`, `chaos_stats`,
 `chaos_query`, `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`,
-`chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, and `chaos_change_plan`. See the **MCP Tools** section of `README.md` for the
+`chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, and `chaos_project`. See the **MCP Tools** section of `README.md` for the
 canonical reference of names, arguments, and intended usage.
 
 `chaos_change_plan` (CLI `chaos change-plan <repo> "<change>" [--since <ref>]`) decomposes a

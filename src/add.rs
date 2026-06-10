@@ -252,6 +252,11 @@ pub async fn run(
         })
     };
 
+    // P6: keep the project layer fresh — relink every project containing this
+    // repo (hash-gated, so an add whose root hash didn't move relinks nothing;
+    // empty array when the repo is in no project).
+    let projects = crate::project::relink_projects_for_repo(storage, repo.id).await;
+
     Ok(json!({
         "status": "indexed",
         "repo_id": repo.id,
@@ -260,6 +265,7 @@ pub async fn run(
         "changed_files": changed_rel,
         "indexed": counts,
         "embedded_chunks": embedded,
+        "projects": projects,
         "communities": {
             "total": detection.communities.len(),
             "feature_communities": feature_communities,

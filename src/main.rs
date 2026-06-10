@@ -2,27 +2,33 @@ mod add;
 mod change_plan;
 mod community;
 mod community_summary;
+mod components;
 mod config;
 mod embedding;
 mod export_util;
 mod extractor;
 mod feature_context;
 mod feature_export;
+mod feature_inventory;
 mod graph;
 mod graph_export;
 mod hierarchy_export;
 mod hook;
 mod impact;
 mod lang;
+mod layering;
+mod linker;
 mod mcp;
 mod merkle;
 mod models;
 mod obsidian_export;
+mod project;
 mod provenance;
 mod query;
 mod setup;
 mod simple_graph_optimizer;
 mod storage;
+mod struct_features;
 mod theme;
 mod user_story;
 mod weights;
@@ -169,6 +175,69 @@ enum Commands {
         #[arg(long, default_value_t = 8)]
         limit: usize,
     },
+    /// Explain the CORE COMPONENTS of a big area (the step before feature
+    /// extraction). Given an area like "OCL" (or nothing, for a repo-level
+    /// overview) it surfaces the communities that make up the area as
+    /// components, shows how they connect, and proposes a read order — then
+    /// writes an interactive HTML overview into docs/features_memory and prints
+    /// a compact JSON summary.
+    Components {
+        repo: String,
+        /// Area/subsystem to explain (e.g. "OCL"). Omit for a repo-level overview.
+        area: Option<String>,
+        /// Override the default docs/features_memory/<slug>-components.html path.
+        #[arg(long)]
+        output_html: Option<PathBuf>,
+        /// Max components to surface.
+        #[arg(long, default_value_t = 8)]
+        limit: usize,
+        /// Representative members (symbols/files) loaded per component.
+        #[arg(long, default_value_t = 12)]
+        top_members: usize,
+    },
+    /// List ALL god-node features (L1 communities), grouped by journey layer.
+    /// The optional filter is auto-detected: a path / real directory → folder
+    /// scope; a layer word (client/ui/api/core/contracts) → that journey layer;
+    /// anything else → a topic match; nothing → the whole repo. Forces available
+    /// via --layer/--folder/--topic. Writes an interactive HTML inventory into
+    /// docs/features_memory and prints a compact JSON summary. Exhaustive (no
+    /// curation) — the counterpart to `components`' ordered overview.
+    Features {
+        /// Repository to list (omit when using --project).
+        repo: Option<String>,
+        /// Optional filter, auto-detected as folder / layer / topic.
+        filter: Option<String>,
+        /// List features across ALL repos of this project instead of one repo
+        /// (cards are tagged with repo aliases and cross-repo links; the HTML
+        /// goes to the project workspace).
+        #[arg(long)]
+        project: Option<String>,
+        /// Force a layer filter (entry|interface|core|foundation, or a synonym
+        /// like client/api/contracts).
+        #[arg(long)]
+        layer: Option<String>,
+        /// Force a folder filter (features with code under this path).
+        #[arg(long)]
+        folder: Option<String>,
+        /// Force a topic (semantic + keyword) filter.
+        #[arg(long)]
+        topic: Option<String>,
+        /// Override the default docs/features_memory/<slug>-features.html path.
+        #[arg(long)]
+        output_html: Option<PathBuf>,
+        /// Cap features surfaced; 0 = all (the default — this listing is exhaustive).
+        #[arg(long, default_value_t = 0)]
+        limit: usize,
+    },
+    /// Manage cross-repository projects: group indexed repos (client, backend,
+    /// contracts, infra, …) under one name and maintain feature→feature
+    /// cross-repo links between them. Links refresh automatically after
+    /// analyze/add (hash-gated), so the project layer follows the same layered
+    /// pipeline as L1–L3.
+    Project {
+        #[command(subcommand)]
+        action: ProjectAction,
+    },
     /// Render a client/user-facing interactive storyboard (UI/UX user stories,
     /// no code) from a storyboard manifest JSON file into
     /// docs/features_memory/<slug>-story.html. Agents normally compose the
@@ -215,6 +284,16 @@ enum Commands {
         #[arg(long)]
         all_features: bool,
     },
+    /// Debug-only: PROTOTYPE structure-first feature extraction over a folder,
+    /// printed side-by-side with the current Louvain communities. Read-only; runs
+    /// off the existing index (no re-analyze). A spike to evaluate deriving
+    /// features from project structure instead of import-graph clustering.
+    #[command(hide = true)]
+    StructFeatures {
+        repo: String,
+        /// Folder to analyze (e.g. `desci-infra`, `desci-ecosystem`).
+        folder: String,
+    },
     /// Debug-only: detect L1 communities (god-nodes) over an indexed repo and
     /// print them as JSON. Read-only; writes nothing. The P0 spike for the
     /// hierarchical-memory layer.
@@ -248,6 +327,33 @@ enum Commands {
         /// Output format: "claude" (default) or "cursor".
         #[arg(long)]
         format: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProjectAction {
+    /// Create a project (idempotent).
+    Create { name: String },
+    /// Attach an already-indexed repository to a project and link it against
+    /// the existing members.
+    AddRepo {
+        project: String,
+        repo: String,
+        /// Project-scoped alias (client/backend/contracts/infra/…). Defaults
+        /// to the repository name.
+        #[arg(long)]
+        alias: Option<String>,
+    },
+    /// List all projects with their member repos and link counts.
+    List,
+    /// Show a project's members, link staleness, links by kind, and embedder
+    /// consistency.
+    Status { project: String },
+    /// Re-detect cross-repo links (hash-gated; --force overrides the gate).
+    Relink {
+        project: String,
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -394,6 +500,9 @@ async fn main() -> Result<()> {
             match outcome {
                 Ok((result, embedded, detection, merkle, summary)) => {
                     storage.finish_analysis(run_id, "completed", None).await?;
+                    // P6: keep the project layer fresh — relink every project
+                    // containing this repo (hash-gated; empty when none).
+                    let projects = project::relink_projects_for_repo(&storage, repo.id).await;
                     let feature_communities =
                         detection.communities.iter().filter(|c| c.size >= 2).count();
                     println!(
@@ -414,7 +523,8 @@ async fn main() -> Result<()> {
                                 "summarized": summary.summarized,
                                 "skipped": summary.skipped,
                                 "embed_calls": summary.embed_calls
-                            }
+                            },
+                            "projects": projects
                         }))?
                     );
                 }
@@ -564,6 +674,88 @@ async fn main() -> Result<()> {
                 change_plan::run(&storage, embedder.as_ref(), &repo, &change, &opts).await?;
             println!("{}", serde_json::to_string_pretty(&summary)?);
         }
+        Commands::Components {
+            repo,
+            area,
+            output_html,
+            limit,
+            top_members,
+        } => {
+            let storage = Storage::connect(&config.storage.database_url).await?;
+            let embedder = build_embedder(&config.embedding)?;
+            let opts = components::ComponentsOptions {
+                output_html,
+                limit,
+                top_members,
+            };
+            let summary =
+                components::run(&storage, embedder.as_ref(), &repo, area.as_deref(), &opts).await?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
+        Commands::Features {
+            repo,
+            filter,
+            project,
+            layer,
+            folder,
+            topic,
+            output_html,
+            limit,
+        } => {
+            let storage = Storage::connect(&config.storage.database_url).await?;
+            // Only a topic filter needs the embedder; layer/folder/whole-repo
+            // listing stays embedder-free, so a missing/misconfigured embedder
+            // should not block them (it just degrades a topic match to keywords).
+            let embedder = build_embedder(&config.embedding).ok();
+            let opts = feature_inventory::FeatureInventoryOptions {
+                output_html,
+                limit,
+                layer,
+                folder,
+                topic,
+            };
+            let summary = match (&project, &repo) {
+                (Some(project), _) => {
+                    feature_inventory::run_project(
+                        &storage,
+                        embedder.as_deref(),
+                        project,
+                        filter.as_deref(),
+                        &opts,
+                    )
+                    .await?
+                }
+                (None, Some(repo)) => {
+                    feature_inventory::run(
+                        &storage,
+                        embedder.as_deref(),
+                        repo,
+                        filter.as_deref(),
+                        &opts,
+                    )
+                    .await?
+                }
+                (None, None) => anyhow::bail!("pass a repo, or --project <name>"),
+            };
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
+        Commands::Project { action } => {
+            let storage = Storage::connect(&config.storage.database_url).await?;
+            let summary = match action {
+                ProjectAction::Create { name } => project::create(&storage, &name).await?,
+                ProjectAction::AddRepo {
+                    project,
+                    repo,
+                    alias,
+                } => project::add_repo(&storage, &project, &repo, alias.as_deref()).await?,
+                ProjectAction::List => project::list(&storage).await?,
+                ProjectAction::Status { project } => project::status(&storage, &project).await?,
+                ProjectAction::Relink { project, force } => {
+                    project::relink(&storage, &project, force).await?
+                }
+            };
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
         Commands::Storyboard {
             repo,
             manifest,
@@ -693,6 +885,10 @@ async fn main() -> Result<()> {
                     "feature_map_html": summary.feature_map_html
                 }))?
             );
+        }
+        Commands::StructFeatures { repo, folder } => {
+            let storage = Storage::connect(&config.storage.database_url).await?;
+            struct_features::run(&storage, &repo, &folder).await?;
         }
         Commands::Communities {
             repo,

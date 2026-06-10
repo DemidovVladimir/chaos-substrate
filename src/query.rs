@@ -39,6 +39,12 @@ pub struct HierarchicalResponse {
 
 /// Minimum cosine score for a community to count as a matched feature.
 const COMMUNITY_MATCH_FLOOR: f64 = 0.30;
+/// Score assigned to a feature matched only by a label/token match (no cosine).
+const LABEL_ROUTE_SCORE: f64 = 0.5;
+/// Cap on label-only routes added as a fallback (keeps boosting focused).
+const LABEL_ROUTE_LIMIT: usize = 5;
+/// Minimum query-token length considered for the label-match fallback.
+const MIN_ROUTE_TOKEN: usize = 3;
 
 /// Top-down retrieval: match the query against community summary embeddings
 /// first, then run the flat hybrid search and boost hits whose node lives in a
@@ -62,17 +68,64 @@ pub async fn query_repo_hierarchical(
             8,
         )
         .await?;
-    let routes: Vec<CommunityRoute> = matches
-        .iter()
-        .filter(|m| m.score >= COMMUNITY_MATCH_FLOOR && m.member_count >= 2)
-        .map(|m| CommunityRoute {
-            id: m.id,
-            label: m.label.clone(),
-            member_count: m.member_count,
-            score: m.score,
-            summary: m.summary.clone(),
-        })
-        .collect();
+    // Routes by cosine over the L3 summary embeddings (top-down semantic match).
+    let mut route_map: HashMap<Uuid, CommunityRoute> = HashMap::new();
+    for m in &matches {
+        if m.score >= COMMUNITY_MATCH_FLOOR && m.member_count >= 2 {
+            route_map.insert(
+                m.id,
+                CommunityRoute {
+                    id: m.id,
+                    label: m.label.clone(),
+                    member_count: m.member_count,
+                    score: m.score,
+                    summary: m.summary.clone(),
+                },
+            );
+        }
+    }
+
+    // Lexical label fallback: the extractive L3 summaries embed weakly, so a
+    // path/label-named feature (e.g. "OCL") often never clears the cosine floor
+    // and the router would silently drop to flat. Match the query's significant
+    // tokens against community LABELS (path-derived) — the same rescue
+    // `chaos_components` relies on. A TRUE fallback: it only runs when the
+    // cosine pass routed nothing, so a fixed-score label route can never
+    // outrank or dilute genuine semantic routes.
+    let tokens = router_label_tokens(query);
+    if route_map.is_empty() && !tokens.is_empty() {
+        let labels = storage.community_labels(repo_id).await?;
+        let mut lexical: Vec<(Uuid, String, i32)> = labels
+            .into_iter()
+            .filter(|(id, label, _)| {
+                !route_map.contains_key(id) && label_matches_tokens(label, &tokens)
+            })
+            .collect();
+        // Prefer larger (more central) features; bound the fallback.
+        lexical.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+        for (id, label, member_count) in lexical.into_iter().take(LABEL_ROUTE_LIMIT) {
+            route_map.insert(
+                id,
+                CommunityRoute {
+                    id,
+                    label,
+                    member_count,
+                    score: LABEL_ROUTE_SCORE,
+                    summary: None,
+                },
+            );
+        }
+    }
+
+    let mut routes: Vec<CommunityRoute> = route_map.into_values().collect();
+    // Deterministic order: strongest first, then larger features, then id.
+    routes.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.member_count.cmp(&a.member_count))
+            .then_with(|| a.id.cmp(&b.id))
+    });
 
     let flat = query_repo(storage, repo_id, embedder, query, limit).await?;
     if routes.is_empty() {
@@ -452,6 +505,52 @@ const LITERAL_SEARCH_STOP_TERMS: &[&str] = &[
     "workflow",
 ];
 
+/// Significant query tokens for the router's label-match fallback: alphanumeric,
+/// length ≥ `MIN_ROUTE_TOKEN`, minus literal-search stopwords and common question
+/// words (so "how does X work" doesn't route on "work"/"the").
+fn router_label_tokens(query: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = search_tokens(query)
+        .into_iter()
+        .filter(|t| {
+            t.len() >= MIN_ROUTE_TOKEN
+                && !LITERAL_SEARCH_STOP_TERMS.contains(&t.as_str())
+                && !ROUTE_STOP_WORDS.contains(&t.as_str())
+        })
+        .collect();
+    tokens.sort();
+    tokens.dedup();
+    tokens
+}
+
+/// True if any token matches a path SEGMENT of the label — exact equality (so
+/// "ocl" hits the `ocl` segment of `ocl-repository.ts`) or, for tokens of length
+/// ≥ 6, a segment prefix (so "onchain" hits `onchainlabs`). Segment-scoped
+/// matching avoids the substring noise of a raw `label.contains(token)` (e.g.
+/// "work" inside "network", "lab" inside "label"); the 6-char prefix floor
+/// keeps short words from prefix-hijacking unrelated segments ("auth" must not
+/// match "author").
+fn label_matches_tokens(label: &str, tokens: &[String]) -> bool {
+    let segments: Vec<String> = label
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_ascii_lowercase())
+        .collect();
+    tokens.iter().any(|t| {
+        segments
+            .iter()
+            .any(|s| s == t || (t.len() >= 6 && s.starts_with(t.as_str())))
+    })
+}
+
+/// Question filler plus ubiquitous path segments (`api`, `src`, …) that appear
+/// in nearly every label — routing on them would always select the largest
+/// communities regardless of the question.
+const ROUTE_STOP_WORDS: &[&str] = &[
+    "and", "api", "app", "apps", "are", "can", "does", "for", "from", "has", "hood", "how", "into",
+    "its", "lib", "src", "that", "the", "this", "under", "was", "web", "what", "when", "where",
+    "which", "who", "why", "with", "work", "works", "you", "your",
+];
+
 fn lexical_match_count(tokens: &[String], haystacks: &[&str]) -> usize {
     tokens
         .iter()
@@ -574,6 +673,39 @@ mod tests {
         assert!(hits
             .iter()
             .any(|hit| hit.metadata.get("dependency").is_some()));
+    }
+
+    #[test]
+    fn router_tokens_drop_question_noise_keep_signal() {
+        let t = router_label_tokens("How does OCL (Onchain Lab) work under the hood?");
+        assert!(t.contains(&"ocl".to_string()));
+        assert!(t.contains(&"onchain".to_string()));
+        assert!(t.contains(&"lab".to_string()));
+        // Common question/filler words must be dropped so they can't route labels.
+        for noise in ["how", "does", "work", "under", "the", "hood"] {
+            assert!(
+                !t.contains(&noise.to_string()),
+                "{noise} should be filtered"
+            );
+        }
+    }
+
+    #[test]
+    fn label_match_is_segment_scoped() {
+        let tokens = vec!["ocl".to_string(), "onchain".to_string()];
+        // Exact segment match ("ocl" in ocl.ts) and prefix for longer tokens.
+        assert!(label_matches_tokens("desci/common/domains/ocl.ts", &tokens));
+        assert!(label_matches_tokens("onchainlabs/src/Foo.sol", &tokens));
+        // No substring false positives: "work" ⊄ "network", "lab" ⊄ "label".
+        assert!(!label_matches_tokens(
+            "ui/network/label-control.tsx",
+            &["work".to_string(), "lab".to_string()]
+        ));
+        // A short token only matches a whole segment, never a prefix.
+        assert!(!label_matches_tokens(
+            "onchainlabs/x.ts",
+            &["lab".to_string()]
+        ));
     }
 
     #[test]

@@ -35,6 +35,22 @@ const MAX_SNIPPET_CHARS: usize = 320;
 /// How many key symbols to name.
 const MAX_KEY_SYMBOLS: usize = 24;
 
+/// Bump this whenever [`compose_summary`] changes the embedded text. The summary
+/// hash gate commits to `subtree_hash || algo_tag()`, so a bumped version
+/// re-summarizes every community **once** on the next analyze even though the
+/// underlying code content (and its `subtree_hash`) is unchanged. v2 dropped the
+/// shared `"Feature:"` boilerplate prefix and front-loads label + key symbols so
+/// summaries embed closer to natural-language queries instead of clustering. v3
+/// adds a human role (journey layer), prefers real defined symbols over import
+/// references for "Key symbols", and names the related features it connects to —
+/// so a summary explains *what it is and where it sits*, not just lists imports.
+pub const SUMMARY_ALGO_VERSION: u32 = 3;
+
+/// Tag folded into the summary hash gate (see [`SUMMARY_ALGO_VERSION`]).
+pub fn algo_tag() -> String {
+    format!("-sum{SUMMARY_ALGO_VERSION}")
+}
+
 /// Result of a summarize pass over a repo's communities.
 #[derive(Debug, Clone, Default)]
 pub struct SummaryOutcome {
@@ -55,12 +71,14 @@ pub async fn summarize_repo(
     repo_id: Uuid,
 ) -> Result<SummaryOutcome> {
     let total = storage.count_hashed_communities(repo_id).await? as usize;
+    let tag = algo_tag();
     let pending = storage
         .communities_needing_summary(
             repo_id,
             embedder.provider(),
             embedder.model_id(),
             embedder.dimensions(),
+            &tag,
         )
         .await?;
 
@@ -79,6 +97,7 @@ pub async fn summarize_repo(
                 embedder.model_id(),
                 embedder.dimensions(),
                 &embedding,
+                &tag,
             )
             .await?;
         embed_calls += 1;
@@ -95,24 +114,45 @@ pub async fn summarize_repo(
 /// Pure: same inputs ⇒ identical text (so the embedding is reproducible).
 pub fn compose_summary(inputs: &CommunitySummaryInputs) -> String {
     let mut out = String::new();
-    out.push_str(&format!("Feature: {}\n", inputs.label));
-    out.push_str(&format!(
-        "{} symbols grouped as one community.\n",
-        inputs.member_count
-    ));
 
-    // Language / kind mix (deterministic via BTreeMap).
-    let mut kinds: BTreeMap<&str, usize> = BTreeMap::new();
-    for (_, kind, _) in &inputs.members {
-        *kinds.entry(kind.as_str()).or_insert(0) += 1;
-    }
-    if !kinds.is_empty() {
-        let kind_str = kinds
+    // Lead with the DOMAIN signal — the humanized label and the key symbols.
+    // The first tokens dominate the embedding, so the old shared prefix
+    // (`"Feature: …"` + `"N symbols grouped as one community"`) pulled every
+    // community's vector toward a common point and away from a natural-language
+    // query like "how does OCL work". Front-loading label + symbols makes the
+    // vector reflect what the feature actually *is*.
+    out.push_str(&humanize_label(&inputs.label));
+    out.push('\n');
+
+    // Role — where this feature sits in the user journey. Tells a reader (and the
+    // embedder) *what kind of thing* it is before any symbol names.
+    let role = role_phrase(crate::layering::classify_community(&inputs.members));
+    out.push_str(&format!("Role: {role}.\n"));
+
+    // Key symbols — prefer the feature's own DEFINITIONS (functions, types,
+    // components) over import-reference nodes, so the line reads as "what this
+    // provides" rather than a list of import paths. Falls back to any non-file
+    // member when a feature has no captured definitions.
+    let definitions = inputs
+        .members
+        .iter()
+        .filter(|(_, kind, _)| is_definition_kind(kind))
+        .map(|(name, _, _)| name.as_str())
+        .take(MAX_KEY_SYMBOLS)
+        .collect::<Vec<_>>();
+    let key_symbols = if definitions.is_empty() {
+        inputs
+            .members
             .iter()
-            .map(|(k, n)| format!("{n} {k}"))
+            .filter(|(_, kind, _)| kind != "file")
+            .map(|(name, _, _)| name.as_str())
+            .take(MAX_KEY_SYMBOLS)
             .collect::<Vec<_>>()
-            .join(", ");
-        out.push_str(&format!("Composition: {kind_str}.\n"));
+    } else {
+        definitions
+    };
+    if !key_symbols.is_empty() {
+        out.push_str(&format!("Key symbols: {}.\n", key_symbols.join(", ")));
     }
 
     // Distinct files (ordered).
@@ -132,16 +172,31 @@ pub fn compose_summary(inputs: &CommunitySummaryInputs) -> String {
         out.push_str(&format!("Files: {file_list}.\n"));
     }
 
-    // Key symbols (skip file nodes — the symbol names are the signal).
-    let key_symbols = inputs
-        .members
-        .iter()
-        .filter(|(_, kind, _)| kind != "file")
-        .map(|(name, _, _)| name.as_str())
-        .take(MAX_KEY_SYMBOLS)
-        .collect::<Vec<_>>();
-    if !key_symbols.is_empty() {
-        out.push_str(&format!("Key symbols: {}.\n", key_symbols.join(", ")));
+    // Related features — what this connects to in the rest of the codebase. The
+    // "where it sits / where it's used" context, grounded in the quotient graph.
+    if !inputs.related.is_empty() {
+        out.push_str(&format!(
+            "Related features: {}.\n",
+            inputs.related.join(", ")
+        ));
+    }
+
+    // Composition (supporting detail, after the signal). Deterministic via
+    // BTreeMap.
+    let mut kinds: BTreeMap<&str, usize> = BTreeMap::new();
+    for (_, kind, _) in &inputs.members {
+        *kinds.entry(kind.as_str()).or_insert(0) += 1;
+    }
+    if !kinds.is_empty() {
+        let kind_str = kinds
+            .iter()
+            .map(|(k, n)| format!("{n} {k}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!(
+            "Composition: {kind_str} ({} members).\n",
+            inputs.member_count
+        ));
     }
 
     // Representative code snippets.
@@ -158,6 +213,52 @@ pub fn compose_summary(inputs: &CommunitySummaryInputs) -> String {
     }
 
     out.chars().take(MAX_SUMMARY_CHARS).collect()
+}
+
+/// Node kinds that are real *definitions* a feature provides — its API surface —
+/// as opposed to import references (`dependency`), `concept`/`use` nodes, file
+/// nodes, or manifest scripts. Used to keep "Key symbols" meaningful.
+fn is_definition_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "function"
+            | "struct"
+            | "enum"
+            | "trait"
+            | "impl"
+            | "method"
+            | "module"
+            | "type_alias"
+            | "deployment_resource"
+    )
+}
+
+/// A short, human phrase for a feature's journey layer — what kind of thing it is.
+fn role_phrase(layer: crate::layering::Layer) -> &'static str {
+    use crate::layering::Layer;
+    match layer {
+        Layer::Entry => "entry point — user-facing UI, client, CLI or pages",
+        Layer::Interface => "interface — the API surface (resolvers, controllers, routes)",
+        Layer::Core => "core — business logic and data access (services, domain, repositories)",
+        Layer::Foundation => "foundation — contracts, infrastructure, config or low-level types",
+        Layer::Unknown => "supporting code (no distinct journey layer)",
+    }
+}
+
+/// Expose both the raw label and its separator-split words so the embedder sees
+/// the natural tokens (`onchainlabs/src/Foo.sol` → also `onchainlabs src Foo
+/// sol`). Pure and deterministic.
+fn humanize_label(label: &str) -> String {
+    let words = label
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if words.is_empty() || words == label {
+        label.to_string()
+    } else {
+        format!("{label} ({words})")
+    }
 }
 
 #[cfg(test)]
@@ -186,6 +287,8 @@ mod tests {
                 ),
             ],
             snippets: vec!["function tokenizeIpnft(uint256 id) external { ... }".into()],
+            // Sorted by label, as the loader's query returns them.
+            related: vec!["access · AccessResolver".into(), "ipnft · CrowdSale".into()],
         }
     }
 
@@ -197,8 +300,67 @@ mod tests {
         assert!(a.contains("Tokenizer"));
         assert!(a.contains("tokenizeIpnft"));
         assert!(a.contains("IPNFT/src/Tokenizer.sol"));
-        // File nodes are not listed as key symbols.
+        // Key symbols list real definitions (struct/function), not file nodes.
         assert!(a.contains("Key symbols: Tokenizer, tokenizeIpnft."));
+        // v2: no shared structural prefix — leads with the domain signal (label).
+        assert!(!a.starts_with("Feature:"));
+        assert!(a.starts_with("ipnft"));
+        // Humanized label exposes the separator-split words for the embedder.
+        assert!(a.contains("ipnft Tokenizer"));
+        // v3: states a role and names the related features it connects to.
+        assert!(a.contains("Role: foundation"), "summary states the role");
+        assert!(
+            a.contains("Related features: access · AccessResolver, ipnft · CrowdSale."),
+            "summary names related features"
+        );
+    }
+
+    #[test]
+    fn key_symbols_prefer_definitions_over_imports() {
+        // A feature whose members are mostly import references plus one real
+        // component: the summary should name the component, not the imports.
+        let mixed = CommunitySummaryInputs {
+            label: "labs · TokenPanel".into(),
+            member_count: 4,
+            members: vec![
+                (
+                    "TokenPanel".into(),
+                    "function".into(),
+                    "labs/token-panel.tsx".into(),
+                ),
+                (
+                    "@/app/ipnft-provider".into(),
+                    "dependency".into(),
+                    String::new(),
+                ),
+                (
+                    "./columns".into(),
+                    "dependency".into(),
+                    "labs/token-panel.tsx".into(),
+                ),
+                (
+                    "token-panel.tsx".into(),
+                    "file".into(),
+                    "labs/token-panel.tsx".into(),
+                ),
+            ],
+            snippets: vec![],
+            related: vec![],
+        };
+        let s = compose_summary(&mixed);
+        assert!(
+            s.contains("Key symbols: TokenPanel."),
+            "names the definition: {s}"
+        );
+        assert!(
+            !s.contains("Key symbols: TokenPanel, @/app"),
+            "imports excluded"
+        );
+    }
+
+    #[test]
+    fn algo_tag_tracks_version() {
+        assert_eq!(algo_tag(), format!("-sum{SUMMARY_ALGO_VERSION}"));
     }
 
     #[test]
@@ -208,6 +370,7 @@ mod tests {
             member_count: 1,
             members: vec![("f".into(), "function".into(), "a.rs".into())],
             snippets: vec!["A".repeat(10_000)],
+            related: vec![],
         };
         assert!(compose_summary(&big).len() <= MAX_SUMMARY_CHARS);
     }

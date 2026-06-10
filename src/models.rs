@@ -124,6 +124,42 @@ pub struct Repository {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A named set of indexed repositories (client, backend, contracts, infra, …)
+/// — the cross-repository grouping the P6 project layer hangs off.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Project {
+    pub id: Uuid,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One member repository of a project, with its project-scoped alias and the
+/// repo root hash recorded at the last successful cross-repo link run (the L2
+/// gate for relinking).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectRepo {
+    pub repo: Repository,
+    pub alias: String,
+    pub linked_repo_hash: Option<String>,
+}
+
+/// A detected cross-repository link between two L1 communities (features) of
+/// different member repos: consumer feature → provider feature. Produced by
+/// the linkers in `src/linker.rs`, persisted in `cross_repo_links`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrossRepoLink {
+    pub id: Uuid,
+    pub source_repo_id: Uuid,
+    pub source_community_id: Uuid,
+    pub target_repo_id: Uuid,
+    pub target_community_id: Uuid,
+    /// `package_dep` | `abi` | `http_route`.
+    pub kind: String,
+    /// Matched names/paths + provenance breadcrumbs.
+    pub evidence: Value,
+    pub confidence: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceFile {
     pub id: Uuid,

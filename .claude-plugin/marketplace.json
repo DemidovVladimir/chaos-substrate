@@ -9,8 +9,8 @@
   "plugins": [
     {
       "name": "chaos-substrate",
-      "description": "Persistent code knowledge memory with a layered feature hierarchy, change-plan decomposition, MCP feature-context explanations, and client-facing feature storyboards (with real-UI previews) for Rust, TypeScript, JavaScript, Python, and Solidity projects.",
-      "version": "0.9.4",
+      "description": "Persistent code knowledge memory with a layered feature hierarchy, change-plan decomposition, core-components area overviews, MCP feature-context explanations, and client-facing feature storyboards (with real-UI previews) for Rust, TypeScript, JavaScript, Python, and Solidity projects.",
+      "version": "0.12.0",
       "author": {
         "name": "Chaos Substrate"
       },
