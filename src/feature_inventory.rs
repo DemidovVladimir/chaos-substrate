@@ -812,12 +812,26 @@ fn assemble_and_write(
         .iter()
         .flat_map(|g| g.features.iter())
         .map(|f| {
+            // The label IS the feature's directory under the structural
+            // partition, so `folders` would repeat it; three symbols identify
+            // a feature — the full roster lives in the HTML inventory. Goal:
+            // the whole response stays small enough to be read INLINE by an
+            // agent (oversized tool results get offloaded to files, and then
+            // agents mine them with jq instead of reading the answer).
+            let mut symbol_names: Vec<String> = Vec::new();
+            for sym in &f.top_symbols {
+                if !symbol_names.contains(&sym.name) {
+                    symbol_names.push(sym.name.clone());
+                }
+                if symbol_names.len() == 3 {
+                    break;
+                }
+            }
             let mut row = json!({
                 "label": f.label,
                 "role": f.role,
                 "member_count": f.member_count,
-                "folders": f.folders,
-                "top_symbols": f.top_symbols.iter().take(6).map(|s| s.name.clone()).collect::<Vec<_>>(),
+                "top_symbols": symbol_names,
             });
             if shared_match_rule.is_none() && !f.matched_by.is_empty() {
                 row["matched_by"] = json!(f.matched_by);

@@ -182,8 +182,8 @@ If MCP tools are available, prefer them over shelling out:
     filter needs the embedder; layer/folder/whole-repo listing is embedder-free. It ALWAYS writes an
     interactive HTML inventory to `docs/features_memory/<slug>-features.html` (embedding a
     `chaos-features-manifest` an agent can extract) and returns a COMPACT JSON summary (resolved
-    filter + how detected, per-layer + language counts, per-feature label/role/folders/symbols/
-    `matched_by`, provenance). It mirrors the `chaos features <repo> ["<filter>"]` CLI command.
+    filter + how detected, per-layer + language counts, per-feature label/role/member_count/symbols
+    (shared `matched_by_rule` lifted top-level), provenance). It mirrors the `chaos features <repo> ["<filter>"]` CLI command.
     Pass `project` instead of `repo` to list features across EVERY repo of a project in one
     journey-layered inventory — each card tagged with its repo alias and annotated with the
     project's cross-repo links; the HTML goes to the project workspace
