@@ -13,7 +13,7 @@ export PATH="$HOME/.local/bin:$PATH"
 ```
 
 Use `chaos-substrate.local.toml` for Ollama. `chaos ollama-setup` tries to start Ollama and
-pull `nomic-embed-text` automatically when Ollama is installed.
+pull `embeddinggemma` automatically when Ollama is installed.
 
 ## 2. Install Chaos Substrate In Claude Cowork
 

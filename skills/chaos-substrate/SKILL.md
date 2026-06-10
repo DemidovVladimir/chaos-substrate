@@ -335,7 +335,7 @@ automatically when the active config uses Ollama.
 
 If Ollama is missing, tell the user to install it from `https://ollama.com/download`. On Linux the
 official install command is usually `curl -fsSL https://ollama.com/install.sh | sh`. The default
-local embedding model is `nomic-embed-text` with `dimensions = 768`.
+local embedding model is `embeddinggemma` with `dimensions = 768`.
 
 Generated artifacts live in the target project:
 

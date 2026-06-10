@@ -116,6 +116,16 @@ all exports/refresh/hook/linkers are embedder-free.
   The wrapper is now ONE file — `bin/chaos` (the path `.mcp.json` and the
   PATH symlink already used); `scripts/chaos` is gone.
 
+### Changed — default local embedding model: EmbeddingGemma
+
+- The recommended/default Ollama model is now **`embeddinggemma`** (Google,
+  308M, 768 dims — best-in-class code retrieval under 500M params), replacing
+  `nomic-embed-text`. Same dimensions, so only the model name changes in
+  config. Existing vectors are unaffected (embeddings are keyed per model);
+  the first analyze per repo under the new model re-embeds once, then the
+  content-hash gates apply as usual. `bin/chaos ollama-setup` now pulls
+  whatever model the config names instead of a hardcoded one.
+
 ### New — clean slate for validation
 
 - `chaos clean [--artifacts]`: the database wipe (all repos or one) can now

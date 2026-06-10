@@ -119,7 +119,9 @@ impl Config {
         };
         let model = env::var("CHAOS_EMBED_MODEL").unwrap_or_else(|_| match provider {
             EmbeddingProvider::OpenAi => "text-embedding-3-small".into(),
-            EmbeddingProvider::Ollama => "nomic-embed-text".into(),
+            // EmbeddingGemma: strongest small local model for code (768 dims,
+            // same as the previous nomic-embed-text default).
+            EmbeddingProvider::Ollama => "embeddinggemma".into(),
         });
         let dimensions = env::var("CHAOS_EMBED_DIMENSIONS")
             .ok()

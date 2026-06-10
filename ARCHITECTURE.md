@@ -32,7 +32,7 @@ edge cost / confidence weighting  ──  src/weights.rs
   │
   ▼
 embeddings (chunk content → vectors)  ──  src/embedding.rs
-  │   OpenAI text-embedding-3-small (1536d) OR Ollama nomic-embed-text (768d)
+  │   OpenAI text-embedding-3-small (1536d) OR Ollama embeddinggemma (768d)
   │   FAIL-CLOSED: no real embedder ⇒ analysis fails (never fake/random vectors)
   ▼
 Postgres + pgvector  ──  src/storage.rs (sqlx)

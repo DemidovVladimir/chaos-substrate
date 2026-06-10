@@ -39,7 +39,7 @@ This is the canonical bootstrap. Bundled Postgres uses `pgvector/pgvector:pg16` 
 cp chaos-substrate.example.toml chaos-substrate.toml   # example config defaults to local Ollama
 docker compose up -d                                   # pgvector on localhost:54329
 # Ollama default: ensure Ollama is running and the model is pulled:
-#   ollama pull nomic-embed-text   (see docs/OLLAMA_SETUP.md)
+#   ollama pull embeddinggemma   (see docs/OLLAMA_SETUP.md)
 chaos migrate                                           # create schema (sqlx migrations)
 chaos doctor                                            # check Postgres + real embedding probe
 chaos analyze /path/to/repo                             # index the repository
@@ -55,7 +55,7 @@ The default `DATABASE_URL` for the bundled container is
 > [docs/QUICKSTART_CLAUDE.md](docs/QUICKSTART_CLAUDE.md) for the full path from installing Rust
 > to generating a feature page, as a single linear guide.
 
-The example config defaults to local Ollama (`nomic-embed-text`, 768 dims,
+The example config defaults to local Ollama (`embeddinggemma`, 768 dims,
 `http://localhost:11434`). Ollama must be running and the model pulled before `chaos doctor` will
 pass. See [docs/OLLAMA_SETUP.md](docs/OLLAMA_SETUP.md) for install, model pull, and
 troubleshooting.
@@ -154,7 +154,7 @@ resolution is name-based.
   pgvector instance (bundled `docker-compose.yml` runs `pgvector/pgvector:pg16` locally on port
   `54329`). Nothing is sent to a third party beyond your chosen embedding provider.
 - **Embeddings require a real provider.** OpenAI (`text-embedding-3-small`, 1536 dims) or Ollama
-  (`nomic-embed-text`, 768 dims). Only chunk text is sent to the embedder.
+  (`embeddinggemma`, 768 dims). Only chunk text is sent to the embedder.
 - **Fail-closed by design.** There are no mock embedders and no random vectors. If no real embedder
   is available, analysis fails rather than fabricating data. A dimension check prevents incompatible
   vectors from being stored.

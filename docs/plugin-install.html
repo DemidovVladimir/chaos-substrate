@@ -600,7 +600,7 @@ chaos impact /path/to/repo "add OAuth2 login"</code></pre>
         <h2>A real embedder</h2>
         <p>Choose one — analysis will refuse to run without a working provider:</p>
         <ul style="margin-top:10px;">
-          <li><strong>Ollama (default)</strong> — <code>nomic-embed-text</code>, 768 dims, <code>http://localhost:11434</code>. No API key needed. The example config defaults to Ollama; run <code>ollama pull nomic-embed-text</code> before indexing. See <a href="OLLAMA_SETUP.md">docs/OLLAMA_SETUP.md</a>.</li>
+          <li><strong>Ollama (default)</strong> — <code>embeddinggemma</code>, 768 dims, <code>http://localhost:11434</code>. No API key needed. The example config defaults to Ollama; run <code>ollama pull embeddinggemma</code> before indexing. See <a href="OLLAMA_SETUP.md">docs/OLLAMA_SETUP.md</a>.</li>
           <li><strong>OpenAI (alternative)</strong> — <code>text-embedding-3-small</code>, 1536 dims. Uncomment the <code>open_ai</code> block in your config and set <code>OPENAI_API_KEY</code>. Only chunk text is sent.</li>
         </ul>
 
@@ -651,7 +651,7 @@ cp chaos-substrate.example.toml chaos-substrate.toml</code></pre>
             </div>
             <p>Starts <code>pgvector/pgvector:pg16</code> on port 54329. For the default Ollama path, ensure Ollama is running and pull the model:</p>
             <div class="pre-wrap">
-              <pre><code>ollama pull nomic-embed-text</code></pre>
+              <pre><code>ollama pull embeddinggemma</code></pre>
               <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
             </div>
             <p style="margin-top:8px;">Using OpenAI instead? Export your key: <code>export OPENAI_API_KEY=sk-...</code></p>
@@ -946,7 +946,7 @@ args    = ["--config", "/abs/chaos-substrate.toml", "mcp"]</code></pre>
         <ul style="margin-top:4px;">
           <li>
             <strong>Embedder not configured → analysis fails by design.</strong>
-            This is correct behavior. Chaos Substrate will not store fake vectors. Set <code>OPENAI_API_KEY</code> or ensure Ollama is running at <code>http://localhost:11434</code> with <code>nomic-embed-text</code> pulled. See <a href="OLLAMA_SETUP.md">docs/OLLAMA_SETUP.md</a>.
+            This is correct behavior. Chaos Substrate will not store fake vectors. Set <code>OPENAI_API_KEY</code> or ensure Ollama is running at <code>http://localhost:11434</code> with <code>embeddinggemma</code> pulled. See <a href="OLLAMA_SETUP.md">docs/OLLAMA_SETUP.md</a>.
           </li>
           <li style="margin-top:10px;">
             <strong>Postgres not reachable.</strong>

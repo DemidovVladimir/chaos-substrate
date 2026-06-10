@@ -49,10 +49,10 @@ export PATH="$HOME/.local/bin:$PATH"          # so `chaos` is on PATH
 
 `bootstrap` does the whole setup in order: installs the `chaos` wrapper, builds the
 release binary (`cargo build --release`), starts Postgres (pgvector on host port `54329`),
-starts Ollama and pulls `nomic-embed-text`, runs `chaos migrate`, then `chaos doctor`.
+starts Ollama and pulls `embeddinggemma`, runs `chaos migrate`, then `chaos doctor`.
 
 A healthy `doctor` reports Postgres, pgvector, provider (`ollama`), model
-(`nomic-embed-text`), and dimensions (`768`). If it fails, the embedder or database is not
+(`embeddinggemma`), and dimensions (`768`). If it fails, the embedder or database is not
 reachable — analysis is **fail-closed** and will not fabricate vectors.
 
 - Embedder install/troubleshooting (and the dimension check): [OLLAMA_SETUP.md](OLLAMA_SETUP.md).

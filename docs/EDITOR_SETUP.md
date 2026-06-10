@@ -67,8 +67,8 @@ tools; see the [MCP Tools](../README.md#mcp-tools) section of the README for the
    `pgvector/pgvector:pg16` on host port `54329` with
    `DATABASE_URL=postgres://chaos:chaos@localhost:54329/chaos_substrate`.
 2. **An embedder.** The example config (`chaos-substrate.example.toml`) defaults to local Ollama
-   (`nomic-embed-text`, 768 dims, `http://localhost:11434`) — no API key needed. Ollama must be
-   running and the model pulled (`ollama pull nomic-embed-text`). For OpenAI instead, uncomment the
+   (`embeddinggemma`, 768 dims, `http://localhost:11434`) — no API key needed. Ollama must be
+   running and the model pulled (`ollama pull embeddinggemma`). For OpenAI instead, uncomment the
    `open_ai` block in your config and set `OPENAI_API_KEY` (`text-embedding-3-small`, 1536 dims).
    Analysis fails closed if no real embedder is reachable.
 3. **Build the release binary:**

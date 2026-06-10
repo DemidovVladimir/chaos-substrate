@@ -370,8 +370,8 @@ and `.cursor/hooks.json`).
 - **Embedder not configured / analysis fails.** This is by design (fail-closed — no fake
   vectors). Configure a real embedder in `chaos-substrate.toml`:
   - OpenAI: `text-embedding-3-small` (1536 dims), needs `OPENAI_API_KEY`.
-  - Ollama: `nomic-embed-text` (768 dims), `base_url http://localhost:11434`
-    (committed default). Ensure the model is pulled: `ollama pull nomic-embed-text`.
+  - Ollama: `embeddinggemma` (768 dims), `base_url http://localhost:11434`
+    (committed default). Ensure the model is pulled: `ollama pull embeddinggemma`.
   Re-run `chaos doctor` to confirm the embedder probe passes.
 
 - **Postgres not reachable.** Confirm the container is up and the port is published:

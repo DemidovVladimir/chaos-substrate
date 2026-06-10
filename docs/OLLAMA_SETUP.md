@@ -7,7 +7,7 @@ Chaos Substrate expects Ollama's `/api/embed` endpoint and defaults to:
 ```toml
 [embedding]
 provider = "ollama"
-model = "nomic-embed-text"
+model = "embeddinggemma"
 dimensions = 768
 base_url = "http://localhost:11434"
 ```
@@ -54,7 +54,7 @@ Linux, so this manual command is usually only needed when the local install bloc
 ## 2. Pull The Embedding Model
 
 ```bash
-ollama pull nomic-embed-text
+ollama pull embeddinggemma
 ```
 
 This model returns 768-dimensional embeddings, so `dimensions = 768` must stay in the config.
@@ -102,19 +102,19 @@ printing success if the Ollama server cannot answer.
 
 If `doctor` cannot connect to Ollama:
 
-- Run `chaos ollama-setup`; it tries to start Ollama and pull `nomic-embed-text`.
+- Run `chaos ollama-setup`; it tries to start Ollama and pull `embeddinggemma`.
 - Confirm `curl http://localhost:11434/api/tags` returns JSON.
-- Confirm `nomic-embed-text` is installed with `ollama list`.
+- Confirm `embeddinggemma` is installed with `ollama list`.
 - Confirm `chaos-substrate.local.toml` has `provider = "ollama"` and `dimensions = 768`.
 
 If analysis fails with an embedding dimension mismatch:
 
-- Keep `nomic-embed-text` paired with `dimensions = 768`.
+- Keep `embeddinggemma` paired with `dimensions = 768`.
 - If you switch to another embedding model, update `dimensions` to exactly match that model.
 - Do not bypass this check with fake vectors; Chaos Substrate intentionally fails when dimensions do
   not match.
 
-If `ollama pull nomic-embed-text` fails:
+If `ollama pull embeddinggemma` fails:
 
 - Check network access.
 - Run `ollama --version`.
