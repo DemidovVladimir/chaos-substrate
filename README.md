@@ -26,7 +26,7 @@ Rust-side, never run as a separate Node or Python service. It can also export a 
 
 | Mode | What | For | How to start |
 | --- | --- | --- | --- |
-| **Agent via MCP** | A stdio MCP server with 17 tools (`chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`, `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`, `chaos_clean`, `chaos_graph`). | Coding agents (Claude Code, Codex, Cursor, Windsurf, OpenCode) that should query durable code memory instead of re-reading files. | `chaos setup` to register the server, then ask the agent to analyze and query. See [docs/EDITOR_SETUP.md](docs/EDITOR_SETUP.md). |
+| **Agent via MCP** | A stdio MCP server with 18 tools (`chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_query`, `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`, `chaos_clean`, `chaos_graph`). | Coding agents (Claude Code, Codex, Cursor, Windsurf, OpenCode) that should query durable code memory instead of re-reading files. | `chaos setup` to register the server, then ask the agent to analyze and query. See [docs/EDITOR_SETUP.md](docs/EDITOR_SETUP.md). |
 | **Raw CLI** | The `chaos` binary: `analyze`, `add`, `stats`, `query`, `feature-context`, `impact`, `change-plan`, `storyboard`, `graph`, `obsidian`, `refresh`, `clean`. | Humans and scripts doing setup, debugging, one-off indexing, or agentless operation. | `chaos analyze <repo>` then `chaos query <repo> "<question>"`. See [Quick Start](#quick-start). |
 | **Generated static feature-website** | A self-contained HTML feature page (light editorial theme) with interactive graph/story/code navigation plus a machine-readable manifest. | Sharing or reviewing how a feature works, and seeding future agent context from the embedded manifest. | `chaos feature-context <repo> "<task>" --output-html page.html`, or the `chaos_write_feature_website` MCP tool. |
 | **Client/user storyboard** | A self-contained HTML page (light editorial theme) that explains a feature from the UI/UX user-story perspective with **no code**: personas, "As a … I want … so that …" stories, clickable frames, confidence rings, an embedded manifest, and optional **real-UI previews** per frame (a captured screenshot/clip or a live `iframe` of the running app). | Handing a stakeholder or end user an interactive presentation of a feature without showing code. | The `chaos_write_storyboard` MCP tool, or `chaos storyboard <repo> --manifest story.json`. |
@@ -97,7 +97,7 @@ cargo build --release
 ## MCP Tools
 
 The stdio MCP server speaks newline-delimited JSON-RPC (no `Content-Length` framing) and exposes
-exactly seventeen tools. **This is the canonical tool reference.**
+exactly eighteen tools. **This is the canonical tool reference.**
 
 | Tool | What it does | Key params | When to use |
 | --- | --- | --- | --- |
@@ -107,6 +107,7 @@ exactly seventeen tools. **This is the canonical tool reference.**
 | `chaos_analyze` | Indexes or refreshes a repository into the persistent graph + embeddings. | `repo_path` | First, to build or update memory for a repo before querying. |
 | `chaos_add` | Incrementally indexes the files changed in git (or explicit `paths`), refreshes the Obsidian vault, and writes an interactive feature/bug page — in one shot. | `repo_path`, `paths`, `since`, `kind` (`feature`\|`bug`), `message`, `obsidian_output`, `no_obsidian`, `no_page` | After changing a few files, to update memory + docs without a full re-index. Auto-classifies feature vs bug from git. |
 | `chaos_stats` | Reports index statistics for an already-indexed repository, read from Postgres: totals (files, nodes, edges, chunks, embedded vs missing, split chunks) plus breakdowns of nodes by kind, edges by kind, chunks by type, and files by language. | `repo` | After `chaos_analyze`/`chaos_add`, to explain or sanity-check what was indexed. Read-only and embedder-free. |
+| `chaos_stack` | Reports the **tech stack** of an already-indexed repository, listed rather than counted: manifest-declared dependencies by ecosystem (npm/cargo — versions, runtime-vs-dev scope, how many workspace manifests declare each, widest-declared first), npm scripts, deployment resources (AWS CDK app entrypoints, Stack classes, L2 constructs by cloud service), indexed JS/TS configs, and the language breakdown. **Always** writes an interactive HTML inventory to `docs/features_memory/stack.html` (embedded `chaos-stack-manifest`) and returns a compact JSON summary with explicit **coverage notes** (what the index does not extract yet: Dockerfiles, CI workflows, pyproject.toml, foundry.toml, Terraform). | `repo`, `output_html` | To answer "what is this repo built with / what infrastructure does it use?" without grepping manifests. Read-only and embedder-free. |
 | `chaos_query` | Answers a focused, source-grounded question via hybrid (semantic + keyword) retrieval. With `hierarchical`, retrieves top-down — matching feature (community) summaries first and returning the surfaced features alongside the chunk hits, falling back to flat search when no hierarchy exists. | `repo`, `question`, `limit` (default 10), `hierarchical` | To get a grounded answer about specific code without re-reading files. |
 | `chaos_feature_context` | Gathers evidence for understanding a feature: semantic/keyword hits, graph context, feature-page manifests. | `repo`, `task`, `limit` (10), `feature_limit` (3), `nodes_per_feature` (8), `features_dir`, `output_html` | Before implementing or explaining a feature, to assemble an implementation brief. Pass `output_html` to also write the feature page. |
 | `chaos_impact` | Builds a feature-vs-existing-code impact report for an indexed repo and **always** writes an interactive HTML (impact summary + evidence dashboard) to `docs/features_memory/<slug>-impact.html`; returns a compact JSON summary (counts, the existing files/symbols the feature touches, warnings, and the HTML path) while the full evidence stays in the HTML. | `repo`, `feature`, `features_dir`, `output_html`, `limit` (10), `feature_limit` (3), `nodes_per_feature` (8) | Before implementing a feature, to see how it maps onto the codebase as it is today (the "before") without flooding context like a raw `chaos_feature_context` dump. |
@@ -264,7 +265,7 @@ unavailable, analysis must fail rather than producing fake vectors.
 
 ### Key source files
 
-`src/main.rs` (clap CLI), `src/mcp.rs` (MCP server, 17 tools), `src/config.rs` (toml+env config),
+`src/main.rs` (clap CLI), `src/mcp.rs` (MCP server, 18 tools), `src/config.rs` (toml+env config),
 `src/storage.rs` (Postgres, sqlx), `src/embedding.rs` (OpenAI/Ollama embedders), `src/extractor.rs`
 (orchestration + Rust/Cargo/Markdown/PDF/JSON/AWS-CDK extraction + call edges),
 `src/lang/{mod,javascript,python,solidity}.rs` (oxc/rustpython/solang AST extraction),
@@ -272,7 +273,8 @@ unavailable, analysis must fail rather than producing fake vectors.
 `src/community.rs` + `src/merkle.rs` + `src/community_summary.rs` + `src/change_plan.rs` +
 `src/hierarchy_export.rs` (hierarchical memory: L1 Louvain god-nodes, L2 Merkle rollup,
 L3 hash-gated community summaries, change-plan tool, and god-node/feature-map export),
-`src/feature_context.rs` + `src/feature_export.rs` (feature pages), `src/graph_export.rs`,
+`src/feature_context.rs` + `src/feature_export.rs` (feature pages), `src/stack.rs`
+(tech-stack inventory), `src/graph_export.rs`,
 `src/obsidian_export.rs`, `src/setup.rs`, `src/hook.rs`, `src/export_util.rs`, and
 `migrations/001_init.sql` (plus `002_communities.sql`, `003_subtree_hash.sql`,
 `004_community_summary.sql`).

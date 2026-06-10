@@ -153,6 +153,23 @@ embeddings, split chunks, nodes with chunks) plus breakdowns of nodes by kind, e
 chunks by type, and files by language. Use it to explain or sanity-check what an `analyze`/`add`
 produced.
 
+## Stack
+
+```sh
+# Report the tech stack of an already-indexed repository (read-only, no embedder)
+chaos stack /path/to/repo
+chaos stack /path/to/repo --output-html out.html   # default: docs/features_memory/stack.html
+```
+
+Lists (not just counts) what the repo is built with, read from the persisted index:
+manifest-declared dependencies by ecosystem (npm/cargo — versions, runtime-vs-dev scope, how many
+workspace manifests declare each, widest-declared first), npm scripts, deployment resources (AWS
+CDK app entrypoints, Stack classes, L2 constructs grouped by cloud service), indexed JS/TS configs,
+and the file-language breakdown. Always writes an interactive HTML inventory (every entry) and
+prints a compact JSON summary (capped lists with `*_omitted` counts). The output states its
+coverage explicitly — Dockerfiles, CI workflows, pyproject.toml, foundry.toml and Terraform are not
+indexed yet and are named as such rather than silently omitted.
+
 ## Feature Context
 
 ```sh
@@ -321,7 +338,7 @@ Use the release binary directly:
 target/release/chaos --config chaos-substrate.toml mcp
 ```
 
-Exposes exactly 17 tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
+Exposes exactly 18 tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_query`,
 `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
 `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`, `chaos_clean`, `chaos_graph` (see README.md "MCP Tools" for the
 full reference).
