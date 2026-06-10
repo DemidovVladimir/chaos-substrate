@@ -691,21 +691,10 @@ fn assemble_and_write(
     limit: usize,
     extra: Value,
 ) -> Result<Value> {
-    // Optional cap: keep the largest features when a positive limit is set.
-    if limit > 0 && cards.len() > limit {
-        cards.sort_by(|a, b| {
-            b.1.member_count
-                .cmp(&a.1.member_count)
-                .then_with(|| a.1.id.cmp(&b.1.id))
-        });
-        let dropped = cards.len() - limit;
-        cards.truncate(limit);
-        warnings.push(format!(
-            "showing the {limit} largest feature(s); {dropped} more matched but were capped by --limit (pass --limit 0 for all)"
-        ));
-    }
-
-    // Layer tallies across everything selected.
+    // Tallies FIRST, over everything that matched — `total`, the overview
+    // sentence, and the per-layer counts must describe the MATCH, not the
+    // listing. A --limit answers "show me fewer", never "pretend fewer exist";
+    // an agent relaying `total` must not under-report the repo.
     let mut layer_tally: BTreeMap<u8, (Layer, usize)> = BTreeMap::new();
     for (layer, _) in &cards {
         layer_tally.entry(layer.rank()).or_insert((*layer, 0)).1 += 1;
@@ -717,6 +706,26 @@ fn assemble_and_write(
             count: *c,
         })
         .collect();
+    let total = cards.len();
+    let all_files: Vec<String> = cards
+        .iter()
+        .flat_map(|(_, c)| c.key_files.clone())
+        .collect();
+    let language_counts = language_tally(&all_files);
+
+    // Optional cap: keep the largest features when a positive limit is set.
+    if limit > 0 && cards.len() > limit {
+        cards.sort_by(|a, b| {
+            b.1.member_count
+                .cmp(&a.1.member_count)
+                .then_with(|| a.1.id.cmp(&b.1.id))
+        });
+        let dropped = cards.len() - limit;
+        cards.truncate(limit);
+        warnings.push(format!(
+            "listing the {limit} largest of {total} matching feature(s); {dropped} more matched (counts describe the full match; pass --limit 0 to list all)"
+        ));
+    }
 
     // Group, journey order (entry first), largest feature first within a group.
     let group_order = [
@@ -749,14 +758,6 @@ fn assemble_and_write(
         });
     }
 
-    // Language tally across all selected features.
-    let all_files: Vec<String> = cards
-        .iter()
-        .flat_map(|(_, c)| c.key_files.clone())
-        .collect();
-    let language_counts = language_tally(&all_files);
-
-    let total = cards.len();
     let overview = compose_overview(resolved, display_name, total, &layer_counts);
     let (title, subtitle) = framing(resolved, display_name);
 
