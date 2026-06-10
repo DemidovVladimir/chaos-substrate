@@ -125,7 +125,35 @@ pub async fn list(storage: &Storage) -> Result<Value> {
             "cross_repo_links": links.len(),
         }));
     }
-    Ok(json!({ "status": "ok", "projects": out }))
+    // Always include the indexed repositories: without them an empty project
+    // list is a dead end — an agent looking for "the client app" can't discover
+    // that the whole stack may already be ONE indexed repo whose sub-apps are
+    // folder/layer filters, not project members.
+    let repos = storage.list_repositories().await?;
+    let indexed: Vec<Value> = repos
+        .iter()
+        .map(|r| {
+            json!({
+                "name": r.name,
+                "root_path": r.root_path,
+                "last_indexed": r.updated_at,
+            })
+        })
+        .collect();
+    let no_projects = out.is_empty();
+    let mut result = json!({ "status": "ok", "projects": out, "indexed_repositories": indexed });
+    if no_projects {
+        result["hint"] = json!(if repos.is_empty() {
+            "no projects and no indexed repositories — run chaos_analyze on a repository first"
+                .to_string()
+        } else {
+            format!(
+                "no cross-repo projects are configured, but {} indexed repository(ies) exist and are queryable directly — use chaos_features/chaos_query/chaos_components with a root_path above. A sub-app inside one indexed repo (a client app, backend, infra folder) is a folder or layer filter on that repo (e.g. chaos_features <repo> \"client\"), not a separate project",
+                repos.len()
+            )
+        });
+    }
+    Ok(result)
 }
 
 pub async fn status(storage: &Storage, project_name: &str) -> Result<Value> {

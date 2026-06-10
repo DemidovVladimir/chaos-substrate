@@ -4,6 +4,41 @@ All notable changes to Chaos Substrate are documented here. Versions before
 0.12.0 predate this file; see the git history (`P0`–`P5` commits) for the
 hierarchical-memory build-out.
 
+## 0.13.0 — 2026-06-10
+
+The discoverability release: an agent that doesn't know what Chaos already
+knows can now find out, and `chaos_features` filters resolve **by meaning**,
+not by exact word match.
+
+### Changed — semantic layer routing in `chaos_features`
+
+A filter that isn't a folder or an exact layer word is now first tried as a
+layer request **semantically**: the filter is embedded once and max-pooled
+against a few prototype phrasings per journey layer, so "backend",
+"client app", "devops", "web frontend" or "API endpoints" select layer(s) by
+embedding cosine — there is no query keyword list to maintain, and an unseen
+phrasing still lands. "backend" legitimately spans two layers and resolves to
+**interface + core**; layers within a small margin of the best join the set.
+Genuine topics ("access control", "ipnft minting") stay below the calibrated
+floor and fall through to the topic match exactly as before
+(`feature_inventory.rs::maybe_route_layers_by_meaning`; thresholds calibrated
+against the default EmbeddingGemma — a model with a flatter cosine
+distribution simply routes fewer filters, degrading to the old behavior).
+`--layer backend` resolves the same way; the routed layer set is returned in
+the compact JSON (`filter.layers`) and recorded as an `embedding` provenance
+breadcrumb. Prototype embeddings are cached per process, so the long-lived
+MCP server embeds the constant phrasings once.
+
+### Changed — `chaos project list` is the discovery call
+
+`project list` now always returns **every indexed repository** (name, root
+path, last indexed) alongside the projects, and an empty project list carries
+a hint instead of being a dead end: with no project configured an agent could
+not discover that the whole stack may already be ONE indexed repo whose
+sub-apps are `chaos_features` folder/layer filters, not project members — it
+fell back to listing the filesystem. Tool descriptions, SKILL.md, README,
+RUNBOOK and CLAUDE.md updated to match (tool count stays 17).
+
 ## 0.12.0 — 2026-06-10
 
 The cross-repository release: Chaos now understands features that span

@@ -13,8 +13,11 @@
 //!   * a single known layer word like `client`/`ui`/`api`/`core`/`contracts`
 //!     ⇒ **layer** filter (`layering::layer_from_query`) — so "client features"
 //!     means "every entry-layer feature";
-//!   * anything else ⇒ **topic** match (summary-embedding cosine + label/summary
-//!     keywords), exhaustive (no top-N cap);
+//!   * anything else is first tried as a layer **by meaning** (embedding cosine
+//!     against per-layer prototype phrasings, so "backend", "client app" or
+//!     "devops" resolve to layers without a keyword list — "backend" spans
+//!     interface+core), and only then falls to a **topic** match
+//!     (summary-embedding cosine + label/summary keywords), exhaustive;
 //!   * nothing ⇒ the whole repo, grouped by layer.
 //!
 //! Like the other surfacing tools it ALWAYS writes an interactive HTML page to
@@ -33,7 +36,7 @@ use crate::{
     storage::Storage,
 };
 use anyhow::{Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -49,6 +52,9 @@ const MIN_SEMANTIC_SCORE: f64 = 0.30;
 const TOP_MEMBERS: usize = 48;
 /// Minimum token length for a lexical topic match (drops noisy 1–2 char hits).
 const MIN_LEXICAL_TOKEN: usize = 3;
+/// Auto-domain split threshold: a path-prefix group bigger than this splits
+/// into its child folders, so domain sections stay readable.
+const MAX_DOMAIN_GROUP: usize = 12;
 
 #[derive(Debug, Default, Clone)]
 pub struct FeatureInventoryOptions {
@@ -62,6 +68,43 @@ pub struct FeatureInventoryOptions {
     pub folder: Option<String>,
     /// Force a topic filter.
     pub topic: Option<String>,
+    /// Agent-supplied curation: human domain groups + one-line notes rendered
+    /// onto the SAME inventory page (re-run the identical query with this set).
+    pub curation: Option<CurationSpec>,
+}
+
+/// Agent-written curation for the human-facing inventory page. Chaos has no
+/// LLM, so readable domain titles and "what's in it" notes can only come from
+/// the agent — it passes the structure it already composed for its answer and
+/// Rust renders it deterministically (the `chaos_write_feature_website`
+/// philosophy applied to the feature inventory).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CurationSpec {
+    pub groups: Vec<CurationGroup>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CurationGroup {
+    /// Human heading, e.g. "IP-NFT Minting flow — the wizard".
+    pub title: String,
+    /// Optional emoji/icon shown before the title.
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// Optional one-paragraph description of the domain.
+    #[serde(default)]
+    pub blurb: Option<String>,
+    #[serde(default)]
+    pub features: Vec<CurationFeature>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CurationFeature {
+    /// Feature label as returned by the inventory (full label or a unique
+    /// trailing fragment of it).
+    pub label: String,
+    /// One-line human "what's in it" note.
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 /// How the filter was interpreted.
@@ -89,6 +132,10 @@ struct ResolvedFilter {
     value: Option<String>,
     /// True when the kind was inferred from the positional filter (vs forced by a flag).
     detected: bool,
+    /// Layer set resolved SEMANTICALLY (prototype-embedding match) — `None` for
+    /// the exact-word path, which `select_features` resolves itself. A phrase
+    /// like "backend" legitimately spans two layers (interface + core).
+    layers: Option<Vec<Layer>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -103,8 +150,35 @@ pub struct FeatureInventoryManifest {
     pub layer_counts: Vec<LayerCount>,
     pub language_counts: Vec<LangCount>,
     pub groups: Vec<LayerGroup>,
+    /// Human-first grouping: features clustered into folder-derived domains
+    /// (auto) or agent-curated domains with notes. The page renders these as
+    /// its primary sections; `groups` keeps the journey-layer view for agents.
+    pub domains: Vec<DomainGroup>,
     pub provenance: Vec<Breadcrumb>,
     pub warnings: Vec<String>,
+}
+
+/// One domain section of the inventory page.
+#[derive(Debug, Clone, Serialize)]
+pub struct DomainGroup {
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blurb: Option<String>,
+    /// True when an agent supplied this group (vs path-derived).
+    pub curated: bool,
+    pub features: Vec<DomainFeatureRef>,
+}
+
+/// Reference into the feature cards (which live in `groups`), plus the
+/// curated one-line note when present.
+#[derive(Debug, Clone, Serialize)]
+pub struct DomainFeatureRef {
+    pub id: Uuid,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -112,6 +186,10 @@ pub struct FilterInfo {
     pub kind: String,
     pub value: Option<String>,
     pub detected: bool,
+    /// Present when the value was resolved to layer(s) by embedding similarity
+    /// rather than an exact word — e.g. "backend" → ["interface", "core"].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layers: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -204,12 +282,20 @@ pub async fn run(
         );
     }
 
-    // 2. Resolve how to read the filter.
-    let resolved = resolve_filter(filter, opts, std::slice::from_ref(&repo_root));
+    // 2. Resolve how to read the filter — exact rules first, then by meaning.
+    let mut resolved = resolve_filter(filter, opts, std::slice::from_ref(&repo_root));
     push_filter_breadcrumb(&resolved, &mut provenance);
 
     // 3–5. Select, build cards, assemble (shared with the project listing).
     let topic_embedding = topic_embedding_for(embedder, &resolved).await?;
+    maybe_route_layers_by_meaning(
+        embedder,
+        &mut resolved,
+        topic_embedding.as_deref(),
+        &mut provenance,
+        &mut warnings,
+    )
+    .await;
     let selected = select_features(
         storage,
         embedder,
@@ -239,6 +325,7 @@ pub async fn run(
         warnings,
         &output,
         opts.limit,
+        opts.curation.as_ref(),
         json!({ "repo_id": repo.id }),
     )
 }
@@ -273,7 +360,7 @@ pub async fn run_project(
         .iter()
         .map(|m| PathBuf::from(&m.repo.root_path))
         .collect();
-    let resolved = resolve_filter(filter, opts, &roots);
+    let mut resolved = resolve_filter(filter, opts, &roots);
     push_filter_breadcrumb(&resolved, &mut provenance);
 
     // Cross-repo link annotations: community id → human-readable notes.
@@ -328,6 +415,14 @@ pub async fn run_project(
 
     // One embed call for the topic filter, shared by every member repo.
     let topic_embedding = topic_embedding_for(embedder, &resolved).await?;
+    maybe_route_layers_by_meaning(
+        embedder,
+        &mut resolved,
+        topic_embedding.as_deref(),
+        &mut provenance,
+        &mut warnings,
+    )
+    .await;
     let mut all_cards: Vec<(Layer, FeatureCard)> = Vec::new();
     let mut repo_summaries: Vec<Value> = Vec::new();
     for m in &members {
@@ -381,6 +476,7 @@ pub async fn run_project(
         warnings,
         &output,
         opts.limit,
+        opts.curation.as_ref(),
         json!({
             "project": project.name,
             "repos": repo_summaries,
@@ -422,6 +518,166 @@ async fn topic_embedding_for(
     Ok(Some(emb.embed(value).await?))
 }
 
+/// Prototype phrasings per journey layer, the anchors for SEMANTIC layer
+/// routing: a filter that isn't a folder or an exact layer word is embedded and
+/// max-pooled against these, so "backend", "client app", "devops" or "API
+/// endpoints" select layer(s) by MEANING — there is no query keyword list to
+/// maintain, and an unseen phrasing ("server side stuff") still lands.
+const LAYER_PROTOTYPES: &[(Layer, &str)] = &[
+    (Layer::Entry, "user-facing client application"),
+    (
+        Layer::Entry,
+        "frontend web app: UI components, screens, pages",
+    ),
+    (Layer::Entry, "mobile app user interface"),
+    (Layer::Entry, "command line interface a user runs"),
+    (Layer::Interface, "HTTP API endpoints and routes"),
+    (Layer::Interface, "GraphQL resolvers and REST controllers"),
+    (
+        Layer::Interface,
+        "the API surface that client applications call",
+    ),
+    (Layer::Interface, "backend API request handlers"),
+    (Layer::Core, "backend business logic and services"),
+    (Layer::Core, "server-side domain model and use cases"),
+    (Layer::Core, "data access layer and repositories"),
+    (Layer::Core, "backend services behind the API"),
+    (Layer::Foundation, "smart contracts on the blockchain"),
+    (
+        Layer::Foundation,
+        "infrastructure as code, deployment and devops",
+    ),
+    (
+        Layer::Foundation,
+        "configuration, environment and project setup",
+    ),
+    (Layer::Foundation, "low-level shared types and utilities"),
+];
+
+/// Floor the best layer's max-pooled cosine must clear for the filter to be
+/// read as a layer request, and the margin under the best within which further
+/// layers join the set ("backend" sits close to both interface and core, so it
+/// selects both). Calibrated against the default local embedder
+/// (EmbeddingGemma): layer phrasings score 0.68–0.91 while genuine topics
+/// ("access control", "payments", "data pipeline") stay ≤ 0.62. A model with a
+/// flatter cosine distribution routes fewer filters — they simply remain topic
+/// matches, the pre-routing behavior.
+const LAYER_ROUTE_FLOOR: f64 = 0.65;
+const LAYER_ROUTE_MARGIN: f64 = 0.06;
+
+fn cosine(a: &[f32], b: &[f32]) -> f64 {
+    let dot: f64 = a.iter().zip(b).map(|(x, y)| *x as f64 * *y as f64).sum();
+    let na: f64 = a.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
+    let nb: f64 = b.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
+    if na == 0.0 || nb == 0.0 {
+        0.0
+    } else {
+        dot / (na * nb)
+    }
+}
+
+/// Prototype embeddings per embedder identity, computed once per process — the
+/// MCP server is long-lived and must not re-embed 16 constant strings on every
+/// features call.
+type PrototypeVectors = std::sync::Arc<Vec<Vec<f32>>>;
+static PROTOTYPE_CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, PrototypeVectors>>> =
+    std::sync::OnceLock::new();
+
+async fn prototype_embeddings(emb: &dyn Embedder) -> Result<PrototypeVectors> {
+    let key = format!("{}/{}/{}", emb.provider(), emb.model_id(), emb.dimensions());
+    let cache = PROTOTYPE_CACHE.get_or_init(Default::default);
+    if let Some(hit) = cache.lock().unwrap().get(&key) {
+        return Ok(hit.clone());
+    }
+    let texts: Vec<String> = LAYER_PROTOTYPES
+        .iter()
+        .map(|(_, t)| t.to_string())
+        .collect();
+    let vecs = std::sync::Arc::new(emb.embed_batch(&texts).await?);
+    cache.lock().unwrap().insert(key, vecs.clone());
+    Ok(vecs)
+}
+
+/// Try to read the filter as a request for journey layer(s) BY MEANING, the
+/// step between exact-word layer detection and the topic fallback. Two cases
+/// route: an auto-detected topic (the phrase may *mean* a layer — "client
+/// app"), and a layer filter whose value isn't an exact layer word
+/// (`--layer backend`). On a hit the resolved filter is switched to a layer
+/// set; on a miss (or with no embedder, or an embedder error) nothing changes —
+/// the filter stays a topic match. Calibration in `LAYER_ROUTE_FLOOR`.
+async fn maybe_route_layers_by_meaning(
+    embedder: Option<&dyn Embedder>,
+    resolved: &mut ResolvedFilter,
+    topic_embedding: Option<&[f32]>,
+    provenance: &mut Vec<Breadcrumb>,
+    warnings: &mut Vec<String>,
+) {
+    let Some(emb) = embedder else { return };
+    let Some(value) = resolved.value.clone() else {
+        return;
+    };
+    let candidate = match resolved.kind {
+        FilterKind::Topic => resolved.detected,
+        FilterKind::Layer => layering::layer_from_query(&value).is_none(),
+        _ => false,
+    };
+    if !candidate {
+        return;
+    }
+    let routed: Result<Option<(Vec<Layer>, f64, &str)>> = async {
+        let query = match topic_embedding {
+            Some(v) => v.to_vec(),
+            None => emb.embed(&value).await?,
+        };
+        let protos = prototype_embeddings(emb).await?;
+        // Max-pool the cosine per layer: a layer is as close as its closest phrasing.
+        let mut best: Vec<(Layer, f64, &str)> = Vec::new();
+        for ((layer, text), vec) in LAYER_PROTOTYPES.iter().zip(protos.iter()) {
+            let score = cosine(&query, vec);
+            match best.iter_mut().find(|(l, _, _)| l == layer) {
+                Some(slot) if score > slot.1 => *slot = (*layer, score, text),
+                Some(_) => {}
+                None => best.push((*layer, score, text)),
+            }
+        }
+        best.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let (_, top, anchor) = best[0];
+        if top < LAYER_ROUTE_FLOOR {
+            return Ok(None);
+        }
+        let mut layers: Vec<Layer> = best
+            .iter()
+            .filter(|(_, s, _)| *s >= top - LAYER_ROUTE_MARGIN)
+            .map(|(l, _, _)| *l)
+            .collect();
+        layers.sort_by_key(|l| l.rank());
+        Ok(Some((layers, top, anchor)))
+    }
+    .await;
+    match routed {
+        Ok(Some((layers, top, anchor))) => {
+            let label = layers
+                .iter()
+                .map(|l| l.as_str())
+                .collect::<Vec<_>>()
+                .join("+");
+            provenance.push(Breadcrumb::new(
+                source::EMBEDDING,
+                "layer_prototype_match",
+                format!(
+                    "read `{value}` as the `{label}` layer(s) by meaning — cosine {top:.2} to the prototype \"{anchor}\" (floor {LAYER_ROUTE_FLOOR}, layers within {LAYER_ROUTE_MARGIN} of the best)"
+                ),
+            ));
+            resolved.kind = FilterKind::Layer;
+            resolved.layers = Some(layers);
+        }
+        Ok(None) => {}
+        Err(e) => warnings.push(format!(
+            "semantic layer routing skipped (embedder error: {e:#}) — `{value}` was matched as a topic"
+        )),
+    }
+}
+
 /// Select the matching feature ids of ONE repo, each with a "why it's here"
 /// breadcrumb. Shared by the single-repo and project-wide listings.
 #[allow(clippy::too_many_arguments)]
@@ -445,17 +701,27 @@ async fn select_features(
         }
         FilterKind::Layer => {
             let value = resolved.value.clone().unwrap_or_default();
-            let want = match layering::layer_from_query(&value) {
-                Some(l) => l,
-                None => {
-                    warnings.push(format!(
-                        "unrecognized layer `{value}` — recognized layers are entry (client/ui/web/cli), interface (api/resolver/route), core (service/logic/domain), foundation (contract/infra/config); showing features that couldn't be layered"
-                    ));
-                    Layer::Unknown
-                }
+            // Semantically routed layer set if present, else the exact-word path.
+            let want: Vec<Layer> = match &resolved.layers {
+                Some(layers) => layers.clone(),
+                None => match layering::layer_from_query(&value) {
+                    Some(l) => vec![l],
+                    None => {
+                        warnings.push(format!(
+                            "unrecognized layer `{value}` — recognized layers are entry (client/ui/web/cli), interface (api/resolver/route), core (service/logic/domain), foundation (contract/infra/config); with an embedder configured, layer phrasings like `backend` also resolve by meaning; showing features that couldn't be layered"
+                        ));
+                        vec![Layer::Unknown]
+                    }
+                },
             };
+            let want_label = want
+                .iter()
+                .map(|l| l.as_str())
+                .collect::<Vec<_>>()
+                .join("+");
             for c in &hierarchy.communities {
-                if layering::classify_community(&c.top_members) == want {
+                let layer = layering::classify_community(&c.top_members);
+                if want.contains(&layer) {
                     selected.push((
                         c.id,
                         vec![Breadcrumb::new(
@@ -463,7 +729,7 @@ async fn select_features(
                             "classify_community",
                             format!(
                                 "classified as the `{}` layer from its members' paths",
-                                want.as_str()
+                                layer.as_str()
                             ),
                         )],
                     ));
@@ -473,15 +739,13 @@ async fn select_features(
                 source::GRAPH,
                 "classify_community",
                 format!(
-                    "kept the {} feature(s) in the `{}` journey layer",
+                    "kept the {} feature(s) in the `{want_label}` journey layer(s)",
                     selected.len(),
-                    want.as_str()
                 ),
             ));
             if selected.is_empty() && !hierarchy.communities.is_empty() {
                 warnings.push(format!(
-                    "no features sit in the `{}` layer — try another layer or a folder/topic filter",
-                    want.as_str()
+                    "no features sit in the `{want_label}` layer(s) — try another layer or a folder/topic filter"
                 ));
             }
         }
@@ -638,9 +902,13 @@ fn build_cards(
         let key_files = distinct_files(&detail.top_members);
         let languages = language_tally(&key_files);
         let folders = top_folders(&key_files);
+        // Distinct by name — a community's top members often repeat one import
+        // path across many nodes, which reads as noise on a feature card.
+        let mut seen_symbols: HashSet<&str> = HashSet::new();
         let top_symbols: Vec<FeatureSymbol> = detail
             .top_members
             .iter()
+            .filter(|(name, _, _)| seen_symbols.insert(name.as_str()))
             .take(8)
             .map(|(name, kind, file)| FeatureSymbol {
                 name: name.clone(),
@@ -689,6 +957,7 @@ fn assemble_and_write(
     mut warnings: Vec<String>,
     output: &Path,
     limit: usize,
+    curation: Option<&CurationSpec>,
     extra: Value,
 ) -> Result<Value> {
     // Optional cap: keep the largest features when a positive limit is set.
@@ -760,8 +1029,24 @@ fn assemble_and_write(
     let overview = compose_overview(resolved, display_name, total, &layer_counts);
     let (title, subtitle) = framing(resolved, display_name);
 
+    // Human-first domain grouping: agent curation when supplied, else
+    // deterministic folder-derived domains.
+    let domains = match curation {
+        Some(spec) => {
+            let (domains, unmatched) = curated_domains(&cards, spec);
+            if !unmatched.is_empty() {
+                warnings.push(format!(
+                    "curation: no feature matched label(s): {}",
+                    unmatched.join(", ")
+                ));
+            }
+            domains
+        }
+        None => auto_domains(&cards),
+    };
+
     let manifest = FeatureInventoryManifest {
-        schema_version: "feature-inventory-1".to_string(),
+        schema_version: "feature-inventory-2".to_string(),
         repo_name: display_name.to_string(),
         title,
         subtitle,
@@ -769,12 +1054,17 @@ fn assemble_and_write(
             kind: resolved.kind.as_str().to_string(),
             value: resolved.value.clone(),
             detected: resolved.detected,
+            layers: resolved
+                .layers
+                .as_ref()
+                .map(|ls| ls.iter().map(|l| l.as_str().to_string()).collect()),
         },
         overview,
         total,
         layer_counts,
         language_counts,
         groups,
+        domains,
         provenance,
         warnings: warnings.clone(),
     };
@@ -785,40 +1075,113 @@ fn assemble_and_write(
     }
     write_features_html(output, &manifest)?;
 
+    // A curated call is a re-render of an inventory the agent already has —
+    // return only the outcome, not the feature lines again.
+    if curation.is_some() {
+        let mut result = json!({
+            "status": "ok",
+            "total": manifest.total,
+            "curated_groups": manifest.domains.iter().filter(|d| d.curated).count(),
+            "auto_groups": manifest.domains.iter().filter(|d| !d.curated).count(),
+            "output_html": output,
+            "warnings": warnings,
+        });
+        if let (Value::Object(target), Value::Object(extra)) = (&mut result, extra) {
+            for (k, v) in extra {
+                target.insert(k, v);
+            }
+        }
+        return Ok(result);
+    }
+
     // Compact JSON (the full detail lives in the HTML). The HTML inventory is
     // exhaustive; the inline list is bounded so a huge repo/project can't flood
     // the agent's context.
     const MAX_COMPACT_FEATURES: usize = 80;
+    // Per-row match evidence is only informative for topic matches (per-feature
+    // cosine / keyword detail). Layer and folder selection stamps one identical
+    // breadcrumb on every row — the top-level `filter` + provenance already
+    // state it once, so repeating it 80× would only burn agent context.
+    // Full breadcrumbs always remain in the HTML manifest.
+    let per_row_match = matches!(resolved.kind, FilterKind::Topic);
+    // One readable line per feature instead of a keyed object: no repeated JSON
+    // keys, one line under pretty-printing, and the spilled-to-disk form (when
+    // a harness persists a large tool result) stays grep-able plain text.
     let mut compact_features: Vec<Value> = manifest
         .groups
         .iter()
         .flat_map(|g| g.features.iter())
         .map(|f| {
-            let mut row = json!({
-                "label": f.label,
-                "role": f.role,
-                "member_count": f.member_count,
-                "folders": f.folders,
-                "top_symbols": f.top_symbols.iter().take(6).map(|s| s.name.clone()).collect::<Vec<_>>(),
-                "matched_by": f.matched_by,
-            });
+            let mut line = String::new();
             if let Some(repo) = &f.repo {
-                row["repo"] = json!(repo);
+                line.push_str(&format!("[{repo}] "));
+            }
+            line.push_str(&format!(
+                "{} — {}, {} members",
+                f.label, f.role, f.member_count
+            ));
+            // Folders the label doesn't already spell out.
+            let extra_folders: Vec<&String> = f
+                .folders
+                .iter()
+                .filter(|d| !f.label.starts_with(d.as_str()))
+                .collect();
+            if !extra_folders.is_empty() {
+                line.push_str(&format!(
+                    " · folders: {}",
+                    extra_folders
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            // Path-like symbol names (JS/TS import specifiers) repeat the
+            // directory context the label already gives — keep the last two
+            // segments inline; the HTML manifest has the full names.
+            let mut symbol_names: Vec<String> = Vec::new();
+            for s in &f.top_symbols {
+                let short = short_symbol_name(&s.name);
+                if !symbol_names.contains(&short) {
+                    symbol_names.push(short);
+                }
+                if symbol_names.len() == 6 {
+                    break;
+                }
+            }
+            if !symbol_names.is_empty() {
+                line.push_str(&format!(" · symbols: {}", symbol_names.join(", ")));
             }
             if !f.cross_links.is_empty() {
-                row["cross_links"] = json!(f.cross_links);
+                line.push_str(&format!(" · links: {}", f.cross_links.join("; ")));
             }
-            row
+            if per_row_match && !f.matched_by.is_empty() {
+                // Short tags; full breadcrumbs live in the HTML manifest.
+                let why: Vec<String> = f
+                    .matched_by
+                    .iter()
+                    .map(|m| match m.method.as_str() {
+                        "community_semantic_search" => m
+                            .detail
+                            .split(" vs ")
+                            .next()
+                            .unwrap_or(&m.detail)
+                            .to_string(),
+                        "label_summary_match" => "keyword".to_string(),
+                        _ => m.detail.clone(),
+                    })
+                    .collect();
+                line.push_str(&format!(" · matched: {}", why.join(" + ")));
+            }
+            json!(line)
         })
         .collect();
     if compact_features.len() > MAX_COMPACT_FEATURES {
         let omitted = compact_features.len() - MAX_COMPACT_FEATURES;
         compact_features.truncate(MAX_COMPACT_FEATURES);
-        compact_features.push(json!({
-            "note": format!(
-                "{omitted} more feature(s) omitted from this inline list — the HTML inventory at output_html has every one"
-            )
-        }));
+        compact_features.push(json!(format!(
+            "… {omitted} more feature(s) omitted from this inline list — the HTML inventory at output_html has every one"
+        )));
     }
 
     let mut result = json!({
@@ -828,6 +1191,7 @@ fn assemble_and_write(
         "total": manifest.total,
         "layer_counts": manifest.layer_counts,
         "language_counts": manifest.language_counts,
+        "domains": manifest.domains.iter().map(|d| format!("{} ({})", d.title, d.features.len())).collect::<Vec<_>>(),
         "features": compact_features,
         "provenance": manifest.provenance,
         "output_html": output,
@@ -839,6 +1203,197 @@ fn assemble_and_write(
         }
     }
     Ok(result)
+}
+
+/// Path-derived domain grouping: strip the label segments every feature
+/// shares, then split top-down — a prefix group bigger than
+/// `MAX_DOMAIN_GROUP` splits into its child folders, single-feature children
+/// stay at the parent level. Deterministic; no embedder, no LLM.
+fn auto_domains(cards: &[(Layer, FeatureCard)]) -> Vec<DomainGroup> {
+    if cards.is_empty() {
+        return Vec::new();
+    }
+    let paths: Vec<Vec<String>> = cards
+        .iter()
+        .map(|(_, c)| {
+            let mut segs: Vec<String> = Vec::new();
+            if let Some(r) = &c.repo {
+                segs.push(format!("[{r}]"));
+            }
+            segs.extend(
+                c.label
+                    .split('/')
+                    .filter(|s| !s.is_empty())
+                    .map(String::from),
+            );
+            segs
+        })
+        .collect();
+    // Longest common prefix across all paths; a feature whose label IS the
+    // prefix lands in the root group.
+    let mut common = 0usize;
+    'outer: loop {
+        let Some(first) = paths[0].get(common) else {
+            break;
+        };
+        for p in &paths {
+            if p.get(common).map(String::as_str) != Some(first.as_str()) {
+                break 'outer;
+            }
+        }
+        common += 1;
+    }
+    let mut out: Vec<DomainGroup> = Vec::new();
+    split_domain(
+        (0..cards.len()).collect(),
+        common,
+        Vec::new(),
+        &paths,
+        cards,
+        &mut out,
+    );
+    if out.len() == 1 && out[0].title == "other" {
+        out[0].title = "all features".to_string();
+    }
+    // Largest domain (by member symbols) first.
+    let weight = |d: &DomainGroup| -> i64 {
+        d.features
+            .iter()
+            .filter_map(|r| cards.iter().find(|(_, c)| c.id == r.id))
+            .map(|(_, c)| c.member_count as i64)
+            .sum()
+    };
+    out.sort_by(|a, b| {
+        weight(b)
+            .cmp(&weight(a))
+            .then_with(|| a.title.cmp(&b.title))
+    });
+    out
+}
+
+/// Recursive splitter for [`auto_domains`].
+fn split_domain(
+    indices: Vec<usize>,
+    depth: usize,
+    prefix: Vec<String>,
+    paths: &[Vec<String>],
+    cards: &[(Layer, FeatureCard)],
+    out: &mut Vec<DomainGroup>,
+) {
+    let emit = |idxs: Vec<usize>, out: &mut Vec<DomainGroup>| {
+        if idxs.is_empty() {
+            return;
+        }
+        let mut feats: Vec<&FeatureCard> = idxs.iter().map(|&i| &cards[i].1).collect();
+        feats.sort_by(|a, b| {
+            b.member_count
+                .cmp(&a.member_count)
+                .then_with(|| a.label.cmp(&b.label))
+        });
+        out.push(DomainGroup {
+            title: if prefix.is_empty() {
+                "other".to_string()
+            } else {
+                prefix.join("/")
+            },
+            icon: None,
+            blurb: None,
+            curated: false,
+            features: feats
+                .into_iter()
+                .map(|c| DomainFeatureRef {
+                    id: c.id,
+                    label: c.label.clone(),
+                    note: None,
+                })
+                .collect(),
+        });
+    };
+    if indices.len() <= MAX_DOMAIN_GROUP {
+        emit(indices, out);
+        return;
+    }
+    let mut here: Vec<usize> = Vec::new();
+    let mut by_seg: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for i in indices {
+        match paths[i].get(depth) {
+            Some(seg) => by_seg.entry(seg.clone()).or_default().push(i),
+            None => here.push(i),
+        }
+    }
+    for (seg, idxs) in by_seg {
+        if idxs.len() == 1 {
+            here.extend(idxs);
+        } else {
+            let mut p = prefix.clone();
+            p.push(seg);
+            split_domain(idxs, depth + 1, p, paths, cards, out);
+        }
+    }
+    emit(here, out);
+}
+
+/// Overlay agent-supplied curation onto the cards: curated groups in the
+/// agent's order (matched by exact label, then unique trailing fragment),
+/// every unplaced feature falling back to auto domains. Returns the domains
+/// plus any curation labels that matched nothing.
+fn curated_domains(
+    cards: &[(Layer, FeatureCard)],
+    spec: &CurationSpec,
+) -> (Vec<DomainGroup>, Vec<String>) {
+    let mut used: HashSet<Uuid> = HashSet::new();
+    let mut unmatched: Vec<String> = Vec::new();
+    let mut domains: Vec<DomainGroup> = Vec::new();
+    for g in &spec.groups {
+        let mut feats: Vec<DomainFeatureRef> = Vec::new();
+        for cf in &g.features {
+            let hit = cards
+                .iter()
+                .find(|(_, c)| !used.contains(&c.id) && c.label == cf.label)
+                .or_else(|| {
+                    cards
+                        .iter()
+                        .find(|(_, c)| !used.contains(&c.id) && c.label.ends_with(&cf.label))
+                });
+            match hit {
+                Some((_, c)) => {
+                    used.insert(c.id);
+                    feats.push(DomainFeatureRef {
+                        id: c.id,
+                        label: c.label.clone(),
+                        note: cf.note.clone(),
+                    });
+                }
+                None => unmatched.push(cf.label.clone()),
+            }
+        }
+        if !feats.is_empty() {
+            domains.push(DomainGroup {
+                title: g.title.clone(),
+                icon: g.icon.clone(),
+                blurb: g.blurb.clone(),
+                curated: true,
+                features: feats,
+            });
+        }
+    }
+    let leftovers: Vec<(Layer, FeatureCard)> = cards
+        .iter()
+        .filter(|(_, c)| !used.contains(&c.id))
+        .cloned()
+        .collect();
+    domains.extend(auto_domains(&leftovers));
+    (domains, unmatched)
+}
+
+/// Compact-row display form of a symbol name: path-like names (import
+/// specifiers) keep only their last two `/` segments, marked with `…/`.
+fn short_symbol_name(name: &str) -> String {
+    let segments: Vec<&str> = name.split('/').filter(|s| !s.is_empty()).collect();
+    if segments.len() <= 2 {
+        return name.to_string();
+    }
+    format!("…/{}", segments[segments.len() - 2..].join("/"))
 }
 
 /// Decide how the positional filter (or a forcing flag) should be read.
@@ -863,6 +1418,7 @@ fn resolve_filter(
             kind: FilterKind::Layer,
             value: Some(v),
             detected: false,
+            layers: None,
         };
     }
     if let Some(v) = flag(&opts.folder) {
@@ -870,6 +1426,7 @@ fn resolve_filter(
             kind: FilterKind::Folder,
             value: Some(v),
             detected: false,
+            layers: None,
         };
     }
     if let Some(v) = flag(&opts.topic) {
@@ -877,6 +1434,7 @@ fn resolve_filter(
             kind: FilterKind::Topic,
             value: Some(v),
             detected: false,
+            layers: None,
         };
     }
     let Some(f) = filter.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -884,6 +1442,7 @@ fn resolve_filter(
             kind: FilterKind::All,
             value: None,
             detected: false,
+            layers: None,
         };
     };
     let kind = if f.contains('/') || f.contains('\\') {
@@ -899,6 +1458,7 @@ fn resolve_filter(
         kind,
         value: Some(f.to_string()),
         detected: true,
+        layers: None,
     }
 }
 
@@ -1160,6 +1720,9 @@ h2{font:var(--type-h4);color:var(--color-ink-700);margin:0 0 16px}
 .matched{margin-top:10px;display:grid;gap:4px}
 .matched div{color:var(--color-ink-500);font:var(--type-body-xs);line-height:1.5}
 .matched b{color:var(--color-ink-700);font-weight:500;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.04em;font-size:10px}
+.note{margin:6px 0 2px;color:var(--color-ink-700);font:var(--type-body-sm);line-height:1.6}
+.blurb{color:var(--color-ink-500);font:var(--type-body-sm);line-height:1.6;margin:2px 0 6px;max-width:80ch}
+.grp>h3 .ico{font-size:18px;line-height:1}
 .item.warn{border:1px solid var(--color-blue-300);border-radius:var(--radius-md);background:var(--color-blue-50);padding:14px 16px;margin-top:12px}
 .item.warn strong{color:var(--color-blue-700);font:var(--type-h6);display:block;margin-bottom:4px}
 .item.warn div{color:var(--color-ink-500);font:var(--type-body-sm);line-height:1.5}
@@ -1180,7 +1743,7 @@ h2{font:var(--type-h4);color:var(--color-ink-700);margin:0 0 16px}
 <main>
   <div class="wrap">
     <section class="panel"><div id="stats" class="stats"></div></section>
-    <section class="panel" data-feat-groups><h2>Features, grouped by journey layer</h2><div class="muted" style="margin-bottom:10px">Entry (UI/CLI) &rarr; interface (API) &rarr; core (logic) &rarr; foundation (contracts/infra). Largest feature first within each layer.</div><div id="groups"></div></section>
+    <section class="panel" data-feat-groups><h2 id="groups-title">Features by domain</h2><div class="muted" style="margin-bottom:10px" id="groups-sub"></div><div id="groups"></div></section>
     <section class="panel" data-feat-provenance><h2>How this was generated</h2><div class="muted" style="margin-bottom:10px">Provenance breadcrumbs &mdash; the steps that produced this inventory.</div><div id="provenance"></div></section>
     <section class="panel"><h2>Warnings</h2><div id="warnings"></div></section>
   </div>
@@ -1200,33 +1763,54 @@ document.getElementById("overview").textContent=D.overview||"";
 document.getElementById("subtitle").textContent=D.subtitle||"";
 var groups=D.groups||[];
 var langs=(D.language_counts||[]).map(function(l){return l.language+" "+l.count;}).join(" · ");
-var stat=[[D.total||0,"features"],[(D.layer_counts||[]).length,"layers"],[groups.length,"groups"],[(D.warnings||[]).length,"warnings"]];
+var stat=[[D.total||0,"features"],[(D.layer_counts||[]).length,"layers"],[((D.domains&&D.domains.length)||groups.length),"domains"],[(D.warnings||[]).length,"warnings"]];
 document.getElementById("stats").innerHTML=stat.map(function(s){return '<div class="stat"><b>'+s[0]+'</b><span>'+s[1]+'</span></div>';}).join("")+(langs?'<div class="stat"><b style="font-size:14px;line-height:1.4">'+esc(langs)+'</b><span>languages</span></div>':'');
 var host=document.getElementById("groups");
-groups.forEach(function(g){
-  var sec=document.createElement("div");sec.className="grp";
-  var role=g.layer||"unknown";
-  var head='<h3><span class="pill '+esc(role)+'">'+esc(role)+'</span>'+esc(g.label)+' <span class="muted" style="font-weight:400">&middot; '+(g.features||[]).length+'</span></h3>';
-  var body=(g.features||[]).map(function(f){
-    var syms=(f.top_symbols||[]).map(function(s){return '<span class="chip">'+esc(s.name)+' <span class="k">'+esc(s.kind)+'</span></span>';}).join("");
-    var fl=(f.languages||[]).map(function(l){return '<span class="lang">'+esc(l.language)+' &middot; '+l.count+'</span>';}).join("");
-    var folders=(f.folders||[]).map(function(x){return '<span class="folder">'+esc(x)+'</span>';}).join("");
-    var matched=(f.matched_by||[]).map(function(m){return '<div><b>'+esc(m.source)+'</b> '+esc(m.detail)+'</div>';}).join("");
-    var xlinks=(f.cross_links||[]).map(function(x){return '<div><b>link</b> '+esc(x)+'</div>';}).join("");
-    var repoChip=f.repo?' <span class="folder">'+esc(f.repo)+'</span>':'';
-    return '<div class="feat"><h4>'+esc(f.label)+repoChip+' <span class="role '+esc(f.role||"unknown")+'">'+esc(f.role||"unknown")+'</span></h4>'+
-      '<div class="muted">'+f.member_count+' symbols</div>'+
-      (folders?'<div class="folders">'+folders+'</div>':'')+
-      (fl?'<div class="chips">'+fl+'</div>':'')+
-      (f.summary?'<div class="summary">'+esc(f.summary)+'</div>':'')+
-      (syms?'<div class="chips">'+syms+'</div>':'')+
-      (xlinks?'<div class="matched">'+xlinks+'</div>':'')+
-      (matched?'<div class="matched">'+matched+'</div>':'')+
-      '</div>';
-  }).join("");
-  sec.innerHTML=head+body;
-  host.appendChild(sec);
-});
+function featHtml(f,note){
+  var syms=(f.top_symbols||[]).map(function(s){return '<span class="chip">'+esc(s.name)+' <span class="k">'+esc(s.kind)+'</span></span>';}).join("");
+  var fl=(f.languages||[]).map(function(l){return '<span class="lang">'+esc(l.language)+' &middot; '+l.count+'</span>';}).join("");
+  var folders=(f.folders||[]).map(function(x){return '<span class="folder">'+esc(x)+'</span>';}).join("");
+  var matched=(f.matched_by||[]).map(function(m){return '<div><b>'+esc(m.source)+'</b> '+esc(m.detail)+'</div>';}).join("");
+  var xlinks=(f.cross_links||[]).map(function(x){return '<div><b>link</b> '+esc(x)+'</div>';}).join("");
+  var repoChip=f.repo?' <span class="folder">'+esc(f.repo)+'</span>':'';
+  return '<div class="feat"><h4>'+esc(f.label)+repoChip+' <span class="role '+esc(f.role||"unknown")+'">'+esc(f.role||"unknown")+'</span></h4>'+
+    (note?'<div class="note">'+esc(note)+'</div>':'')+
+    '<div class="muted">'+f.member_count+' symbols</div>'+
+    (folders?'<div class="folders">'+folders+'</div>':'')+
+    (fl?'<div class="chips">'+fl+'</div>':'')+
+    (f.summary?'<div class="summary">'+esc(f.summary)+'</div>':'')+
+    (syms?'<div class="chips">'+syms+'</div>':'')+
+    (xlinks?'<div class="matched">'+xlinks+'</div>':'')+
+    (matched?'<div class="matched">'+matched+'</div>':'')+
+    '</div>';
+}
+var domains=D.domains||[];
+if(domains.length){
+  var anyCurated=domains.some(function(d){return d.curated;});
+  document.getElementById("groups-sub").textContent=anyCurated
+    ?"Curated domains first; remaining features grouped by folder (tagged auto). Each card's pill shows its journey layer."
+    :"Features clustered by folder domain, largest first. Each card's pill shows its journey layer (entry/interface/core/foundation).";
+  var byId={};groups.forEach(function(g){(g.features||[]).forEach(function(f){byId[f.id]=f;});});
+  domains.forEach(function(g){
+    var sec=document.createElement("div");sec.className="grp";
+    var head='<h3>'+(g.icon?'<span class="ico">'+esc(g.icon)+'</span>':'')+esc(g.title)+' <span class="muted" style="font-weight:400">&middot; '+(g.features||[]).length+'</span>'+((anyCurated&&!g.curated)?' <span class="pill unknown">auto</span>':'')+'</h3>';
+    var blurb=g.blurb?'<div class="blurb">'+esc(g.blurb)+'</div>':'';
+    var body=(g.features||[]).map(function(r){var f=byId[r.id];return f?featHtml(f,r.note):'';}).join("");
+    sec.innerHTML=head+blurb+body;
+    host.appendChild(sec);
+  });
+}else{
+  document.getElementById("groups-title").textContent="Features, grouped by journey layer";
+  document.getElementById("groups-sub").innerHTML="Entry (UI/CLI) &rarr; interface (API) &rarr; core (logic) &rarr; foundation (contracts/infra). Largest feature first within each layer.";
+  groups.forEach(function(g){
+    var sec=document.createElement("div");sec.className="grp";
+    var role=g.layer||"unknown";
+    var head='<h3><span class="pill '+esc(role)+'">'+esc(role)+'</span>'+esc(g.label)+' <span class="muted" style="font-weight:400">&middot; '+(g.features||[]).length+'</span></h3>';
+    var body=(g.features||[]).map(function(f){return featHtml(f);}).join("");
+    sec.innerHTML=head+body;
+    host.appendChild(sec);
+  });
+}
 if(!host.children.length)host.innerHTML='<div class="muted">No features matched. Ensure the repo is indexed (chaos_analyze) so communities exist, then try a broader filter or omit it.</div>';
 var prov=document.getElementById("provenance");
 (D.provenance||[]).forEach(function(c){var el=document.createElement("div");el.className="matched";el.innerHTML='<div><b>'+esc(c.source)+'</b> '+esc(c.method)+'</div><div class="muted">'+esc(c.detail)+(c.locator?' &middot; '+esc(c.locator):'')+'</div>';prov.appendChild(el);});
@@ -1309,6 +1893,7 @@ mod tests {
             kind: FilterKind::Layer,
             value: Some("client".into()),
             detected: true,
+            layers: None,
         };
         let lc = vec![LayerCount {
             layer: "entry".into(),
@@ -1327,8 +1912,100 @@ mod tests {
             kind: FilterKind::Topic,
             value: Some("xyz".into()),
             detected: true,
+            layers: None,
         };
         let text = compose_overview(&resolved, "repo", 0, &[]);
         assert!(text.contains("No features matched"));
+    }
+
+    fn card(label: &str, members: i32) -> (Layer, FeatureCard) {
+        (
+            Layer::Entry,
+            FeatureCard {
+                id: Uuid::new_v4(),
+                label: label.to_string(),
+                summary: None,
+                member_count: members,
+                role: "entry".into(),
+                languages: vec![],
+                top_symbols: vec![],
+                key_files: vec![],
+                folders: vec![],
+                matched_by: vec![],
+                repo: None,
+                cross_links: vec![],
+            },
+        )
+    }
+
+    #[test]
+    fn auto_domains_strips_common_prefix_and_splits_big_groups() {
+        // 13 mint features + 3 settings features under one app root: the root
+        // (16 > MAX_DOMAIN_GROUP) splits into its child folders.
+        let mut cards: Vec<(Layer, FeatureCard)> = (0..13)
+            .map(|i| card(&format!("apps/labs/src/mint/f{i}"), 10))
+            .collect();
+        cards.extend((0..3).map(|i| card(&format!("apps/labs/src/settings/s{i}"), 5)));
+        let domains = auto_domains(&cards);
+        let titles: Vec<&str> = domains.iter().map(|d| d.title.as_str()).collect();
+        // Common prefix apps/labs/src is stripped from titles.
+        assert!(titles.contains(&"mint"), "titles: {titles:?}");
+        assert!(titles.contains(&"settings"), "titles: {titles:?}");
+        // Largest domain first; nothing is curated.
+        assert_eq!(domains[0].title, "mint");
+        assert!(domains.iter().all(|d| !d.curated));
+        let total: usize = domains.iter().map(|d| d.features.len()).sum();
+        assert_eq!(total, 16);
+    }
+
+    #[test]
+    fn auto_domains_small_set_is_one_group() {
+        let cards = vec![card("a/x", 1), card("a/y", 2)];
+        let domains = auto_domains(&cards);
+        assert_eq!(domains.len(), 1);
+        assert_eq!(domains[0].title, "all features");
+        assert_eq!(domains[0].features.len(), 2);
+    }
+
+    #[test]
+    fn curated_domains_match_by_label_fragment_and_report_unmatched() {
+        let cards = vec![
+            card("apps/labs/src/mint/steps", 10),
+            card("apps/labs/src/mint/forms", 8),
+            card("apps/labs/src/settings", 3),
+        ];
+        let spec = CurationSpec {
+            groups: vec![CurationGroup {
+                title: "Minting".into(),
+                icon: Some("🧬".into()),
+                blurb: Some("the wizard".into()),
+                features: vec![
+                    CurationFeature {
+                        label: "mint/steps".into(), // trailing fragment
+                        note: Some("step definitions".into()),
+                    },
+                    CurationFeature {
+                        label: "no/such/feature".into(),
+                        note: None,
+                    },
+                ],
+            }],
+        };
+        let (domains, unmatched) = curated_domains(&cards, &spec);
+        assert_eq!(unmatched, vec!["no/such/feature".to_string()]);
+        assert!(domains[0].curated);
+        assert_eq!(domains[0].features.len(), 1);
+        assert_eq!(domains[0].features[0].label, "apps/labs/src/mint/steps");
+        assert_eq!(
+            domains[0].features[0].note.as_deref(),
+            Some("step definitions")
+        );
+        // The two unplaced cards fall back to auto domains.
+        let auto_total: usize = domains
+            .iter()
+            .filter(|d| !d.curated)
+            .map(|d| d.features.len())
+            .sum();
+        assert_eq!(auto_total, 2);
     }
 }
