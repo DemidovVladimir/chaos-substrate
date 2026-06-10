@@ -164,6 +164,41 @@ Expected behavior:
 - Re-running `query` after restarting the process still uses persisted data.
 - If the embedder is unavailable, analyze/query should fail rather than produce fake vectors.
 
+### 0.12.0 additions — token efficiency and the project layer
+
+```sh
+# Zero-cost re-analyze: run analyze TWICE on the same unchanged repo.
+cargo run -- --config chaos-substrate.local.toml analyze /path/to/repo
+cargo run -- --config chaos-substrate.local.toml analyze /path/to/repo
+
+# Cross-repo project layer (use two indexed repos).
+cargo run -- --config chaos-substrate.local.toml project create demo
+cargo run -- --config chaos-substrate.local.toml project add-repo demo /path/to/repo --alias backend
+cargo run -- --config chaos-substrate.local.toml project add-repo demo /path/to/other --alias client
+cargo run -- --config chaos-substrate.local.toml project relink demo
+cargo run -- --config chaos-substrate.local.toml project status demo
+cargo run -- --config chaos-substrate.local.toml features --project demo
+```
+
+Expected behavior:
+
+- The SECOND `analyze` of an unchanged repo reports `embedded_chunks: 0`,
+  `reused_embeddings: <all chunks>`, and `summaries.embed_calls: 0` — a full re-index of
+  unchanged content makes ZERO embedder calls (embeddings are preserved by content hash;
+  L3 summaries are hash-gated, with `summaries.reused_from_cache` covering community-ID churn).
+- After a one-file edit, `analyze` re-embeds ONLY that file's chunks and re-summarizes only the
+  affected community.
+- `project relink` runs once after `add-repo`, then a second `relink` returns
+  `status: "up_to_date"` (the L2 hash gate); `analyze`/`add` on a member repo end with a
+  `projects` relink report. Cross-repo links carry `kind` (`package_dep`/`abi`/`http_route`),
+  evidence, and provenance breadcrumbs.
+- `features --project` writes one journey-layered HTML inventory to the project workspace
+  (`~/.chaos/projects/<slug>/` or `$CHAOS_PROJECT_DIR`), with cards tagged by repo alias.
+- `query`/`feature_context` tool RETURNS contain excerpted chunk contents (an explicit
+  `[+N chars in the indexed chunk]` marker past 800 chars); generated HTML keeps full evidence.
+- `chaos_write_feature_website` called with manifest only (no `html`) renders the interactive
+  page itself and reports `rendered_by: "chaos (manifest-driven)"`.
+
 ## Persistence Checks
 
 After migration and analysis, inspect Postgres:
