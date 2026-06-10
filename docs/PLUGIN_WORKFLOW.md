@@ -21,7 +21,6 @@ chaos-substrate/
 ├── .mcp.json
 ├── bin/chaos
 ├── skills/chaos-substrate/SKILL.md
-├── scripts/chaos
 ├── docs/
 └── src/
 ```
@@ -36,7 +35,7 @@ chaos-substrate/
 - The tool-use hooks (`.claude-plugin/hooks/hooks.json`, `.cursor/hooks.json`) run `chaos hook` to
   inject code-memory context on `Grep`, `Glob`, and `Bash`. The hook always exits 0, is a safe
   no-op when the DB/index is unavailable, and has no embedder dependency.
-- `bin/chaos` delegates to `scripts/chaos`, which owns setup, indexing, querying, and
+- `bin/chaos` is the single wrapper entrypoint: it owns setup, indexing, querying, and
   feature-page generation.
 
 ## What Still Requires User Setup
@@ -54,7 +53,7 @@ credentials.
 From the Chaos Substrate plugin checkout, bootstrap once:
 
 ```bash
-scripts/chaos bootstrap
+bin/chaos bootstrap
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
@@ -102,7 +101,7 @@ chaos explain "$PWD" "authorization and RBAC"
 For local Ollama embeddings:
 
 ```bash
-CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos bootstrap
+CHAOS_CONFIG=chaos-substrate.local.toml bin/chaos bootstrap
 export PATH="$HOME/.local/bin:$PATH"
 ```
 

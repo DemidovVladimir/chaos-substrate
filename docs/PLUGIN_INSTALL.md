@@ -30,8 +30,7 @@ chaos-substrate/
 ├── .claude-plugin/marketplace.json     # marketplace Claude Code reads
 ├── .mcp.json
 ├── bin/chaos
-├── skills/chaos-substrate/SKILL.md
-└── scripts/chaos
+└── skills/chaos-substrate/SKILL.md
 ```
 
 ## 2. Bootstrap Local Services
@@ -39,7 +38,7 @@ chaos-substrate/
 From the Chaos Substrate checkout:
 
 ```bash
-CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos bootstrap
+CHAOS_CONFIG=chaos-substrate.local.toml bin/chaos bootstrap
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
@@ -140,7 +139,7 @@ skills/chaos-substrate/SKILL.md
 bin/chaos
 ```
 
-To register only the MCP server (no plugin), or for the `scripts/chaos claude-code-add` and
+To register only the MCP server (no plugin), or for the `bin/chaos claude-code-add` and
 `claude mcp add` commands, see [docs/EDITOR_SETUP.md](EDITOR_SETUP.md). The shared MCP server exposes
 fourteen tools (`chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`, `chaos_feature_context`,
 `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`); see the [MCP Tools](../README.md#mcp-tools) section of the README for the

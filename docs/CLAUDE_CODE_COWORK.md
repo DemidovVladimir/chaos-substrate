@@ -8,7 +8,7 @@ agent workflow.
 From the Chaos Substrate checkout:
 
 ```sh
-scripts/chaos bootstrap
+bin/chaos bootstrap
 export PATH="$HOME/.local/bin:$PATH"
 ```
 

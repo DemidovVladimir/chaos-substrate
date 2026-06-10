@@ -740,13 +740,13 @@ cp chaos-substrate.example.toml chaos-substrate.toml</code></pre>
         <p>Use the wrapper script (builds binary if needed and calls <code>claude mcp add</code>):</p>
         <div class="pre-wrap">
           <pre><code># Machine-local (private)
-scripts/chaos claude-code-add local
+bin/chaos claude-code-add local
 
 # Shareable project .mcp.json
-scripts/chaos claude-code-add project /abs/path/to/target-repo
+bin/chaos claude-code-add project /abs/path/to/target-repo
 
 # User-level
-scripts/chaos claude-code-add user</code></pre>
+bin/chaos claude-code-add user</code></pre>
           <button class="copy-btn" aria-label="Copy command" onclick="copyPre(this)">Copy</button>
         </div>
         <p style="margin-top:12px;">Or register directly with the Claude Code CLI:</p>

@@ -109,6 +109,8 @@ all exports/refresh/hook/linkers are embedder-free.
   everything outside its own setup verbs (`bootstrap`, `init`, `update`, …),
   which contradicted every documented command. `chaos help` through the
   wrapper shows the binary's agent guide plus the wrapper-only extras.
+  The wrapper is now ONE file — `bin/chaos` (the path `.mcp.json` and the
+  PATH symlink already used); `scripts/chaos` is gone.
 
 ### New — clean slate for validation
 

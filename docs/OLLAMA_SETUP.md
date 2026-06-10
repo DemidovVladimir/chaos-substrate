@@ -83,7 +83,7 @@ cargo build --release
 For normal agent use, prefer the wrapper:
 
 ```bash
-CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos bootstrap
+CHAOS_CONFIG=chaos-substrate.local.toml bin/chaos bootstrap
 export PATH="$HOME/.local/bin:$PATH"
 ```
 

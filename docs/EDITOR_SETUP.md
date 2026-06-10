@@ -40,7 +40,7 @@ target/release/chaos setup --scope project   # Claude Code: project scope via cl
 For a shareable project-scoped `.mcp.json` in a target repository, use the wrapper instead:
 
 ```bash
-scripts/chaos claude-code-add project /absolute/path/to/target-repo
+bin/chaos claude-code-add project /absolute/path/to/target-repo
 ```
 
 `setup` is idempotent: rerunning it re-writes the chaos-substrate entry with the current values;
@@ -98,9 +98,9 @@ In every block below, replace `<abs>` with the absolute path to your Chaos Subst
 Use the wrapper, which builds the binary if needed and runs `claude mcp add` with the right scope:
 
 ```bash
-scripts/chaos claude-code-add local                       # private, machine-local
-scripts/chaos claude-code-add project /absolute/path/to/target-repo   # shareable .mcp.json
-scripts/chaos claude-code-add user                        # user-level config
+bin/chaos claude-code-add local                       # private, machine-local
+bin/chaos claude-code-add project /absolute/path/to/target-repo   # shareable .mcp.json
+bin/chaos claude-code-add user                        # user-level config
 ```
 
 Or register directly with the Claude Code CLI:

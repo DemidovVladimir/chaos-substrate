@@ -43,7 +43,7 @@ Copy the example config (it already defaults to local Ollama), then run `bootstr
 
 ```bash
 cp chaos-substrate.example.toml chaos-substrate.toml
-scripts/chaos bootstrap
+bin/chaos bootstrap
 export PATH="$HOME/.local/bin:$PATH"          # so `chaos` is on PATH
 ```
 
@@ -84,7 +84,7 @@ Inside Claude Code, verify the plugin loaded:
   index is unavailable).
 
 > **MCP server only?** If you want the tools without the plugin, skip this step and run
-> `scripts/chaos claude-code-add local` (or `claude-code-add project /abs/path/to/repo`
+> `bin/chaos claude-code-add local` (or `claude-code-add project /abs/path/to/repo`
 > for a shareable `.mcp.json`). Per-editor details: [EDITOR_SETUP.md](EDITOR_SETUP.md).
 
 ## 5. Index your repository

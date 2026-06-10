@@ -153,14 +153,14 @@ Windsurf, and OpenCode and registers chaos-substrate as an MCP server in each (m
 To register only Claude Code, use the canonical wrapper:
 
 ```sh
-scripts/chaos claude-code-add local /absolute/path/to/typescript-repo
+bin/chaos claude-code-add local /absolute/path/to/typescript-repo
 ```
 
 Use `project` instead of `local` for a team-shared `.mcp.json` in the target repository, or `user`
 for a user-scoped registration:
 
 ```sh
-scripts/chaos claude-code-add project /absolute/path/to/typescript-repo
+bin/chaos claude-code-add project /absolute/path/to/typescript-repo
 ```
 
 The path argument is the Claude Code project where `.mcp.json` should be written. If omitted, the
