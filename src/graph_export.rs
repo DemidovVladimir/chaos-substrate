@@ -458,10 +458,25 @@ function radiusFor(node) {
   return base + Math.min(7, Math.sqrt(Math.max(node.chunk_count, 0)));
 }
 
+function clusterRadius(topic) {
+  // Matches the child sunflower spiral's outermost radius, plus label room.
+  return 130 + Math.sqrt(Math.max(topic.children.length, 1)) * 19;
+}
+
 function layoutNodes() {
-  const ringRadius = Math.max(900, topicNodes.length * 95);
+  // Size-aware ring: every cluster gets arc length proportional to its
+  // DIAMETER, and the ring radius comes from the total required
+  // circumference — so a few huge package clusters can never overlap their
+  // neighbors and collapse the circle into a chain.
+  const pad = 1.3;
+  const radii = topicNodes.map(clusterRadius);
+  const circumference = radii.reduce((sum, r) => sum + 2 * r * pad, 0);
+  const ringRadius = Math.max(700, circumference / (2 * Math.PI));
+  let cursor = -Math.PI / 2;
   topicNodes.forEach((topic, topicIndex) => {
-    const angle = -Math.PI / 2 + topicIndex * 2 * Math.PI / Math.max(topicNodes.length, 1);
+    const arc = (2 * radii[topicIndex] * pad) / ringRadius;
+    const angle = cursor + arc / 2;
+    cursor += arc;
     topic.x = Math.cos(angle) * ringRadius;
     topic.y = Math.sin(angle) * ringRadius;
     const children = topic.children.sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name));

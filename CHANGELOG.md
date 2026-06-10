@@ -25,6 +25,16 @@ hierarchical-memory build-out.
   summaries recompute (chunk embeddings are reused; the summary cache covers
   identical-content groups).
 
+### Fixed — graph.html no longer renders as a "worm"
+
+- The interactive graph's cluster ring sized itself by cluster COUNT while
+  each cluster's radius grows with its child count — on a monorepo one giant
+  package cluster overlapped its neighbors and collapsed the circle into a
+  chain. The ring is now size-aware: every cluster gets arc length
+  proportional to its diameter and the ring radius comes from the total
+  required circumference (verified: 32 clusters, zero overlaps on
+  molecule_core's 13.4k-node graph).
+
 ## 0.12.0 — 2026-06-10
 
 The cross-repository release: Chaos now understands features that span
