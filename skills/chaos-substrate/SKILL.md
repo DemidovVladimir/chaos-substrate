@@ -23,9 +23,11 @@ Use this skill when working on or operating Chaos Substrate, a Rust-only code kn
 The base graph is the L0 multigraph (files, symbols, chunks, edges). Layered on top of it — all in
 Rust, all additive, never replacing L0 — is a hierarchy that lets agents reason at the feature level:
 
-- L1 communities / "god-nodes" / features: a deterministic Louvain partition of the graph
-  (`src/community.rs`) persisted as the `communities`, `community_members`, and `community_edges`
-  (quotient graph) tables. Migration `migrations/002_communities.sql`.
+- L1 communities / "god-nodes" / features: a deterministic structure-first partition
+  (`src/community.rs`) — directory cuts within package-root boundaries; the import graph relates
+  features (quotient edges) but does not define them — persisted as the `communities`,
+  `community_members`, and `community_edges` (quotient graph) tables. Migration
+  `migrations/002_communities.sql`.
 - L2 Merkle rollup: each chunk `content_hash` rolls up into file -> community -> repo `subtree_hash`
   (`src/merkle.rs`), driving `chaos add`'s feature "blast radius". Migration
   `migrations/003_subtree_hash.sql`.
@@ -180,8 +182,8 @@ If MCP tools are available, prefer them over shelling out:
     filter needs the embedder; layer/folder/whole-repo listing is embedder-free. It ALWAYS writes an
     interactive HTML inventory to `docs/features_memory/<slug>-features.html` (embedding a
     `chaos-features-manifest` an agent can extract) and returns a COMPACT JSON summary (resolved
-    filter + how detected, per-layer + language counts, per-feature label/role/folders/symbols/
-    `matched_by`, provenance). It mirrors the `chaos features <repo> ["<filter>"]` CLI command.
+    filter + how detected, per-layer + language counts, per-feature label/role/member_count/symbols
+    (shared `matched_by_rule` lifted top-level), provenance). It mirrors the `chaos features <repo> ["<filter>"]` CLI command.
     Pass `project` instead of `repo` to list features across EVERY repo of a project in one
     journey-layered inventory — each card tagged with its repo alias and annotated with the
     project's cross-repo links; the HTML goes to the project workspace

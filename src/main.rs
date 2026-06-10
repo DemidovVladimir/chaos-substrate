@@ -28,7 +28,6 @@ mod query;
 mod setup;
 mod simple_graph_optimizer;
 mod storage;
-mod struct_features;
 mod theme;
 mod user_story;
 mod weights;
@@ -300,25 +299,19 @@ enum Commands {
         #[arg(long)]
         all_features: bool,
     },
-    /// Debug-only: PROTOTYPE structure-first feature extraction over a folder,
-    /// printed side-by-side with the current Louvain communities. Read-only; runs
-    /// off the existing index (no re-analyze). A spike to evaluate deriving
-    /// features from project structure instead of import-graph clustering.
-    #[command(hide = true)]
-    StructFeatures {
-        repo: String,
-        /// Folder to analyze (e.g. `desci-infra`, `desci-ecosystem`).
-        folder: String,
-    },
     /// Debug-only: detect L1 communities (god-nodes) over an indexed repo and
     /// print them as JSON. Read-only; writes nothing. The P0 spike for the
     /// hierarchical-memory layer.
     #[command(hide = true)]
     Communities {
         repo: String,
-        /// Modularity resolution γ (default 1.0; higher = finer communities).
+        /// Modularity resolution γ (Louvain only; default 1.0).
         #[arg(long, default_value_t = 1.0)]
         resolution: f64,
+        /// Use the pre-v2 import-graph Louvain partition instead of the
+        /// structure-first default (for comparison).
+        #[arg(long)]
+        louvain: bool,
         /// Cap the number of communities printed (largest first). 0 = all.
         #[arg(long, default_value_t = 0)]
         top: usize,
@@ -895,13 +888,10 @@ async fn main() -> Result<()> {
                 }))?
             );
         }
-        Commands::StructFeatures { repo, folder } => {
-            let storage = Storage::connect(&config.storage.database_url).await?;
-            struct_features::run(&storage, &repo, &folder).await?;
-        }
         Commands::Communities {
             repo,
             resolution,
+            louvain,
             top,
         } => {
             let storage = Storage::connect(&config.storage.database_url).await?;
@@ -911,7 +901,14 @@ async fn main() -> Result<()> {
                 .with_context(|| format!("repository is not indexed: {repo}"))?;
             let nodes = storage.load_all_nodes(repo.id).await?;
             let edges = storage.load_all_edges(repo.id).await?;
-            let cfg = community::CommunityConfig { resolution };
+            let cfg = community::CommunityConfig {
+                resolution,
+                algorithm: if louvain {
+                    community::PartitionAlgorithm::Louvain
+                } else {
+                    community::PartitionAlgorithm::Structural
+                },
+            };
             let mut detection = community::detect_communities(repo.id, &nodes, &edges, &cfg);
             // Largest communities first for human review; ties by id for stability.
             detection

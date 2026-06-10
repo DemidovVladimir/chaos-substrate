@@ -4,6 +4,37 @@ All notable changes to Chaos Substrate are documented here. Versions before
 0.12.0 predate this file; see the git history (`P0`–`P5` commits) for the
 hierarchical-memory build-out.
 
+## Unreleased
+
+### Changed — structure-first feature partition (detection v2)
+
+- **Features now come from the project's own structure, not import-graph
+  clustering.** Membership: every node groups by its file's directory, package
+  roots (`package.json`/`Cargo.toml` directories) are hard boundaries, and
+  directories over 25 files split into their children (the `struct-features`
+  spike's verdict, promoted into `src/community.rs`). The weighted import
+  graph still *relates* features — quotient edges, top-member ranking, and the
+  reported modularity are unchanged — it just no longer decides membership,
+  which used to produce blobs named after the most-imported module and
+  "features" that were import lists (desci-infra before/after: 50 communities
+  with 10 blobs + 17 glue → directory-true features, labels = directory
+  paths). Nodes with no file home (bare-import targets) attach to the group
+  their edges couple to most. Louvain remains selectable for comparison
+  (`chaos communities --louvain`).
+- One-time effect per repo on the next `analyze`: community IDs reshuffle, so
+  summaries recompute (chunk embeddings are reused; the summary cache covers
+  identical-content groups).
+
+### Fixed — graph.html no longer renders as a "worm"
+
+- The interactive graph's cluster ring sized itself by cluster COUNT while
+  each cluster's radius grows with its child count — on a monorepo one giant
+  package cluster overlapped its neighbors and collapsed the circle into a
+  chain. The ring is now size-aware: every cluster gets arc length
+  proportional to its diameter and the ring radius comes from the total
+  required circumference (verified: 32 clusters, zero overlaps on
+  molecule_core's 13.4k-node graph).
+
 ## 0.12.0 — 2026-06-10
 
 The cross-repository release: Chaos now understands features that span

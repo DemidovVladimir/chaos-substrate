@@ -691,21 +691,10 @@ fn assemble_and_write(
     limit: usize,
     extra: Value,
 ) -> Result<Value> {
-    // Optional cap: keep the largest features when a positive limit is set.
-    if limit > 0 && cards.len() > limit {
-        cards.sort_by(|a, b| {
-            b.1.member_count
-                .cmp(&a.1.member_count)
-                .then_with(|| a.1.id.cmp(&b.1.id))
-        });
-        let dropped = cards.len() - limit;
-        cards.truncate(limit);
-        warnings.push(format!(
-            "showing the {limit} largest feature(s); {dropped} more matched but were capped by --limit (pass --limit 0 for all)"
-        ));
-    }
-
-    // Layer tallies across everything selected.
+    // Tallies FIRST, over everything that matched — `total`, the overview
+    // sentence, and the per-layer counts must describe the MATCH, not the
+    // listing. A --limit answers "show me fewer", never "pretend fewer exist";
+    // an agent relaying `total` must not under-report the repo.
     let mut layer_tally: BTreeMap<u8, (Layer, usize)> = BTreeMap::new();
     for (layer, _) in &cards {
         layer_tally.entry(layer.rank()).or_insert((*layer, 0)).1 += 1;
@@ -717,6 +706,26 @@ fn assemble_and_write(
             count: *c,
         })
         .collect();
+    let total = cards.len();
+    let all_files: Vec<String> = cards
+        .iter()
+        .flat_map(|(_, c)| c.key_files.clone())
+        .collect();
+    let language_counts = language_tally(&all_files);
+
+    // Optional cap: keep the largest features when a positive limit is set.
+    if limit > 0 && cards.len() > limit {
+        cards.sort_by(|a, b| {
+            b.1.member_count
+                .cmp(&a.1.member_count)
+                .then_with(|| a.1.id.cmp(&b.1.id))
+        });
+        let dropped = cards.len() - limit;
+        cards.truncate(limit);
+        warnings.push(format!(
+            "listing the {limit} largest of {total} matching feature(s); {dropped} more matched (counts describe the full match; pass --limit 0 to list all)"
+        ));
+    }
 
     // Group, journey order (entry first), largest feature first within a group.
     let group_order = [
@@ -749,14 +758,6 @@ fn assemble_and_write(
         });
     }
 
-    // Language tally across all selected features.
-    let all_files: Vec<String> = cards
-        .iter()
-        .flat_map(|(_, c)| c.key_files.clone())
-        .collect();
-    let language_counts = language_tally(&all_files);
-
-    let total = cards.len();
     let overview = compose_overview(resolved, display_name, total, &layer_counts);
     let (title, subtitle) = framing(resolved, display_name);
 
@@ -787,21 +788,55 @@ fn assemble_and_write(
 
     // Compact JSON (the full detail lives in the HTML). The HTML inventory is
     // exhaustive; the inline list is bounded so a huge repo/project can't flood
-    // the agent's context.
+    // the agent's context. Every entry has the SAME shape — agents pipe this
+    // through jq/group_by, so no mixed-shape sentinel objects in the array.
     const MAX_COMPACT_FEATURES: usize = 80;
+    // Layer/folder filters give every feature the IDENTICAL matched_by
+    // breadcrumb; repeating it per row is pure payload waste. When all rows
+    // would match for the same reason, lift it out as one top-level rule.
+    let all_matched: Vec<&Vec<Breadcrumb>> = manifest
+        .groups
+        .iter()
+        .flat_map(|g| g.features.iter())
+        .map(|f| &f.matched_by)
+        .collect();
+    let shared_match_rule = match all_matched.split_first() {
+        Some((first, rest))
+            if !first.is_empty() && rest.iter().all(|m| m == first) && !rest.is_empty() =>
+        {
+            Some((*first).clone())
+        }
+        _ => None,
+    };
     let mut compact_features: Vec<Value> = manifest
         .groups
         .iter()
         .flat_map(|g| g.features.iter())
         .map(|f| {
+            // The label IS the feature's directory under the structural
+            // partition, so `folders` would repeat it; three symbols identify
+            // a feature — the full roster lives in the HTML inventory. Goal:
+            // the whole response stays small enough to be read INLINE by an
+            // agent (oversized tool results get offloaded to files, and then
+            // agents mine them with jq instead of reading the answer).
+            let mut symbol_names: Vec<String> = Vec::new();
+            for sym in &f.top_symbols {
+                if !symbol_names.contains(&sym.name) {
+                    symbol_names.push(sym.name.clone());
+                }
+                if symbol_names.len() == 3 {
+                    break;
+                }
+            }
             let mut row = json!({
                 "label": f.label,
                 "role": f.role,
                 "member_count": f.member_count,
-                "folders": f.folders,
-                "top_symbols": f.top_symbols.iter().take(6).map(|s| s.name.clone()).collect::<Vec<_>>(),
-                "matched_by": f.matched_by,
+                "top_symbols": symbol_names,
             });
+            if shared_match_rule.is_none() && !f.matched_by.is_empty() {
+                row["matched_by"] = json!(f.matched_by);
+            }
             if let Some(repo) = &f.repo {
                 row["repo"] = json!(repo);
             }
@@ -811,14 +846,13 @@ fn assemble_and_write(
             row
         })
         .collect();
+    let mut features_omitted = 0usize;
     if compact_features.len() > MAX_COMPACT_FEATURES {
-        let omitted = compact_features.len() - MAX_COMPACT_FEATURES;
+        features_omitted = compact_features.len() - MAX_COMPACT_FEATURES;
         compact_features.truncate(MAX_COMPACT_FEATURES);
-        compact_features.push(json!({
-            "note": format!(
-                "{omitted} more feature(s) omitted from this inline list — the HTML inventory at output_html has every one"
-            )
-        }));
+        warnings.push(format!(
+            "inline list capped at {MAX_COMPACT_FEATURES} feature(s); {features_omitted} more are in the HTML inventory at output_html"
+        ));
     }
 
     let mut result = json!({
@@ -826,6 +860,7 @@ fn assemble_and_write(
         "filter": manifest.filter,
         "overview": manifest.overview,
         "total": manifest.total,
+        "features_omitted": features_omitted,
         "layer_counts": manifest.layer_counts,
         "language_counts": manifest.language_counts,
         "features": compact_features,
@@ -833,6 +868,9 @@ fn assemble_and_write(
         "output_html": output,
         "warnings": warnings,
     });
+    if let Some(rule) = shared_match_rule {
+        result["matched_by_rule"] = json!(rule);
+    }
     if let (Value::Object(target), Value::Object(extra)) = (&mut result, extra) {
         for (k, v) in extra {
             target.insert(k, v);

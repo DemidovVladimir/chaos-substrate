@@ -118,8 +118,13 @@ and `add` exactly as before.
 
 - **L0 — multigraph.** The base typed knowledge graph (nodes, edges, chunks, embeddings) described
   above.
-- **L1 — communities / "god-nodes" / features.** A deterministic Louvain pass in `src/community.rs`
-  clusters L0 into features, persisted as a quotient graph in the `communities`,
+- **L1 — communities / "god-nodes" / features.** A deterministic **structure-first** partition in
+  `src/community.rs`: nodes group by their file's directory, package roots (`package.json` /
+  `Cargo.toml`) are hard boundaries, and big directories cut into their children (≤ 25 files per
+  feature). The weighted import graph still RELATES features (quotient edges, top members,
+  reported modularity) — it just no longer decides membership, because clustering it produced
+  import-named blobs and glue features. The pre-v2 Louvain partition stays selectable for
+  comparison (`chaos communities --louvain`). Persisted as a quotient graph in the `communities`,
   `community_members`, and `community_edges` tables (`migrations/002_communities.sql`).
 - **L2 — Merkle rollup.** `src/merkle.rs` rolls each chunk's `content_hash` up into
   file / community / repo `subtree_hash`es, which drive `chaos add`'s per-feature **blast radius**

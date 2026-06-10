@@ -1177,51 +1177,6 @@ impl Storage {
             .collect())
     }
 
-    /// Read-only: every node under a folder subtree as `(file_path, name, kind)`,
-    /// for the structure-first feature prototype. Matches `prefix` and `prefix/%`
-    /// (LIKE metacharacters escaped). Includes file/definition/dependency nodes so
-    /// the caller can separate real symbols from imports itself.
-    pub async fn load_symbols_under_path(
-        &self,
-        repo_id: Uuid,
-        prefix: &str,
-    ) -> Result<Vec<(String, String, String)>> {
-        let p = prefix.trim().trim_start_matches("./").trim_matches('/');
-        if p.is_empty() {
-            return Ok(Vec::new());
-        }
-        let escaped = p
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_");
-        let patterns = vec![format!("{escaped}/%"), escaped];
-        let rows = sqlx::query(
-            r#"
-            select f.path as path, n.name as name, n.kind as kind
-            from nodes n
-            join files f on f.id = n.file_id
-            where f.repo_id = $1
-              and n.kind <> 'repository'
-              and f.path ilike any($2::text[])
-            order by f.path, n.kind, n.name
-            "#,
-        )
-        .bind(repo_id)
-        .bind(&patterns)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| {
-                (
-                    r.get::<String, _>("path"),
-                    r.get::<String, _>("name"),
-                    r.get::<String, _>("kind"),
-                )
-            })
-            .collect())
-    }
-
     /// Load the full feature hierarchy (communities of size ≥ 2, their top
     /// members, and the quotient edges among them) for surfacing. Read-only and
     /// embedder-free; empty for a repo with no persisted communities.

@@ -254,7 +254,7 @@ every entry-layer feature); anything else → a **topic** match; omit it for the
 with `--layer`/`--folder`/`--topic`. Only a topic filter needs the embedder; layer/folder/whole-repo
 listing is embedder-free. **Always** writes an interactive HTML inventory to
 `docs/features_memory/<slug>-features.html` and prints a compact JSON summary (resolved filter + how
-detected, per-layer + language counts, per-feature label/role/folders/symbols/`matched_by`,
+detected, per-layer + language counts, per-feature label (the feature's directory)/role/member_count/symbols (a shared `matched_by_rule` is lifted to the top level),
 provenance). `--limit 0` (default) returns everything.
 
 ## Projects (cross-repository)
