@@ -38,7 +38,10 @@ pub async fn run(config: Config) -> Result<()> {
                 "result": {
                     "protocolVersion": "2025-06-18",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "chaos-substrate", "version": env!("CARGO_PKG_VERSION")}
+                    "serverInfo": {"name": "chaos-substrate", "version": env!("CARGO_PKG_VERSION")},
+                    // Kept deliberately tiny — it loads into every session.
+                    // The full workflow guide is one chaos_help call away.
+                    "instructions": "Persistent code knowledge memory. Index with chaos_analyze (full) or chaos_add (after edits); ask with chaos_query (hierarchical=true for feature routing); orient with chaos_components / chaos_features; scope changes with chaos_change_plan; cross-repo via chaos_project. Tool returns are compact excerpts — full evidence lives in the generated HTML pages. Call chaos_help for workflows and tool order."
                 }
             }),
             "tools/list" => json!({
@@ -46,6 +49,15 @@ pub async fn run(config: Config) -> Result<()> {
                 "id": id,
                 "result": {
                     "tools": [
+                        {
+                            "name": "chaos_help",
+                            "description": "The agent guide for this server: recommended tool ORDER and WORKFLOWS (first index, incremental updates, asking questions, orienting in a big codebase, scoping a change, documenting a feature, cross-repo projects, starting clean), plus token notes (returns are excerpts; HTML pages keep full evidence). Costs nothing until called — use it once when you first meet this server, or whenever unsure which tool fits.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {},
+                                "required": []
+                            }
+                        },
                         {
                             "name": "chaos_analyze",
                             "description": "Analyze and persist a repository knowledge graph and real embeddings. Replaces stale indexed data for that repository.",
@@ -727,9 +739,39 @@ async fn handle_tool_call(
             };
             Ok(tool_text(serde_json::to_string_pretty(&summary)?))
         }
+        "chaos_help" => Ok(tool_text(AGENT_GUIDE.to_string())),
         _ => anyhow::bail!("unknown tool: {name}"),
     }
 }
+
+/// The `chaos_help` payload: cross-tool workflow guidance MCP-only sessions
+/// otherwise never see (the plugin's SKILL.md carries it for plugin users).
+/// Static text — zero DB/embedder work, and zero tokens until requested.
+const AGENT_GUIDE: &str = "\
+Chaos Substrate — persistent code knowledge memory (Postgres + pgvector). Tool order and workflows:
+
+WORKFLOWS
+  first index        chaos_analyze {repo_path}  — full graph + embeddings + feature hierarchy
+  after editing      chaos_add {repo_path, message}  — index only the git-changed files, refresh artifacts, write a feature/bug page
+  sanity-check       chaos_stats {repo}  — what the index holds (read-only, embedder-free)
+  ask a question     chaos_query {repo, question, hierarchical: true}  — feature-routed retrieval; flat search without the flag
+  grasp a big area   chaos_components {repo, area?}  — curated component overview with a read order (run BEFORE feature work)
+  list features      chaos_features {repo | project, filter?}  — exhaustive inventory; filter auto-detects folder | layer (client/api/core/contracts) | topic
+  scope a change     chaos_change_plan {repo, change_description, since?}  — which features a change spans, in check order
+  gather evidence    chaos_feature_context {repo, task}  — implementation context; treat its warnings as blockers
+  impact (before)    chaos_impact {repo, feature}  — how a proposed feature maps onto today's code, compact return + HTML
+  document (eng)     chaos_write_feature_website {repo, slug, title, manifest}  — OMIT html: Chaos renders the page from the manifest
+  document (users)   chaos_write_storyboard {repo, slug, title, manifest}  — code-free feature guide for stakeholders
+  cross-repo         chaos_project {action: create | add_repo | list | status | relink}  — link client/backend/contracts/infra repos; then chaos_features {project}
+  exports            chaos_obsidian / chaos_refresh  — regenerate vault + pages from the index, no embedder
+
+RULES OF THUMB
+  - Index before anything else; chaos_add after each change keeps memory fresh (hash-gated: unchanged content costs zero embedder calls).
+  - Returns are compact excerpts (chunk text capped, lists capped); the generated HTML under docs/features_memory/ keeps FULL evidence.
+  - Compose feature pages from chaos_feature_context evidence, never from chaos_query alone; pass manifests, never raw HTML.
+  - Cross-repo: all member repos must share one embedder config; links refresh automatically after analyze/add.
+  - CLI equivalent exists for everything (`chaos help` in a shell); full ops reference: RUNBOOK.md, canonical tool table: README.md.
+";
 
 fn write_llm_feature_website(
     repo_root: &str,
@@ -1033,6 +1075,30 @@ mod tests {
             "edges": [{}, {}, {}],
             "story": [{}, {}, {}]
         })
+    }
+
+    #[test]
+    fn agent_guide_names_every_other_tool() {
+        // Sync guard: if a tool is added without teaching the guide about it,
+        // this fails. (chaos_help itself is the one returning the guide.)
+        for tool in [
+            "chaos_analyze",
+            "chaos_add",
+            "chaos_stats",
+            "chaos_query",
+            "chaos_feature_context",
+            "chaos_impact",
+            "chaos_write_feature_website",
+            "chaos_obsidian",
+            "chaos_refresh",
+            "chaos_write_storyboard",
+            "chaos_change_plan",
+            "chaos_components",
+            "chaos_features",
+            "chaos_project",
+        ] {
+            assert!(AGENT_GUIDE.contains(tool), "guide missing {tool}");
+        }
     }
 
     #[test]

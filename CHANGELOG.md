@@ -12,7 +12,7 @@ pipeline was audited and reworked so that **unchanged content never costs an
 embedder call** and tool returns never flood an agent's context.
 
 PR: [#3](https://github.com/DemidovVladimir/chaos-substrate/pull/3) ·
-Migrations: `005_projects.sql`, `006_summary_cache.sql` · MCP tools: 13 → **14**
+Migrations: `005_projects.sql`, `006_summary_cache.sql` · MCP tools: 13 → **15**
 
 ### New — cross-repository projects (P6)
 
@@ -98,6 +98,10 @@ all exports/refresh/hook/linkers are embedder-free.
   any directory with **no database or config**, so an agent can orient itself
   without `cd`-ing into the checkout and compiling. `chaos help <command>`
   prints that command's full flags; `--help` still works everywhere.
+- The MCP twin: a `chaos_help` tool returns the same workflow guide on demand
+  (zero tokens until called), and the server's `initialize` response now
+  carries compact MCP `instructions` so every session starts with the tool
+  order and a pointer to `chaos_help`.
 
 ### New — wrapper pass-through
 

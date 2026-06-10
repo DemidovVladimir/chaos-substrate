@@ -53,9 +53,9 @@ graph automatically, because that turns a local flow step into an unreadable nei
 For plugin/MCP workflows, generate feature pages by first calling `chaos_feature_context`, then
 having the LLM compose the page and manifest, then calling `chaos_write_feature_website`.
 
-The MCP server exposes fourteen tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
+The MCP server exposes fifteen tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
 `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
-`chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, and `chaos_project`.
+`chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, and `chaos_help`.
 
 Both `chaos refresh` and `chaos obsidian` are now also available as MCP tools, so an agent can
 regenerate the Obsidian vault (`chaos_obsidian`) or refresh the vault and feature pages

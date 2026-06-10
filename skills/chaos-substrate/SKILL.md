@@ -198,6 +198,9 @@ If MCP tools are available, prefer them over shelling out:
     `list`, `status` (members, staleness, links by kind, embedder consistency), `relink` (manual,
     `force` overrides the gate). All member repos must share ONE embedder config; `status` warns on
     mismatch. It mirrors the `chaos project create|add-repo|list|status|relink` CLI commands.
+15. Use `chaos_help` (no arguments) when unsure which tool fits: it returns the recommended tool
+    order and typical workflows as static text — no database or embedder work, zero tokens until
+    called. The server's MCP `instructions` carry the one-line version automatically.
 
 Treat `chaos_feature_context.warnings` as blocking for generated feature websites. If it says a
 filesystem path exists but no Postgres hits referenced it, or that docs exist but no docs were
@@ -370,7 +373,7 @@ Use a real Postgres database with pgvector for persistence tests. Use real OpenA
 - Keep stdout protocol-clean; diagnostics should go to stderr or structured logging that does not corrupt MCP messages.
 - The MCP server exposes THIRTEEN tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
   `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
-  `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, and `chaos_project`.
+  `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, and `chaos_help`.
 - `chaos_add` incrementally indexes only git-changed files (or explicit `paths`), refreshes the
   Obsidian vault, and writes a feature/bug page in one call; use it instead of a full
   `chaos_analyze` after small edits. The page carries provenance breadcrumbs and correlates the

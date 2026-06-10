@@ -321,9 +321,9 @@ Use the release binary directly:
 target/release/chaos --config chaos-substrate.toml mcp
 ```
 
-Exposes exactly 14 tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
+Exposes exactly 15 tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
 `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
-`chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project` (see README.md "MCP Tools" for the
+`chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help` (see README.md "MCP Tools" for the
 full reference).
 
 Validate the server responds with a single JSON line:

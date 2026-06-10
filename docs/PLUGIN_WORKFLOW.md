@@ -28,9 +28,9 @@ chaos-substrate/
 - Codex reads `.codex-plugin/plugin.json`.
 - Claude Code reads `.claude-plugin/plugin.json` and `.claude-plugin/hooks/hooks.json`.
 - Both share the root `.mcp.json`, `skills/`, and `bin/chaos`.
-- The shared MCP server exposes fourteen tools (`chaos_analyze`, `chaos_add`, `chaos_stats`,
+- The shared MCP server exposes fifteen tools (`chaos_analyze`, `chaos_add`, `chaos_stats`,
   `chaos_query`, `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`,
-  `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`); see the [MCP Tools](../README.md#mcp-tools) section of the
+  `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`); see the [MCP Tools](../README.md#mcp-tools) section of the
   README for the reference.
 - The tool-use hooks (`.claude-plugin/hooks/hooks.json`, `.cursor/hooks.json`) run `chaos hook` to
   inject code-memory context on `Grep`, `Glob`, and `Bash`. The hook always exits 0, is a safe
@@ -148,7 +148,7 @@ Codex uses `.codex-plugin/plugin.json`. The manifest points to:
 
 During development, install or load this repository as the `chaos-substrate` plugin. Once enabled,
 the agent can use the `chaos-substrate` skill and the MCP tools exposed by `chaos mcp` (see
-the [MCP Tools](../README.md#mcp-tools) section of the README for the fourteen-tool reference).
+the [MCP Tools](../README.md#mcp-tools) section of the README for the fifteen-tool reference).
 
 `chaos_write_feature_website` enforces the feature-page contract. It rejects prose-only pages that
 do not include an interactive graph, story flow, architecture/flow sections, code context, evidence
