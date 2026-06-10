@@ -163,6 +163,22 @@ fn default_schema_version() -> String {
     "legacy".to_string()
 }
 
+/// Cap on a matched node's code excerpt in TOOL RETURNS (full code stays in the
+/// generated HTML pages and, of course, in the repo itself).
+const MAX_RETURN_NODE_CODE_CHARS: usize = 600;
+
+/// Trim chunk contents and node code for a TOOL RETURN. Call AFTER any HTML
+/// write — generated pages keep the full evidence; the agent's context gets
+/// excerpts plus pointers.
+pub fn cap_response_for_return(response: &mut FeatureContextResponse) {
+    crate::query::cap_hits_for_return(&mut response.postgres.hits);
+    for feature in &mut response.feature_matches {
+        for node in &mut feature.matched_nodes {
+            node.code = crate::query::truncate_for_return(&node.code, MAX_RETURN_NODE_CODE_CHARS);
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum FeatureStoryStepInput {

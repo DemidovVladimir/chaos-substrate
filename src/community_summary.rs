@@ -58,8 +58,11 @@ pub struct SummaryOutcome {
     pub summarized: usize,
     /// Communities skipped by the hash gate (unchanged content).
     pub skipped: usize,
-    /// Actual embedder calls made (== summarized).
+    /// Actual embedder calls made (== summarized − reused).
     pub embed_calls: usize,
+    /// Communities restored from the content-addressed summary cache (identical
+    /// content under a new community id) — zero embedder calls each.
+    pub reused: usize,
 }
 
 /// Summarize every community that needs it (hash-gated), embedding each summary
@@ -83,7 +86,25 @@ pub async fn summarize_repo(
         .await?;
 
     let mut embed_calls = 0usize;
+    let mut reused = 0usize;
     for (community_id, subtree_hash) in &pending {
+        // Content-addressed cache first: a partition shuffle that renamed an
+        // unchanged community (new id, same member content) restores the prior
+        // summary + embedding with zero embedder calls.
+        if storage
+            .restore_cached_summary(
+                *community_id,
+                subtree_hash,
+                &tag,
+                embedder.provider(),
+                embedder.model_id(),
+                embedder.dimensions(),
+            )
+            .await?
+        {
+            reused += 1;
+            continue;
+        }
         let inputs = storage.load_community_summary_inputs(*community_id).await?;
         let summary = compose_summary(&inputs);
         // Real embedder — fail closed (no placeholder vector ever written).
@@ -107,6 +128,7 @@ pub async fn summarize_repo(
         summarized: pending.len(),
         skipped: total.saturating_sub(pending.len()),
         embed_calls,
+        reused,
     })
 }
 

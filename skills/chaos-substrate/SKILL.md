@@ -81,9 +81,12 @@ If MCP tools are available, prefer them over shelling out:
    path. The full evidence lives only in the HTML, so it will not flood an agent context like a raw
    `chaos_feature_context` dump. Use it to see how a proposed feature maps onto the codebase as it
    exists today (the before). It mirrors the `chaos impact <repo> <feature>` CLI command.
-7. Use `chaos_write_feature_website` only after reading `chaos_feature_context` output and composing
-   a feature-specific website plus manifest. The LLM must decide the feature story, claims, nodes,
-   and flow from evidence; the tool only writes the artifact.
+7. Use `chaos_write_feature_website` only after reading `chaos_feature_context` output. Compose a
+   feature-specific MANIFEST (feature, title, subtitle, claims, modes, nodes with file/lines/code,
+   edges, story) and pass it WITHOUT the `html` argument — Chaos renders the full interactive page
+   deterministically (the same renderer `chaos add` uses), so you never spend tokens authoring or
+   transmitting raw HTML. The LLM still decides the story, claims, nodes, and flow from evidence;
+   the tool owns the rendering. (Passing `html` yourself is a legacy path.)
 8. Use `chaos_obsidian` to export an already-indexed repository as an Obsidian vault from the
    persisted graph; run it after `chaos_analyze` (which never writes files) when you want browsable
    docs. This lets an MCP-only agent generate the vault without shelling out to the CLI.
@@ -202,17 +205,12 @@ returned, do not call `chaos_write_feature_website` yet. Run `chaos_analyze`/`up
 more targeted `chaos_feature_context` call that names the missing subtree/docs, then compose the
 website only after the missing evidence appears.
 
-Feature websites must be interactive, not prettified Markdown. Before calling
-`chaos_write_feature_website`, the HTML must include:
-
-- `data-chaos-feature-website` root
-- `data-chaos-graph` graph surface with clickable `data-node-id` nodes
-- `data-chaos-story` with clickable `data-story-step` entries
-- `data-chaos-architecture` section
-- `data-chaos-flow` section
-- `data-chaos-code` source/code context section
-- `data-chaos-evidence` evidence/uncertainty section
-- JavaScript `addEventListener` handlers for graph/story/code navigation
+Feature websites are interactive, not prettified Markdown — Chaos's renderer guarantees the
+interactive graph/story/architecture/code/evidence surfaces when you pass a manifest without
+`html`. Only if you author `html` yourself (legacy) must it include the
+`data-chaos-feature-website` / `data-chaos-graph` (clickable `data-node-id`) / `data-chaos-story`
+(`data-story-step`) / `data-chaos-architecture` / `data-chaos-flow` / `data-chaos-code` /
+`data-chaos-evidence` markers and JavaScript `addEventListener` interactivity.
 
 The manifest must include at least three claims, two modes, five nodes, three edges, and three story
 steps. If evidence is too thin for that, do not write a weak page; ask to index/query more first.

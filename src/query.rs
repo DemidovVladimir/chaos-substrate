@@ -37,6 +37,30 @@ pub struct HierarchicalResponse {
     pub context_paths: Vec<ContextPath>,
 }
 
+/// Cap on a hit's chunk content in TOOL RETURNS (the full text stays in the
+/// index and in generated HTML; the agent can always read the file). Applied at
+/// the MCP/CLI boundary, never inside retrieval — HTML evidence keeps full text.
+pub const MAX_RETURN_CHUNK_CHARS: usize = 800;
+/// Cap on a community summary inside a hierarchical route return.
+pub const MAX_ROUTE_SUMMARY_CHARS: usize = 400;
+
+/// Truncate text for a tool return at a char boundary, marking the cut.
+pub fn truncate_for_return(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(max_chars).collect();
+    let dropped = text.chars().count() - max_chars;
+    format!("{kept}… [+{dropped} chars in the indexed chunk]")
+}
+
+/// Cap every hit's content for a tool return (see [`MAX_RETURN_CHUNK_CHARS`]).
+pub fn cap_hits_for_return(hits: &mut [SearchHit]) {
+    for hit in hits {
+        hit.content = truncate_for_return(&hit.content, MAX_RETURN_CHUNK_CHARS);
+    }
+}
+
 /// Minimum cosine score for a community to count as a matched feature.
 const COMMUNITY_MATCH_FLOOR: f64 = 0.30;
 /// Score assigned to a feature matched only by a label/token match (no cosine).
@@ -126,8 +150,26 @@ pub async fn query_repo_hierarchical(
             .then_with(|| b.member_count.cmp(&a.member_count))
             .then_with(|| a.id.cmp(&b.id))
     });
+    // Routes are a return-only surface: trim each summary (full text lives in
+    // the communities table and every generated feature page).
+    for route in &mut routes {
+        if let Some(summary) = &route.summary {
+            route.summary = Some(truncate_for_return(summary, MAX_ROUTE_SUMMARY_CHARS));
+        }
+    }
 
-    let flat = query_repo(storage, repo_id, embedder, query, limit).await?;
+    // Reuse the query embedding computed for community routing — the flat
+    // search would otherwise embed the identical text a second time.
+    let flat = query_repo_with_expansions(
+        storage,
+        repo_id,
+        embedder,
+        query,
+        limit,
+        &[query],
+        Some(&query_embedding),
+    )
+    .await?;
     if routes.is_empty() {
         return Ok(HierarchicalResponse {
             mode: "flat-fallback",
@@ -157,6 +199,9 @@ pub async fn query_repo_hierarchical(
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+    // The hierarchical response is a return-only surface (no HTML consumer):
+    // cap chunk contents here.
+    cap_hits_for_return(&mut hits);
 
     Ok(HierarchicalResponse {
         mode: "hierarchical",
@@ -173,7 +218,7 @@ pub async fn query_repo(
     query: &str,
     limit: i64,
 ) -> Result<QueryResponse> {
-    query_repo_with_expansions(storage, repo_id, embedder, query, limit, &[query]).await
+    query_repo_with_expansions(storage, repo_id, embedder, query, limit, &[query], None).await
 }
 
 pub async fn query_feature_context_repo(
@@ -185,9 +230,12 @@ pub async fn query_feature_context_repo(
 ) -> Result<QueryResponse> {
     let expansions = feature_context_queries(task);
     let query_refs = expansions.iter().map(String::as_str).collect::<Vec<_>>();
-    query_repo_with_expansions(storage, repo_id, embedder, task, limit, &query_refs).await
+    query_repo_with_expansions(storage, repo_id, embedder, task, limit, &query_refs, None).await
 }
 
+/// `first_query_embedding`: a precomputed embedding of `queries[0]`, when the
+/// caller already paid for it (the hierarchical router) — saves one embed call.
+#[allow(clippy::too_many_arguments)]
 async fn query_repo_with_expansions(
     storage: &Storage,
     repo_id: Uuid,
@@ -195,12 +243,21 @@ async fn query_repo_with_expansions(
     original_query: &str,
     limit: i64,
     queries: &[&str],
+    first_query_embedding: Option<&[f32]>,
 ) -> Result<QueryResponse> {
     let candidate_limit = (limit * 8).clamp(40, 200);
     let mut hits = Vec::new();
-    for query in queries {
-        let mut query_hits =
-            retrieve_query_hits(storage, repo_id, embedder, query, candidate_limit).await?;
+    for (i, query) in queries.iter().enumerate() {
+        let precomputed = if i == 0 { first_query_embedding } else { None };
+        let mut query_hits = retrieve_query_hits(
+            storage,
+            repo_id,
+            embedder,
+            query,
+            candidate_limit,
+            precomputed,
+        )
+        .await?;
         hits.append(&mut query_hits);
     }
     merge_duplicate_hits(&mut hits);
@@ -224,8 +281,12 @@ async fn retrieve_query_hits(
     embedder: &dyn Embedder,
     query: &str,
     candidate_limit: i64,
+    precomputed_embedding: Option<&[f32]>,
 ) -> Result<Vec<SearchHit>> {
-    let query_embedding = embedder.embed(query).await?;
+    let query_embedding = match precomputed_embedding {
+        Some(v) => v.to_vec(),
+        None => embedder.embed(query).await?,
+    };
     let mut hits = storage
         .semantic_search(
             repo_id,
@@ -637,6 +698,20 @@ fn retain_supplemental_context(hits: &mut Vec<SearchHit>, limit: usize) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn truncate_for_return_caps_and_marks() {
+        let short = super::truncate_for_return("hello", 10);
+        assert_eq!(short, "hello");
+        let long_text = "x".repeat(900);
+        let capped = super::truncate_for_return(&long_text, super::MAX_RETURN_CHUNK_CHARS);
+        assert!(capped.starts_with(&"x".repeat(super::MAX_RETURN_CHUNK_CHARS)));
+        assert!(capped.contains("+100 chars"));
+        // char-boundary safe on multibyte text
+        let multi = "é".repeat(900);
+        let capped = super::truncate_for_return(&multi, 800);
+        assert!(capped.chars().count() < 900 + 40);
+    }
+
     use super::*;
     use serde_json::json;
 

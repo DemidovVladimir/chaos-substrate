@@ -209,6 +209,7 @@ pub async fn run(
     push_filter_breadcrumb(&resolved, &mut provenance);
 
     // 3–5. Select, build cards, assemble (shared with the project listing).
+    let topic_embedding = topic_embedding_for(embedder, &resolved).await?;
     let selected = select_features(
         storage,
         embedder,
@@ -216,6 +217,7 @@ pub async fn run(
         &hierarchy,
         &detail_by_id,
         &resolved,
+        topic_embedding.as_deref(),
         &mut provenance,
         &mut warnings,
     )
@@ -324,6 +326,8 @@ pub async fn run_project(
         ),
     ));
 
+    // One embed call for the topic filter, shared by every member repo.
+    let topic_embedding = topic_embedding_for(embedder, &resolved).await?;
     let mut all_cards: Vec<(Layer, FeatureCard)> = Vec::new();
     let mut repo_summaries: Vec<Value> = Vec::new();
     for m in &members {
@@ -354,6 +358,7 @@ pub async fn run_project(
             &hierarchy,
             &detail_by_id,
             &resolved,
+            topic_embedding.as_deref(),
             &mut provenance,
             &mut warnings,
         )
@@ -402,6 +407,21 @@ fn push_filter_breadcrumb(resolved: &ResolvedFilter, provenance: &mut Vec<Breadc
     }
 }
 
+/// Embed a topic filter ONCE for the whole listing — `select_features` runs per
+/// repo in project mode and must not re-embed the identical query N times.
+async fn topic_embedding_for(
+    embedder: Option<&dyn Embedder>,
+    resolved: &ResolvedFilter,
+) -> Result<Option<Vec<f32>>> {
+    if resolved.kind != FilterKind::Topic {
+        return Ok(None);
+    }
+    let (Some(emb), Some(value)) = (embedder, resolved.value.as_deref()) else {
+        return Ok(None);
+    };
+    Ok(Some(emb.embed(value).await?))
+}
+
 /// Select the matching feature ids of ONE repo, each with a "why it's here"
 /// breadcrumb. Shared by the single-repo and project-wide listings.
 #[allow(clippy::too_many_arguments)]
@@ -412,6 +432,7 @@ async fn select_features(
     hierarchy: &CommunityHierarchy,
     detail_by_id: &HashMap<Uuid, &CommunityDetail>,
     resolved: &ResolvedFilter,
+    topic_embedding: Option<&[f32]>,
     provenance: &mut Vec<Breadcrumb>,
     warnings: &mut Vec<String>,
 ) -> Result<Vec<(Uuid, Vec<Breadcrumb>)>> {
@@ -501,8 +522,7 @@ async fn select_features(
             let value = resolved.value.clone().unwrap_or_default();
             // 3a. Semantic match against the L3 summary embeddings (if available).
             let mut score_by_id: HashMap<Uuid, f64> = HashMap::new();
-            if let Some(emb) = embedder {
-                let query_embedding = emb.embed(&value).await?;
+            if let (Some(emb), Some(query_embedding)) = (embedder, topic_embedding) {
                 let cap = hierarchy.communities.len().max(12) as i64;
                 let semantic = storage
                     .community_semantic_search(
@@ -510,7 +530,7 @@ async fn select_features(
                         emb.provider(),
                         emb.model_id(),
                         emb.dimensions(),
-                        &query_embedding,
+                        query_embedding,
                         cap,
                     )
                     .await?;
@@ -765,8 +785,11 @@ fn assemble_and_write(
     }
     write_features_html(output, &manifest)?;
 
-    // Compact JSON (the full detail lives in the HTML).
-    let compact_features: Vec<Value> = manifest
+    // Compact JSON (the full detail lives in the HTML). The HTML inventory is
+    // exhaustive; the inline list is bounded so a huge repo/project can't flood
+    // the agent's context.
+    const MAX_COMPACT_FEATURES: usize = 80;
+    let mut compact_features: Vec<Value> = manifest
         .groups
         .iter()
         .flat_map(|g| g.features.iter())
@@ -788,6 +811,15 @@ fn assemble_and_write(
             row
         })
         .collect();
+    if compact_features.len() > MAX_COMPACT_FEATURES {
+        let omitted = compact_features.len() - MAX_COMPACT_FEATURES;
+        compact_features.truncate(MAX_COMPACT_FEATURES);
+        compact_features.push(json!({
+            "note": format!(
+                "{omitted} more feature(s) omitted from this inline list — the HTML inventory at output_html has every one"
+            )
+        }));
+    }
 
     let mut result = json!({
         "status": "ok",

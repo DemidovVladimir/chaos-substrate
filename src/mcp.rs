@@ -12,7 +12,6 @@ use crate::{
     Config,
 };
 use anyhow::{Context, Result};
-use futures::{StreamExt, TryStreamExt};
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -137,17 +136,17 @@ pub async fn run(config: Config) -> Result<()> {
                         },
                         {
                             "name": "chaos_write_feature_website",
-                            "description": "Write an LLM-composed interactive feature website into docs/features_memory with an embedded chaos-feature-manifest JSON block. Use after chaos_feature_context, not as a substitute for understanding the feature. HTML must include interactive graph, story flow, architecture, code, and evidence sections.",
+                            "description": "Write an interactive feature website into docs/features_memory with an embedded chaos-feature-manifest JSON block. PREFERRED: pass ONLY the structured `manifest` (feature, title, subtitle, claims>=3, modes>=2, nodes>=5 with file/lines/code, edges>=3, story>=3) and OMIT `html` — Chaos renders the full interactive page deterministically (same renderer as chaos add), so you never spend tokens authoring or transmitting raw HTML. Use after chaos_feature_context, not as a substitute for understanding the feature. Legacy: passing `html` still works but must include the interactive graph/story/architecture/code/evidence markers.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
                                     "repo": {"type": "string"},
                                     "slug": {"type": "string"},
                                     "title": {"type": "string"},
-                                    "html": {"type": "string"},
-                                    "manifest": {"type": "object"}
+                                    "manifest": {"type": "object", "description": "FeatureManifest: {feature:{id,title,domain,summary}, title, subtitle, claims[], modes[], nodes[{id,label,subtitle,group,file,lines,role,code,evidence,confidence}], edges[{source,target,label,kind}], story[{id,title,body,node_ids}]}. Chaos renders the page from this."},
+                                    "html": {"type": "string", "description": "LEGACY ONLY — omit to let Chaos render from the manifest (cheaper and consistent)."}
                                 },
-                                "required": ["repo", "slug", "title", "html", "manifest"]
+                                "required": ["repo", "slug", "title", "manifest"]
                             }
                         },
                         {
@@ -178,14 +177,14 @@ pub async fn run(config: Config) -> Result<()> {
                         },
                         {
                             "name": "chaos_write_storyboard",
-                            "description": "Write a CLIENT/USER-FACING interactive 'Feature guide' into docs/features_memory/<slug>-story.html: the feature explained from the UI/UX user-story perspective with NO code, rendered as a light editorial scrollytelling page (Access-Control lineage). You supply a structured, code-free manifest (personas as role cards; user stories as 'As a … I want … so that …' with plain-language acceptance criteria; clickable frames grouped into stages that render as an alternating step-by-step walkthrough; outcomes). It supports OPTIONAL branding (`brand`, `hero_image`), an optional permission `matrix`, an agent-style `callout`, and an end-of-page interactive `game`, and adds scroll-unlock gamification (a sticky progress HUD, per-stage 'cleared' badges, a completion reward). Confidence values are OPTIONAL metadata and are NOT shown to the end user. Each walkthrough step pairs with a device mockup built from the frame's `preview` — a REAL captured screenshot or a live app route; Chaos cannot synthesise the client's screens, so a frame with no `preview` renders an honest 'add a screenshot' placeholder. ASK the user/developer to capture real screenshots (or point you at a running route) rather than inventing UI. Use this for a stakeholder/end-user presentation; use chaos_write_feature_website instead for the engineer-facing graph/architecture/code page. Compose from real understanding (run chaos_feature_context / chaos_impact first); do not invent UI that does not exist.",
+                            "description": "Write a CLIENT/USER-FACING interactive 'Feature guide' into docs/features_memory/<slug>-story.html: the feature explained as a code-free UI/UX user story (role-card personas, 'As a … I want … so that …' stories, a step-by-step scrollytelling walkthrough, outcomes), rendered by Chaos in the light editorial theme — you pass a structured manifest only, never HTML. Each walkthrough frame may carry a `preview` showing the REAL client UI (a captured screenshot, or a live iframe of a running route); Chaos cannot synthesise screens, so frames without a preview show an honest placeholder — ask for real captures. Optional extras: `brand_preset` (e.g. 'molecule') or `brand`/`hero_image`, persona `who`/`icon`/`includes`/`tier`, a permission `matrix`, a `callout`, and an end-of-page `game`. Confidence values are metadata, never shown to end users. Use for stakeholder/end-user presentations; use chaos_write_feature_website for the engineer-facing page. Compose from real understanding (chaos_feature_context / chaos_impact first); do not invent UI.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
                                     "repo": {"type": "string"},
                                     "slug": {"type": "string", "description": "Slug for the output filename docs/features_memory/<slug>-story.html."},
                                     "title": {"type": "string", "description": "Page title; used when the manifest omits one."},
-                                    "manifest": {"type": "object", "description": "StoryboardManifest: {title, subtitle, audience, overall_confidence, personas[], stories[], frames[], outcomes[]}. NO code/file/line fields. Minimums: >=1 persona, >=2 stories, >=3 frames, >=1 outcome; every confidence in [0,1]; story.frame_ids and persona references must resolve. Each frame MAY include an optional `preview` showing the REAL client UI (not code): {\"kind\":\"image\",\"src\":\"previews/x.png\",\"alt\":\"...\",\"caption\":\"...\"} for a screenshot/clip you captured (offline, leaks nothing — preferred), or {\"kind\":\"iframe\",\"url\":\"http://localhost:5173/route\",\"caption\":\"...\"} to live-embed a running app route (only renders while that server is up). src/url must not use javascript:/vbscript:/data:text/html. OPTIONAL (all backward-compatible) for the richer Access-Control look: a top-level `brand_preset` name (e.g. \"molecule\") that fills logo/hero/company from a preset shipped inside Chaos — available to every install, no local files — for any `brand`/`hero_image` fields you leave empty (explicit values win); `hero_image` (banner src — relative/http(s)/data:image) and `brand` {name,tagline,logo_src,href} to set branding yourself; per-persona `who`, `icon` (one of eye|file|crown|agent|key|user|users|shield|lock|clock|doc|grant|revoke|bolt|flag), `includes`, and `tier` (>0 places it on the role ladder, higher = more authority); a top-level `matrix` {columns:[role names], rows:[{capability, allowed:[bool per column]}], caption} for the permission table; a `callout` {kicker,heading,intro,title,body,points[]} for an agent-style highlight band; and a `game` {kicker,heading,intro,instructions,rounds:[{prompt,context:[chips],options:[{label,correct,explain}]}],win_message} for the end-of-page click-to-check mini-game (each round needs >=2 options and >=1 marked correct)."}
+                                    "manifest": {"type": "object", "description": "StoryboardManifest: {title, subtitle, audience, overall_confidence, personas[], stories[], frames[], outcomes[]} — NO code/file/line fields. Minimums: >=1 persona, >=2 stories, >=3 frames, >=1 outcome; confidences in [0,1]; story.frame_ids and persona references must resolve. A frame's optional `preview` is {kind:'image', src, alt, caption} for a captured screenshot (preferred) or {kind:'iframe', url, caption} for a running route; src/url must not be javascript:/vbscript:/data:text/html. Optional: `brand_preset` name, `hero_image` + `brand` {name,tagline,logo_src,href}, persona `who`/`icon`/`includes`/`tier`, `matrix` {columns, rows:[{capability, allowed[]}]}, `callout` {kicker,heading,intro,title,body,points[]}, `game` {kicker,heading,intro,instructions,rounds:[{prompt,context[],options:[{label,correct,explain}]}],win_message} (each round >=2 options, >=1 correct)."}
                                 },
                                 "required": ["repo", "slug", "title", "manifest"]
                             }
@@ -240,7 +239,7 @@ pub async fn run(config: Config) -> Result<()> {
                         },
                         {
                             "name": "chaos_project",
-                            "description": "Manage CROSS-REPOSITORY projects — the layer above single-repo memory. A project is a named set of indexed repositories (client, backend, smart contracts, infra, …); Chaos detects FEATURE→FEATURE CROSS-REPO LINKS between members from the persisted index (consumer → provider): `package_dep` (one repo imports a package the other publishes), `abi` (client/backend code references a Solidity contract defined in the contracts repo), `http_route` (a fetch/axios call path matches a route registered in another repo). Links attach at the feature (L1 community) level, carry evidence + provenance breadcrumbs, and refresh AUTOMATICALLY after chaos_analyze/chaos_add on any member (gated by the L2 repo root hash, like L3 summaries — a no-change re-index relinks nothing). Actions: `create` (idempotent), `add_repo` (attach an INDEXED repo under an alias like client/backend/contracts; links it immediately), `list`, `status` (members, link staleness vs current root hashes, links by kind, embedder consistency), `relink` (manual re-detect; `force` overrides the gate). Use chaos_features with `project` to list every member repo's features in one journey-layered, cross-link-annotated inventory.",
+                            "description": "Manage CROSS-REPOSITORY projects: a named set of indexed repos (client, backend, contracts, infra, …). Chaos detects feature→feature CROSS-REPO LINKS between members from the persisted index (consumer → provider): `package_dep` (imports a package another member publishes), `abi` (references a Solidity contract defined elsewhere), `http_route` (a fetch/axios call path matches a registered route). Links attach at the feature (L1) level with evidence + provenance, and refresh AUTOMATICALLY after chaos_analyze/chaos_add on any member (hash-gated — a no-change re-index relinks nothing). Actions: create (idempotent), add_repo (attach an INDEXED repo under an alias; links immediately), list, status (members, staleness, links by kind, embedder consistency), relink (`force` overrides the gate). Use chaos_features with `project` for the cross-repo feature inventory.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
@@ -380,7 +379,10 @@ async fn handle_tool_call(
                 .await?;
                 Ok(tool_text(serde_json::to_string_pretty(&answer)?))
             } else {
-                let answer = query_repo(storage, repo.id, embedder, question, limit).await?;
+                let mut answer = query_repo(storage, repo.id, embedder, question, limit).await?;
+                // Return-only surface: excerpt chunk contents (the full text
+                // stays in the index; the agent can open the file).
+                crate::query::cap_hits_for_return(&mut answer.hits);
                 Ok(tool_text(serde_json::to_string_pretty(&answer)?))
             }
         }
@@ -418,7 +420,7 @@ async fn handle_tool_call(
             let feature_matches =
                 load_feature_matches(task, &features_dir, feature_limit, nodes_per_feature)?;
             let provenance = feature_context_provenance(&postgres, &features_dir, &feature_matches);
-            let response = FeatureContextResponse {
+            let mut response = FeatureContextResponse {
                 task: task.to_string(),
                 postgres,
                 features_dir,
@@ -428,8 +430,10 @@ async fn handle_tool_call(
             };
             let output_html = args.get("output_html").and_then(Value::as_str);
             if let Some(output_html) = output_html {
+                // The HTML keeps the FULL evidence; the return gets excerpts.
                 write_feature_context_html(Path::new(output_html), &response)?;
             }
+            crate::feature_context::cap_response_for_return(&mut response);
             Ok(tool_text(serde_json::to_string_pretty(&json!({
                 "wrote_html": output_html,
                 "context": response
@@ -479,19 +483,30 @@ async fn handle_tool_call(
                 .get("title")
                 .and_then(Value::as_str)
                 .context("title is required")?;
-            let html = args
-                .get("html")
-                .and_then(Value::as_str)
-                .context("html is required")?;
+            let html = args.get("html").and_then(Value::as_str);
             let manifest = args.get("manifest").context("manifest is required")?;
             let repo = storage
                 .find_repository(repo)
                 .await?
                 .context("repository is not indexed")?;
-            let path = write_llm_feature_website(&repo.root_path, slug, title, html, manifest)?;
+            // Preferred path: NO html argument — Chaos renders the interactive
+            // page from the manifest (same deterministic renderer `chaos add`
+            // uses), so the LLM never spends tokens authoring or transmitting
+            // raw HTML. The legacy html path remains for back-compat.
+            let (path, rendered_by) = match html {
+                None => (
+                    write_manifest_feature_website(&repo.root_path, slug, title, manifest)?,
+                    "chaos (manifest-driven)",
+                ),
+                Some(html) => (
+                    write_llm_feature_website(&repo.root_path, slug, title, html, manifest)?,
+                    "llm-html (legacy)",
+                ),
+            };
             Ok(tool_text(serde_json::to_string_pretty(&json!({
                 "output_html": path,
-                "manifest_embedded": true
+                "manifest_embedded": true,
+                "rendered_by": rendered_by
             }))?))
         }
         "chaos_obsidian" => {
@@ -767,7 +782,47 @@ fn write_llm_feature_website(
     Ok(output)
 }
 
-pub(crate) fn validate_feature_website_contract(html: &str, manifest: &Value) -> Result<()> {
+/// Render the feature page from the manifest alone — the deterministic Rust
+/// renderer `chaos add` already uses. The minimum-evidence contract still
+/// applies; only the HTML-authoring burden moves off the LLM.
+fn write_manifest_feature_website(
+    repo_root: &str,
+    slug: &str,
+    title: &str,
+    manifest: &Value,
+) -> Result<PathBuf> {
+    validate_manifest_minimums(manifest)?;
+    // Tolerate a manifest that leaves title/subtitle to the tool arguments.
+    let mut value = manifest.clone();
+    if let Value::Object(map) = &mut value {
+        if map
+            .get("title")
+            .and_then(Value::as_str)
+            .is_none_or(|t| t.trim().is_empty())
+        {
+            map.insert("title".into(), json!(title));
+        }
+        map.entry("subtitle").or_insert_with(|| json!(""));
+    }
+    let parsed: crate::feature_context::FeatureManifest = serde_json::from_value(value).context(
+        "manifest must match the FeatureManifest schema (feature, title, subtitle, claims, modes, nodes, edges, story)",
+    )?;
+    let slug = safe_slug(slug);
+    let output = Path::new(repo_root)
+        .join("docs/features_memory")
+        .join(format!("{slug}-explanation.html"));
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        &output,
+        crate::feature_export::render_feature_website(&parsed)?,
+    )?;
+    Ok(output)
+}
+
+/// Minimum-evidence contract shared by both rendering paths.
+pub(crate) fn validate_manifest_minimums(manifest: &Value) -> Result<()> {
     let required_manifest = [
         ("claims", 3usize),
         ("modes", 2usize),
@@ -787,6 +842,11 @@ pub(crate) fn validate_feature_website_contract(html: &str, manifest: &Value) ->
             );
         }
     }
+    Ok(())
+}
+
+pub(crate) fn validate_feature_website_contract(html: &str, manifest: &Value) -> Result<()> {
+    validate_manifest_minimums(manifest)?;
 
     let required_html_markers = [
         "data-chaos-feature-website",
@@ -864,7 +924,9 @@ async fn analyze_repo(
     let outcome = async {
         let extractor = RustRepositoryExtractor::new(config.indexing.clone());
         let result = extractor.extract(repo_path, repo.id, commit)?;
-        storage.replace_repo_index(repo.id, &result).await?;
+        // Embeddings for unchanged content survive the wipe (restored by content
+        // hash inside the replace transaction).
+        let reused = storage.replace_repo_index(repo.id, &result).await?;
         let missing = storage
             .chunks_missing_embeddings(
                 repo.id,
@@ -873,22 +935,7 @@ async fn analyze_repo(
                 embedder.dimensions(),
             )
             .await?;
-        futures::stream::iter(missing.iter().map(|chunk| async move {
-            let embedding = embedder.embed(&chunk.content).await?;
-            storage
-                .insert_embedding(
-                    chunk,
-                    embedder.provider(),
-                    embedder.model_id(),
-                    embedder.dimensions(),
-                    &embedding,
-                )
-                .await?;
-            Result::<_, anyhow::Error>::Ok(())
-        }))
-        .buffer_unordered(crate::EMBED_CONCURRENCY)
-        .try_collect::<()>()
-        .await?;
+        crate::embedding::embed_missing_chunks(storage, embedder, &missing).await?;
         // L1: derive + persist the community layer from the written graph.
         let detection = crate::community::detect_and_persist(
             storage,
@@ -911,6 +958,7 @@ async fn analyze_repo(
             "edges": result.edges.len(),
             "chunks": result.chunks.len(),
             "embedded_chunks": missing.len(),
+            "reused_embeddings": reused,
             "communities": detection.communities.len(),
             "feature_communities": feature_communities,
             "quotient_edges": detection.quotient_edges.len(),
@@ -919,7 +967,8 @@ async fn analyze_repo(
             "summaries": {
                 "summarized": summary.summarized,
                 "skipped": summary.skipped,
-                "embed_calls": summary.embed_calls
+                "embed_calls": summary.embed_calls,
+                "reused_from_cache": summary.reused
             }
         }))
     }
@@ -984,6 +1033,63 @@ mod tests {
             "edges": [{}, {}, {}],
             "story": [{}, {}, {}]
         })
+    }
+
+    #[test]
+    fn manifest_driven_website_renders_without_llm_html() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = |id: &str| {
+            json!({
+                "id": id, "label": id, "subtitle": "s", "group": "core",
+                "file": "src/lib.rs", "lines": "1-10", "role": "core",
+                "code": "fn x() {}"
+            })
+        };
+        let manifest = json!({
+            "feature": {"id": "f1", "title": "Auth", "domain": "core", "summary": "sums"},
+            "title": "Auth feature",
+            "subtitle": "How auth works",
+            "claims": [
+                {"id": "c1", "title": "t", "body": "b", "confidence": 0.9, "node_ids": ["n1"]},
+                {"id": "c2", "title": "t", "body": "b", "confidence": 0.9, "node_ids": ["n2"]},
+                {"id": "c3", "title": "t", "body": "b", "confidence": 0.9, "node_ids": ["n3"]}
+            ],
+            "modes": [
+                {"id": "m1", "title": "happy", "node_ids": ["n1"]},
+                {"id": "m2", "title": "error", "node_ids": ["n2"]}
+            ],
+            "nodes": [node("n1"), node("n2"), node("n3"), node("n4"), node("n5")],
+            "edges": [
+                {"source": "n1", "target": "n2", "label": "calls"},
+                {"source": "n2", "target": "n3", "label": "calls"},
+                {"source": "n3", "target": "n4", "label": "calls"}
+            ],
+            "story": [
+                {"id": "s1", "title": "step 1"},
+                {"id": "s2", "title": "step 2"},
+                {"id": "s3", "title": "step 3"}
+            ]
+        });
+        let path = write_manifest_feature_website(
+            dir.path().to_str().unwrap(),
+            "auth-feature",
+            "Auth feature",
+            &manifest,
+        )
+        .expect("manifest-driven render should succeed");
+        let html = std::fs::read_to_string(&path).unwrap();
+        assert!(html.contains("chaos-feature-manifest"), "manifest embedded");
+        assert!(html.contains("Auth feature"));
+
+        // Thin manifests are still rejected (the evidence contract holds).
+        let thin = json!({"claims": [], "modes": [], "nodes": [], "edges": [], "story": []});
+        assert!(write_manifest_feature_website(
+            dir.path().to_str().unwrap(),
+            "thin",
+            "Thin",
+            &thin
+        )
+        .is_err());
     }
 
     #[test]

@@ -58,6 +58,61 @@ pub trait Embedder: Send + Sync {
     fn model_id(&self) -> &str;
     fn dimensions(&self) -> usize;
     async fn embed(&self, input: &str) -> Result<Vec<f32>>;
+
+    /// Embed several texts in one provider request where the API supports it
+    /// (both OpenAI and Ollama accept array inputs). The default falls back to
+    /// sequential single calls — token cost is identical either way; batching
+    /// saves HTTP round-trips during indexing.
+    async fn embed_batch(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>> {
+        let mut out = Vec::with_capacity(inputs.len());
+        for input in inputs {
+            out.push(self.embed(input).await?);
+        }
+        Ok(out)
+    }
+}
+
+/// Texts per batched embedding request during indexing.
+const EMBED_BATCH_SIZE: usize = 16;
+/// Batched requests in flight at once (16 × 2 ≈ the old 8-way single-text
+/// concurrency, with far fewer round-trips).
+const EMBED_BATCH_CONCURRENCY: usize = 2;
+
+/// Embed every chunk in `missing` and persist the vectors — the one shared
+/// indexing loop (analyze / add / MCP analyze all call this). Batches requests
+/// and fails closed on any embed error. Returns how many chunks were embedded.
+pub async fn embed_missing_chunks(
+    storage: &crate::storage::Storage,
+    embedder: &dyn Embedder,
+    missing: &[crate::models::KnowledgeChunk],
+) -> Result<usize> {
+    use futures::{StreamExt, TryStreamExt};
+    futures::stream::iter(missing.chunks(EMBED_BATCH_SIZE).map(|batch| async move {
+        let inputs: Vec<String> = batch.iter().map(|c| c.content.clone()).collect();
+        let vectors = embedder.embed_batch(&inputs).await?;
+        anyhow::ensure!(
+            vectors.len() == batch.len(),
+            "embedder returned {} vectors for {} inputs",
+            vectors.len(),
+            batch.len()
+        );
+        for (chunk, vector) in batch.iter().zip(vectors.iter()) {
+            storage
+                .insert_embedding(
+                    chunk,
+                    embedder.provider(),
+                    embedder.model_id(),
+                    embedder.dimensions(),
+                    vector,
+                )
+                .await?;
+        }
+        Result::<_, anyhow::Error>::Ok(())
+    }))
+    .buffer_unordered(EMBED_BATCH_CONCURRENCY)
+    .try_collect::<()>()
+    .await?;
+    Ok(missing.len())
 }
 
 pub fn build_embedder(cfg: &EmbeddingConfig) -> Result<Box<dyn Embedder>> {
@@ -113,6 +168,13 @@ struct OpenAiEmbeddingRequest<'a> {
     dimensions: usize,
 }
 
+#[derive(Serialize)]
+struct OpenAiBatchEmbeddingRequest<'a> {
+    model: &'a str,
+    input: &'a [String],
+    dimensions: usize,
+}
+
 #[derive(Deserialize)]
 struct OpenAiEmbeddingResponse {
     data: Vec<OpenAiEmbeddingData>,
@@ -121,6 +183,9 @@ struct OpenAiEmbeddingResponse {
 #[derive(Deserialize)]
 struct OpenAiEmbeddingData {
     embedding: Vec<f32>,
+    /// Position of this vector in the input array (0 for single requests).
+    #[serde(default)]
+    index: usize,
 }
 
 #[async_trait]
@@ -182,6 +247,61 @@ impl Embedder for OpenAiEmbedder {
         validate_dimensions(&embedding, self.dimensions)?;
         Ok(embedding)
     }
+
+    async fn embed_batch(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let body = (|| async {
+            let response = self
+                .client
+                .post("https://api.openai.com/v1/embeddings")
+                .bearer_auth(&self.api_key)
+                .json(&OpenAiBatchEmbeddingRequest {
+                    model: &self.model,
+                    input: inputs,
+                    dimensions: self.dimensions,
+                })
+                .send()
+                .await
+                .map_err(|e| {
+                    let transient = transport_error_is_transient(&e);
+                    let err = anyhow::Error::new(e).context("failed to call OpenAI embeddings API");
+                    EmbedAttemptError {
+                        error: err,
+                        transient,
+                    }
+                })?;
+            let status = response.status();
+            let text = response
+                .text()
+                .await
+                .map_err(|e| EmbedAttemptError::transient(anyhow::Error::new(e)))?;
+            ensure_success(status, text, "OpenAI")
+        })
+        .retry(retry_policy())
+        .when(|e: &EmbedAttemptError| e.transient)
+        .await
+        .map_err(|e| e.error)?;
+
+        let mut data = serde_json::from_str::<OpenAiEmbeddingResponse>(&body)
+            .context("failed to decode OpenAI embeddings response")?
+            .data;
+        anyhow::ensure!(
+            data.len() == inputs.len(),
+            "OpenAI returned {} vectors for {} inputs",
+            data.len(),
+            inputs.len()
+        );
+        // The API documents data in input order, keyed by `index` — sort to be safe.
+        data.sort_by_key(|d| d.index);
+        let mut out = Vec::with_capacity(data.len());
+        for d in data {
+            validate_dimensions(&d.embedding, self.dimensions)?;
+            out.push(d.embedding);
+        }
+        Ok(out)
+    }
 }
 
 struct OllamaEmbedder {
@@ -213,6 +333,12 @@ impl OllamaEmbedder {
 struct OllamaEmbeddingRequest<'a> {
     model: &'a str,
     input: &'a str,
+}
+
+#[derive(Serialize)]
+struct OllamaBatchEmbeddingRequest<'a> {
+    model: &'a str,
+    input: &'a [String],
 }
 
 #[derive(Deserialize)]
@@ -275,6 +401,55 @@ impl Embedder for OllamaEmbedder {
             .context("Ollama embed response had no vectors")?;
         validate_dimensions(&embedding, self.dimensions)?;
         Ok(embedding)
+    }
+
+    async fn embed_batch(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let url = format!("{}/api/embed", self.base_url.trim_end_matches('/'));
+        let body = (|| async {
+            let response = self
+                .client
+                .post(&url)
+                .json(&OllamaBatchEmbeddingRequest {
+                    model: &self.model,
+                    input: inputs,
+                })
+                .send()
+                .await
+                .map_err(|e| {
+                    let transient = transport_error_is_transient(&e);
+                    let err = anyhow::Error::new(e).context("failed to call Ollama embeddings API");
+                    EmbedAttemptError {
+                        error: err,
+                        transient,
+                    }
+                })?;
+            let status = response.status();
+            let text = response
+                .text()
+                .await
+                .map_err(|e| EmbedAttemptError::transient(anyhow::Error::new(e)))?;
+            ensure_success(status, text, "Ollama")
+        })
+        .retry(retry_policy())
+        .when(|e: &EmbedAttemptError| e.transient)
+        .await
+        .map_err(|e| e.error)?;
+
+        let response = serde_json::from_str::<OllamaEmbeddingResponse>(&body)
+            .context("failed to decode Ollama embeddings response")?;
+        anyhow::ensure!(
+            response.embeddings.len() == inputs.len(),
+            "Ollama returned {} vectors for {} inputs",
+            response.embeddings.len(),
+            inputs.len()
+        );
+        for embedding in &response.embeddings {
+            validate_dimensions(embedding, self.dimensions)?;
+        }
+        Ok(response.embeddings)
     }
 }
 

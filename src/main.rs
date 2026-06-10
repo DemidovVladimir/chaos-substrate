@@ -44,7 +44,6 @@ use feature_context::{
     write_feature_context_html, FeatureContextResponse,
 };
 use feature_export::refresh_project_exports;
-use futures::{StreamExt, TryStreamExt};
 use graph_export::write_graph_html;
 use obsidian_export::write_obsidian_vault;
 use query::{query_feature_context_repo, query_repo};
@@ -53,9 +52,6 @@ use std::path::PathBuf;
 use storage::Storage;
 use tracing::warn;
 use tracing_subscriber::EnvFilter;
-
-/// Maximum number of embedding requests in flight at once.
-pub(crate) const EMBED_CONCURRENCY: usize = 8;
 
 #[derive(Parser)]
 #[command(name = "chaos")]
@@ -454,7 +450,10 @@ async fn main() -> Result<()> {
             let outcome = async {
                 let extractor = RustRepositoryExtractor::new(config.indexing.clone());
                 let result = extractor.extract(&repo_path, repo.id, commit)?;
-                storage.replace_repo_index(repo.id, &result).await?;
+                // Embeddings for unchanged content survive the wipe (restored by
+                // content hash inside the replace transaction) — only genuinely
+                // new/changed chunks are left to embed.
+                let reused = storage.replace_repo_index(repo.id, &result).await?;
                 let missing = storage
                     .chunks_missing_embeddings(
                         repo.id,
@@ -463,24 +462,7 @@ async fn main() -> Result<()> {
                         embedder.dimensions(),
                     )
                     .await?;
-                let embedder_ref = embedder.as_ref();
-                let storage_ref = &storage;
-                futures::stream::iter(missing.iter().map(|chunk| async move {
-                    let embedding = embedder_ref.embed(&chunk.content).await?;
-                    storage_ref
-                        .insert_embedding(
-                            chunk,
-                            embedder_ref.provider(),
-                            embedder_ref.model_id(),
-                            embedder_ref.dimensions(),
-                            &embedding,
-                        )
-                        .await?;
-                    Result::<_, anyhow::Error>::Ok(())
-                }))
-                .buffer_unordered(EMBED_CONCURRENCY)
-                .try_collect::<()>()
-                .await?;
+                embedding::embed_missing_chunks(&storage, embedder.as_ref(), &missing).await?;
                 // L1: derive + persist the community layer from the written graph.
                 let detection = community::detect_and_persist(
                     &storage,
@@ -493,12 +475,19 @@ async fn main() -> Result<()> {
                 // L3: hash-gated community summaries, embedded by the real embedder.
                 let summary =
                     community_summary::summarize_repo(&storage, embedder.as_ref(), repo.id).await?;
-                Result::<_, anyhow::Error>::Ok((result, missing.len(), detection, merkle, summary))
+                Result::<_, anyhow::Error>::Ok((
+                    result,
+                    reused,
+                    missing.len(),
+                    detection,
+                    merkle,
+                    summary,
+                ))
             }
             .await;
 
             match outcome {
-                Ok((result, embedded, detection, merkle, summary)) => {
+                Ok((result, reused_embeddings, embedded, detection, merkle, summary)) => {
                     storage.finish_analysis(run_id, "completed", None).await?;
                     // P6: keep the project layer fresh — relink every project
                     // containing this repo (hash-gated; empty when none).
@@ -514,6 +503,7 @@ async fn main() -> Result<()> {
                             "edges": result.edges.len(),
                             "chunks": result.chunks.len(),
                             "embedded_chunks": embedded,
+                            "reused_embeddings": reused_embeddings,
                             "communities": detection.communities.len(),
                             "feature_communities": feature_communities,
                             "quotient_edges": detection.quotient_edges.len(),
@@ -522,7 +512,8 @@ async fn main() -> Result<()> {
                             "summaries": {
                                 "summarized": summary.summarized,
                                 "skipped": summary.skipped,
-                                "embed_calls": summary.embed_calls
+                                "embed_calls": summary.embed_calls,
+                                "reused_from_cache": summary.reused
                             },
                             "projects": projects
                         }))?
@@ -592,8 +583,10 @@ async fn main() -> Result<()> {
                 .await?;
                 println!("{}", serde_json::to_string_pretty(&response)?);
             } else {
-                let response =
+                let mut response =
                     query_repo(&storage, repo.id, embedder.as_ref(), &question, limit).await?;
+                // Return-only surface: excerpt chunk contents.
+                query::cap_hits_for_return(&mut response.hits);
                 println!("{}", serde_json::to_string_pretty(&response)?);
             }
         }
@@ -622,7 +615,7 @@ async fn main() -> Result<()> {
             let feature_matches =
                 load_feature_matches(&task, &features_dir, feature_limit, nodes_per_feature)?;
             let provenance = feature_context_provenance(&postgres, &features_dir, &feature_matches);
-            let response = FeatureContextResponse {
+            let mut response = FeatureContextResponse {
                 task,
                 postgres,
                 features_dir,
@@ -631,8 +624,10 @@ async fn main() -> Result<()> {
                 provenance,
             };
             if let Some(output_html) = output_html {
+                // The HTML keeps the FULL evidence; the printed JSON gets excerpts.
                 write_feature_context_html(&output_html, &response)?;
             }
+            feature_context::cap_response_for_return(&mut response);
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Commands::Impact {

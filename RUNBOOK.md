@@ -58,6 +58,12 @@ chaos refresh /path/to/repo --all-features
 `analyze` requires a real embedder (OpenAI or Ollama). If none is configured, analysis
 **fails by design** — never produces fake/random vectors.
 
+Re-running `analyze` is cheap: chunk embeddings are **preserved by content hash** across the
+re-index (the output reports `reused_embeddings`), L3 summaries are hash-gated, and a
+content-addressed summary cache covers community-ID churn (`summaries.reused_from_cache`) — so a
+full re-analyze of unchanged code makes **zero** embedder calls. Embedding requests are batched
+(16 texts per call) for both providers.
+
 `refresh` (and `obsidian`) also regenerate god-node community notes from the persisted layers —
 `vault/Communities/*.md` plus a `Feature Map.md`, and an interactive
 `docs/features_memory/feature-map.html` — with **no** re-index and **no** embedder.

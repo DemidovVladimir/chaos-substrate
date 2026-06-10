@@ -138,8 +138,40 @@ impl Storage {
         Ok(())
     }
 
-    pub async fn replace_repo_index(&self, repo_id: Uuid, result: &ExtractionResult) -> Result<()> {
+    /// Replace a repository's whole L0 index with a fresh extraction.
+    ///
+    /// Embeddings are PRESERVED by content: before the wipe, the repo's
+    /// embeddings are saved (server-side, into a transaction-scoped temp table)
+    /// keyed by `(content_hash, provider, model_id, dimensions)`, and after the
+    /// fresh chunks are inserted every chunk whose content already had an
+    /// embedding gets it back. `content_hash` is deterministic SHA-256 of the
+    /// chunk content, so a full re-analyze of unchanged code makes ZERO
+    /// embedder calls — only genuinely new/changed content is left for
+    /// [`Storage::chunks_missing_embeddings`]. Returns how many embeddings were
+    /// reused.
+    pub async fn replace_repo_index(
+        &self,
+        repo_id: Uuid,
+        result: &ExtractionResult,
+    ) -> Result<u64> {
         let mut tx = self.pool.begin().await?;
+        // Harvest existing embeddings by content before anything is deleted.
+        // Temp table is connection-local and dropped on commit, so concurrent
+        // replaces on other pool connections cannot collide.
+        sqlx::query(
+            r#"
+            create temp table _chaos_saved_embeddings on commit drop as
+            select distinct on (c.content_hash, e.provider, e.model_id, e.dimensions)
+                   c.content_hash, e.provider, e.model_id, e.dimensions, e.embedding
+            from embeddings e
+            join chunks c on c.id = e.chunk_id
+            where c.repo_id = $1
+            order by c.content_hash, e.provider, e.model_id, e.dimensions
+            "#,
+        )
+        .bind(repo_id)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("delete from embeddings using chunks where embeddings.chunk_id = chunks.id and chunks.repo_id = $1")
             .bind(repo_id)
             .execute(&mut *tx)
@@ -174,8 +206,26 @@ impl Storage {
             insert_chunk(&mut tx, chunk).await?;
         }
 
+        // Restore saved embeddings onto the fresh chunks with matching content.
+        let restored = sqlx::query(
+            r#"
+            insert into embeddings
+                (id, chunk_id, provider, model_id, dimensions, content_hash, embedding, created_at)
+            select gen_random_uuid(), c.id, s.provider, s.model_id, s.dimensions,
+                   c.content_hash, s.embedding, now()
+            from chunks c
+            join _chaos_saved_embeddings s on s.content_hash = c.content_hash
+            where c.repo_id = $1
+            on conflict (chunk_id, provider, model_id, dimensions, content_hash) do nothing
+            "#,
+        )
+        .bind(repo_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
         tx.commit().await?;
-        Ok(())
+        Ok(restored)
     }
 
     /// Incrementally merge a partial extraction (only `changed_paths`) into an
@@ -735,11 +785,95 @@ impl Storage {
         .bind(model_id)
         .bind(dimensions as i32)
         .bind(subtree_hash)
-        .bind(literal)
+        .bind(&literal)
+        .execute(&mut *tx)
+        .await?;
+        // Content-addressed cache: if a later partition shuffle gives this same
+        // member content a NEW community id, the summary + embedding can be
+        // restored without an embedder call (see restore_cached_summary).
+        sqlx::query(
+            r#"
+            insert into community_summary_cache
+                (content_hash, algo, provider, model_id, dimensions, summary, embedding, created_at)
+            values ($1, $2, $3, $4, $5, $6, $7::vector, now())
+            on conflict (content_hash, algo, provider, model_id, dimensions)
+            do update set summary = excluded.summary, embedding = excluded.embedding, created_at = now()
+            "#,
+        )
+        .bind(subtree_hash)
+        .bind(algo_tag)
+        .bind(provider)
+        .bind(model_id)
+        .bind(dimensions as i32)
+        .bind(summary)
+        .bind(&literal)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Restore a community's summary + embedding from the content-addressed
+    /// cache when an identical-content entry exists (same subtree hash, summary
+    /// algo, and embedder identity). Returns true on a cache hit — the caller
+    /// then skips composing and embedding entirely. This is what makes
+    /// community-ID churn (a partition shuffle renaming an unchanged community)
+    /// cost ZERO embedder calls.
+    pub async fn restore_cached_summary(
+        &self,
+        community_id: Uuid,
+        subtree_hash: &str,
+        algo_tag: &str,
+        provider: &str,
+        model_id: &str,
+        dimensions: usize,
+    ) -> Result<bool> {
+        let mut tx = self.pool.begin().await?;
+        let updated = sqlx::query(
+            r#"
+            update communities c
+            set summary = s.summary, summary_hash = $2 || $3, summarized_at = now()
+            from community_summary_cache s
+            where c.id = $1
+              and s.content_hash = $2 and s.algo = $3
+              and s.provider = $4 and s.model_id = $5 and s.dimensions = $6
+            "#,
+        )
+        .bind(community_id)
+        .bind(subtree_hash)
+        .bind(algo_tag)
+        .bind(provider)
+        .bind(model_id)
+        .bind(dimensions as i32)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if updated == 0 {
+            // No cache entry (or no such community) — nothing was written.
+            return Ok(false);
+        }
+        sqlx::query(
+            r#"
+            insert into community_embeddings
+                (id, community_id, provider, model_id, dimensions, content_hash, embedding, created_at)
+            select gen_random_uuid(), $1, $4, $5, $6, $2, s.embedding, now()
+            from community_summary_cache s
+            where s.content_hash = $2 and s.algo = $3
+              and s.provider = $4 and s.model_id = $5 and s.dimensions = $6
+            on conflict (community_id, provider, model_id, dimensions)
+            do update set embedding = excluded.embedding, content_hash = excluded.content_hash, created_at = now()
+            "#,
+        )
+        .bind(community_id)
+        .bind(subtree_hash)
+        .bind(algo_tag)
+        .bind(provider)
+        .bind(model_id)
+        .bind(dimensions as i32)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     // ---- L1/L3 top-down retrieval support (P4) ------------------------------
