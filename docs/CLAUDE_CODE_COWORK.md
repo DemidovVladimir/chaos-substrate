@@ -165,7 +165,7 @@ index/query context instead of writing a weak page.
 
 If Claude only uses `chaos_query` for a feature explanation, the plugin is stale or MCP is exposing
 the old tool surface. Rebuild and re-upload `dist/chaos-substrate-cowork-plugin.zip`, then verify the
-MCP tool list contains all seventeen tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`,
+MCP tool list contains all eighteen tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_query`,
 `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
 `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`, `chaos_clean`, and `chaos_graph`.
 

@@ -27,6 +27,7 @@ mod provenance;
 mod query;
 mod setup;
 mod simple_graph_optimizer;
+mod stack;
 mod storage;
 mod struct_features;
 mod theme;
@@ -130,6 +131,19 @@ enum Commands {
     /// breakdowns of nodes by kind, edges by kind, chunks by type, and files by
     /// language. Read-only; explains what an analyze/add produced.
     Stats { repo: String },
+    /// Report the TECH STACK of an indexed repository: manifest-declared
+    /// dependencies by ecosystem (npm/cargo, with versions and runtime-vs-dev
+    /// scope), npm scripts, deployment resources (AWS CDK apps, stacks, and
+    /// constructs by service), JS/TS configs, and the language breakdown —
+    /// listed, not just counted (stats counts them). Read-only and
+    /// embedder-free; always writes docs/features_memory/stack.html and states
+    /// its coverage (Dockerfiles/CI/pyproject/foundry are not indexed yet).
+    Stack {
+        repo: String,
+        /// Output HTML path (default <repo>/docs/features_memory/stack.html).
+        #[arg(long)]
+        output_html: Option<PathBuf>,
+    },
     /// Query an already indexed repository.
     Query {
         repo: String,
@@ -585,6 +599,12 @@ async fn main() -> Result<()> {
             let stats = storage.repo_stats(&repo).await?;
             println!("{}", serde_json::to_string_pretty(&stats)?);
         }
+        Commands::Stack { repo, output_html } => {
+            let storage = Storage::connect(&config.storage.database_url).await?;
+            let opts = stack::StackOptions { output_html };
+            let summary = stack::run(&storage, &repo, &opts).await?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
         Commands::Query {
             repo,
             question,
@@ -1016,6 +1036,7 @@ fn print_agent_help(topic: Option<&str>) -> Result<()> {
          \x20 first index       chaos migrate && chaos doctor && chaos analyze /path/to/repo\n\
          \x20 after editing     chaos add /path/to/repo -m \"what changed\"\n\
          \x20 ask a question    chaos query /path/to/repo \"how does auth work?\" --hierarchical\n\
+         \x20 what's the stack  chaos stack /path/to/repo\n\
          \x20 grasp a big area  chaos components /path/to/repo \"payments\"\n\
          \x20 list features     chaos features /path/to/repo client\n\
          \x20 scope a change    chaos change-plan /path/to/repo \"add rate limiting\" --since main\n\

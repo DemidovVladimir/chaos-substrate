@@ -41,7 +41,7 @@ pub async fn run(config: Config) -> Result<()> {
                     "serverInfo": {"name": "chaos-substrate", "version": env!("CARGO_PKG_VERSION")},
                     // Kept deliberately tiny — it loads into every session.
                     // The full workflow guide is one chaos_help call away.
-                    "instructions": "Persistent code knowledge memory. Index with chaos_analyze (full) or chaos_add (after edits); ask with chaos_query (hierarchical=true for feature routing); orient with chaos_components / chaos_features; scope changes with chaos_change_plan; cross-repo via chaos_project. Tool returns are compact excerpts — full evidence lives in the generated HTML pages. A feature deep-dive ends with chaos_write_feature_website (persist your explanation as a page, manifest only) — not chat-only. Call chaos_help for workflows and tool order."
+                    "instructions": "Persistent code knowledge memory. Index with chaos_analyze (full) or chaos_add (after edits); ask with chaos_query (hierarchical=true for feature routing); orient with chaos_components / chaos_features; tech stack & infra via chaos_stack; scope changes with chaos_change_plan; cross-repo via chaos_project. Tool returns are compact excerpts — full evidence lives in the generated HTML pages. A feature deep-dive ends with chaos_write_feature_website (persist your explanation as a page, manifest only) — not chat-only. Call chaos_help for workflows and tool order."
                 }
             }),
             "tools/list" => json!({
@@ -94,6 +94,18 @@ pub async fn run(config: Config) -> Result<()> {
                                 "type": "object",
                                 "properties": {
                                     "repo": {"type": "string"}
+                                },
+                                "required": ["repo"]
+                            }
+                        },
+                        {
+                            "name": "chaos_stack",
+                            "description": "Report the TECH STACK of an already-indexed repository, LISTED rather than counted (chaos_stats only counts these node kinds): manifest-DECLARED dependencies by ecosystem (npm/cargo — name, versions, runtime-vs-dev scope, and how many workspace manifests declare each, widest-declared first), npm scripts, deployment resources (AWS CDK app entrypoints, Stack classes, and L2 constructs grouped by cloud service), indexed JS/TS configs, and the file-language breakdown. Read-only and embedder-free. ALWAYS writes an interactive HTML inventory to docs/features_memory/stack.html (manifest embedded under id=\"chaos-stack-manifest\") and returns a COMPACT JSON summary (capped lists with *_omitted counts; every entry lives in the HTML). The return states its COVERAGE explicitly — what the index extracts vs what it does not yet (Dockerfiles, CI workflows, pyproject.toml, foundry.toml, Terraform), so read those files directly if they matter. Use it to answer \"what is this repo built with / what infrastructure does it use?\" without grepping manifests.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo": {"type": "string"},
+                                    "output_html": {"type": "string", "description": "Override the default docs/features_memory/stack.html path."}
                                 },
                                 "required": ["repo"]
                             }
@@ -394,6 +406,20 @@ async fn handle_tool_call(
                 .context("repository is not indexed")?;
             let stats = storage.repo_stats(&repo).await?;
             Ok(tool_text(serde_json::to_string_pretty(&stats)?))
+        }
+        "chaos_stack" => {
+            let repo = args
+                .get("repo")
+                .and_then(Value::as_str)
+                .context("repo is required")?;
+            let opts = crate::stack::StackOptions {
+                output_html: args
+                    .get("output_html")
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from),
+            };
+            let summary = crate::stack::run(storage, repo, &opts).await?;
+            Ok(tool_text(serde_json::to_string_pretty(&summary)?))
         }
         "chaos_query" => {
             let repo = args
@@ -837,6 +863,7 @@ WORKFLOWS
   first index        chaos_analyze {repo_path}  — full graph + embeddings + feature hierarchy
   after editing      chaos_add {repo_path, message}  — index only the git-changed files, refresh artifacts, write a feature/bug page
   sanity-check       chaos_stats {repo}  — what the index holds (read-only, embedder-free)
+  what's the stack   chaos_stack {repo}  — declared dependencies, scripts, CDK stacks/resources, configs, languages — LISTED, with explicit coverage notes (embedder-free)
   ask a question     chaos_query {repo, question, hierarchical: true}  — feature-routed retrieval; flat search without the flag
   grasp a big area   chaos_components {repo, area?}  — curated component overview with a read order (run BEFORE feature work)
   list features      chaos_features {repo | project, filter?}  — exhaustive inventory; filter auto-detects folder | layer (exact word OR by meaning: 'backend', 'client app') | topic; after composing your answer, call again with curation {groups: [{title, icon?, blurb?, features: [{label, note?}]}]} so the HTML carries your human domains + notes
@@ -1171,6 +1198,7 @@ mod tests {
             "chaos_analyze",
             "chaos_add",
             "chaos_stats",
+            "chaos_stack",
             "chaos_query",
             "chaos_feature_context",
             "chaos_impact",

@@ -4,6 +4,44 @@ All notable changes to Chaos Substrate are documented here. Versions before
 0.12.0 predate this file; see the git history (`P0`–`P5` commits) for the
 hierarchical-memory build-out.
 
+## 0.14.0 — 2026-06-10
+
+The tech-stack release: "what is this repo built with?" is now a first-class
+question, answered from the persisted index — no more agents falling back to
+grepping `package.json` (observed in a real molecule_core session: the agent
+used chaos correctly for orientation, then shelled out for the dependency
+list because no tool would name it).
+
+### Added — `chaos_stack` MCP tool + `chaos stack` CLI (18 tools)
+
+`chaos_stats` only *counts* dependency and deployment-resource nodes;
+`chaos_stack` *lists* them. Read-only and embedder-free, it reports:
+
+- **Dependencies by ecosystem** (npm / cargo): manifest-DECLARED entries only
+  (import-derived `dependency` nodes are excluded by their stable_id shape),
+  each with name, distinct version requirements, runtime-vs-dev scope from the
+  manifest section, and how many workspace manifests declare it —
+  widest-declared first, the non-hardcoded "load-bearing package" signal.
+- **npm scripts** grouped by name with a deterministic example command.
+- **Deployment & infrastructure**: AWS CDK app entrypoints (cdk.json), Stack
+  classes, and L2 constructs grouped by cloud service with examples.
+- **JS/TS config files** and the **file-language breakdown**.
+
+Like the other surfacing tools it ALWAYS writes an interactive HTML inventory
+(default `docs/features_memory/stack.html`, a repo-level singleton like
+`graph.html`, swept by `chaos_clean --artifacts`; embedded
+`chaos-stack-manifest`) and returns a COMPACT JSON summary — capped lists with
+lifted `*_omitted` counts, uniform array rows, provenance breadcrumbs.
+
+**Honesty contract:** the return carries explicit `coverage` notes naming what
+the extractor does **not** persist yet (Dockerfiles, CI workflows,
+pyproject.toml, foundry.toml, Terraform), so an agent never mistakes the
+inventory for a complete scan — widening extractor coverage is the follow-up.
+
+New read-only storage facets back it: `stack_dependencies`, `stack_scripts`,
+`stack_deployment_resources`, `stack_config_files` (`src/storage.rs`), all
+keyed off existing tables — no schema change.
+
 ## 0.13.0 — 2026-06-10
 
 The discoverability release: an agent that doesn't know what Chaos already

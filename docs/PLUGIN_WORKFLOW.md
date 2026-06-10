@@ -28,7 +28,7 @@ chaos-substrate/
 - Codex reads `.codex-plugin/plugin.json`.
 - Claude Code reads `.claude-plugin/plugin.json` and `.claude-plugin/hooks/hooks.json`.
 - Both share the root `.mcp.json`, `skills/`, and `bin/chaos`.
-- The shared MCP server exposes seventeen tools (`chaos_analyze`, `chaos_add`, `chaos_stats`,
+- The shared MCP server exposes eighteen tools (`chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`,
   `chaos_query`, `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`,
   `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`, `chaos_clean`, `chaos_graph`); see the [MCP Tools](../README.md#mcp-tools) section of the
   README for the reference.
@@ -148,7 +148,7 @@ Codex uses `.codex-plugin/plugin.json`. The manifest points to:
 
 During development, install or load this repository as the `chaos-substrate` plugin. Once enabled,
 the agent can use the `chaos-substrate` skill and the MCP tools exposed by `chaos mcp` (see
-the [MCP Tools](../README.md#mcp-tools) section of the README for the seventeen-tool reference).
+the [MCP Tools](../README.md#mcp-tools) section of the README for the eighteen-tool reference).
 
 `chaos_write_feature_website` enforces the feature-page contract. It rejects prose-only pages that
 do not include an interactive graph, story flow, architecture/flow sections, code context, evidence
