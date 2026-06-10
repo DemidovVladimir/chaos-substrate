@@ -276,6 +276,18 @@ pub async fn run(config: Config) -> Result<()> {
                                 },
                                 "required": ["confirm"]
                             }
+                        },
+                        {
+                            "name": "chaos_graph",
+                            "description": "Export an already-indexed repository as a standalone interactive HTML graph (the full L0 node/edge view) read from the persisted index — embedder-free, writes one self-contained file. Defaults to docs/features_memory/graph.html inside the repo (so chaos_clean --artifacts sweeps it); override with `output`. For the feature-level map (L1 communities + quotient graph) use chaos_obsidian / chaos_refresh instead, which write feature-map.html.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo": {"type": "string"},
+                                    "output": {"type": "string", "description": "Output HTML path. Defaults to <repo>/docs/features_memory/graph.html."}
+                                },
+                                "required": ["repo"]
+                            }
                         }
                     ]
                 }
@@ -771,6 +783,34 @@ async fn handle_tool_call(
             let summary = crate::run_clean(storage, repo, artifacts).await?;
             Ok(tool_text(serde_json::to_string_pretty(&summary)?))
         }
+        "chaos_graph" => {
+            let repo = args
+                .get("repo")
+                .and_then(Value::as_str)
+                .context("repo is required")?;
+            let repo = storage
+                .find_repository(repo)
+                .await?
+                .context("repository is not indexed")?;
+            let output = args
+                .get("output")
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    Path::new(&repo.root_path).join("docs/features_memory/graph.html")
+                });
+            if let Some(parent) = output.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let graph = storage.load_graph_export(&repo).await?;
+            crate::graph_export::write_graph_html(&output, &graph)?;
+            Ok(tool_text(serde_json::to_string_pretty(&json!({
+                "output": output,
+                "repo_id": repo.id,
+                "nodes": graph.nodes.len(),
+                "edges": graph.edges.len()
+            }))?))
+        }
         _ => anyhow::bail!("unknown tool: {name}"),
     }
 }
@@ -795,6 +835,7 @@ WORKFLOWS
   document (users)   chaos_write_storyboard {repo, slug, title, manifest}  — code-free feature guide for stakeholders
   cross-repo         chaos_project {action: create | add_repo | list | status | relink}  — link client/backend/contracts/infra repos; then chaos_features {project}
   exports            chaos_obsidian / chaos_refresh  — regenerate vault + pages from the index, no embedder
+  graph view         chaos_graph {repo, output?}  — standalone interactive L0 node/edge HTML (feature map comes from obsidian/refresh)
   fresh start        chaos_clean {repo?, artifacts?, confirm: true}  — DESTRUCTIVE index wipe (one repo or all); artifacts also deletes generated files
 
 RULES OF THUMB
@@ -1129,6 +1170,7 @@ mod tests {
             "chaos_features",
             "chaos_project",
             "chaos_clean",
+            "chaos_graph",
         ] {
             assert!(AGENT_GUIDE.contains(tool), "guide missing {tool}");
         }

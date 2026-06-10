@@ -12,7 +12,7 @@ pipeline was audited and reworked so that **unchanged content never costs an
 embedder call** and tool returns never flood an agent's context.
 
 PR: [#3](https://github.com/DemidovVladimir/chaos-substrate/pull/3) ·
-Migrations: `005_projects.sql`, `006_summary_cache.sql` · MCP tools: 13 → **16**
+Migrations: `005_projects.sql`, `006_summary_cache.sql` · MCP tools: 13 → **17**
 
 ### New — cross-repository projects (P6)
 
@@ -118,12 +118,20 @@ all exports/refresh/hook/linkers are embedder-free.
 
 ### New — `chaos_clean` MCP tool
 
-- The clean-slate flow is reachable from agent sessions too (16 tools total):
+- The clean-slate flow is reachable from agent sessions too (17 tools total):
   `chaos_clean {repo?, artifacts?, confirm: true}` mirrors
   `chaos clean [--artifacts]`. It is guarded — the call fails without
   `confirm: true`, and the description instructs agents to use it only on
   explicit user request. Previously agents had to cd into the checkout and
   drive the CLI to reset state.
+
+### New — `chaos_graph` MCP tool
+
+- The standalone interactive graph export is reachable from agent sessions
+  (17 tools total): `chaos_graph {repo, output?}` mirrors
+  `chaos graph <repo> -o graph.html`, defaulting to
+  `docs/features_memory/graph.html` inside the repo so `chaos_clean
+  --artifacts` sweeps it. Embedder-free, read-only over the persisted index.
 
 ### Changed — default local embedding model: EmbeddingGemma
 
