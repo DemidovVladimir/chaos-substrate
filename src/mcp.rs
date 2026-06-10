@@ -263,6 +263,19 @@ pub async fn run(config: Config) -> Result<()> {
                                 },
                                 "required": ["action"]
                             }
+                        },
+                        {
+                            "name": "chaos_clean",
+                            "description": "DESTRUCTIVE: wipe the persisted index — one repository (pass `repo`) or EVERYTHING (omit it). Pass `artifacts: true` to also delete the generated files on disk (the repo's chaos-obsidian-vault/ and docs/features_memory/, plus all project workspaces when wiping everything) for a truly clean slate before re-validation. Requires `confirm: true` — refuse to guess; only call this when the user explicitly asked to clean/reset. Reports exactly what was removed. The schema survives (no re-migrate needed); re-index afterwards with chaos_analyze.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo": {"type": "string", "description": "Repository path or name to clear. OMIT to wipe every repository."},
+                                    "artifacts": {"type": "boolean", "default": false, "description": "Also delete generated files on disk (vault, feature pages, project workspaces)."},
+                                    "confirm": {"type": "boolean", "description": "Must be true. Guard against accidental wipes — set it only on explicit user intent."}
+                                },
+                                "required": ["confirm"]
+                            }
                         }
                     ]
                 }
@@ -740,6 +753,24 @@ async fn handle_tool_call(
             Ok(tool_text(serde_json::to_string_pretty(&summary)?))
         }
         "chaos_help" => Ok(tool_text(AGENT_GUIDE.to_string())),
+        "chaos_clean" => {
+            if !args
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                anyhow::bail!(
+                    "chaos_clean is destructive — pass confirm: true (and only when the user explicitly asked to clean/reset)"
+                );
+            }
+            let repo = args.get("repo").and_then(Value::as_str);
+            let artifacts = args
+                .get("artifacts")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let summary = crate::run_clean(storage, repo, artifacts).await?;
+            Ok(tool_text(serde_json::to_string_pretty(&summary)?))
+        }
         _ => anyhow::bail!("unknown tool: {name}"),
     }
 }
@@ -764,6 +795,7 @@ WORKFLOWS
   document (users)   chaos_write_storyboard {repo, slug, title, manifest}  — code-free feature guide for stakeholders
   cross-repo         chaos_project {action: create | add_repo | list | status | relink}  — link client/backend/contracts/infra repos; then chaos_features {project}
   exports            chaos_obsidian / chaos_refresh  — regenerate vault + pages from the index, no embedder
+  fresh start        chaos_clean {repo?, artifacts?, confirm: true}  — DESTRUCTIVE index wipe (one repo or all); artifacts also deletes generated files
 
 RULES OF THUMB
   - Index before anything else; chaos_add after each change keeps memory fresh (hash-gated: unchanged content costs zero embedder calls).
@@ -1096,6 +1128,7 @@ mod tests {
             "chaos_components",
             "chaos_features",
             "chaos_project",
+            "chaos_clean",
         ] {
             assert!(AGENT_GUIDE.contains(tool), "guide missing {tool}");
         }

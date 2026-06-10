@@ -264,9 +264,9 @@ Chaos Substrate should become a modular code-to-knowledge memory system:
 - Call edges are file-scoped heuristics; cross-file call resolution is name-based, not type-resolved.
 - No Go/Kubernetes/Terraform adapter yet.
 - No full integration test with a real embedder was run unless the validator provides OpenAI or Ollama.
-- MCP has a focused tool surface of fifteen tools: `chaos_analyze`, `chaos_add`, `chaos_stats`,
+- MCP has a focused tool surface of sixteen tools: `chaos_analyze`, `chaos_add`, `chaos_stats`,
   `chaos_query`, `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`,
-  `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, and `chaos_help`.
+  `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`, and `chaos_clean`.
 
 ## Pass Criteria
 

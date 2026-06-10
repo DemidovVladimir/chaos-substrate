@@ -49,7 +49,7 @@ hybrid retrieval  ──  src/query.rs
   ▼
 outputs
   ├─ CLI results (JSON on stdout)              ──  src/main.rs
-  ├─ MCP tools (15)                            ──  src/mcp.rs
+  ├─ MCP tools (16)                            ──  src/mcp.rs
   ├─ interactive graph.html                    ──  src/graph_export.rs
   ├─ Obsidian vault                            ──  src/obsidian_export.rs
   └─ feature context + feature websites        ──  src/feature_context.rs, src/feature_export.rs
@@ -148,9 +148,9 @@ no embedder**.
 
 ## MCP Tools
 
-The stdio MCP server exposes exactly fifteen tools: `chaos_analyze`, `chaos_add`, `chaos_stats`,
+The stdio MCP server exposes exactly sixteen tools: `chaos_analyze`, `chaos_add`, `chaos_stats`,
 `chaos_query`, `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`,
-`chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, and `chaos_help`. See the **MCP Tools** section of `README.md` for the
+`chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`, and `chaos_clean`. See the **MCP Tools** section of `README.md` for the
 canonical reference of names, arguments, and intended usage.
 
 `chaos_change_plan` (CLI `chaos change-plan <repo> "<change>" [--since <ref>]`) decomposes a

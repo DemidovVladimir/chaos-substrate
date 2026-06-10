@@ -450,47 +450,7 @@ async fn main() -> Result<()> {
         }
         Commands::Clean { repo, artifacts } => {
             let storage = Storage::connect(&config.storage.database_url).await?;
-            let summary = if let Some(repo) = repo {
-                let repository = storage
-                    .find_repository(&repo)
-                    .await?
-                    .with_context(|| format!("repository is not indexed: {repo}"))?;
-                let removed_artifacts = if artifacts {
-                    remove_generated_artifacts(std::path::Path::new(&repository.root_path))
-                } else {
-                    Vec::new()
-                };
-                storage.purge_repository(repository.id).await?;
-                json!({
-                    "cleared": "repository",
-                    "root_path": repository.root_path,
-                    "repo_id": repository.id,
-                    "artifacts_removed": removed_artifacts,
-                })
-            } else {
-                // Collect artifact locations BEFORE the wipe (the rows are the
-                // only record of where the repos and project workspaces live).
-                let mut removed_artifacts: Vec<String> = Vec::new();
-                if artifacts {
-                    for repository in storage.list_repositories().await? {
-                        removed_artifacts.extend(remove_generated_artifacts(std::path::Path::new(
-                            &repository.root_path,
-                        )));
-                    }
-                    for proj in storage.list_projects().await? {
-                        let workspace = project::project_workspace_dir(&proj.name);
-                        if workspace.is_dir() && std::fs::remove_dir_all(&workspace).is_ok() {
-                            removed_artifacts.push(workspace.display().to_string());
-                        }
-                    }
-                }
-                let removed = storage.clear_all().await?;
-                json!({
-                    "cleared": "all",
-                    "removed": removed,
-                    "artifacts_removed": removed_artifacts,
-                })
-            };
+            let summary = run_clean(&storage, repo.as_deref(), artifacts).await?;
             println!("{}", serde_json::to_string_pretty(&summary)?);
         }
         Commands::Analyze { repo_path } => {
@@ -1048,6 +1008,57 @@ fn print_agent_help(topic: Option<&str>) -> Result<()> {
          \x20 (OpenAI/Ollama) is required for analyze/add/query; never fake vectors."
     );
     Ok(())
+}
+
+/// Wipe the persisted index — one repository, or everything — optionally
+/// deleting the generated files on disk too. Shared by the `chaos clean` CLI
+/// arm and the `chaos_clean` MCP tool.
+pub(crate) async fn run_clean(
+    storage: &Storage,
+    repo: Option<&str>,
+    artifacts: bool,
+) -> Result<serde_json::Value> {
+    if let Some(repo) = repo {
+        let repository = storage
+            .find_repository(repo)
+            .await?
+            .with_context(|| format!("repository is not indexed: {repo}"))?;
+        let removed_artifacts = if artifacts {
+            remove_generated_artifacts(std::path::Path::new(&repository.root_path))
+        } else {
+            Vec::new()
+        };
+        storage.purge_repository(repository.id).await?;
+        Ok(json!({
+            "cleared": "repository",
+            "root_path": repository.root_path,
+            "repo_id": repository.id,
+            "artifacts_removed": removed_artifacts,
+        }))
+    } else {
+        // Collect artifact locations BEFORE the wipe (the rows are the only
+        // record of where the repos and project workspaces live).
+        let mut removed_artifacts: Vec<String> = Vec::new();
+        if artifacts {
+            for repository in storage.list_repositories().await? {
+                removed_artifacts.extend(remove_generated_artifacts(std::path::Path::new(
+                    &repository.root_path,
+                )));
+            }
+            for proj in storage.list_projects().await? {
+                let workspace = project::project_workspace_dir(&proj.name);
+                if workspace.is_dir() && std::fs::remove_dir_all(&workspace).is_ok() {
+                    removed_artifacts.push(workspace.display().to_string());
+                }
+            }
+        }
+        let removed = storage.clear_all().await?;
+        Ok(json!({
+            "cleared": "all",
+            "removed": removed,
+            "artifacts_removed": removed_artifacts,
+        }))
+    }
 }
 
 /// Delete the generated artifacts Chaos writes inside a repository — exactly

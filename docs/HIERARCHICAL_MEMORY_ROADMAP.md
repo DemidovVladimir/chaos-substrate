@@ -3,7 +3,7 @@
 > **Status:** ✅ Implemented (P0–P5 all green) · **Last updated:** 2026-06-04 · **Owner:** _unassigned_
 >
 > **Historical document.** Tool counts, versions, and theme references below reflect the state
-> when each phase shipped. Current state (0.12.0): **fifteen** MCP tools (incl. `chaos_components`,
+> when each phase shipped. Current state (0.12.0): **sixteen** MCP tools (incl. `chaos_components`,
 > `chaos_features`, `chaos_project`), all generated HTML in the **light editorial** theme, plus the
 > P6 cross-repository project layer — see [CHANGELOG.md](../CHANGELOG.md) and the README.
 >

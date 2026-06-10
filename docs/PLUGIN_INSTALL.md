@@ -141,8 +141,8 @@ bin/chaos
 
 To register only the MCP server (no plugin), or for the `bin/chaos claude-code-add` and
 `claude mcp add` commands, see [docs/EDITOR_SETUP.md](EDITOR_SETUP.md). The shared MCP server exposes
-fifteen tools (`chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`, `chaos_feature_context`,
-`chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`); see the [MCP Tools](../README.md#mcp-tools) section of the README for the
+sixteen tools (`chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_query`, `chaos_feature_context`,
+`chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`, `chaos_clean`); see the [MCP Tools](../README.md#mcp-tools) section of the README for the
 tool reference.
 
 ## 6. Use From A Project
