@@ -266,7 +266,7 @@ pub async fn run(config: Config) -> Result<()> {
                         },
                         {
                             "name": "chaos_clean",
-                            "description": "DESTRUCTIVE: wipe the persisted index — one repository (pass `repo`) or EVERYTHING (omit it). Pass `artifacts: true` to also delete the generated files on disk (the repo's chaos-obsidian-vault/ and docs/features_memory/, plus all project workspaces when wiping everything) for a truly clean slate before re-validation. Requires `confirm: true` — refuse to guess; only call this when the user explicitly asked to clean/reset. Reports exactly what was removed. The schema survives (no re-migrate needed); re-index afterwards with chaos_analyze.",
+                            "description": "DESTRUCTIVE: wipe the persisted index — one repository (pass `repo`) or EVERYTHING (omit it). Pass `artifacts: true` to also delete the generated files on disk (the repo's chaos-obsidian-vault/ and docs/features_memory/, plus all project workspaces when wiping everything) for a truly clean slate before re-validation. Requires `confirm: true` — refuse to guess; only call this when the user explicitly asked to clean/reset. Reports exactly what was removed. The schema survives (no re-migrate needed). Cleaning does NOT imply re-indexing: stop after the wipe unless the user also asked to rebuild — the index simply stays empty until a chaos_analyze is requested.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {

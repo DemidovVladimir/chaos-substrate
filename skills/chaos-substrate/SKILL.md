@@ -204,8 +204,9 @@ If MCP tools are available, prefer them over shelling out:
 16. Use `chaos_clean` ONLY when the user explicitly asks to clean/reset. It is DESTRUCTIVE: wipes
     the persisted index for one repo (`repo`) or everything (omit it); `artifacts: true` also
     deletes the generated files on disk (vault, feature pages, project workspaces). It requires
-    `confirm: true` and reports exactly what was removed; the schema survives, so re-index with
-    `chaos_analyze` afterwards. It mirrors `chaos clean [<repo>] [--artifacts]`.
+    `confirm: true` and reports exactly what was removed; the schema survives. Cleaning does NOT
+    imply re-indexing — stop after the wipe unless the user also asked to rebuild; the index stays
+    empty until a `chaos_analyze` is requested. It mirrors `chaos clean [<repo>] [--artifacts]`.
 
 Treat `chaos_feature_context.warnings` as blocking for generated feature websites. If it says a
 filesystem path exists but no Postgres hits referenced it, or that docs exist but no docs were
