@@ -56,6 +56,9 @@ use tracing_subscriber::EnvFilter;
 #[derive(Parser)]
 #[command(name = "chaos")]
 #[command(about = "Persistent code knowledge memory for agents")]
+// `chaos help` is our agent-oriented guide (see [`print_agent_help`]), not
+// clap's built-in alias for `--help` — the flag form still works everywhere.
+#[command(disable_help_subcommand = true)]
 struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
@@ -65,6 +68,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Agent-friendly guide: every command with what it's for, typical
+    /// workflows, and copy-paste examples. Needs no database or config — safe
+    /// to run from anywhere. `chaos help <command>` shows that command's full
+    /// flags.
+    Help {
+        /// Optional command name for focused help (e.g. `chaos help analyze`).
+        command: Option<String>,
+    },
     /// Apply database migrations.
     Migrate,
     /// Verify database and embedder configuration.
@@ -403,9 +414,17 @@ async fn main() -> Result<()> {
         std::process::exit(0);
     }
 
+    // `help` must work from any directory with no config, database, or
+    // embedder — it's how agents discover the tool, often before any setup.
+    if let Commands::Help { ref command } = cli.command {
+        print_agent_help(command.as_deref())?;
+        return Ok(());
+    }
+
     let config = Config::load(cli.config.as_deref())?;
 
     match cli.command {
+        Commands::Help { .. } => unreachable!("Help handled by early-exit block"),
         Commands::Migrate => {
             let storage = Storage::connect(&config.storage.database_url).await?;
             storage.migrate().await?;
@@ -969,6 +988,65 @@ async fn main() -> Result<()> {
         Commands::Hook { .. } => unreachable!("Hook handled by early-exit block"),
     }
 
+    Ok(())
+}
+
+/// The `chaos help` guide. The command list is generated from clap's own
+/// metadata (names + first doc line), so it can never drift from the real
+/// CLI; only the workflow examples below it are curated.
+fn print_agent_help(topic: Option<&str>) -> Result<()> {
+    use clap::CommandFactory;
+    let mut root = Cli::command();
+
+    if let Some(topic) = topic {
+        let Some(sub) = root.find_subcommand_mut(topic) else {
+            anyhow::bail!("unknown command `{topic}` — run `chaos help` for the full list");
+        };
+        print!("{}", sub.render_long_help());
+        return Ok(());
+    }
+
+    println!(
+        "Chaos Substrate {} — persistent code knowledge memory for agents\n",
+        env!("CARGO_PKG_VERSION")
+    );
+    println!("USAGE: chaos [--config <PATH>] <command> [args]\n");
+    println!(
+        "When this repo is registered as an MCP server, prefer the chaos_* MCP tools —\n\
+         same engine, structured returns. This CLI is the standalone surface.\n"
+    );
+
+    println!("COMMANDS");
+    for sub in root.get_subcommands() {
+        if sub.is_hide_set() {
+            continue;
+        }
+        let about = sub.get_about().map(|a| a.to_string()).unwrap_or_default();
+        // First sentence only — the full text is one `chaos help <command>` away.
+        let brief = match about.find(". ") {
+            Some(i) => &about[..i + 1],
+            None => about.as_str(),
+        };
+        println!("  {:<18} {brief}", sub.get_name());
+    }
+
+    println!(
+        "\nTYPICAL WORKFLOWS\n\
+         \x20 first index       chaos migrate && chaos doctor && chaos analyze /path/to/repo\n\
+         \x20 after editing     chaos add /path/to/repo -m \"what changed\"\n\
+         \x20 ask a question    chaos query /path/to/repo \"how does auth work?\" --hierarchical\n\
+         \x20 grasp a big area  chaos components /path/to/repo \"payments\"\n\
+         \x20 list features     chaos features /path/to/repo client\n\
+         \x20 scope a change    chaos change-plan /path/to/repo \"add rate limiting\" --since main\n\
+         \x20 cross-repo        chaos project create app && chaos project add-repo app /repo --alias backend\n\
+         \x20                   chaos features --project app\n\
+         \x20 fresh start       chaos clean --artifacts\n\
+         \nDETAILS\n\
+         \x20 chaos help <command>   full flags for one command (same as chaos <command> --help)\n\
+         \x20 RUNBOOK.md             complete ops reference · README.md  MCP tool reference\n\
+         \x20 Config: chaos-substrate.toml or DATABASE_URL/CHAOS_EMBED_* env. A real embedder\n\
+         \x20 (OpenAI/Ollama) is required for analyze/add/query; never fake vectors."
+    );
     Ok(())
 }
 

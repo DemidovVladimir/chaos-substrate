@@ -235,6 +235,10 @@ In command examples, call this resolved wrapper as `$CHAOS`. If `chaos` is alrea
 `PATH`, set `CHAOS=chaos`. Always pass the target project as an absolute path or as
 `"$PWD"` after confirming the shell is in the target project.
 
+To discover or recall the CLI, run `$CHAOS help` (or `$CHAOS help <command>` for one command's
+flags) — it works from any directory with no database or config and includes typical workflows.
+Never `cd` into the Chaos Substrate checkout to run `cargo run -- --help`.
+
 Natural language mapping:
 
 - "Set up Chaos Substrate here" or "make this project use Chaos" -> MCP `chaos_analyze`; otherwise `$CHAOS onboard <repo-path>`

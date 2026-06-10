@@ -90,6 +90,15 @@ What was already efficient stays untouched: `chaos add` embeds only changed
 chunks, L3 summaries are extractive (no generation tokens) and hash-gated, and
 all exports/refresh/hook/linkers are embedder-free.
 
+### New — `chaos help`
+
+- `chaos help [<command>]`: an agent-friendly guide — every command with its
+  purpose (generated from the CLI definition itself, so it can never drift),
+  typical workflows with copy-paste examples, and config pointers. Works from
+  any directory with **no database or config**, so an agent can orient itself
+  without `cd`-ing into the checkout and compiling. `chaos help <command>`
+  prints that command's full flags; `--help` still works everywhere.
+
 ### New — clean slate for validation
 
 - `chaos clean [--artifacts]`: the database wipe (all repos or one) can now

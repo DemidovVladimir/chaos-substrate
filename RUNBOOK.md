@@ -18,6 +18,13 @@ cargo build --release
 # binary at: target/release/chaos
 ```
 
+## Orientation
+
+```sh
+chaos help              # every command + typical workflows; works anywhere, needs no DB/config
+chaos help <command>    # full flags for one command
+```
+
 ## Bootstrap
 
 ```sh

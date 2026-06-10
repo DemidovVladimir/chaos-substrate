@@ -169,6 +169,7 @@ stores provider, model, dimensions, content hash, and pgvector data.
 ## CLI
 
 ```bash
+chaos help [<command>]                                 # agent-friendly guide: commands, workflows, examples (no DB/config needed)
 chaos migrate                                          # create/update schema
 chaos doctor                                           # check Postgres + embedding provider
 chaos clean [<repo>] [--artifacts]                     # wipe the index (all repos, or one); --artifacts also deletes generated files

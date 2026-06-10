@@ -15,6 +15,7 @@ Use it to create and query a persistent knowledge base for Rust, Solidity, TypeS
 ## Common Commands
 
 ```sh
+cargo run -- help [<command>]   # agent guide: commands + workflows + examples (no DB/config needed)
 cargo run -- migrate
 cargo run -- doctor
 cargo run -- analyze /path/to/repo
