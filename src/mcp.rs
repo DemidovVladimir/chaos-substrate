@@ -41,7 +41,7 @@ pub async fn run(config: Config) -> Result<()> {
                     "serverInfo": {"name": "chaos-substrate", "version": env!("CARGO_PKG_VERSION")},
                     // Kept deliberately tiny — it loads into every session.
                     // The full workflow guide is one chaos_help call away.
-                    "instructions": "Persistent code knowledge memory. Index with chaos_analyze (full) or chaos_add (after edits); ask with chaos_query (hierarchical=true for feature routing); orient with chaos_components / chaos_features; scope changes with chaos_change_plan; cross-repo via chaos_project. Tool returns are compact excerpts — full evidence lives in the generated HTML pages. Call chaos_help for workflows and tool order."
+                    "instructions": "Persistent code knowledge memory. Index with chaos_analyze (full) or chaos_add (after edits); ask with chaos_query (hierarchical=true for feature routing); orient with chaos_components / chaos_features; scope changes with chaos_change_plan; cross-repo via chaos_project. Tool returns are compact excerpts — full evidence lives in the generated HTML pages. A feature deep-dive ends with chaos_write_feature_website (persist your explanation as a page, manifest only) — not chat-only. Call chaos_help for workflows and tool order."
                 }
             }),
             "tools/list" => json!({
@@ -114,7 +114,7 @@ pub async fn run(config: Config) -> Result<()> {
                         },
                         {
                             "name": "chaos_feature_context",
-                            "description": "Build focused implementation context for a feature or task. Reads Postgres retrieval plus generated feature-memory manifests and returns warnings when expected paths/docs are missing. Use this before composing any feature website; treat warnings as blockers before writing. Each retrieval hit is tagged with its retrieval method (semantic/keyword/literal), each feature match carries the prior page's own provenance, and the response includes top-level provenance breadcrumbs (how the evidence was gathered).",
+                            "description": "Build focused implementation context for a feature or task. Reads Postgres retrieval plus generated feature-memory manifests and returns warnings when expected paths/docs are missing. Use this before composing any feature website; treat warnings as blockers before writing. Each retrieval hit is tagged with its retrieval method (semantic/keyword/literal), each feature match carries the prior page's own provenance, and the response includes top-level provenance breadcrumbs (how the evidence was gathered). This tool gathers evidence but writes NO page — finish the drill-down by persisting your composed explanation with chaos_write_feature_website (manifest only), so the deep-dive survives the conversation.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
@@ -233,25 +233,29 @@ pub async fn run(config: Config) -> Result<()> {
                         },
                         {
                             "name": "chaos_features",
-                            "description": "List ALL god-node FEATURES (L1 communities) that match a filter, grouped by where each sits in the user journey (entry → interface → core → foundation). This is the EXHAUSTIVE inventory counterpart to chaos_components: where chaos_components gives a curated, capped, ordered read-through of ONE area, chaos_features answers 'give me EVERY feature [in this layer / under this folder / about this topic]' with no curation and no cap. The single `filter` is AUTO-DETECTED — a path or a real directory name → FOLDER scope (features whose code lives under it); a single layer word like client/ui/api/core/contracts → that journey LAYER (so 'client features' means every entry-layer feature); anything else → a TOPIC match (summary-embedding cosine + label/summary keywords); omit it for the whole repo. Force the interpretation with `layer`/`folder`/`topic`. Only a topic filter needs the embedder; layer/folder/whole-repo listing is embedder-free. ALWAYS writes an interactive HTML inventory to docs/features_memory/<slug>-features.html (manifest embedded under id=\"chaos-features-manifest\") and returns a COMPACT JSON summary (resolved filter + how detected, total, per-layer counts, language counts, per-feature label/role/member_count/folders/top symbols/matched_by, PROVENANCE breadcrumbs, the HTML path). Requires the repo to be indexed (chaos_analyze/chaos_add build the hierarchy).",
+                            "description": "List ALL god-node FEATURES (L1 communities) that match a filter, grouped by where each sits in the user journey (entry → interface → core → foundation). This is the EXHAUSTIVE inventory counterpart to chaos_components: where chaos_components gives a curated, capped, ordered read-through of ONE area, chaos_features answers 'give me EVERY feature [in this layer / under this folder / about this topic]' with no curation and no cap. The single `filter` is AUTO-DETECTED — a path or a real directory name → FOLDER scope (features whose code lives under it); a single layer word like client/ui/api/core/contracts → that journey LAYER (so 'client features' means every entry-layer feature); anything else is first tried as a layer BY MEANING (embedding cosine against per-layer prototype phrasings — 'backend', 'client app', 'devops', 'API endpoints' resolve semantically, no keyword list; 'backend' spans interface+core) and only then falls to a TOPIC match (summary-embedding cosine + label/summary keywords); omit it for the whole repo. Force the interpretation with `layer`/`folder`/`topic`. Exact layer words, folders and whole-repo listing are embedder-free; semantic layer routing and topic matching use the embedder. ALWAYS writes an interactive HTML inventory to docs/features_memory/<slug>-features.html (manifest embedded under id=\"chaos-features-manifest\") and returns a COMPACT JSON summary sized to stay inline in agent context: resolved filter + how detected, total, per-layer counts, language counts, domain group names, ONE READABLE LINE PER FEATURE (label — layer role, member count · extra folders · short symbols; topic matches append why-it-matched), PROVENANCE breadcrumbs, the HTML path. Full per-feature detail (full symbol paths, files, breadcrumbs) lives in the HTML manifest. The HTML groups features into HUMAN-READABLE DOMAINS — folder-derived automatically; when you compose a curated grouping with notes for your answer, CALL AGAIN with the same repo/filter plus `curation` so the page carries your domains and one-line notes too (cheap re-render, tiny receipt return). Requires the repo to be indexed (chaos_analyze/chaos_add build the hierarchy).",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
                                     "repo": {"type": "string", "description": "Repository to list. Omit when passing `project`."},
                                     "project": {"type": "string", "description": "List features across ALL repos of this PROJECT instead of one repo: every member repo's features in one journey-layered inventory, each card tagged with its repo alias (client/backend/contracts/…) and annotated with the project's cross-repo links (→ backend:auth-api (http_route)). The HTML goes to the project workspace (~/.chaos/projects/<slug>/ or $CHAOS_PROJECT_DIR)."},
-                                    "filter": {"type": "string", "description": "Auto-detected filter: a path/dir → folder; a layer word (client/ui/api/core/contracts) → layer; else a topic. Omit for the whole repo/project."},
+                                    "filter": {"type": "string", "description": "Auto-detected filter: a path/dir → folder; a layer word (client/ui/api/core/contracts) → layer; any other phrase is tried as a layer by meaning ('backend', 'client app') before falling to a topic. Omit for the whole repo/project."},
                                     "layer": {"type": "string", "description": "Force a layer filter: entry|interface|core|foundation (or a synonym like client/api/contracts)."},
                                     "folder": {"type": "string", "description": "Force a folder filter: features with code under this path."},
                                     "topic": {"type": "string", "description": "Force a topic (semantic + keyword) filter."},
                                     "output_html": {"type": "string", "description": "Override the default docs/features_memory/<slug>-features.html path."},
-                                    "limit": {"type": "integer", "default": 0, "description": "Cap features surfaced; 0 = all (default — exhaustive)."}
+                                    "limit": {"type": "integer", "default": 0, "description": "Cap features surfaced; 0 = all (default — exhaustive)."},
+                                    "curation": {
+                                        "type": "object",
+                                        "description": "OPTIONAL second pass that makes the generated HTML human-first: after reading the inventory, call again with the SAME repo/filter plus this curation — the domain groupings and one-line notes you composed for your answer anyway. Shape: {groups: [{title, icon?, blurb?, features: [{label, note?}]}]} — title is the human heading ('IP-NFT Minting flow — the wizard'), icon an optional emoji, blurb an optional paragraph, label a feature label from the inventory (full or unique trailing fragment), note the one-line 'what's in it'. Chaos re-runs the identical selection and renders YOUR domains as the page's primary sections; unplaced features fall back to folder-derived domains (tagged auto). The return is a tiny render receipt, not the inventory again."
+                                    }
                                 },
                                 "required": []
                             }
                         },
                         {
                             "name": "chaos_project",
-                            "description": "Manage CROSS-REPOSITORY projects: a named set of indexed repos (client, backend, contracts, infra, …). Chaos detects feature→feature CROSS-REPO LINKS between members from the persisted index (consumer → provider): `package_dep` (imports a package another member publishes), `abi` (references a Solidity contract defined elsewhere), `http_route` (a fetch/axios call path matches a registered route). Links attach at the feature (L1) level with evidence + provenance, and refresh AUTOMATICALLY after chaos_analyze/chaos_add on any member (hash-gated — a no-change re-index relinks nothing). Actions: create (idempotent), add_repo (attach an INDEXED repo under an alias; links immediately), list, status (members, staleness, links by kind, embedder consistency), relink (`force` overrides the gate). Use chaos_features with `project` for the cross-repo feature inventory.",
+                            "description": "Manage CROSS-REPOSITORY projects: a named set of indexed repos (client, backend, contracts, infra, …). Chaos detects feature→feature CROSS-REPO LINKS between members from the persisted index (consumer → provider): `package_dep` (imports a package another member publishes), `abi` (references a Solidity contract defined elsewhere), `http_route` (a fetch/axios call path matches a registered route). Links attach at the feature (L1) level with evidence + provenance, and refresh AUTOMATICALLY after chaos_analyze/chaos_add on any member (hash-gated — a no-change re-index relinks nothing). Actions: create (idempotent), add_repo (attach an INDEXED repo under an alias; links immediately), list (also returns EVERY indexed repository — the discovery call when you don't know what Chaos already knows; a sub-app inside one indexed repo is a chaos_features folder/layer filter, not a project), status (members, staleness, links by kind, embedder consistency), relink (`force` overrides the gate). Use chaos_features with `project` for the cross-repo feature inventory.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
@@ -473,7 +477,10 @@ async fn handle_tool_call(
             crate::feature_context::cap_response_for_return(&mut response);
             Ok(tool_text(serde_json::to_string_pretty(&json!({
                 "wrote_html": output_html,
-                "context": response
+                "context": response,
+                // Anti-drift: a drill-down that ends as chat-only loses the
+                // synthesis when the conversation does.
+                "next": "This evidence is for a feature deep-dive — once you have composed your explanation, PERSIST it as the interactive page: chaos_write_feature_website {repo, slug, title, manifest} (manifest only, omit html) -> docs/features_memory/<slug>.html. Don't leave the drill-down chat-only."
             }))?))
         }
         "chaos_impact" => {
@@ -712,6 +719,11 @@ async fn handle_tool_call(
                 layer: args.get("layer").and_then(Value::as_str).map(String::from),
                 folder: args.get("folder").and_then(Value::as_str).map(String::from),
                 topic: args.get("topic").and_then(Value::as_str).map(String::from),
+                curation: args
+                    .get("curation")
+                    .map(|v| serde_json::from_value(v.clone()))
+                    .transpose()
+                    .context("invalid `curation` — expected {groups: [{title, icon?, blurb?, features: [{label, note?}]}]}")?,
             };
             let summary = match (project, repo) {
                 (Some(project), _) => {
@@ -827,9 +839,9 @@ WORKFLOWS
   sanity-check       chaos_stats {repo}  — what the index holds (read-only, embedder-free)
   ask a question     chaos_query {repo, question, hierarchical: true}  — feature-routed retrieval; flat search without the flag
   grasp a big area   chaos_components {repo, area?}  — curated component overview with a read order (run BEFORE feature work)
-  list features      chaos_features {repo | project, filter?}  — exhaustive inventory; filter auto-detects folder | layer (client/api/core/contracts) | topic
+  list features      chaos_features {repo | project, filter?}  — exhaustive inventory; filter auto-detects folder | layer (exact word OR by meaning: 'backend', 'client app') | topic; after composing your answer, call again with curation {groups: [{title, icon?, blurb?, features: [{label, note?}]}]} so the HTML carries your human domains + notes
   scope a change     chaos_change_plan {repo, change_description, since?}  — which features a change spans, in check order
-  gather evidence    chaos_feature_context {repo, task}  — implementation context; treat its warnings as blockers
+  gather evidence    chaos_feature_context {repo, task}  — implementation context; treat its warnings as blockers; FINISH the drill-down with chaos_write_feature_website so the explanation persists as a page
   impact (before)    chaos_impact {repo, feature}  — how a proposed feature maps onto today's code, compact return + HTML
   document (eng)     chaos_write_feature_website {repo, slug, title, manifest}  — OMIT html: Chaos renders the page from the manifest
   document (users)   chaos_write_storyboard {repo, slug, title, manifest}  — code-free feature guide for stakeholders
@@ -842,6 +854,7 @@ RULES OF THUMB
   - Index before anything else; chaos_add after each change keeps memory fresh (hash-gated: unchanged content costs zero embedder calls).
   - Returns are compact excerpts (chunk text capped, lists capped); the generated HTML under docs/features_memory/ keeps FULL evidence.
   - Compose feature pages from chaos_feature_context evidence, never from chaos_query alone; pass manifests, never raw HTML.
+  - A feature DEEP-DIVE is not done until the page exists: end it with chaos_write_feature_website (engineers) or chaos_write_storyboard (stakeholders) — an explanation that lives only in chat is lost when the session ends.
   - Cross-repo: all member repos must share one embedder config; links refresh automatically after analyze/add.
   - CLI equivalent exists for everything (`chaos help` in a shell); full ops reference: RUNBOOK.md, canonical tool table: README.md.
 ";

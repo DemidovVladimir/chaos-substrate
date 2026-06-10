@@ -250,9 +250,12 @@ Lists **all** god-node features (L1 communities) that match a filter, grouped by
 (entry → interface → core → foundation) — the exhaustive, uncurated counterpart to `components`. The
 optional positional filter is **auto-detected**: a path or real directory → **folder** scope; a
 single layer word (`client`/`ui`/`api`/`core`/`contracts`) → that **layer** (so "client features" =
-every entry-layer feature); anything else → a **topic** match; omit it for the whole repo. Force it
-with `--layer`/`--folder`/`--topic`. Only a topic filter needs the embedder; layer/folder/whole-repo
-listing is embedder-free. **Always** writes an interactive HTML inventory to
+every entry-layer feature); any other phrase is first tried as a layer **by meaning** (embedding
+cosine against per-layer prototype phrasings — "backend", "client app", "devops" resolve
+semantically, no keyword list; "backend" spans interface+core), then falls to a **topic** match;
+omit it for the whole repo. Force it with `--layer`/`--folder`/`--topic`. Exact layer words, folders
+and whole-repo listing are embedder-free; semantic layer routing and topic matching use the
+embedder. **Always** writes an interactive HTML inventory to
 `docs/features_memory/<slug>-features.html` and prints a compact JSON summary (resolved filter + how
 detected, per-layer + language counts, per-feature label/role/folders/symbols/`matched_by`,
 provenance). `--limit 0` (default) returns everything.
@@ -263,7 +266,7 @@ provenance). `--limit 0` (default) returns everything.
 chaos project create molecule
 chaos project add-repo molecule /path/to/client --alias client     # repo must be indexed
 chaos project add-repo molecule /path/to/contracts --alias contracts
-chaos project list
+chaos project list                     # projects + EVERY indexed repo (the discovery call)
 chaos project status molecule          # members, link staleness, links by kind, embedder check
 chaos project relink molecule          # hash-gated; --force to override
 chaos features --project molecule      # every member repo's features in ONE layered inventory

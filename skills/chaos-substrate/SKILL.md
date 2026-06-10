@@ -74,6 +74,9 @@ If MCP tools are available, prefer them over shelling out:
 5. Use `chaos_feature_context` when the user asks to explain a feature, prepare implementation
    context, or generate a feature explanation. Hits carry `metadata.retrieved_by`
    (semantic/keyword/literal), and the response includes top-level **provenance breadcrumbs**.
+   It gathers evidence but writes NO page — a drill-down is not done until you persist the
+   composed explanation with `chaos_write_feature_website` (its return carries a `next` reminder).
+   Chat-only explanations are lost when the session ends.
 6. Use `chaos_impact` to build a feature-vs-existing-code impact report for an indexed repo. It
    ALWAYS writes an interactive HTML (impact summary plus evidence dashboard) to
    `docs/features_memory/<slug>-impact.html` and returns a COMPACT JSON summary — counts plus the
@@ -175,9 +178,12 @@ If MCP tools are available, prefer them over shelling out:
     answers "give me EVERY feature [in this layer / under this folder / about this topic]". The single
     `filter` is AUTO-DETECTED: a path or real directory → FOLDER scope; a single layer word like
     `client`/`ui`/`api`/`core`/`contracts` → that journey LAYER (so "all client features" = every
-    entry-layer feature); anything else → a TOPIC match (summary cosine + label/summary keywords);
-    omit it for the whole repo. Force the interpretation with `layer`/`folder`/`topic`. Only a topic
-    filter needs the embedder; layer/folder/whole-repo listing is embedder-free. It ALWAYS writes an
+    entry-layer feature); any other phrase is first tried as a layer BY MEANING (embedding cosine
+    against per-layer prototype phrasings — "backend", "client app", "devops", "API endpoints"
+    resolve semantically, no keyword list; "backend" spans interface+core) and only then falls to a
+    TOPIC match (summary cosine + label/summary keywords); omit it for the whole repo. Force the
+    interpretation with `layer`/`folder`/`topic`. Exact layer words, folders and whole-repo listing
+    are embedder-free; semantic layer routing and topic matching use the embedder. It ALWAYS writes an
     interactive HTML inventory to `docs/features_memory/<slug>-features.html` (embedding a
     `chaos-features-manifest` an agent can extract) and returns a COMPACT JSON summary (resolved
     filter + how detected, per-layer + language counts, per-feature label/role/folders/symbols/
@@ -195,9 +201,12 @@ If MCP tools are available, prefer them over shelling out:
     and refresh AUTOMATICALLY after `chaos_analyze`/`chaos_add` on any member — gated by the L2 repo
     root hash, so a no-change re-index relinks nothing. Actions: `create` (idempotent), `add_repo`
     (attach an INDEXED repo under an alias like client/backend/contracts; links it immediately),
-    `list`, `status` (members, staleness, links by kind, embedder consistency), `relink` (manual,
-    `force` overrides the gate). All member repos must share ONE embedder config; `status` warns on
-    mismatch. It mirrors the `chaos project create|add-repo|list|status|relink` CLI commands.
+    `list` (also returns EVERY indexed repository — the discovery call when you don't know what
+    Chaos already knows; a sub-app inside one indexed repo is a `chaos_features` folder/layer
+    filter, not a project), `status` (members, staleness, links by kind, embedder consistency),
+    `relink` (manual, `force` overrides the gate). All member repos must share ONE embedder config;
+    `status` warns on mismatch. It mirrors the `chaos project create|add-repo|list|status|relink`
+    CLI commands.
 15. Use `chaos_help` (no arguments) when unsure which tool fits: it returns the recommended tool
     order and typical workflows as static text — no database or embedder work, zero tokens until
     called. The server's MCP `instructions` carry the one-line version automatically.
@@ -463,11 +472,25 @@ Use a real Postgres database with pgvector for persistence tests. Use real OpenA
   journey layer (entry → interface → core → foundation) — the EXHAUSTIVE, uncurated counterpart to
   `chaos_components`. The single `filter` is AUTO-DETECTED: a path or real directory → FOLDER scope
   (features whose code lives under it); a single layer word like `client`/`ui`/`api`/`core`/
-  `contracts` → that journey LAYER (so "all client features" = every entry-layer feature); anything
-  else → a TOPIC match (summary cosine + label/summary keywords); omit it for the whole repo. Force
-  the interpretation with `layer`/`folder`/`topic`. Only a topic filter needs the embedder. It ALWAYS
+  `contracts` → that journey LAYER (so "all client features" = every entry-layer feature); any other
+  phrase is first tried as a layer BY MEANING (embedding cosine against per-layer prototype
+  phrasings — "backend", "client app", "devops" resolve semantically; "backend" spans
+  interface+core) and only then falls to a TOPIC match (summary cosine + label/summary keywords);
+  omit it for the whole repo. Force the interpretation with `layer`/`folder`/`topic`. Exact layer
+  words, folders and whole-repo listing are embedder-free. It ALWAYS
   writes an interactive HTML inventory to `docs/features_memory/<slug>-features.html` (embedding a
-  `chaos-features-manifest` an agent can extract) and returns a COMPACT JSON summary — resolved filter
-  + how detected, total, per-layer + language counts, per-feature label/role/member_count/folders/top
-  symbols/`matched_by`, top-level `provenance`, and the HTML path. It mirrors the
-  `chaos features <repo> ["<filter>"]` CLI command.
+  `chaos-features-manifest` an agent can extract) and returns a COMPACT JSON summary sized to stay
+  inline in agent context — resolved filter + how detected, total, per-layer + language counts,
+  domain group names, ONE READABLE LINE PER FEATURE (label, layer role, member count, extra folders,
+  short symbols, and why-it-matched for topic queries), top-level `provenance`, and the HTML path;
+  full per-feature detail (full symbol paths, files, breadcrumbs) lives in the HTML manifest.
+
+  The HTML page groups features into HUMAN-READABLE DOMAINS, folder-derived automatically. When you
+  compose a curated grouping with one-line notes for your answer (domain titles like "IP-NFT Minting
+  flow — the wizard", per-feature "what's in it" notes), call `chaos_features` AGAIN with the same
+  repo/filter plus `curation: {groups: [{title, icon?, blurb?, features: [{label, note?}]}]}` — Chaos
+  re-runs the identical selection (cheap; folder/layer scopes are embedder-free) and renders YOUR
+  domains as the page's primary sections, with unplaced features falling back to auto domains
+  (tagged `auto`). Labels match by exact value or a unique trailing fragment; the return is a tiny
+  render receipt, not the inventory again. CLI parity: `chaos features <repo> "<filter>"
+  --curation curation.json`. It mirrors the `chaos features <repo> ["<filter>"]` CLI command.

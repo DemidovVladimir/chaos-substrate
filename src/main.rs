@@ -214,10 +214,13 @@ enum Commands {
     /// List ALL god-node features (L1 communities), grouped by journey layer.
     /// The optional filter is auto-detected: a path / real directory → folder
     /// scope; a layer word (client/ui/api/core/contracts) → that journey layer;
-    /// anything else → a topic match; nothing → the whole repo. Forces available
-    /// via --layer/--folder/--topic. Writes an interactive HTML inventory into
-    /// docs/features_memory and prints a compact JSON summary. Exhaustive (no
-    /// curation) — the counterpart to `components`' ordered overview.
+    /// any other phrase is first tried as a layer BY MEANING (embedding match —
+    /// "backend", "client app", "devops" resolve semantically; "backend" spans
+    /// interface+core) and then falls to a topic match; nothing → the whole
+    /// repo. Forces available via --layer/--folder/--topic. Writes an
+    /// interactive HTML inventory into docs/features_memory and prints a
+    /// compact JSON summary. Exhaustive (no curation) — the counterpart to
+    /// `components`' ordered overview.
     Features {
         /// Repository to list (omit when using --project).
         repo: Option<String>,
@@ -244,6 +247,12 @@ enum Commands {
         /// Cap features surfaced; 0 = all (the default — this listing is exhaustive).
         #[arg(long, default_value_t = 0)]
         limit: usize,
+        /// JSON file with agent-written domain curation ({"groups": [{"title",
+        /// "icon"?, "blurb"?, "features": [{"label", "note"?}]}]}) — re-renders
+        /// the SAME inventory page with those human domains/notes as the
+        /// primary sections.
+        #[arg(long)]
+        curation: Option<PathBuf>,
     },
     /// Manage cross-repository projects: group indexed repos (client, backend,
     /// contracts, infra, …) under one name and maintain feature→feature
@@ -360,7 +369,9 @@ enum ProjectAction {
         #[arg(long)]
         alias: Option<String>,
     },
-    /// List all projects with their member repos and link counts.
+    /// List all projects with their member repos and link counts, plus EVERY
+    /// indexed repository — the discovery call when you don't know what Chaos
+    /// already knows.
     List,
     /// Show a project's members, link staleness, links by kind, and embedder
     /// consistency.
@@ -710,18 +721,28 @@ async fn main() -> Result<()> {
             topic,
             output_html,
             limit,
+            curation,
         } => {
             let storage = Storage::connect(&config.storage.database_url).await?;
             // Only a topic filter needs the embedder; layer/folder/whole-repo
             // listing stays embedder-free, so a missing/misconfigured embedder
             // should not block them (it just degrades a topic match to keywords).
             let embedder = build_embedder(&config.embedding).ok();
+            let curation = curation
+                .map(|p| -> anyhow::Result<feature_inventory::CurationSpec> {
+                    let raw = std::fs::read_to_string(&p)
+                        .with_context(|| format!("reading curation file {}", p.display()))?;
+                    serde_json::from_str(&raw)
+                        .with_context(|| format!("parsing curation file {}", p.display()))
+                })
+                .transpose()?;
             let opts = feature_inventory::FeatureInventoryOptions {
                 output_html,
                 limit,
                 layer,
                 folder,
                 topic,
+                curation,
             };
             let summary = match (&project, &repo) {
                 (Some(project), _) => {
