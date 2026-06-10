@@ -125,6 +125,16 @@ pub async fn list(storage: &Storage) -> Result<Value> {
             "cross_repo_links": links.len(),
         }));
     }
+    if out.is_empty() {
+        // An empty list must still point the agent somewhere useful: the
+        // repos may simply be one monorepo (scope with a folder filter), or a
+        // project may just not have been created yet.
+        return Ok(json!({
+            "status": "ok",
+            "projects": out,
+            "hint": "no cross-repo projects exist. If the codebase is several indexed repos, create one: chaos_project {action: create} then {action: add_repo}. If it is ONE monorepo, you don't need a project — scope chaos_features with a folder filter instead (e.g. filter: \"apps\" or \"packages/<app>\") or a layer word like client.",
+        }));
+    }
     Ok(json!({ "status": "ok", "projects": out }))
 }
 
