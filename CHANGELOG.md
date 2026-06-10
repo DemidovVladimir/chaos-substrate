@@ -90,6 +90,15 @@ What was already efficient stays untouched: `chaos add` embeds only changed
 chunks, L3 summaries are extractive (no generation tokens) and hash-gated, and
 all exports/refresh/hook/linkers are embedder-free.
 
+### New — clean slate for validation
+
+- `chaos clean [--artifacts]`: the database wipe (all repos or one) can now
+  ALSO delete the generated files on disk — each repo's
+  `chaos-obsidian-vault/` and `docs/features_memory/`, plus (when clearing
+  everything) the project workspaces under `~/.chaos/projects/`. Off by
+  default because feature pages are often committed as durable feature
+  memory; the output lists exactly what was removed (`artifacts_removed`).
+
 ### Fixed — pre-release audit (7-angle review)
 
 - The project relink hash gate no longer stays permanently open for a member

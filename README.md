@@ -171,7 +171,7 @@ stores provider, model, dimensions, content hash, and pgvector data.
 ```bash
 chaos migrate                                          # create/update schema
 chaos doctor                                           # check Postgres + embedding provider
-chaos clean [<repo>]                                   # wipe the index (all repos, or just one)
+chaos clean [<repo>] [--artifacts]                     # wipe the index (all repos, or one); --artifacts also deletes generated files
 chaos analyze <repo>                                   # index a repository
 chaos add <repo> [-m "<what changed>"]                 # index git-diff + refresh vault + write feature/bug page
 chaos stats <repo>                                     # report index statistics (read-only, embedder-free)

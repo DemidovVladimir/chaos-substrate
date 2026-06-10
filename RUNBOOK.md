@@ -106,10 +106,19 @@ chaos clean
 
 # Wipe only one repository (by absolute path or repository name)
 chaos clean /path/to/repo
+
+# ALSO delete the generated files on disk — a truly clean slate for validation
+chaos clean --artifacts                  # all repos + project workspaces (~/.chaos/projects)
+chaos clean /path/to/repo --artifacts    # one repo's chaos-obsidian-vault/ + docs/features_memory/
 ```
 
 `clean` removes persisted index data but leaves the schema in place — no `migrate` is needed
-before re-indexing.
+before re-indexing. By default it touches ONLY the database; generated files survive because
+feature pages are often committed to git as durable feature memory. `--artifacts` additionally
+deletes the two Chaos-owned directories inside each repo (`chaos-obsidian-vault/`,
+`docs/features_memory/`) and, when clearing everything, the project workspaces — never anything
+else. Exports written to caller-chosen paths (`graph -o`, explicit `--output-html`) are not
+tracked and must be removed by hand.
 
 ## Query
 

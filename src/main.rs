@@ -70,10 +70,19 @@ enum Commands {
     /// Verify database and embedder configuration.
     Doctor,
     /// Wipe the persisted index. With no argument clears every repository;
-    /// pass a repo path/name to clear only that repository.
+    /// pass a repo path/name to clear only that repository. The database is
+    /// always wiped; pass --artifacts to ALSO delete the generated files on
+    /// disk (chaos-obsidian-vault/, docs/features_memory/, and — when clearing
+    /// everything — the project workspaces under ~/.chaos/projects), so a
+    /// validation run can start truly clean.
     Clean {
         /// Optional repository path or name to clear; omit to clear everything.
         repo: Option<String>,
+        /// Also delete generated artifacts from disk (vault, feature pages,
+        /// project workspaces). Off by default — feature pages are often
+        /// committed to git as durable feature memory.
+        #[arg(long)]
+        artifacts: bool,
     },
     /// Analyze and persist a repository knowledge graph and embeddings.
     Analyze { repo_path: PathBuf },
@@ -420,22 +429,48 @@ async fn main() -> Result<()> {
                 }))?
             );
         }
-        Commands::Clean { repo } => {
+        Commands::Clean { repo, artifacts } => {
             let storage = Storage::connect(&config.storage.database_url).await?;
             let summary = if let Some(repo) = repo {
                 let repository = storage
                     .find_repository(&repo)
                     .await?
                     .with_context(|| format!("repository is not indexed: {repo}"))?;
+                let removed_artifacts = if artifacts {
+                    remove_generated_artifacts(std::path::Path::new(&repository.root_path))
+                } else {
+                    Vec::new()
+                };
                 storage.purge_repository(repository.id).await?;
                 json!({
                     "cleared": "repository",
                     "root_path": repository.root_path,
                     "repo_id": repository.id,
+                    "artifacts_removed": removed_artifacts,
                 })
             } else {
+                // Collect artifact locations BEFORE the wipe (the rows are the
+                // only record of where the repos and project workspaces live).
+                let mut removed_artifacts: Vec<String> = Vec::new();
+                if artifacts {
+                    for repository in storage.list_repositories().await? {
+                        removed_artifacts.extend(remove_generated_artifacts(std::path::Path::new(
+                            &repository.root_path,
+                        )));
+                    }
+                    for proj in storage.list_projects().await? {
+                        let workspace = project::project_workspace_dir(&proj.name);
+                        if workspace.is_dir() && std::fs::remove_dir_all(&workspace).is_ok() {
+                            removed_artifacts.push(workspace.display().to_string());
+                        }
+                    }
+                }
                 let removed = storage.clear_all().await?;
-                json!({ "cleared": "all", "removed": removed })
+                json!({
+                    "cleared": "all",
+                    "removed": removed,
+                    "artifacts_removed": removed_artifacts,
+                })
             };
             println!("{}", serde_json::to_string_pretty(&summary)?);
         }
@@ -935,4 +970,22 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Delete the generated artifacts Chaos writes inside a repository — exactly
+/// the two deterministic homes (`chaos-obsidian-vault/` and
+/// `docs/features_memory/`), never anything else. Returns the paths actually
+/// removed. Exports written to caller-chosen paths (`graph -o`, explicit
+/// `--output-html`) are not tracked and must be removed by hand.
+fn remove_generated_artifacts(repo_root: &std::path::Path) -> Vec<String> {
+    let mut removed = Vec::new();
+    for dir in [
+        repo_root.join("chaos-obsidian-vault"),
+        repo_root.join("docs/features_memory"),
+    ] {
+        if dir.is_dir() && std::fs::remove_dir_all(&dir).is_ok() {
+            removed.push(dir.display().to_string());
+        }
+    }
+    removed
 }

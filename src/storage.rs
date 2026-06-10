@@ -1873,6 +1873,29 @@ impl Storage {
         }))
     }
 
+    /// Every indexed repository, in a stable order. Used by `chaos clean
+    /// --artifacts` to find each repo's generated files before the DB wipe.
+    pub async fn list_repositories(&self) -> Result<Vec<Repository>> {
+        let rows = sqlx::query(
+            "select id, name, root_path, remote_url, current_commit_sha, created_at, updated_at \
+             from repositories order by name, root_path",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| Repository {
+                id: row.get("id"),
+                name: row.get("name"),
+                root_path: row.get("root_path"),
+                remote_url: row.get("remote_url"),
+                current_commit_sha: row.get("current_commit_sha"),
+                created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
+            })
+            .collect())
+    }
+
     /// Fast keyword/symbol lookup by name — no embedder required.
     ///
     /// Joins `nodes` → `files` for the given `repo_id` and does a

@@ -136,6 +136,9 @@ Use a small real repository containing Rust, Solidity, TypeScript, JavaScript, o
 ```sh
 docker compose up -d
 cargo run -- --config chaos-substrate.local.toml migrate
+# optional fresh start: wipe the DB AND the generated files (vault, feature
+# pages, project workspaces) so nothing from a previous run can leak in
+cargo run -- --config chaos-substrate.local.toml clean --artifacts
 cargo run -- --config chaos-substrate.local.toml analyze /path/to/repo
 cargo run -- --config chaos-substrate.local.toml add /path/to/repo
 cargo run -- --config chaos-substrate.local.toml stats /path/to/repo
