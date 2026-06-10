@@ -149,7 +149,7 @@ Codex uses `.codex-plugin/plugin.json`. The manifest points to:
 
 During development, install or load this repository as the `chaos-substrate` plugin. Once enabled,
 the agent can use the `chaos-substrate` skill and the MCP tools exposed by `chaos-agent mcp` (see
-the [MCP Tools](../README.md#mcp-tools) section of the README for the twelve-tool reference).
+the [MCP Tools](../README.md#mcp-tools) section of the README for the fourteen-tool reference).
 
 `chaos_write_feature_website` enforces the feature-page contract. It rejects prose-only pages that
 do not include an interactive graph, story flow, architecture/flow sections, code context, evidence

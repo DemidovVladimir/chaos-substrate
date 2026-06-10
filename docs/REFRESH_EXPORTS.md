@@ -30,7 +30,7 @@ Default outputs:
 
 - `/absolute/path/to/repo/chaos-obsidian-vault`
 
-Feature context pages generated with `feature-context --output-html` use dark, neon static websites.
+Feature context pages generated with `feature-context --output-html` use the shared light editorial theme.
 They are standalone HTML files and can be opened directly in a browser.
 
 Each generated feature page also embeds a machine-readable manifest:

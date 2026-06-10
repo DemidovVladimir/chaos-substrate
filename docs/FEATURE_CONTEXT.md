@@ -51,7 +51,7 @@ cargo run -- feature-context /absolute/path/to/repo "implement secure upload ico
   --nodes-per-feature 8
 ```
 
-To write a dark standalone explanation website:
+To write a standalone explanation website (light editorial theme):
 
 ```bash
 cargo run -- feature-context /absolute/path/to/repo "authorization and RBAC" \

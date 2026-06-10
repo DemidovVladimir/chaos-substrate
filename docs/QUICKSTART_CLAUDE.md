@@ -63,7 +63,7 @@ reachable — analysis is **fail-closed** and will not fabricate vectors.
 
 ## 4. Install the plugin in Claude Code
 
-The plugin bundles the skill, the nine MCP tools, and the tool-use hooks together.
+The plugin bundles the skill, the fourteen MCP tools, and the tool-use hooks together.
 
 For local testing, launch Claude Code pointed at this checkout:
 
@@ -146,7 +146,7 @@ Generate a feature explanation website for end-to-end encryption with Chaos Subs
 
 Claude first calls `chaos_feature_context` to gather evidence (semantic + keyword hits,
 graph context, existing manifests), then composes the page and calls
-`chaos_write_feature_website`. The result is a self-contained dark HTML page with an
+`chaos_write_feature_website`. The result is a self-contained HTML page (light editorial theme) with an
 interactive graph, story flow, code context, and a machine-readable manifest, written under
 `docs/features_memory/` in your repo.
 
@@ -185,4 +185,4 @@ Deeper references:
 - [EDITOR_SETUP.md](EDITOR_SETUP.md) — canonical per-editor MCP registration.
 - [CLAUDE_MCP_INSTALL.md](CLAUDE_MCP_INSTALL.md) — Claude Desktop config and a longer MCP walkthrough.
 - [PLUGIN_INSTALL.md](PLUGIN_INSTALL.md) — plugin package, marketplace, and Cowork zip.
-- README → [MCP Tools](../README.md#mcp-tools) — the twelve-tool reference.
+- README → [MCP Tools](../README.md#mcp-tools) — the fourteen-tool reference.
