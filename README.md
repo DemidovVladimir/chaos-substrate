@@ -270,7 +270,7 @@ unavailable, analysis must fail rather than producing fake vectors.
 `src/lang/{mod,javascript,python,solidity}.rs` (oxc/rustpython/solang AST extraction),
 `src/weights.rs` (edge cost/confidence), `src/query.rs` (hybrid retrieval),
 `src/community.rs` + `src/merkle.rs` + `src/community_summary.rs` + `src/change_plan.rs` +
-`src/hierarchy_export.rs` (hierarchical memory: L1 Louvain god-nodes, L2 Merkle rollup,
+`src/hierarchy_export.rs` (hierarchical memory: L1 structure-first god-nodes, L2 Merkle rollup,
 L3 hash-gated community summaries, change-plan tool, and god-node/feature-map export),
 `src/feature_context.rs` + `src/feature_export.rs` (feature pages), `src/graph_export.rs`,
 `src/obsidian_export.rs`, `src/setup.rs`, `src/hook.rs`, `src/export_util.rs`, and

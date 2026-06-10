@@ -69,9 +69,11 @@ Do not synthesize feature pages from `chaos_query` alone when `chaos_feature_con
 On top of the flat multigraph (**L0**), `analyze`/`add` derive a layered memory (see
 `docs/HIERARCHICAL_MEMORY_ROADMAP.md`):
 
-- **L1 — communities / "god-nodes" / features.** Deterministic Louvain (`src/community.rs`) groups
-  L0 nodes into features with a quotient graph of typed edges between them (`communities`,
-  `community_members`, `community_edges`).
+- **L1 — communities / "god-nodes" / features.** Deterministic **structure-first** partition
+  (`src/community.rs`): directory cuts within package-root boundaries decide membership; the
+  weighted import graph relates features (quotient graph of typed edges) but no longer defines
+  them (Louvain stays selectable for comparison). Tables: `communities`, `community_members`,
+  `community_edges`.
 - **L2 — Merkle rollup.** `content_hash` leaves roll up to file → community → repo `subtree_hash`es
   (`src/merkle.rs`). This drives `chaos add`'s feature **blast radius** and gates L3.
 - **L3 — community summaries.** A hash-gated, real-embedder summary per community

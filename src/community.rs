@@ -8,11 +8,24 @@
 //!
 //! # Algorithm
 //!
-//! Deterministic, multi-level **Louvain** modularity optimization, ported from
-//! the well-known reference bookkeeping (Blondel et al. / python-louvain) but
-//! with **all randomness removed**: nodes are always visited in canonical
-//! `stable_id` order and ties break toward the smallest community
-//! representative. Same `(nodes, edges, config)` ⇒ byte-identical partition.
+//! **Structure-first (default since v2).** A feature comes from the project's
+//! own STRUCTURE: every node is grouped by its file's directory, package roots
+//! (`package.json` / `Cargo.toml` directories) are hard boundaries, and big
+//! directories are cut into their children while small ones roll up (the verdict of the
+//! retired `struct-features` spike, promoted here). The import graph is still
+//! what RELATES features — quotient edges, top-member ranking, and the
+//! reported modularity all come from the weighted L0 edges — it just no
+//! longer decides membership, because clustering the import graph produced
+//! blobs named after the most-imported module and "features" that were just
+//! import lists. Nodes with no file home (bare-import targets) attach to the
+//! group their edges couple to most.
+//!
+//! The previous algorithm — deterministic, multi-level **Louvain** modularity
+//! optimization (Blondel et al. with all randomness removed: canonical
+//! `stable_id` visiting order, ties toward the smallest representative) — is
+//! kept selectable via [`PartitionAlgorithm::Louvain`] for comparison
+//! (`chaos communities --louvain`). Same `(nodes, edges, config)` ⇒
+//! byte-identical partition under either algorithm.
 //!
 //! # Determinism contract
 //!
@@ -39,7 +52,9 @@ use uuid::Uuid;
 
 /// Detection algorithm/version recorded in `communities.detection_params`, so a
 /// future tuning change is visible and re-detect can be forced.
-pub const DETECTION_VERSION: i64 = 1;
+/// v2: structure-first partition (directory cuts within package roots) replaced
+/// global Louvain as the default.
+pub const DETECTION_VERSION: i64 = 2;
 
 /// Fixed namespace for deterministic community UUIDv5 derivation. Generated
 /// once and pinned; must never change or community ids would churn.
@@ -55,18 +70,47 @@ const MAX_LEVELS: usize = 32;
 const MAX_PASSES_PER_LEVEL: usize = 64;
 /// Default number of representative members surfaced per community.
 const TOP_MEMBERS: usize = 8;
+/// A directory subtree becomes one structural feature once it holds at most
+/// this many distinct files; larger directories split into their children.
+/// (Validated by the retired `struct-features` comparison spike.)
+const MAX_GROUP_FILES: usize = 25;
+
+/// Which partition decides community membership. Quotient edges, top-member
+/// ranking, and modularity reporting use the weighted L0 graph either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PartitionAlgorithm {
+    /// Structure-first: directory cuts within package roots (default).
+    #[default]
+    Structural,
+    /// Import-graph Louvain (the pre-v2 behavior, kept for comparison).
+    Louvain,
+}
+
+impl PartitionAlgorithm {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Structural => "structural",
+            Self::Louvain => "louvain",
+        }
+    }
+}
 
 /// Tuning for [`detect_communities`].
 #[derive(Debug, Clone)]
 pub struct CommunityConfig {
-    /// Modularity resolution γ. 1.0 = standard; higher ⇒ finer/smaller
-    /// communities, lower ⇒ coarser/larger.
+    /// Modularity resolution γ (Louvain only). 1.0 = standard; higher ⇒
+    /// finer/smaller communities, lower ⇒ coarser/larger.
     pub resolution: f64,
+    /// Which algorithm decides membership.
+    pub algorithm: PartitionAlgorithm,
 }
 
 impl Default for CommunityConfig {
     fn default() -> Self {
-        Self { resolution: 1.0 }
+        Self {
+            resolution: 1.0,
+            algorithm: PartitionAlgorithm::default(),
+        }
     }
 }
 
@@ -152,7 +196,7 @@ pub async fn detect_and_persist(
     let edges = storage.load_all_edges(repo_id).await?;
     let detection = detect_communities(repo_id, &nodes, &edges, config);
     let params = json!({
-        "algorithm": "louvain",
+        "algorithm": config.algorithm.as_str(),
         "resolution": detection.resolution,
         "version": DETECTION_VERSION,
         "levels": detection.levels,
@@ -235,8 +279,83 @@ pub fn detect_communities(
 
     let base = Graph::from_pairs(n, &pair_weight);
 
-    // 3. Multi-level Louvain. `node_to_comm` maps original index -> community
-    //    label of the current top level; we compose down each aggregation.
+    // 3. Partition. Structure-first by default; Louvain kept for comparison.
+    //    Either way the result is a per-node group label + optional per-group
+    //    display names (structural groups are named after their directory).
+    let (node_to_comm, group_names, modularity, levels) = match config.algorithm {
+        PartitionAlgorithm::Structural => {
+            let (assignment, names) = structural_partition(&indexed, &pair_weight);
+            // Modularity of the structural partition over the same weighted
+            // graph — an honest comparability metric, not an objective.
+            let modularity = base.modularity(&assignment, config.resolution);
+            (assignment, Some(names), modularity, 1)
+        }
+        PartitionAlgorithm::Louvain => {
+            let (assignment, modularity, levels) = louvain_partition(&base, config);
+            (assignment, None, modularity, levels)
+        }
+    };
+
+    // 4. Compact community labels to 0..k by first appearance (canonical order),
+    //    remapping the structural group names alongside.
+    let compact = compact_labels(&node_to_comm);
+    let k = distinct_count(&compact);
+    let compact_names: Option<Vec<String>> = group_names.map(|names| {
+        let mut out = vec![String::new(); k];
+        for (idx, &c) in compact.iter().enumerate() {
+            if out[c].is_empty() {
+                out[c] = names[node_to_comm[idx]].clone();
+            }
+        }
+        out
+    });
+
+    // 5. Gather members per community.
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); k];
+    for (idx, &c) in compact.iter().enumerate() {
+        members[c].push(idx);
+    }
+
+    // 6. Weighted degree within the base graph (for top-member ranking).
+    let base_degree = &base.degree;
+
+    let communities = build_communities(
+        repo_id,
+        &indexed,
+        &members,
+        &pair_weight,
+        &compact,
+        base_degree,
+        compact_names.as_deref(),
+    );
+
+    // build_communities returns communities aligned to compact labels 0..k, so
+    // position == label. Map label -> community UUID for the quotient graph.
+    let mut comm_id_by_label: Vec<Uuid> = vec![Uuid::nil(); k];
+    for (label, community) in communities.iter().enumerate() {
+        comm_id_by_label[label] = community.id;
+    }
+
+    let quotient_edges =
+        build_quotient_edges(&pair_weight, &compact, &comm_id_by_label, edges, &index_of);
+
+    CommunityDetection {
+        communities,
+        quotient_edges,
+        modularity,
+        levels,
+        resolution: config.resolution,
+        node_count: n,
+        edge_count: considered_edges,
+    }
+}
+
+/// The classic multi-level Louvain loop over the weighted base graph.
+/// Returns `(node_to_comm, modularity, levels)`.
+fn louvain_partition(base: &Graph, config: &CommunityConfig) -> (Vec<usize>, f64, usize) {
+    let n = base.n;
+    // `node_to_comm` maps original index -> community label of the current top
+    // level; we compose down each aggregation.
     let mut node_to_comm: Vec<usize> = (0..n).collect();
     let mut graph = base.clone();
     let mut modularity = graph.modularity(&(0..graph.n).collect::<Vec<_>>(), config.resolution);
@@ -263,52 +382,185 @@ pub fn detect_communities(
         }
         graph = graph.induce(&level_comm);
     }
+    (node_to_comm, modularity, levels)
+}
 
-    // 4. Compact community labels to 0..k by first appearance (canonical order).
-    let compact = compact_labels(&node_to_comm);
-    let k = distinct_count(&compact);
+/// Structure-first partition: nodes group by their file's directory, package
+/// roots (`package.json` / `Cargo.toml` directories) are hard boundaries, and
+/// directories holding more than [`MAX_GROUP_FILES`] files split into their
+/// children while small ones roll up. Nodes with no file home (bare-import
+/// targets like `import:bare:react`) attach to the group their weighted edges
+/// couple to most. Returns the per-node assignment plus a display name per
+/// group (its directory path). Pure and deterministic.
+fn structural_partition(
+    indexed: &[&KnowledgeNode],
+    pair_weight: &HashMap<(usize, usize), f64>,
+) -> (Vec<usize>, Vec<String>) {
+    // 1. Each node's file path: the stable_id prefix before the first ':'.
+    //    A real path contains '/' or (for repo-root files) a '.'; anything else
+    //    (e.g. the `import` prefix of bare-import targets) has no file home.
+    let paths: Vec<Option<&str>> = indexed
+        .iter()
+        .map(|n| {
+            let head = n.stable_id.split(':').next().unwrap_or("");
+            (head.contains('/') || head.contains('.')).then_some(head)
+        })
+        .collect();
 
-    // 5. Gather members per community.
-    let mut members: Vec<Vec<usize>> = vec![Vec::new(); k];
-    for (idx, &c) in compact.iter().enumerate() {
-        members[c].push(idx);
+    // 2. Package roots are hard feature boundaries.
+    let mut package_roots: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for path in paths.iter().flatten() {
+        if path.ends_with("package.json") || path.ends_with("Cargo.toml") {
+            package_roots.insert(dir_of(path).to_string());
+        }
     }
 
-    // 6. Weighted degree within the base graph (for top-member ranking).
-    let base_degree = &base.degree;
-
-    let communities = build_communities(
-        repo_id,
-        &indexed,
-        &members,
-        &pair_weight,
-        &compact,
-        base_degree,
-    );
-
-    // build_communities returns communities aligned to compact labels 0..k, so
-    // position == label. Map label -> community UUID for the quotient graph.
-    let mut comm_id_by_label: Vec<Uuid> = vec![Uuid::nil(); k];
-    for (label, community) in communities.iter().enumerate() {
-        comm_id_by_label[label] = community.id;
+    // 3. Distinct files per nearest enclosing package root ("" = none/root).
+    let mut files_by_package: BTreeMap<String, std::collections::BTreeSet<&str>> = BTreeMap::new();
+    for path in paths.iter().flatten() {
+        let pkg = nearest_package_root(path, &package_roots).unwrap_or_default();
+        files_by_package.entry(pkg).or_default().insert(path);
     }
 
-    let quotient_edges =
-        build_quotient_edges(&pair_weight, &compact, &comm_id_by_label, edges, &index_of);
+    // 4. Cut each package's directory tree into groups.
+    let mut group_of_path: HashMap<&str, usize> = HashMap::new();
+    let mut group_names: Vec<String> = Vec::new();
+    for (pkg, files) in &files_by_package {
+        let root: &str = pkg.as_str();
+        let file_vec: Vec<&str> = files.iter().copied().collect();
+        let mut cuts: Vec<(String, Vec<&str>)> = Vec::new();
+        cut_tree(root, &file_vec, MAX_GROUP_FILES, &mut cuts);
+        for (name, group_files) in cuts {
+            let group = group_names.len();
+            group_names.push(if name.is_empty() {
+                "<repo root>".to_string()
+            } else {
+                name
+            });
+            for f in group_files {
+                group_of_path.insert(f, group);
+            }
+        }
+    }
 
-    CommunityDetection {
-        communities,
-        quotient_edges,
-        modularity,
-        levels,
-        resolution: config.resolution,
-        node_count: n,
-        edge_count: considered_edges,
+    // 5. Assign path-bearing nodes directly; homeless nodes by coupling.
+    let mut assignment: Vec<usize> = vec![usize::MAX; indexed.len()];
+    for (idx, path) in paths.iter().enumerate() {
+        if let Some(p) = path {
+            assignment[idx] = group_of_path[p];
+        }
+    }
+    let mut tallies: HashMap<usize, BTreeMap<usize, f64>> = HashMap::new();
+    for (&(a, b), &w) in pair_weight {
+        match (assignment[a] != usize::MAX, assignment[b] != usize::MAX) {
+            (true, false) => {
+                *tallies
+                    .entry(b)
+                    .or_default()
+                    .entry(assignment[a])
+                    .or_insert(0.0) += w;
+            }
+            (false, true) => {
+                *tallies
+                    .entry(a)
+                    .or_default()
+                    .entry(assignment[b])
+                    .or_insert(0.0) += w;
+            }
+            _ => {}
+        }
+    }
+    for (idx, slot) in assignment.iter_mut().enumerate() {
+        if *slot != usize::MAX {
+            continue;
+        }
+        // Argmax coupling weight; BTreeMap iterates groups ascending, and the
+        // strict '>' keeps the smallest group index on ties — deterministic.
+        let attached = tallies.get(&idx).and_then(|t| {
+            let mut best: Option<(usize, f64)> = None;
+            for (&g, &w) in t {
+                if best.is_none_or(|(_, bw)| w > bw) {
+                    best = Some((g, w));
+                }
+            }
+            best.map(|(g, _)| g)
+        });
+        match attached {
+            Some(g) => *slot = g,
+            None => {
+                // Truly isolated: a singleton group (member_count < 2 never
+                // surfaces as a feature, so this is just bookkeeping).
+                *slot = group_names.len();
+                group_names.push(format!("isolated · {}", indexed[idx].name));
+            }
+        }
+    }
+    (assignment, group_names)
+}
+
+/// Cut a directory tree: emit `root` as one group when its subtree holds at
+/// most `max` files; otherwise recurse into child directories (files sitting
+/// directly in `root` form their own group).
+fn cut_tree<'a>(root: &str, files: &[&'a str], max: usize, out: &mut Vec<(String, Vec<&'a str>)>) {
+    if files.len() <= max {
+        out.push((root.to_string(), files.to_vec()));
+        return;
+    }
+    let prefix = if root.is_empty() {
+        String::new()
+    } else {
+        format!("{root}/")
+    };
+    let mut children: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    let mut loose: Vec<&str> = Vec::new();
+    for &f in files {
+        let rest = f.strip_prefix(&prefix).unwrap_or(f);
+        match rest.split_once('/') {
+            Some((seg, _)) => children
+                .entry(if root.is_empty() {
+                    seg.to_string()
+                } else {
+                    format!("{root}/{seg}")
+                })
+                .or_default()
+                .push(f),
+            None => loose.push(f),
+        }
+    }
+    // If the tree can't actually be split (everything is loose), emit as one
+    // group rather than recursing forever.
+    if children.is_empty() {
+        out.push((root.to_string(), loose));
+        return;
+    }
+    for (child, fs) in children {
+        cut_tree(&child, &fs, max, out);
+    }
+    if !loose.is_empty() {
+        out.push((root.to_string(), loose));
+    }
+}
+
+/// The longest package root that is a directory-prefix of `file`.
+fn nearest_package_root(file: &str, roots: &std::collections::BTreeSet<String>) -> Option<String> {
+    roots
+        .iter()
+        .filter(|r| !r.is_empty() && file.starts_with(&format!("{r}/")))
+        .max_by_key(|r| r.len())
+        .cloned()
+}
+
+fn dir_of(path: &str) -> &str {
+    match path.rfind('/') {
+        Some(i) => &path[..i],
+        None => "",
     }
 }
 
 /// Per-community assembly: deterministic id, label, members, language mix,
 /// top members. Returned in compact-label order (label 0 first).
+/// `group_names`: structural partitions name groups after their directory;
+/// when absent (Louvain) the label is derived from the members.
 fn build_communities(
     repo_id: Uuid,
     indexed: &[&KnowledgeNode],
@@ -316,6 +568,7 @@ fn build_communities(
     pair_weight: &HashMap<(usize, usize), f64>,
     compact: &[usize],
     base_degree: &[f64],
+    group_names: Option<&[String]>,
 ) -> Vec<DetectedCommunity> {
     // internal edge counts per community.
     let mut internal_edges = vec![0usize; members.len()];
@@ -377,7 +630,10 @@ fn build_communities(
             })
             .collect();
 
-        let label_text = community_label(&top_members, &member_stable_ids);
+        let label_text = match group_names {
+            Some(names) => names[label].clone(),
+            None => community_label(&top_members, &member_stable_ids),
+        };
 
         out.push(DetectedCommunity {
             id,
@@ -706,6 +962,15 @@ mod tests {
         }
     }
 
+    /// The pre-v2 algorithm — used by tests that assert Louvain mechanics
+    /// (kept as a supported comparison path).
+    fn louvain_cfg() -> CommunityConfig {
+        CommunityConfig {
+            resolution: 1.0,
+            algorithm: PartitionAlgorithm::Louvain,
+        }
+    }
+
     fn edge(src: Uuid, dst: Uuid, kind: EdgeKind, cost: f64, conf: f64) -> KnowledgeEdge {
         KnowledgeEdge {
             id: Uuid::new_v4(),
@@ -781,7 +1046,7 @@ mod tests {
                 }
             }
         }
-        let det = detect_communities(Uuid::nil(), &nodes, &edges, &CommunityConfig::default());
+        let det = detect_communities(Uuid::nil(), &nodes, &edges, &louvain_cfg());
         assert_eq!(
             det.communities.len(),
             3,
@@ -880,7 +1145,7 @@ mod tests {
             1.0,
         ));
 
-        let det = detect_communities(Uuid::nil(), &nodes, &edges, &CommunityConfig::default());
+        let det = detect_communities(Uuid::nil(), &nodes, &edges, &louvain_cfg());
         assert_eq!(det.communities.len(), 2);
         assert_eq!(det.quotient_edges.len(), 1);
         let qe = &det.quotient_edges[0];
@@ -933,7 +1198,7 @@ mod tests {
             edges.push(edge(func_b.id, nodes[4 + a].id, EdgeKind::Calls, 0.1, 1.0));
         }
 
-        let det = detect_communities(Uuid::nil(), &nodes, &edges, &CommunityConfig::default());
+        let det = detect_communities(Uuid::nil(), &nodes, &edges, &louvain_cfg());
         // Which communities contain a node from file "shared/F.rs"?
         let mut files_to_comms: std::collections::BTreeMap<
             String,
@@ -968,5 +1233,127 @@ mod tests {
         let _ = &mut edges;
         let det = detect_communities(Uuid::nil(), &nodes, &edges, &CommunityConfig::default());
         assert_eq!(det.node_count, 2, "repository node excluded from detection");
+    }
+
+    /// Structure-first: package roots are hard boundaries — heavy cross-package
+    /// coupling must NOT merge features across a package.json boundary.
+    #[test]
+    fn structural_package_roots_are_hard_boundaries() {
+        let pa = node(
+            "packages/a/package.json:npm:script:build",
+            NodeKind::Script,
+            "json",
+        );
+        let pb = node(
+            "packages/b/package.json:npm:script:build",
+            NodeKind::Script,
+            "json",
+        );
+        let a1 = node("packages/a/src/x.ts:fn:x", NodeKind::Function, "typescript");
+        let a2 = node("packages/a/src/y.ts:fn:y", NodeKind::Function, "typescript");
+        let b1 = node("packages/b/src/z.ts:fn:z", NodeKind::Function, "typescript");
+        let b2 = node("packages/b/src/w.ts:fn:w", NodeKind::Function, "typescript");
+        let nodes = vec![pa, pb, a1.clone(), a2.clone(), b1.clone(), b2.clone()];
+        // Strong coupling across packages — Louvain would merge; structure must not.
+        let edges = vec![
+            edge(a1.id, b1.id, EdgeKind::Calls, 0.01, 1.0),
+            edge(a2.id, b2.id, EdgeKind::Calls, 0.01, 1.0),
+            edge(a1.id, a2.id, EdgeKind::Calls, 1.0, 0.5),
+            edge(b1.id, b2.id, EdgeKind::Calls, 1.0, 0.5),
+        ];
+        let det = detect_communities(Uuid::nil(), &nodes, &edges, &CommunityConfig::default());
+        let group_of = |sid: &str| {
+            det.communities
+                .iter()
+                .position(|c| c.member_stable_ids.iter().any(|m| m == sid))
+                .unwrap()
+        };
+        assert_eq!(
+            group_of("packages/a/src/x.ts:fn:x"),
+            group_of("packages/a/src/y.ts:fn:y")
+        );
+        assert_eq!(
+            group_of("packages/b/src/z.ts:fn:z"),
+            group_of("packages/b/src/w.ts:fn:w")
+        );
+        assert_ne!(
+            group_of("packages/a/src/x.ts:fn:x"),
+            group_of("packages/b/src/z.ts:fn:z"),
+            "package boundary must hold against cross-package coupling"
+        );
+    }
+
+    /// Big directories split into children; labels are the directory paths.
+    #[test]
+    fn structural_splits_big_dirs_and_labels_by_directory() {
+        let mut nodes = Vec::new();
+        for i in 0..15 {
+            nodes.push(node(
+                &format!("app/tokens/f{i:02}.ts:fn:t{i}"),
+                NodeKind::Function,
+                "typescript",
+            ));
+            nodes.push(node(
+                &format!("app/holders/g{i:02}.ts:fn:h{i}"),
+                NodeKind::Function,
+                "typescript",
+            ));
+        }
+        let det = detect_communities(Uuid::nil(), &nodes, &[], &CommunityConfig::default());
+        let labels: Vec<&str> = det.communities.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"app/tokens"), "labels: {labels:?}");
+        assert!(labels.contains(&"app/holders"), "labels: {labels:?}");
+        assert!(
+            !labels.contains(&"app"),
+            "a 30-file dir must split, not blob: {labels:?}"
+        );
+    }
+
+    /// A homeless bare-import node attaches to the group it couples to most.
+    #[test]
+    fn structural_attaches_bare_imports_by_coupling() {
+        let a = node("ui/button.ts:fn:render", NodeKind::Function, "typescript");
+        let b = node("api/server.ts:fn:serve", NodeKind::Function, "typescript");
+        let bare = node("import:bare:@acme/ui", NodeKind::Dependency, "typescript");
+        let nodes = vec![a.clone(), b.clone(), bare.clone()];
+        let edges = vec![
+            edge(a.id, bare.id, EdgeKind::Imports, 0.1, 1.0), // strong
+            edge(b.id, bare.id, EdgeKind::Imports, 1.0, 0.1), // weak
+        ];
+        let det = detect_communities(Uuid::nil(), &nodes, &edges, &CommunityConfig::default());
+        let ui = det
+            .communities
+            .iter()
+            .find(|c| c.member_stable_ids.iter().any(|m| m.starts_with("ui/")))
+            .unwrap();
+        assert!(
+            ui.member_stable_ids
+                .iter()
+                .any(|m| m == "import:bare:@acme/ui"),
+            "bare import must join its strongest-coupled group: {:?}",
+            ui.member_stable_ids
+        );
+    }
+
+    /// Same input twice ⇒ byte-identical structural partition (ids included).
+    #[test]
+    fn structural_partition_is_deterministic() {
+        let mut nodes = Vec::new();
+        for i in 0..40 {
+            nodes.push(node(
+                &format!("src/m{:02}/f.rs:rust:function:f{i}", i % 7),
+                NodeKind::Function,
+                "rust",
+            ));
+        }
+        let d1 = detect_communities(Uuid::nil(), &nodes, &[], &CommunityConfig::default());
+        let d2 = detect_communities(Uuid::nil(), &nodes, &[], &CommunityConfig::default());
+        let sig = |d: &CommunityDetection| {
+            d.communities
+                .iter()
+                .map(|c| (c.id, c.label.clone(), c.member_stable_ids.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(sig(&d1), sig(&d2));
     }
 }
