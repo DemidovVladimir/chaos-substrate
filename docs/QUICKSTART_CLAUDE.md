@@ -43,11 +43,11 @@ Copy the example config (it already defaults to local Ollama), then run `bootstr
 
 ```bash
 cp chaos-substrate.example.toml chaos-substrate.toml
-scripts/chaos-agent bootstrap
-export PATH="$HOME/.local/bin:$PATH"          # so `chaos-agent` is on PATH
+scripts/chaos bootstrap
+export PATH="$HOME/.local/bin:$PATH"          # so `chaos` is on PATH
 ```
 
-`bootstrap` does the whole setup in order: installs the `chaos-agent` wrapper, builds the
+`bootstrap` does the whole setup in order: installs the `chaos` wrapper, builds the
 release binary (`cargo build --release`), starts Postgres (pgvector on host port `54329`),
 starts Ollama and pulls `nomic-embed-text`, runs `chaos migrate`, then `chaos doctor`.
 
@@ -84,7 +84,7 @@ Inside Claude Code, verify the plugin loaded:
   index is unavailable).
 
 > **MCP server only?** If you want the tools without the plugin, skip this step and run
-> `scripts/chaos-agent claude-code-add local` (or `claude-code-add project /abs/path/to/repo`
+> `scripts/chaos claude-code-add local` (or `claude-code-add project /abs/path/to/repo`
 > for a shareable `.mcp.json`). Per-editor details: [EDITOR_SETUP.md](EDITOR_SETUP.md).
 
 ## 5. Index your repository
@@ -102,7 +102,7 @@ it (or "Update the Chaos Substrate index") whenever the code changes.
 CLI mirror (on PATH after step 3):
 
 ```bash
-chaos-agent update /absolute/path/to/your-repo
+chaos update /absolute/path/to/your-repo
 ```
 
 **Incremental indexing after edits.** Once a repo is analyzed, you don't have to re-index the
@@ -159,7 +159,7 @@ interactive graph, story flow, code context, and a machine-readable manifest, wr
 CLI mirror — generate the page without the agent:
 
 ```bash
-chaos-agent explain /absolute/path/to/your-repo "end-to-end encryption"
+chaos explain /absolute/path/to/your-repo "end-to-end encryption"
 # writes docs/features_memory/end-to-end-encryption-explanation.html
 ```
 

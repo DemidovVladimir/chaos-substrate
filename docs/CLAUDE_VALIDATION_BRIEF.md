@@ -82,7 +82,7 @@ Supported extracted knowledge:
 - `.codex-plugin/plugin.json` - Codex plugin metadata
 - `.claude-plugin/plugin.json` - Claude Code plugin metadata
 - `.mcp.json` - shared plugin MCP server definition
-- `bin/chaos-agent` - plugin-safe wrapper entrypoint
+- `bin/chaos` - plugin-safe wrapper entrypoint
 - `skills/chaos-substrate/SKILL.md` - agent guidance
 
 ## Validation Commands

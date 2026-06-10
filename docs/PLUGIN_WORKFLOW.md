@@ -19,16 +19,16 @@ chaos-substrate/
 ├── .claude-plugin/hooks/hooks.json
 ├── .cursor/hooks.json
 ├── .mcp.json
-├── bin/chaos-agent
+├── bin/chaos
 ├── skills/chaos-substrate/SKILL.md
-├── scripts/chaos-agent
+├── scripts/chaos
 ├── docs/
 └── src/
 ```
 
 - Codex reads `.codex-plugin/plugin.json`.
 - Claude Code reads `.claude-plugin/plugin.json` and `.claude-plugin/hooks/hooks.json`.
-- Both share the root `.mcp.json`, `skills/`, and `bin/chaos-agent`.
+- Both share the root `.mcp.json`, `skills/`, and `bin/chaos`.
 - The shared MCP server exposes fourteen tools (`chaos_analyze`, `chaos_add`, `chaos_stats`,
   `chaos_query`, `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`,
   `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`); see the [MCP Tools](../README.md#mcp-tools) section of the
@@ -36,7 +36,7 @@ chaos-substrate/
 - The tool-use hooks (`.claude-plugin/hooks/hooks.json`, `.cursor/hooks.json`) run `chaos hook` to
   inject code-memory context on `Grep`, `Glob`, and `Bash`. The hook always exits 0, is a safe
   no-op when the DB/index is unavailable, and has no embedder dependency.
-- `bin/chaos-agent` delegates to `scripts/chaos-agent`, which owns setup, indexing, querying, and
+- `bin/chaos` delegates to `scripts/chaos`, which owns setup, indexing, querying, and
   feature-page generation.
 
 ## What Still Requires User Setup
@@ -54,7 +54,7 @@ credentials.
 From the Chaos Substrate plugin checkout, bootstrap once:
 
 ```bash
-scripts/chaos-agent bootstrap
+scripts/chaos bootstrap
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
@@ -95,28 +95,28 @@ The plugin skill chooses the underlying wrapper command. Direct CLI use is for d
 agentless operation:
 
 ```bash
-chaos-agent onboard "$PWD"
-chaos-agent explain "$PWD" "authorization and RBAC"
+chaos onboard "$PWD"
+chaos explain "$PWD" "authorization and RBAC"
 ```
 
 For local Ollama embeddings:
 
 ```bash
-CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos-agent bootstrap
+CHAOS_CONFIG=chaos-substrate.local.toml scripts/chaos bootstrap
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
 After that, use the same natural agent requests from the target project. The plugin will run
-`chaos-agent onboard` or related commands with the active config.
+`chaos onboard` or related commands with the active config.
 
 See `docs/OLLAMA_SETUP.md` for installation and troubleshooting.
 
 ## Natural Language Mapping
 
 - "Go through the project and create sufficient index and explanation"
-  - Plugin intent: create or refresh the project memory. Implementation command: `chaos-agent onboard <repo-path>` for first setup.
+  - Plugin intent: create or refresh the project memory. Implementation command: `chaos onboard <repo-path>` for first setup.
 - "Update index"
-  - Plugin intent: refresh the existing memory. Implementation command: `chaos-agent update <repo-path>`.
+  - Plugin intent: refresh the existing memory. Implementation command: `chaos update <repo-path>`.
 - "Add my latest changes" / "index what I just changed and write a page"
   - Plugin intent: one-shot incremental update from git diff. MCP tool: `chaos_add`. CLI: `chaos add [repo-path]`.
     Incrementally indexes only the changed files, refreshes the Obsidian vault, and writes a feature/bug page.
@@ -125,16 +125,16 @@ See `docs/OLLAMA_SETUP.md` for installation and troubleshooting.
     nodes, edges, chunks, and files), read-only and embedder-free. MCP tool: `chaos_stats`. CLI:
     `chaos stats <repo-path>`.
 - "Generate explanation for X feature"
-  - Plugin intent: produce focused feature context and a feature-memory website. MCP flow: `chaos_feature_context`, then LLM-composed HTML/manifest via `chaos_write_feature_website`. CLI fallback: `chaos-agent explain <repo-path> "X"`.
+  - Plugin intent: produce focused feature context and a feature-memory website. MCP flow: `chaos_feature_context`, then LLM-composed HTML/manifest via `chaos_write_feature_website`. CLI fallback: `chaos explain <repo-path> "X"`.
 - "Find context for implementing X"
-  - Plugin intent: return source-grounded implementation context. MCP tool: `chaos_feature_context`. CLI fallback: `chaos-agent context <repo-path> "X"`.
+  - Plugin intent: return source-grounded implementation context. MCP tool: `chaos_feature_context`. CLI fallback: `chaos context <repo-path> "X"`.
 - "Show how X feature impacts the existing code"
   - Plugin intent: build a feature-vs-existing-code impact report for an indexed repo and always
     write an interactive HTML (impact summary + evidence) into `docs/features_memory`, returning a
     compact summary of the existing files/symbols the feature touches. MCP tool: `chaos_impact`.
     CLI: `chaos impact <repo-path> "X"`.
 - "Use this with Claude Code or Claude Cowork"
-  - Run `chaos-agent claude-code-add local <repo-path>` for private setup or `project` for shared
+  - Run `chaos claude-code-add local <repo-path>` for private setup or `project` for shared
     `.mcp.json`. See [docs/EDITOR_SETUP.md](EDITOR_SETUP.md) for all editors.
 - "Set this up in my editor(s)"
   - Run `target/release/chaos setup` to register the MCP server in every detected editor, or
@@ -148,7 +148,7 @@ Codex uses `.codex-plugin/plugin.json`. The manifest points to:
 - `mcpServers`: `./.mcp.json`
 
 During development, install or load this repository as the `chaos-substrate` plugin. Once enabled,
-the agent can use the `chaos-substrate` skill and the MCP tools exposed by `chaos-agent mcp` (see
+the agent can use the `chaos-substrate` skill and the MCP tools exposed by `chaos mcp` (see
 the [MCP Tools](../README.md#mcp-tools) section of the README for the fourteen-tool reference).
 
 `chaos_write_feature_website` enforces the feature-page contract. It rejects prose-only pages that
@@ -175,7 +175,7 @@ Then in Claude Code:
 /chaos-substrate:chaos-substrate
 ```
 
-The plugin also exposes `bin/chaos-agent` to Claude's shell environment while enabled.
+The plugin also exposes `bin/chaos` to Claude's shell environment while enabled.
 
 ## Outputs
 
@@ -199,5 +199,5 @@ are refreshable derived artifacts.
 - The plugin can start this repository's Docker Compose stack, but it cannot install Docker itself.
 - The plugin can try to start Ollama and pull the configured model when the Ollama CLI/app is
   installed, but it cannot install the Ollama desktop app.
-- The plugin can configure Claude Code MCP with `chaos-agent claude-code-add`, but Claude Code may
+- The plugin can configure Claude Code MCP with `chaos claude-code-add`, but Claude Code may
   still ask for approval before using project-scoped MCP servers.

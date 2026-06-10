@@ -119,8 +119,8 @@ provenance/related blocks).
 Prefer the wrapper when registering this repository as an MCP server:
 
 ```sh
-scripts/chaos-agent claude-code-add local
-scripts/chaos-agent claude-code-add project /absolute/path/to/target-repo
+scripts/chaos claude-code-add local
+scripts/chaos claude-code-add project /absolute/path/to/target-repo
 ```
 
 Use `local` for private setup and `project` when a target repository should receive a shareable

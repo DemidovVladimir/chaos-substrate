@@ -153,14 +153,14 @@ Windsurf, and OpenCode and registers chaos-substrate as an MCP server in each (m
 To register only Claude Code, use the canonical wrapper:
 
 ```sh
-scripts/chaos-agent claude-code-add local /absolute/path/to/typescript-repo
+scripts/chaos claude-code-add local /absolute/path/to/typescript-repo
 ```
 
 Use `project` instead of `local` for a team-shared `.mcp.json` in the target repository, or `user`
 for a user-scoped registration:
 
 ```sh
-scripts/chaos-agent claude-code-add project /absolute/path/to/typescript-repo
+scripts/chaos claude-code-add project /absolute/path/to/typescript-repo
 ```
 
 The path argument is the Claude Code project where `.mcp.json` should be written. If omitted, the
@@ -242,8 +242,8 @@ The skill is then available as:
 Use these surfaces together:
 
 - `.claude-plugin/plugin.json` for reusable Claude plugin packaging.
-- `.mcp.json` and `bin/chaos-agent` for plugin-level MCP.
-- `CLAUDE.md` for target-project instructions written by `chaos-agent onboard`.
+- `.mcp.json` and `bin/chaos` for plugin-level MCP.
+- `CLAUDE.md` for target-project instructions written by `chaos onboard`.
 - `docs/CLAUDE_VALIDATION_BRIEF.md` for validation and PRD review.
 - The MCP tools (see README → MCP Tools) for live access to the persisted knowledge base,
   indexing/reindexing, feature evidence, and LLM-composed feature-page generation.

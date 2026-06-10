@@ -99,6 +99,17 @@ all exports/refresh/hook/linkers are embedder-free.
   without `cd`-ing into the checkout and compiling. `chaos help <command>`
   prints that command's full flags; `--help` still works everywhere.
 
+### New — wrapper pass-through
+
+- The `chaos` wrapper (`bin/chaos` → `scripts/chaos`, the PATH-installed
+  entrypoint) now passes every unrecognized command straight through to the
+  real binary with the repo's config — `chaos analyze/add/query/features/
+  components/project/clean/help/…` all work from anywhere, with the binary
+  auto-rebuilt when sources changed. Previously the wrapper rejected
+  everything outside its own setup verbs (`bootstrap`, `init`, `update`, …),
+  which contradicted every documented command. `chaos help` through the
+  wrapper shows the binary's agent guide plus the wrapper-only extras.
+
 ### New — clean slate for validation
 
 - `chaos clean [--artifacts]`: the database wipe (all repos or one) can now

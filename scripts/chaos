@@ -7,7 +7,7 @@ BIN="${CHAOS_BIN:-$ROOT/target/release/chaos}"
 
 usage() {
   cat <<'USAGE'
-Usage:
+Wrapper-managed commands (setup/orchestration; this script):
   chaos bootstrap
   chaos install-agent [bin-dir]
   chaos doctor
@@ -20,6 +20,10 @@ Usage:
   chaos explain <repo-path> <feature-or-task>
   chaos claude-code-add [local|project|user] [claude-project-dir]
   chaos mcp
+
+Every other command passes straight through to the chaos binary with this
+repo's config — chaos analyze/add/stats/query/features/components/project/
+change-plan/clean/… all work. Run `chaos help` for the full guide.
 
 Environment:
   CHAOS_CONFIG     Path to chaos-substrate.toml. Defaults to this repo's config.
@@ -370,11 +374,29 @@ CLAUDE
     ensure_binary
     exec "$BIN" --config "$CONFIG" mcp
     ;;
-  ""|-h|--help|help)
+  ""|-h|--help)
     usage
     ;;
-  *)
+  help)
+    # The binary's agent guide first (commands + workflows), then the
+    # wrapper-only extras this script adds on top.
+    ensure_binary
+    "$BIN" help "$@"
+    printf '\n'
     usage
-    exit 2
+    ;;
+  -*)
+    # Caller passed their own flags (e.g. --config) — forward verbatim,
+    # without injecting the wrapper's config a second time.
+    ensure_binary
+    exec "$BIN" "$cmd" "$@"
+    ;;
+  *)
+    # Pass-through: every real chaos subcommand (analyze, add, stats, query,
+    # features, components, project, change-plan, clean, …) runs against this
+    # repo's config. Unknown names get clap's own error + suggestions, so this
+    # wrapper never needs a hardcoded command list again.
+    ensure_binary
+    exec "$BIN" --config "$CONFIG" "$cmd" "$@"
     ;;
 esac

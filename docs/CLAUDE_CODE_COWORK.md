@@ -8,11 +8,11 @@ agent workflow.
 From the Chaos Substrate checkout:
 
 ```sh
-scripts/chaos-agent bootstrap
+scripts/chaos bootstrap
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Use `chaos-substrate.local.toml` for Ollama. `chaos-agent ollama-setup` tries to start Ollama and
+Use `chaos-substrate.local.toml` for Ollama. `chaos ollama-setup` tries to start Ollama and
 pull `nomic-embed-text` automatically when Ollama is installed.
 
 ## 2. Install Chaos Substrate In Claude Cowork
@@ -52,12 +52,12 @@ The plugin exposes the namespaced skill:
 /chaos-substrate:chaos-substrate
 ```
 
-The plugin also includes root `.mcp.json` and `bin/chaos-agent`. For an explicit project MCP entry,
+The plugin also includes root `.mcp.json` and `bin/chaos`. For an explicit project MCP entry,
 Claude Code supports local stdio MCP servers through `claude mcp add`. The wrapper can register the
 server for you:
 
 ```sh
-chaos-agent claude-code-add local /absolute/path/to/target-repo
+chaos claude-code-add local /absolute/path/to/target-repo
 ```
 
 Scopes:
@@ -69,13 +69,13 @@ Scopes:
 For a team-shared project config, run:
 
 ```sh
-chaos-agent claude-code-add project /absolute/path/to/target-repo
+chaos claude-code-add project /absolute/path/to/target-repo
 ```
 
 For example:
 
 ```sh
-chaos-agent claude-code-add project /absolute/path/to/infra-repo
+chaos claude-code-add project /absolute/path/to/infra-repo
 ```
 
 The second argument is the Claude Code project directory where `.mcp.json` should be written. If you
@@ -184,7 +184,7 @@ MAX_MCP_OUTPUT_TOKENS=50000 claude
 ## 7. What Not To Do
 
 - Do not configure Chaos Substrate through `cargo run` in MCP settings; use the release binary.
-- Do not copy the skill into every project; load the Claude plugin or use `chaos-agent onboard`.
+- Do not copy the skill into every project; load the Claude plugin or use `chaos onboard`.
 - Do not reduce feature explanation to `chaos_query` only when `chaos_feature_context` is available.
 - Do not use a static script as a substitute for feature understanding; compose the feature website
   after reading evidence, then write it with `chaos_write_feature_website`.

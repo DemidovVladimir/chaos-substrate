@@ -30,7 +30,7 @@ cp chaos-substrate.local.toml chaos-substrate.toml
 ```
 
 See `docs/OLLAMA_SETUP.md` if Ollama is not installed or the model is missing. For agent use,
-`chaos-agent bootstrap` performs the Ollama readiness step automatically.
+`chaos bootstrap` performs the Ollama readiness step automatically.
 
 ## 3. Prepare The Database
 
