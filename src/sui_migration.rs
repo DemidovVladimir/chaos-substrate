@@ -451,12 +451,14 @@ const DEP_RULES: &[DepRule] = &[
         label: "S3 object storage client",
         mappings: &["s3-review"],
     },
+    // The v2 monolith is the WHOLE AWS SDK — S3 use is possible, not proven,
+    // so the label must not claim more than the dependency shows.
     DepRule {
         ecosystem: "npm",
         pattern: "aws-sdk",
         chain: None,
         area: "storage",
-        label: "S3 object storage client",
+        label: "AWS SDK usage (S3-capable, service unconfirmed)",
         mappings: &["s3-review"],
     },
     DepRule {
@@ -609,11 +611,14 @@ const CHUNK_RULES: &[ChunkRule] = &[
         label: "Token metadata URI",
         mappings: &["nft-metadata-walrus"],
     },
+    // Anchored to The Graph's domain — the bare word "subgraph" is a common
+    // graph-theory term and would mislabel non-Web3 code as indexer evidence
+    // (subgraph.yaml presence is caught by the config probe instead).
     ChunkRule {
-        needle: "subgraph",
+        needle: "thegraph.com",
         chain: Some("ethereum"),
         area: "indexer",
-        label: "Subgraph references",
+        label: "The Graph endpoint references",
         mappings: &["events-indexing"],
     },
     // ---- Solana ------------------------------------------------------------
@@ -1149,6 +1154,7 @@ impl Coverage {
                 "contents of unindexed configs (foundry.toml/Anchor.toml internals — only presence is detected)".into(),
                 "Dockerfiles, CI workflows, Terraform — not indexed".into(),
                 "runtime behavior, gas/economics modeling, oracle and bridge dependencies".into(),
+                "the walrus-sites and sui-object-state storage buckets have no automatic detector yet — they are part of the classification vocabulary but are never auto-assigned; flows that fit them surface as 'review'".into(),
                 "automatic Solidity/Anchor → Move translation — this report maps impact, it does not generate Move code or guarantee correctness".into(),
             ],
         }
@@ -1234,6 +1240,11 @@ pub async fn run(storage: &Storage, repo: &str, opts: &SuiMigrationOptions) -> R
         )
         .with_locator("chunks"),
     );
+    if chunk_rows.len() as i64 >= CHUNK_SCAN_LIMIT {
+        warnings.push(format!(
+            "chunk scan hit its {CHUNK_SCAN_LIMIT}-row prefilter cap — code-pattern evidence may be incomplete for very large repos (match counts are a lower bound)"
+        ));
+    }
     signals.extend(detect_chunk_signals(&chunk_rows));
 
     let contracts = storage.solidity_contract_nodes(repo.id).await?;
@@ -1378,31 +1389,41 @@ pub async fn run(storage: &Storage, repo: &str, opts: &SuiMigrationOptions) -> R
         .clone()
         .unwrap_or_else(|| repo_root.join("docs/features_memory"));
     let correlation_query = correlation_query(&signals, &source_resolution.resolved);
-    let related_pages: Vec<RelatedPage> =
-        match load_feature_matches(&correlation_query, &features_dir, 3, 4) {
-            Ok(matches) => {
-                provenance.push(
-                    Breadcrumb::new(
-                        source::MANIFEST,
-                        "load_feature_matches",
-                        format!(
+    let related_pages: Vec<RelatedPage> = match load_feature_matches(
+        &correlation_query,
+        &features_dir,
+        3,
+        4,
+    ) {
+        Ok(matches) => {
+            provenance.push(
+                Breadcrumb::new(
+                    source::MANIFEST,
+                    "load_feature_matches",
+                    format!(
                         "{} prior feature page(s) correlated with the detected migration surface",
                         matches.len()
                     ),
-                    )
-                    .with_locator(features_dir.display().to_string()),
-                );
-                matches
-                    .into_iter()
-                    .map(|m| RelatedPage {
-                        page: m.page.display().to_string(),
-                        title: m.title,
-                        score: m.score,
-                    })
-                    .collect()
-            }
-            Err(_) => Vec::new(),
-        };
+                )
+                .with_locator(features_dir.display().to_string()),
+            );
+            matches
+                .into_iter()
+                .map(|m| RelatedPage {
+                    page: m.page.display().to_string(),
+                    title: m.title,
+                    score: m.score,
+                })
+                .collect()
+        }
+        Err(err) => {
+            warnings.push(format!(
+                    "prior feature pages could not be read from {} ({err}) — related-page correlation skipped",
+                    features_dir.display()
+                ));
+            Vec::new()
+        }
+    };
 
     // ---- Mappings, storage, access ----------------------------------------------
     let triggered = triggered_mappings(&signals);
@@ -2010,7 +2031,14 @@ fn excerpt(text: &str, max: usize) -> String {
 fn compose_overview(repo_name: &str, source: &SourceResolution, totals: &Totals) -> String {
     let stack = match source.resolved.as_str() {
         "unknown" => "no recognizable source-chain stack".to_string(),
-        resolved => format!("an {resolved} stack"),
+        resolved => {
+            let article = if resolved.starts_with(['a', 'e', 'i', 'o', 'u']) {
+                "an"
+            } else {
+                "a"
+            };
+            format!("{article} {resolved} stack")
+        }
     };
     format!(
         "{repo_name} reads as {stack}: {} migration signal(s), {} existing feature(s) affected, {} Sui concept mapping(s) triggered, {} storage and {} access-control flow(s) classified. {} official doc(s) cited from the {} profile (retrieved {}). Full evidence in the HTML report.",
@@ -2774,5 +2802,21 @@ mod tests {
             .overview
             .contains("demo reads as an ethereum stack"));
         assert!(manifest.overview.contains(sui_docs::PROFILE_NAME));
+        // Article agrees with the resolved stack name.
+        for (resolved, expected) in [
+            ("solana", "a solana stack"),
+            ("mixed", "a mixed stack"),
+            ("ethereum", "an ethereum stack"),
+        ] {
+            let source = SourceResolution {
+                requested: "auto".into(),
+                resolved: resolved.into(),
+                evidence: BTreeMap::new(),
+            };
+            assert!(
+                compose_overview("demo", &source, &Totals::default()).contains(expected),
+                "expected '{expected}'"
+            );
+        }
     }
 }
