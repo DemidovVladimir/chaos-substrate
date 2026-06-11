@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 pub struct Breadcrumb {
     /// Coarse origin bucket — one of the [`source`] constants
     /// (`git`, `postgres`, `file`, `ast`, `regex`, `embedding`,
-    /// `feature-manifest`, `merkle`, `graph`).
+    /// `feature-manifest`, `merkle`, `graph`, `docs-profile`).
     pub source: String,
     /// The concrete operation, e.g. `"git diff"`, `"load_graph_export"`,
     /// `"read_snippet"`, `"community_semantic_search"`, `"load_feature_matches"`.
@@ -81,6 +81,9 @@ pub mod source {
     pub const MERKLE: &str = "merkle";
     /// Derived from the in-memory knowledge graph / community detection (L1).
     pub const GRAPH: &str = "graph";
+    /// Cited from a compiled-in official documentation profile (e.g. the
+    /// `sui-official` profile in `src/sui_docs.rs`).
+    pub const DOCS: &str = "docs-profile";
 }
 
 #[cfg(test)]

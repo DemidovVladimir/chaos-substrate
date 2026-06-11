@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sui migration impact</title>
+<style>
+:root{
+  /* neutrals (warm near-blacks & cool greys) */
+  --color-ink-900:rgb(2,9,21);--color-ink-800:rgb(7,20,31);--color-ink-700:rgb(15,39,63);
+  --color-ink-600:rgb(18,31,47);--color-ink-500:rgb(30,50,74);--color-ink-400:rgb(43,69,101);
+  --color-ink-300:rgb(68,117,154);--color-ink-200:rgb(127,138,152);--color-ink-100:rgb(180,190,205);
+  /* borders + surfaces */
+  --color-border:rgb(213,220,230);--color-border-soft:rgb(238,242,246);
+  --color-surface-0:rgb(255,255,255);--color-surface-1:rgb(249,249,249);
+  --color-surface-2:rgb(244,249,252);--color-surface-3:rgb(238,242,246);
+  /* accent blues */
+  --color-blue-50:rgb(244,248,253);--color-blue-100:rgb(233,241,250);--color-blue-150:rgb(223,238,255);
+  --color-blue-200:rgb(221,233,248);--color-blue-300:rgb(193,219,250);--color-blue-400:rgb(132,178,233);
+  --color-blue-500:rgb(130,165,206);--color-blue-600:rgb(68,117,154);--color-blue-700:rgb(27,88,156);
+  --color-blue-800:rgb(13,69,113);--color-blue-900:rgb(3,22,49);
+  /* secondary accents */
+  --color-purple-500:rgb(112,70,198);--color-purple-100:rgb(241,234,255);
+  --color-teal-500:rgb(0,200,187);--color-magenta-500:rgb(252,65,255);--color-violet-500:rgb(128,68,255);
+  /* semantic */
+  --fg-primary:var(--color-ink-600);--fg-secondary:var(--color-ink-400);--fg-tertiary:var(--color-ink-200);
+  --fg-muted:var(--color-ink-100);--fg-accent:var(--color-blue-400);--fg-on-dark:var(--color-surface-0);
+  --bg-page:var(--color-surface-0);--bg-surface:var(--color-surface-1);--bg-quiet:var(--color-surface-2);--bg-chip:var(--color-surface-3);
+  --bg-sky-soft:linear-gradient(180deg,rgb(233,241,250) 0%,rgb(223,238,255) 100%);
+  --bg-diamond:radial-gradient(circle,rgb(252,65,255) 0%,rgb(128,68,255) 49%,rgba(128,68,255,0) 100%);
+  /* borders / radii */
+  --border-hairline:1px solid var(--color-border);--border-soft:1px solid var(--color-border-soft);--border-accent:1px solid var(--color-blue-400);
+  --radius-xs:4px;--radius-sm:8px;--radius-md:12px;--radius-lg:16px;--radius-xl:24px;--radius-pill:999px;
+  /* spacing (4px base) */
+  --space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-5:24px;--space-6:32px;--space-7:48px;--space-8:64px;--space-9:80px;--space-10:128px;
+  /* shadows (subtle, warm tint) */
+  --shadow-xs:0 1px 2px rgba(96,0,228,.03);--shadow-sm:0 2px 8px rgba(96,0,228,.06);
+  --shadow-md:0 8px 24px rgba(96,0,228,.06),0 1px 2px rgba(23,219,207,.02);
+  --shadow-lg:0 20px 40px rgba(2,9,21,.08),0 2px 8px rgba(96,0,228,.06);
+  --shadow-focus:0 0 0 3px rgba(132,178,233,.35);
+  /* type families — no bundled fonts; first names are preferences only */
+  --font-display:"Aeonik","Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --font-body:"Geist","Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  /* type scale */
+  --type-display-xl:500 56px/1.1 var(--font-display);--type-display-lg:500 40px/1.2 var(--font-display);
+  --type-h1:500 40px/1.2 var(--font-display);--type-h2:500 32px/1.2 var(--font-display);
+  --type-h3:500 24px/1.2 var(--font-display);--type-h4:500 20px/1.2 var(--font-display);
+  --type-h5:500 16px/1.3 var(--font-display);--type-h6:500 14px/1.3 var(--font-display);
+  --type-body-lg:400 18px/1.4 var(--font-body);--type-body:400 16px/1.4 var(--font-body);
+  --type-body-sm:400 14px/1.4 var(--font-body);--type-body-xs:400 12px/1.4 var(--font-body);
+  --type-overline:500 14px/1.4 var(--font-mono);--type-overline-sm:500 12px/1.3 var(--font-mono);
+  --type-label:500 12px/14px var(--font-body);
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg-page);color:var(--fg-primary);font:var(--type-body);
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+h1{font:var(--type-h1);margin:0}h2{font:var(--type-h2);margin:0}h3{font:var(--type-h3);margin:0}
+h4{font:var(--type-h4);margin:0}h5{font:var(--type-h5);margin:0}h6{font:var(--type-h6);margin:0}
+p{font:var(--type-body);color:var(--fg-secondary);margin:0}
+::selection{background:var(--color-blue-150)}
+a{color:var(--fg-primary);text-decoration:underline;text-underline-offset:2px;text-decoration-thickness:1px}
+a:hover{color:var(--color-blue-700)}
+.mono{font-family:var(--font-mono)}
+.overline{font:var(--type-overline);text-transform:uppercase;letter-spacing:.03em;color:var(--color-blue-500)}
+code,kbd,samp{font:var(--type-body-sm);font-family:var(--font-mono);background:var(--bg-chip);padding:2px 6px;border-radius:var(--radius-xs)}
+
+/* ---------- shared chrome ---------- */
+.wrap{max-width:1040px;margin:0 auto;padding:0 32px}
+.wrap.wide{max-width:1240px}
+
+/* brand slot */
+.brand{display:inline-flex;align-items:center;gap:9px;color:var(--color-ink-600);text-decoration:none}
+.brand svg{width:22px;height:22px;display:block;color:var(--color-blue-700)}
+.brand-img{height:24px;width:auto;display:block}
+.brand-text{font:var(--type-h6);font-weight:500;color:var(--color-ink-700);letter-spacing:-.01em}
+.brand-link{text-decoration:none}
+.brand-placeholder{border:1px dashed var(--color-blue-300);border-radius:var(--radius-pill);
+  padding:5px 13px 5px 11px;color:var(--color-blue-600)}
+.brand-placeholder .brand-text{font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.08em;color:var(--color-blue-600)}
+.brand-placeholder svg{width:16px;height:16px}
+
+/* topbar */
+.topbar{position:sticky;top:0;z-index:30;background:rgba(255,255,255,.86);
+  backdrop-filter:saturate(1.2) blur(8px);border-bottom:var(--border-hairline)}
+.topbar .wrap{display:flex;align-items:center;gap:16px;height:64px}
+.topbar .crumb{font:var(--type-body-sm);color:var(--fg-tertiary);display:flex;gap:8px;align-items:center;white-space:nowrap}
+.topbar .crumb b{color:var(--fg-secondary);font-weight:500}
+.topbar .crumb span.sep{color:var(--color-ink-100)}
+.topbar .sp{flex:1}
+.topbar .pilltag{font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.08em;white-space:nowrap;
+  color:var(--color-blue-700);background:var(--color-blue-100);padding:6px 12px;border-radius:var(--radius-pill)}
+@media(max-width:620px){.topbar .crumb{display:none}}
+
+/* scroll progress (sits under the topbar) */
+.scrollbar{position:fixed;top:0;left:0;height:3px;width:0;z-index:40;
+  background:linear-gradient(90deg,var(--color-blue-400),var(--color-blue-700));transition:width .12s linear}
+
+/* hero */
+.hero{background:var(--bg-sky-soft);border-bottom:var(--border-hairline);overflow:hidden;position:relative}
+.hero .wrap{display:grid;grid-template-columns:1.15fr .85fr;gap:32px;align-items:center;padding:60px 32px}
+.eyebrow{font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.16em;color:var(--color-blue-700);
+  margin-bottom:18px;display:flex;align-items:center;gap:10px}
+.eyebrow::before{content:"";width:22px;height:1px;background:var(--color-blue-500);display:inline-block}
+.hero h1{font:var(--type-display-xl);letter-spacing:-.01em;color:var(--color-ink-700);margin:0 0 20px}
+.hero .lede{font:var(--type-body-lg);color:var(--color-ink-500);max-width:42ch;line-height:1.5}
+.hero .audience{margin-top:18px;font:var(--type-body-sm);color:var(--color-ink-400);max-width:46ch;line-height:1.5}
+@media(max-width:860px){.hero .wrap{grid-template-columns:1fr;padding:44px 32px;gap:24px}.hero h1{font:var(--type-display-lg)}}
+
+/* nutshell band */
+.nutshell{background:var(--color-surface-2);border-bottom:var(--border-hairline)}
+.nutshell .wrap{padding:28px 32px;display:flex;gap:20px;align-items:flex-start}
+.nutshell .mark{flex:0 0 auto;width:40px;height:40px;border-radius:var(--radius-md);background:var(--color-ink-600);
+  color:#fff;display:grid;place-items:center}
+.nutshell .mark svg{width:22px;height:22px}
+.nutshell p{font:var(--type-body-lg);color:var(--color-ink-600);line-height:1.55;margin:0}
+
+/* section scaffold */
+section.block{padding:64px 0;border-bottom:var(--border-hairline)}
+section.block:last-of-type{border-bottom:0}
+.kicker{font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.14em;color:var(--color-blue-500);
+  margin-bottom:14px;display:flex;align-items:center;gap:12px}
+.kicker .hint{color:var(--fg-tertiary);letter-spacing:.06em;text-transform:none;font-family:var(--font-body);font-size:12px}
+h2.sec{font:var(--type-h2);letter-spacing:-.01em;color:var(--color-ink-700);margin:0 0 16px;max-width:24ch}
+.sec-intro{font:var(--type-body-lg);color:var(--color-ink-400);max-width:64ch;line-height:1.55}
+
+/* reveal-on-scroll (gated on .js so it never hides content when JS is off) */
+.js .reveal{opacity:0;transform:translateY(14px);transition:opacity .6s ease,transform .6s ease}
+.js .reveal.in{opacity:1;transform:none}
+/* visually-hidden text for screen readers */
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+/* honour reduced-motion across every generated animation/transition */
+@media(prefers-reduced-motion:reduce){.js .reveal{opacity:1;transform:none}
+  .js *,.js *::before,.js *::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+
+/* footer */
+footer{background:var(--color-ink-900);color:var(--color-blue-100);padding:36px 0}
+footer .wrap{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+footer .brand{color:#fff}
+footer .brand svg{color:var(--color-blue-300)}
+footer .brand-text{color:#fff}
+footer .brand-placeholder{border-color:rgba(255,255,255,.25);color:var(--color-blue-200)}
+footer .brand-placeholder svg,footer .brand-placeholder .brand-text{color:var(--color-blue-200)}
+footer .sp{flex:1}
+footer .meta{font:var(--type-body-sm);color:var(--color-blue-500)}
+
+/* ===== sui migration impact (light editorial) ===== */
+header.ov{background:var(--bg-sky-soft);border-bottom:var(--border-hairline)}
+header.ov .wrap{padding:48px 32px 36px}
+header.ov .eyebrow{font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.16em;color:var(--color-blue-700);margin-bottom:16px;display:flex;align-items:center;gap:10px}
+header.ov .eyebrow::before{content:"";width:22px;height:1px;background:var(--color-blue-500);display:inline-block}
+header.ov h1{font:var(--type-display-lg);letter-spacing:-.01em;color:var(--color-ink-700);margin:0 0 10px}
+#overview{font:var(--type-body-lg);color:var(--color-ink-500);line-height:1.55;max-width:80ch}
+.sub{color:var(--color-ink-400);max-width:76ch;margin-top:14px;font:var(--type-body-sm);line-height:1.6}
+main{padding:40px 0 64px;display:grid;gap:24px}
+.panel{background:var(--color-surface-0);border:var(--border-hairline);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);padding:24px}
+h2{font:var(--type-h4);color:var(--color-ink-700);margin:0 0 16px}
+h3{font:var(--type-h5);color:var(--color-ink-700);margin:18px 0 8px}
+.muted{color:var(--fg-tertiary);line-height:1.5}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px}
+.stat{border:var(--border-hairline);border-radius:var(--radius-md);background:var(--color-surface-2);padding:18px}
+.stat b{display:block;font:var(--type-h2);font-family:var(--font-display);color:var(--color-ink-700);line-height:1}
+.stat span{display:block;color:var(--fg-tertiary);font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.08em;margin-top:8px}
+.lang{display:inline-flex;align-items:center;gap:6px;border-radius:var(--radius-pill);padding:3px 10px;margin:6px 6px 0 0;font:var(--type-overline-sm);font-family:var(--font-mono);background:var(--color-blue-50);color:var(--color-blue-700)}
+table{width:100%;border-collapse:collapse;font:var(--type-body-sm)}
+th{font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.06em;color:var(--fg-tertiary);text-align:left;padding:8px 10px;border-bottom:var(--border-hairline)}
+td{padding:7px 10px;border-bottom:var(--border-hairline);color:var(--color-ink-500);vertical-align:top}
+td.mono{font-family:var(--font-mono)}
+.tag{display:inline-block;border-radius:var(--radius-pill);padding:2px 9px;margin:1px 4px 1px 0;font:var(--type-overline-sm);font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.05em;background:var(--color-surface-2);color:var(--color-ink-500)}
+.tag.ethereum{color:#5a4ae3;background:rgba(98,76,255,.12)}
+.tag.solana{color:#0e8a6d;background:rgba(20,241,149,.14)}
+.tag.sui{color:#0a6fb8;background:rgba(77,162,255,.16)}
+.tag.contracts{color:var(--color-blue-700);background:var(--color-blue-100)}
+.tag.client{color:var(--color-purple-500);background:var(--color-purple-100)}
+.tag.storage{color:#9a6700;background:rgba(255,193,7,.16)}
+.tag.access{color:#b33059;background:rgba(255,77,128,.12)}
+.tag.indexer,.tag.infra,.tag.docs{color:var(--color-ink-500);background:var(--color-surface-3)}
+.effort{display:inline-block;border-radius:var(--radius-pill);padding:2px 9px;font:var(--type-overline-sm);font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.05em}
+.effort.rethink{color:#b33059;background:rgba(255,77,128,.12)}
+.effort.rewrite{color:#9a6700;background:rgba(255,193,7,.16)}
+.effort.adapt{color:#007f76;background:rgba(0,200,187,.12)}
+.effort.review{color:var(--color-blue-700);background:var(--color-blue-100)}
+.cls{display:inline-block;border-radius:var(--radius-pill);padding:2px 9px;font:var(--type-overline-sm);font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.05em}
+.cls.walrus-blob{color:#007f76;background:rgba(0,200,187,.12)}
+.cls.walrus-sites{color:#007f76;background:rgba(0,200,187,.12)}
+.cls.walrus-plus-seal{color:#b33059;background:rgba(255,77,128,.12)}
+.cls.sui-object-state{color:var(--color-blue-700);background:var(--color-blue-100)}
+.cls.keep-offchain{color:var(--color-ink-500);background:var(--color-surface-3)}
+.cls.review{color:#9a6700;background:rgba(255,193,7,.16)}
+.fit{display:inline-block;border-radius:var(--radius-pill);padding:2px 9px;font:var(--type-overline-sm);font-family:var(--font-mono);text-transform:uppercase}
+.fit.strong{color:#007f76;background:rgba(0,200,187,.12)}
+.fit.possible{color:#9a6700;background:rgba(255,193,7,.16)}
+.fit.not-needed{color:var(--color-ink-500);background:var(--color-surface-3)}
+.card{border:var(--border-hairline);border-radius:var(--radius-md);background:var(--color-surface-1);padding:16px;margin-top:12px}
+.card strong{color:var(--color-ink-700);font-weight:500}
+.card .files{margin-top:8px}
+.card .files code{display:inline-block;margin:2px 6px 2px 0;font:var(--type-body-xs);font-family:var(--font-mono);background:var(--color-surface-3);border-radius:var(--radius-sm);padding:1px 7px;color:var(--color-ink-500)}
+.card .docs{margin-top:8px}
+.card .docs a{display:inline-block;margin:2px 8px 2px 0;font:var(--type-body-xs);color:var(--color-blue-700)}
+.steps{counter-reset:step;display:grid;gap:10px}
+.step{display:flex;gap:14px;border:var(--border-hairline);border-radius:var(--radius-md);background:var(--color-surface-1);padding:14px 16px}
+.step .n{font:var(--type-h3);font-family:var(--font-display);color:var(--color-blue-500);line-height:1;min-width:34px}
+.step .b{color:var(--color-ink-500);font:var(--type-body-sm);line-height:1.55}
+.step .b b{color:var(--color-ink-700);font-weight:500;text-transform:capitalize}
+.cov{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:760px){.cov{grid-template-columns:1fr}}
+.cov .box{border:var(--border-hairline);border-radius:var(--radius-md);padding:16px 18px}
+.cov .box.ok{background:rgba(0,200,187,.06)}
+.cov .box.gap{background:var(--color-blue-50)}
+.cov h4{margin:0 0 8px;font:var(--type-h6);color:var(--color-ink-700)}
+.cov li{color:var(--color-ink-500);font:var(--type-body-sm);line-height:1.6;margin:4px 0 4px 16px}
+.matched{margin-top:10px;display:grid;gap:4px}
+.matched div{color:var(--color-ink-500);font:var(--type-body-xs);line-height:1.5}
+.matched b{color:var(--color-ink-700);font-weight:500;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.04em;font-size:10px}
+.item.warn{border:1px solid var(--color-blue-300);border-radius:var(--radius-md);background:var(--color-blue-50);padding:14px 16px;margin-top:12px}
+.item.warn strong{color:var(--color-blue-700);font:var(--type-h6);display:block;margin-bottom:4px}
+.item.warn div{color:var(--color-ink-500);font:var(--type-body-sm);line-height:1.5}
+details{border:var(--border-hairline);border-radius:var(--radius-md);padding:10px 14px;margin-top:10px}
+summary{cursor:pointer;color:var(--color-ink-700);font:var(--type-h6)}
+.doc-group h4{margin:14px 0 4px;font:var(--type-h6);color:var(--color-ink-700)}
+.doc-group .doc{font:var(--type-body-sm);color:var(--color-ink-500);margin:4px 0 4px 4px;line-height:1.5}
+.doc-group .doc a{color:var(--color-blue-700)}
+</style>
+</head>
+<body data-chaos-sui-migration>
+<div class="topbar"><div class="wrap"><span class="brand brand-placeholder" title="Pass a `brand` object (name, logo_src, tagline) to label this page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="6" r="2.4"/><circle cx="19" cy="9" r="2.4"/><circle cx="11" cy="18" r="2.4"/><path d="M7 7 17 8.4M16.8 11 12.4 15.8M9 16 6 8.3"/></svg><span class="brand-text">Add your logo</span></span><span class="crumb">Migration<span class="sep">&rsaquo;</span><b>Sui impact</b></span><span class="sp"></span><span class="pilltag">Sui migration</span></div></div>
+
+<header class="ov">
+  <div class="wrap">
+    <div class="eyebrow">Sui migration impact</div>
+    <h1 id="title">Sui migration impact</h1>
+    <div id="overview"></div>
+    <div class="sub" id="subtitle"></div>
+  </div>
+</header>
+
+<main>
+  <div class="wrap">
+    <section class="panel"><div id="stats" class="stats"></div><div id="langs" style="margin-top:14px"></div></section>
+    <section class="panel" data-sui-source><h2>Detected source stack</h2><div class="muted" style="margin-bottom:10px">Evidence-only: every row names where it was found (dependency manifests, indexed code, AST definitions, or config files present on disk).</div><div id="source-res" style="margin-bottom:10px"></div><div id="signals"></div></section>
+    <section class="panel" data-sui-features><h2>Affected features</h2><div class="muted" style="margin-bottom:10px">L1 feature communities whose member files carry migration evidence &mdash; the product features a Sui migration actually touches, ordered by review priority.</div><div id="features"></div></section>
+    <section class="panel" data-sui-mappings><h2>Source-chain &rarr; Sui concept mapping</h2><div class="muted" style="margin-bottom:10px">Only mappings triggered by detected evidence are listed. Each one cites the official doc that backs it.</div><div id="mappings"></div></section>
+    <section class="panel" data-sui-storage><h2>Storage migration</h2><div class="muted" style="margin-bottom:10px">Storage is a first-class migration concern. Classification per flow: Walrus blob, Walrus Sites, Walrus + Seal, Sui object state, keep offchain, or review.</div><div id="storage"></div></section>
+    <section class="panel" data-sui-access><h2>Access control &amp; Seal</h2><div class="muted" style="margin-bottom:10px">Seal is recommended only where an onchain decryption policy is the product rule &mdash; including explicit &ldquo;not needed&rdquo; verdicts.</div><div id="access"></div></section>
+    <section class="panel" data-sui-review><h2>Review order</h2><div class="steps" id="review"></div></section>
+    <section class="panel" data-sui-docs><h2>Official docs cited</h2><div class="muted" id="docs-meta" style="margin-bottom:10px"></div><div id="docs"></div></section>
+    <section class="panel" data-sui-related><h2>Related feature pages</h2><div id="related"></div></section>
+    <section class="panel" data-sui-coverage><h2>Coverage</h2><div class="muted" style="margin-bottom:10px">What this report reads &mdash; and what it cannot see. It maps impact; it does not generate Move code or guarantee correctness.</div><div class="cov" id="coverage"></div></section>
+    <section class="panel" data-sui-provenance><h2>How this was generated</h2><div id="provenance"></div></section>
+    <section class="panel"><h2>Warnings</h2><div id="warnings"></div></section>
+  </div>
+</main>
+
+<footer><div class="wrap"><span class="brand brand-placeholder" title="Pass a `brand` object (name, logo_src, tagline) to label this page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="6" r="2.4"/><circle cx="19" cy="9" r="2.4"/><circle cx="11" cy="18" r="2.4"/><path d="M7 7 17 8.4M16.8 11 12.4 15.8M9 16 6 8.3"/></svg><span class="brand-text">Add your company</span></span><span class="sp"></span><span class="meta">generated by Chaos Substrate</span></div></footer>
+
+<script type="application/json" id="chaos-sui-migration-manifest">{"schema_version":"sui-migration-impact-1","repo_name":"sui-migration-demo","title":"sui-migration-demo — Sui migration impact","subtitle":"Which existing features a Sui migration touches, which Sui primitives replace the current patterns, and what to review first — evidence-triggered, official-docs-backed, no auto-migration claims.","overview":"sui-migration-demo reads as an ethereum stack: 13 migration signal(s), 5 existing feature(s) affected, 10 Sui concept mapping(s) triggered, 3 storage and 3 access-control flow(s) classified. 14 official doc(s) cited from the sui-official profile (retrieved 2026-06-11). Full evidence in the HTML report.","source":{"requested":"auto","resolved":"ethereum","evidence":{"ethereum":8}},"languages":[{"count":3,"name":"json"},{"count":3,"name":"typescript"},{"count":1,"name":"markdown"},{"count":1,"name":"solidity"}],"totals":{"signals":13,"affected_features":5,"mappings":10,"storage_candidates":3,"access_candidates":3,"docs_cited":14},"signals":[{"label":"Hardhat toolchain","chain":"ethereum","area":"infra","via":"dependency","detail":"declared package(s): @nomicfoundation/hardhat-toolbox, hardhat","files":["contracts/package.json"],"files_total":1},{"label":"Lit Protocol token-gating","chain":null,"area":"access","via":"dependency","detail":"declared package(s): @lit-protocol/lit-node-client","files":["client/package.json"],"files_total":1},{"label":"OpenZeppelin contracts library","chain":"ethereum","area":"contracts","via":"dependency","detail":"declared package(s): @openzeppelin/contracts","files":["contracts/package.json"],"files_total":1},{"label":"Pinata pinning service","chain":null,"area":"storage","via":"dependency","detail":"declared package(s): @pinata/sdk","files":["client/package.json"],"files_total":1},{"label":"ethers.js client SDK","chain":"ethereum","area":"client","via":"dependency","detail":"declared package(s): ethers","files":["client/package.json"],"files_total":1},{"label":"ERC-721 usage","chain":"ethereum","area":"contracts","via":"code-pattern","detail":"3 chunk match(es) across 2 file(s)","files":["client/src/gated.ts","contracts/contracts/GalleryNFT.sol"],"files_total":2},{"label":"Encryption usage in code","chain":null,"area":"access","via":"code-pattern","detail":"4 chunk match(es) across 2 file(s)","files":["README.md","client/src/gated.ts"],"files_total":2},{"label":"Ownable access control","chain":"ethereum","area":"contracts","via":"code-pattern","detail":"3 chunk match(es) across 1 file(s)","files":["contracts/contracts/GalleryNFT.sol"],"files_total":1},{"label":"Pinata gateway URLs","chain":null,"area":"storage","via":"code-pattern","detail":"1 chunk match(es) across 1 file(s)","files":["README.md"],"files_total":1},{"label":"Token metadata URI","chain":"ethereum","area":"contracts","via":"code-pattern","detail":"7 chunk match(es) across 2 file(s)","files":["README.md","contracts/contracts/GalleryNFT.sol"],"files_total":2},{"label":"ipfs:// URIs","chain":null,"area":"storage","via":"code-pattern","detail":"5 chunk match(es) across 4 file(s)","files":["README.md","client/src/gated.ts","client/src/mint.ts","contracts/contracts/GalleryNFT.sol"],"files_total":4},{"label":"Solidity contract definitions","chain":"ethereum","area":"contracts","via":"contract-definition","detail":"1 definition(s): GalleryNFT (contract)","files":["contracts/contracts/GalleryNFT.sol"],"files_total":1},{"label":"Hardhat config","chain":"ethereum","area":"infra","via":"config-file","detail":"1 config file(s) present (contents not indexed — presence only)","files":["contracts/hardhat.config.ts"],"files_total":1}],"affected_features":[{"community_id":"aa804a1a-f2d6-549c-b85b-e3d538d58d1a","label":"client · client/src/gated.ts","member_count":5,"areas":["contracts","storage","access"],"evidence_files":["client/src/gated.ts"],"evidence_files_total":1,"top_symbols":["accessControlConditions (function)","decryptBonusFile (function)","encryptBonusFile (function)","GatedFile (trait)"],"summary":"client · client/src/gated.ts (client client src gated ts)\nRole: entry point — user-facing UI, client, CLI or pages.\nKey symbols: accessControlConditions, decryptBonusFile, encryptBonusFile, GatedFile.\nFiles: client/src/gated.ts.\nComposition…"},{"community_id":"3f61c18a-f397-5c1c-96b8-70ec6528799b","label":"contracts · contracts/contracts/GalleryNFT.sol","member_count":12,"areas":["contracts","storage"],"evidence_files":["contracts/contracts/GalleryNFT.sol"],"evidence_files_total":1,"top_symbols":["ArtworkMinted (concept)","BaseURIChanged (concept)","ERC721 (concept)","Ownable (concept)","@openzeppelin/contracts/access/Ownable.sol (dependency)","@openzeppelin/contracts/token/ERC721/ERC721.sol (dependency)"],"summary":"contracts · contracts/contracts/GalleryNFT.sol (contracts contracts contracts GalleryNFT sol)\nRole: foundation — contracts, infrastructure, config or low-level types.\nKey symbols: constructor, mintWithURI, setBaseURI, tokenURI, GalleryNFT.…"},{"community_id":"394bb095-3974-53f8-94b4-efbc3a58c6ca","label":"contracts · contracts/package.json","member_count":4,"areas":["contracts","infra"],"evidence_files":["contracts/package.json"],"evidence_files_total":1,"top_symbols":["npm script build (script)","npm script deploy (script)","npm script test (script)"],"summary":"contracts · contracts/package.json (contracts contracts package json)\nRole: foundation — contracts, infrastructure, config or low-level types.\nKey symbols: npm script build, npm script deploy, npm script test.\nFiles: contracts/package.json.…"},{"community_id":"818df20b-08c7-5e16-ad23-d186adb5111b","label":"client · client/package.json","member_count":3,"areas":["client","storage","access"],"evidence_files":["client/package.json"],"evidence_files_total":1,"top_symbols":["npm script build (script)","npm script mint (script)"],"summary":"client · client/package.json (client client package json)\nRole: entry point — user-facing UI, client, CLI or pages.\nKey symbols: npm script build, npm script mint.\nFiles: client/package.json.\nComposition: 1 file, 2 script (3 members).\nRepre…"},{"community_id":"d1e0e30c-4e55-5a01-b75b-b258be946604","label":"client · client/src/mint.ts","member_count":3,"areas":["storage"],"evidence_files":["client/src/mint.ts"],"evidence_files_total":1,"top_symbols":["mintArtwork (function)","ArtworkInput (trait)"],"summary":"client · client/src/mint.ts (client client src mint ts)\nRole: entry point — user-facing UI, client, CLI or pages.\nKey symbols: mintArtwork, ArtworkInput.\nFiles: client/src/mint.ts.\nRelated features: contracts · contracts/contracts/GalleryNF…"}],"mappings":[{"id":"solidity-move","source_chain":"ethereum","area":"contracts","source_pattern":"Solidity contracts \u0026 storage mappings","sui_concept":"Move modules: objects, dynamic fields, tables/bags instead of contract storage","notes":"Contract state stops being a key-value store inside one account; each asset becomes an addressable object with an owner. Port state layout first — every other layer consumes the new object types.","effort":"rewrite","docs":[{"id":"sui-for-ethereum","title":"Sui for Ethereum developers","url":"https://docs.sui.io/getting-started/sui-for-ethereum"},{"id":"sui-move-concepts","title":"Sui Move concepts","url":"https://docs.sui.io/develop/write-move/sui-move-concepts"},{"id":"object-model","title":"Object model","url":"https://docs.sui.io/concepts/object-model"},{"id":"dynamic-fields","title":"Dynamic fields","url":"https://docs.sui.io/concepts/dynamic-fields"}]},{"id":"erc721","source_chain":"ethereum","area":"contracts","source_pattern":"ERC-721 / ERC-1155 NFTs","sui_concept":"Sui objects + Display metadata + Kiosk with transfer policies","notes":"Each NFT is a real object, not a tokenId in a mapping. Royalties/transfer hooks become enforced Kiosk transfer policies; tokenURI metadata becomes a Display template.","effort":"rewrite","docs":[{"id":"kiosk","title":"Kiosk standard","url":"https://docs.sui.io/standards/kiosk"},{"id":"display","title":"Object Display standard","url":"https://docs.sui.io/standards/display"},{"id":"transfer-rules","title":"Custom transfer rules","url":"https://docs.sui.io/concepts/transfers/custom-rules"},{"id":"object-model","title":"Object model","url":"https://docs.sui.io/concepts/object-model"}]},{"id":"evm-access-control","source_chain":"ethereum","area":"contracts","source_pattern":"Ownable / AccessControl roles","sui_concept":"Capability objects and explicit object ownership","notes":"msg.sender checks become possession of a capability object (e.g. AdminCap) passed into entry functions — authorization moves from address comparison to the type system. This is contract authorization, NOT a Seal use case.","effort":"rethink","docs":[{"id":"sui-for-ethereum","title":"Sui for Ethereum developers","url":"https://docs.sui.io/getting-started/sui-for-ethereum"},{"id":"object-ownership","title":"Object ownership","url":"https://docs.sui.io/concepts/object-ownership"},{"id":"sui-move-concepts","title":"Sui Move concepts","url":"https://docs.sui.io/develop/write-move/sui-move-concepts"}]},{"id":"evm-client-sdk","source_chain":"ethereum","area":"client","source_pattern":"ethers / viem / wagmi client code","sui_concept":"@mysten/sui TypeScript SDK + dapp-kit","notes":"Contract reads become object/owned-object queries; writes become PTBs. Event subscriptions and ABI typing are replaced by the Sui RPC/GraphQL surface.","effort":"rewrite","docs":[{"id":"ts-sdk","title":"Sui TypeScript SDK","url":"https://sdk.mystenlabs.com/typescript"},{"id":"sui-for-ethereum","title":"Sui for Ethereum developers","url":"https://docs.sui.io/getting-started/sui-for-ethereum"}]},{"id":"wallets","source_chain":"any","area":"client","source_pattern":"Wallet connection \u0026 signing (wallet adapters, EIP-712 / message signing)","sui_concept":"Sui wallet standard via dapp-kit; intent signing","notes":"Wallet connectors move to the Sui wallet standard (dapp-kit hooks); typed-data and message signing become Sui intent signing — session keys and zkLogin become available options.","effort":"adapt","docs":[{"id":"ts-sdk","title":"Sui TypeScript SDK","url":"https://sdk.mystenlabs.com/typescript"}]},{"id":"ipfs-walrus","source_chain":"any","area":"storage","source_pattern":"IPFS-pinned content (ipfs:// URIs, pinning services)","sui_concept":"Walrus blobs (HTTP publisher/aggregator API)","notes":"Content-addressed public blobs map directly to Walrus, with availability that Sui contracts can verify — pinning services and gateway dependence go away.","effort":"adapt","docs":[{"id":"walrus","title":"Walrus documentation","url":"https://docs.wal.app/"},{"id":"walrus-web-api","title":"Walrus HTTP API","url":"https://docs.wal.app/usage/web-api.html"},{"id":"walrus-design","title":"Walrus design overview","url":"https://docs.wal.app/design/overview.html"}]},{"id":"nft-metadata-walrus","source_chain":"any","area":"storage","source_pattern":"tokenURI / baseURI offchain metadata","sui_concept":"Display standard onchain + Walrus for media","notes":"The metadata template moves onchain (Display); only the actual media blobs need storage — put those on Walrus and drop the JSON-blob indirection.","effort":"adapt","docs":[{"id":"display","title":"Object Display standard","url":"https://docs.sui.io/standards/display"},{"id":"walrus","title":"Walrus documentation","url":"https://docs.wal.app/"}]},{"id":"encrypted-content-seal","source_chain":"any","area":"access","source_pattern":"Encrypted offchain content","sui_concept":"Seal (threshold encryption, onchain access policy) + Walrus for ciphertext","notes":"Seal applies when WHO may decrypt is a product rule worth putting onchain. Transport encryption or internal secrets are not Seal use cases — verify before adopting.","effort":"review","docs":[{"id":"seal","title":"Seal documentation","url":"https://seal-docs.wal.app/"},{"id":"walrus","title":"Walrus documentation","url":"https://docs.wal.app/"}]},{"id":"gated-content-seal","source_chain":"any","area":"access","source_pattern":"Token-gated content access (e.g. Lit Protocol)","sui_concept":"Seal access policies bound to Sui objects","notes":"Gating conditions ('holds NFT X', 'member of Y') become Seal policies evaluated against Sui state — the closest like-for-like replacement in this report.","effort":"rewrite","docs":[{"id":"seal","title":"Seal documentation","url":"https://seal-docs.wal.app/"}]},{"id":"evm-toolchain","source_chain":"ethereum","area":"infra","source_pattern":"Hardhat / Foundry / Truffle build \u0026 deploy pipeline","sui_concept":"Sui CLI + Move build/test/publish","notes":"Compile/test/deploy scripts move to `sui move build/test` and `sui client publish`; deployment addresses become package ids + shared object ids in config.","effort":"rewrite","docs":[{"id":"sui-for-ethereum","title":"Sui for Ethereum developers","url":"https://docs.sui.io/getting-started/sui-for-ethereum"},{"id":"packages","title":"Move packages (publish \u0026 upgrade)","url":"https://docs.sui.io/concepts/sui-move-concepts/packages"}]}],"storage_candidates":[{"flow":"Content-addressed public blobs on IPFS","classification":"walrus-blob","reasoning":"ipfs:// URIs / pinning-service usage detected. Content-addressed public blobs map directly to Walrus blobs, and availability becomes verifiable by Sui contracts — pinning subscriptions and gateway dependence go away.","evidence_files":["README.md","client/package.json","client/src/gated.ts","client/src/mint.ts","contracts/contracts/GalleryNFT.sol"],"docs":[{"id":"walrus","title":"Walrus documentation","url":"https://docs.wal.app/"},{"id":"walrus-web-api","title":"Walrus HTTP API","url":"https://docs.wal.app/usage/web-api.html"},{"id":"walrus-design","title":"Walrus design overview","url":"https://docs.wal.app/design/overview.html"}]},{"flow":"Encrypted / gated subset of the blob flows","classification":"walrus-plus-seal","reasoning":"the repo combines blob storage with encryption or token-gating evidence — for flows where WHO may decrypt is a product rule, store ciphertext on Walrus and bind the decryption policy to Sui state with Seal.","evidence_files":["client/package.json"],"docs":[{"id":"seal","title":"Seal documentation","url":"https://seal-docs.wal.app/"},{"id":"walrus","title":"Walrus documentation","url":"https://docs.wal.app/"}]},{"flow":"NFT metadata \u0026 media URIs (tokenURI/baseURI)","classification":"walrus-blob","reasoning":"offchain token metadata detected. On Sui the metadata template moves onchain via the Display standard; only the media blobs need storage — Walrus candidates.","evidence_files":["README.md","client/src/gated.ts","contracts/contracts/GalleryNFT.sol"],"docs":[{"id":"display","title":"Object Display standard","url":"https://docs.sui.io/standards/display"},{"id":"walrus","title":"Walrus documentation","url":"https://docs.wal.app/"}]}],"access_candidates":[{"pattern":"Token-gated content access (Lit Protocol or similar)","seal_fit":"strong","reasoning":"gating conditions evaluated against chain state are exactly what Seal policies express on Sui — the closest like-for-like replacement in this report.","evidence_files":["client/package.json"],"docs":[{"id":"seal","title":"Seal documentation","url":"https://seal-docs.wal.app/"}]},{"pattern":"Encryption usage in code","seal_fit":"possible","reasoning":"encryption evidence found, but Seal only applies when WHO may decrypt is a product rule worth putting onchain. Transport encryption, hashing, or internal secrets are NOT Seal use cases — verify each flow before adopting.","evidence_files":["README.md","client/src/gated.ts"],"docs":[{"id":"seal","title":"Seal documentation","url":"https://seal-docs.wal.app/"},{"id":"walrus","title":"Walrus documentation","url":"https://docs.wal.app/"}]},{"pattern":"Contract-role access control (Ownable / AccessControl)","seal_fit":"not-needed","reasoning":"contract authorization maps to capability objects and object ownership on Sui — public data guarded by roles needs no encryption, so Seal is not the tool here.","evidence_files":["contracts/contracts/GalleryNFT.sol","contracts/package.json"],"docs":[{"id":"object-ownership","title":"Object ownership","url":"https://docs.sui.io/concepts/object-ownership"},{"id":"sui-for-ethereum","title":"Sui for Ethereum developers","url":"https://docs.sui.io/getting-started/sui-for-ethereum"}]}],"review_order":[{"order":1,"area":"contracts","instruction":"Port contract/program state and entry points to Move modules and objects first — every other layer consumes the new object types.","features":["client · client/src/gated.ts","contracts · contracts/contracts/GalleryNFT.sol","contracts · contracts/package.json"]},{"order":2,"area":"client","instruction":"Swap chain SDKs for @mysten/sui + dapp-kit against the new package; object reads replace contract calls, PTBs replace batched writes.","features":["client · client/package.json"]},{"order":3,"area":"storage","instruction":"Move blob flows to Walrus (and metadata templates to Display) once object types exist to anchor them.","features":["client · client/src/gated.ts","contracts · contracts/contracts/GalleryNFT.sol","client · client/package.json","client · client/src/mint.ts"]},{"order":4,"area":"access","instruction":"Decide Seal policies after object ownership is settled — policies bind to Sui state, so they cannot be designed before the objects exist.","features":["client · client/src/gated.ts","client · client/package.json"]},{"order":5,"area":"infra","instruction":"Replace the build/deploy toolchain (Hardhat/Anchor → Sui CLI + Move) and update CI; package ids replace contract addresses in config.","features":["contracts · contracts/package.json"]}],"docs_profile":{"name":"sui-official","retrieved":"2026-06-11","entries_total":23,"cited":[{"id":"sui-for-ethereum","title":"Sui for Ethereum developers","url":"https://docs.sui.io/getting-started/sui-for-ethereum","section":"Migration guides","summary":"Official EVM-to-Sui mapping: accounts vs objects, Solidity vs Move, gas, tooling."},{"id":"object-model","title":"Object model","url":"https://docs.sui.io/concepts/object-model","section":"Object model \u0026 ownership","summary":"Everything on Sui is an object with id, version, and owner — the unit state lives in."},{"id":"object-ownership","title":"Object ownership","url":"https://docs.sui.io/concepts/object-ownership","section":"Object model \u0026 ownership","summary":"Owned, shared, immutable, and wrapped objects — replaces account/signer authorization models."},{"id":"dynamic-fields","title":"Dynamic fields","url":"https://docs.sui.io/concepts/dynamic-fields","section":"Object model \u0026 ownership","summary":"Attach fields/objects at runtime — the Sui answer to mappings, PDAs, and open-ended state."},{"id":"sui-move-concepts","title":"Sui Move concepts","url":"https://docs.sui.io/develop/write-move/sui-move-concepts","section":"Move concepts","summary":"How Sui Move differs from core Move: object-centric storage, entry functions, abilities."},{"id":"packages","title":"Move packages (publish \u0026 upgrade)","url":"https://docs.sui.io/concepts/sui-move-concepts/packages","section":"Package upgrades","summary":"Package publishing, UpgradeCap, and upgrade compatibility rules — replaces proxy patterns."},{"id":"kiosk","title":"Kiosk standard","url":"https://docs.sui.io/standards/kiosk","section":"Tokens \u0026 assets","summary":"Onchain commerce/trading primitive for NFTs with enforced royalty \u0026 transfer rules."},{"id":"display","title":"Object Display standard","url":"https://docs.sui.io/standards/display","section":"Tokens \u0026 assets","summary":"Offchain-renderable metadata templates for objects — the tokenURI counterpart."},{"id":"transfer-rules","title":"Custom transfer rules","url":"https://docs.sui.io/concepts/transfers/custom-rules","section":"Tokens \u0026 assets","summary":"Restricting how objects move — transfer policies replace ERC-721 hook/approval patterns."},{"id":"walrus","title":"Walrus documentation","url":"https://docs.wal.app/","section":"Storage (Walrus)","summary":"Decentralized blob storage on Sui: erasure-coded, contract-verifiable availability."},{"id":"walrus-design","title":"Walrus design overview","url":"https://docs.wal.app/design/overview.html","section":"Storage (Walrus)","summary":"Architecture, epochs, and availability guarantees — what Walrus does and does not promise."},{"id":"walrus-web-api","title":"Walrus HTTP API","url":"https://docs.wal.app/usage/web-api.html","section":"Storage (Walrus)","summary":"Publisher/aggregator HTTP endpoints — the drop-in surface for IPFS-gateway-style flows."},{"id":"seal","title":"Seal documentation","url":"https://seal-docs.wal.app/","section":"Access control (Seal)","summary":"Threshold encryption with onchain access policies — gated/private content bound to Sui state."},{"id":"ts-sdk","title":"Sui TypeScript SDK","url":"https://sdk.mystenlabs.com/typescript","section":"Client SDKs","summary":"@mysten/sui client SDK and dapp-kit — replaces ethers/viem/wagmi and @solana/web3.js."}]},"related_pages":[],"coverage":{"included":["manifest-declared npm/cargo dependencies from the persisted index","lexical scans over indexed chunk content (Solidity, Rust, TS/JS, Python, Markdown, PDF text)","Solidity contract/interface/library definitions from AST extraction","disk presence probes for toolchain configs (foundry.toml, hardhat.config.*, Anchor.toml, subgraph.yaml, Move.toml)","L1 feature communities + prior generated feature pages for impact mapping"],"not_covered":["contents of unindexed configs (foundry.toml/Anchor.toml internals — only presence is detected)","Dockerfiles, CI workflows, Terraform — not indexed","runtime behavior, gas/economics modeling, oracle and bridge dependencies","automatic Solidity/Anchor → Move translation — this report maps impact, it does not generate Move code or guarantee correctness"]},"provenance":[{"source":"postgres","method":"stack_dependencies","detail":"9 manifest-declared dependency row(s) matched against 50 chain/storage/access rules","locator":"nodes"},{"source":"regex","method":"scan_chunks","detail":"12 chunk(s) hit the ILIKE prefilter for 26 code patterns; exact substring match applied in Rust","locator":"chunks"},{"source":"ast","method":"solidity_contract_nodes","detail":"1 Solidity contract/interface/library definition(s) from AST extraction","locator":"nodes"},{"source":"file","method":"probe_config_files","detail":"Hardhat config: 1 file(s) present on disk","locator":"contracts/hardhat.config.ts"},{"source":"postgres","method":"group_counts","detail":"files grouped by language","locator":"files"},{"source":"graph","method":"dominant_community_for_files","detail":"5 of 7 evidence file(s) mapped to L1 feature communities","locator":"community_members"},{"source":"feature-manifest","method":"load_feature_matches","detail":"0 prior feature page(s) correlated with the detected migration surface","locator":"/Users/vladimirdemidov/development/chaos-substrate/examples/sui-migration-demo/docs/features_memory"},{"source":"docs-profile","method":"sui_docs_profile","detail":"14 official doc(s) cited from profile 'sui-official' (URLs verified 2026-06-11)"},{"source":"graph","method":"sui_migration_impact","detail":"aggregated 13 signal(s) → 5 affected feature(s), 10 mapping(s), 3 storage / 3 access candidate(s)"}],"warnings":[]}</script>
+<script>
+(function(){
+var D=JSON.parse(document.getElementById("chaos-sui-migration-manifest").textContent);
+function esc(v){return String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;");}
+function tag(v){return v?'<span class="tag '+esc(v)+'">'+esc(v)+'</span>':'';}
+function files(list,total){if(!list||!list.length)return'';var s='<div class="files">'+list.map(function(f){return '<code>'+esc(f)+'</code>';}).join("")+'</div>';if(total>list.length)s+='<div class="muted" style="font-size:12px">+'+(total-list.length)+' more file(s)</div>';return s;}
+function docs(list){if(!list||!list.length)return'';return '<div class="docs">'+list.map(function(d){return '<a href="'+esc(d.url)+'" target="_blank" rel="noopener">'+esc(d.title)+' &nearr;</a>';}).join("")+'</div>';}
+document.getElementById("title").textContent=D.title||"Sui migration impact";
+document.getElementById("overview").textContent=D.overview||"";
+document.getElementById("subtitle").textContent=D.subtitle||"";
+var T=D.totals||{};
+var stat=[[T.signals||0,"signals"],[T.affected_features||0,"features affected"],[T.mappings||0,"concept mappings"],[T.storage_candidates||0,"storage flows"],[T.access_candidates||0,"access flows"],[T.docs_cited||0,"docs cited"]];
+document.getElementById("stats").innerHTML=stat.map(function(s){return '<div class="stat"><b>'+s[0]+'</b><span>'+s[1]+'</span></div>';}).join("");
+document.getElementById("langs").innerHTML=(D.languages||[]).map(function(l){return '<span class="lang">'+esc(l.name)+' &middot; '+l.count+'</span>';}).join("");
+var S=D.source||{};
+var ev=Object.keys(S.evidence||{}).map(function(k){return tag(k)+' '+S.evidence[k]+' signal(s)';}).join(" &nbsp; ");
+document.getElementById("source-res").innerHTML='<b>Requested:</b> '+esc(S.requested)+' &nbsp;&middot;&nbsp; <b>Resolved:</b> '+tag(S.resolved)+(ev?' &nbsp;&middot;&nbsp; '+ev:'');
+var sig=document.getElementById("signals");
+if((D.signals||[]).length){
+  sig.innerHTML='<table><tr><th>Signal</th><th>Chain</th><th>Area</th><th>Via</th><th>Evidence</th></tr>'+
+    D.signals.map(function(s){return '<tr><td><strong>'+esc(s.label)+'</strong><div class="muted" style="font-size:12px">'+esc(s.detail)+'</div></td><td>'+tag(s.chain)+'</td><td>'+tag(s.area)+'</td><td class="mono">'+esc(s.via)+'</td><td>'+files(s.files,s.files_total)+'</td></tr>';}).join("")+'</table>';
+}else{sig.innerHTML='<div class="muted">No source-chain, storage, or access evidence detected.</div>';}
+var feat=document.getElementById("features");
+(D.affected_features||[]).forEach(function(f){
+  var el=document.createElement("div");el.className="card";
+  el.innerHTML='<strong>'+esc(f.label)+'</strong> <span class="muted">('+f.member_count+' members)</span><div style="margin-top:6px">'+(f.areas||[]).map(tag).join("")+'</div>'+(f.summary?'<div class="muted" style="margin-top:6px">'+esc(f.summary)+'</div>':'')+files(f.evidence_files,f.evidence_files_total)+((f.top_symbols||[]).length?'<div class="muted" style="margin-top:6px;font-size:12px">symbols: '+f.top_symbols.map(esc).join(", ")+'</div>':'');
+  feat.appendChild(el);
+});
+if(!feat.children.length)feat.innerHTML='<div class="muted">No feature communities matched the evidence files (hierarchy missing or evidence outside any feature) &mdash; see warnings.</div>';
+var map=document.getElementById("mappings");
+if((D.mappings||[]).length){
+  map.innerHTML='<table><tr><th>Today (source chain)</th><th>On Sui</th><th>Area</th><th>Effort</th></tr>'+
+    D.mappings.map(function(m){return '<tr><td><strong>'+esc(m.source_pattern)+'</strong><div class="muted" style="font-size:12px">'+esc(m.source_chain)+'</div></td><td>'+esc(m.sui_concept)+'<div class="muted" style="font-size:12px;margin-top:4px">'+esc(m.notes)+'</div>'+docs(m.docs)+'</td><td>'+tag(m.area)+'</td><td><span class="effort '+esc(m.effort)+'">'+esc(m.effort)+'</span></td></tr>';}).join("")+'</table>';
+}else{map.innerHTML='<div class="muted">No mappings triggered &mdash; no chain evidence detected.</div>';}
+var sto=document.getElementById("storage");
+(D.storage_candidates||[]).forEach(function(c){
+  var el=document.createElement("div");el.className="card";
+  el.innerHTML='<strong>'+esc(c.flow)+'</strong> <span class="cls '+esc(c.classification)+'">'+esc(c.classification)+'</span><div class="muted" style="margin-top:6px">'+esc(c.reasoning)+'</div>'+files(c.evidence_files,c.evidence_files.length)+docs(c.docs);
+  sto.appendChild(el);
+});
+if(!sto.children.length)sto.innerHTML='<div class="muted">No storage dependencies detected in the index &mdash; nothing to classify (and no Walrus pitch without evidence).</div>';
+var acc=document.getElementById("access");
+(D.access_candidates||[]).forEach(function(c){
+  var el=document.createElement("div");el.className="card";
+  el.innerHTML='<strong>'+esc(c.pattern)+'</strong> <span class="fit '+esc(c.seal_fit)+'">Seal: '+esc(c.seal_fit)+'</span><div class="muted" style="margin-top:6px">'+esc(c.reasoning)+'</div>'+files(c.evidence_files,c.evidence_files.length)+docs(c.docs);
+  acc.appendChild(el);
+});
+if(!acc.children.length)acc.innerHTML='<div class="muted">No encryption or gated-access evidence &mdash; Seal does not apply to this repo as indexed.</div>';
+var rev=document.getElementById("review");
+(D.review_order||[]).forEach(function(s){
+  var el=document.createElement("div");el.className="step";
+  el.innerHTML='<div class="n">'+s.order+'</div><div class="b"><b>'+esc(s.area)+'</b> &mdash; '+esc(s.instruction)+((s.features||[]).length?'<div class="muted" style="margin-top:4px;font-size:12px">features: '+s.features.map(esc).join(", ")+'</div>':'')+'</div>';
+  rev.appendChild(el);
+});
+if(!rev.children.length)rev.innerHTML='<div class="muted">No active migration areas.</div>';
+var P=D.docs_profile||{};
+document.getElementById("docs-meta").textContent='Profile "'+(P.name||"")+'" — URLs verified '+(P.retrieved||"")+'. '+( (P.cited||[]).length)+' of '+(P.entries_total||0)+' entries cited by this report.';
+var dg=document.getElementById("docs");var bySec={};
+(P.cited||[]).forEach(function(d){(bySec[d.section]=bySec[d.section]||[]).push(d);});
+dg.innerHTML=Object.keys(bySec).map(function(sec){return '<div class="doc-group"><h4>'+esc(sec)+'</h4>'+bySec[sec].map(function(d){return '<div class="doc"><a href="'+esc(d.url)+'" target="_blank" rel="noopener">'+esc(d.title)+'</a> &mdash; '+esc(d.summary)+'</div>';}).join("")+'</div>';}).join("")||'<div class="muted">No docs cited.</div>';
+var rel=document.getElementById("related");
+(D.related_pages||[]).forEach(function(r){var el=document.createElement("div");el.className="card";el.innerHTML='<strong>'+esc(r.title)+'</strong><div class="muted" style="font-size:12px">'+esc(r.page)+' &middot; score '+r.score+'</div>';rel.appendChild(el);});
+if(!rel.children.length)rel.innerHTML='<div class="muted">No previously generated feature pages correlated with the migration surface.</div>';
+var cov=document.getElementById("coverage");var C=D.coverage||{};
+cov.innerHTML='<div class="box ok"><h4>Read by this report</h4><ul>'+(C.included||[]).map(function(x){return '<li>'+esc(x)+'</li>';}).join("")+'</ul></div>'+
+  '<div class="box gap"><h4>Not covered</h4><ul>'+(C.not_covered||[]).map(function(x){return '<li>'+esc(x)+'</li>';}).join("")+'</ul></div>';
+var prov=document.getElementById("provenance");
+(D.provenance||[]).forEach(function(c){var el=document.createElement("div");el.className="matched";el.innerHTML='<div><b>'+esc(c.source)+'</b> '+esc(c.method)+'</div><div class="muted">'+esc(c.detail)+(c.locator?' &middot; '+esc(c.locator):'')+'</div>';prov.appendChild(el);});
+if(!prov.children.length)prov.innerHTML='<div class="muted">No breadcrumbs recorded.</div>';
+var w=document.getElementById("warnings");
+(D.warnings||[]).forEach(function(x){var el=document.createElement("div");el.className="item warn";el.innerHTML='<strong>Note</strong><div>'+esc(x)+'</div>';w.appendChild(el);});
+if(!w.children.length)w.innerHTML='<div class="muted">No warnings.</div>';
+})();
+</script>
+</body>
+</html>

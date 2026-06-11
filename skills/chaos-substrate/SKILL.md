@@ -233,6 +233,23 @@ If MCP tools are available, prefer them over shelling out:
     those files directly if they matter, and say so instead of presenting the inventory as a
     complete scan. Do NOT fall back to grepping package.json/Cargo.toml for stack questions when
     this tool is available. It mirrors `chaos stack <repo> [--output-html out.html]`.
+19. Use `chaos_sui_migration_impact` when the user asks what a SUI MIGRATION would touch in an
+    indexed Ethereum/Solana/mixed Web3 repository ("if we move this to Sui, what's affected?").
+    Read-only and embedder-free, it detects the source stack from the persisted index (Solidity /
+    Hardhat / OpenZeppelin / ERC standards, Anchor / SPL / Metaplex / PDAs, ethers/viem/wagmi and
+    @solana clients, IPFS/Arweave/S3 storage, encryption/token-gating) plus disk probes for
+    toolchain configs, maps the evidence onto the L1 feature communities, and triggers
+    source-pattern → Sui concept mappings (objects/dynamic fields, Coin/Kiosk/Display, capability
+    objects, PTBs, package upgrades, events + GraphQL) — each citing the compiled-in `sui-official`
+    docs profile (official Sui / Walrus / Seal pages with URL + verified date). Storage flows are
+    classified per-flow (Walrus blob / Walrus+Seal / keep-offchain / review) and Seal verdicts are
+    explicit, INCLUDING "not-needed" (contract-role access control maps to capability objects, not
+    Seal). It ALWAYS writes `docs/features_memory/sui-migration-impact.html` (embedded
+    `chaos-sui-migration-manifest`) and returns a COMPACT JSON summary (capped lists with
+    `*_omitted` counts) with provenance breadcrumbs. Evidence-triggered only — no signal, no claim
+    — and it maps impact: it does NOT generate Move code or promise automatic migration. Follow up
+    a chosen slice with `chaos_change_plan` (e.g. "port IPFS NFT metadata to Sui objects and
+    Walrus"). It mirrors `chaos sui-migration-impact <repo> --source auto|ethereum|solana|mixed`.
 
 Treat `chaos_feature_context.warnings` as blocking for generated feature websites. If it says a
 filesystem path exists but no Postgres hits referenced it, or that docs exist but no docs were
@@ -403,9 +420,9 @@ Use a real Postgres database with pgvector for persistence tests. Use real OpenA
 - MCP transport is stdio.
 - The process should be launched directly by the agent client.
 - Keep stdout protocol-clean; diagnostics should go to stderr or structured logging that does not corrupt MCP messages.
-- The MCP server exposes EIGHTEEN tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_query`,
+- The MCP server exposes NINETEEN tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_query`,
   `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
-  `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`, `chaos_clean`, and `chaos_graph`.
+  `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_sui_migration_impact`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`, `chaos_clean`, and `chaos_graph`.
 - `chaos_add` incrementally indexes only git-changed files (or explicit `paths`), refreshes the
   Obsidian vault, and writes a feature/bug page in one call; use it instead of a full
   `chaos_analyze` after small edits. The page carries provenance breadcrumbs and correlates the

@@ -4,6 +4,50 @@ All notable changes to Chaos Substrate are documented here. Versions before
 0.12.0 predate this file; see the git history (`P0`–`P5` commits) for the
 hierarchical-memory build-out.
 
+## 0.15.0 — 2026-06-11
+
+The Sui Overflow release: an existing Ethereum or Solana repo becomes a
+source-grounded **Sui migration impact report** — which features are affected,
+which Sui primitives replace the current patterns, and what to review first.
+
+### Added — `chaos_sui_migration_impact` MCP tool + `chaos sui-migration-impact` CLI (19 tools)
+
+Read-only and embedder-free, built on the persisted index like `chaos_stack`:
+
+- **Source-stack detection (R2)**: manifest-declared dependency rules
+  (Hardhat/OpenZeppelin/ethers/viem/wagmi, Anchor/SPL/Metaplex/@solana,
+  IPFS/Arweave/S3 clients, Lit Protocol/encryption libraries), lexical chunk
+  scans (ERC standards, Ownable/AccessControl, delegatecall/upgradeable,
+  declare_id!/#[program]/PDAs/CPI, ipfs://, ar://, gateway URLs), Solidity
+  contract definitions from AST extraction, and bounded disk probes for
+  toolchain configs (foundry.toml, hardhat.config.*, Anchor.toml,
+  subgraph.yaml, Move.toml). Every signal carries evidence files.
+- **Feature impact (R3)**: evidence files map onto L1 feature communities
+  (`dominant_community_for_files`), with areas, top symbols, summaries, and
+  prior-feature-page correlation via `load_feature_matches`.
+- **`sui-official` docs profile (R1)** (`src/sui_docs.rs`): a compiled-in,
+  versioned reference set of official Sui / Walrus / Seal documentation —
+  23 entries with URL, title, content group, and a verified-on date; every
+  migration mapping cites entries by id (new `docs-profile` provenance source).
+- **Migration mappings**: evidence-triggered source-pattern → Sui concept
+  rows (Solidity storage → objects/dynamic fields, ERC-20/721 → Coin/Kiosk/
+  Display, Ownable → capability objects, proxies → package upgrades,
+  multicall/CPI → PTBs, PDAs → dynamic fields, rent → storage rebates,
+  events → Sui events + GraphQL), each with an effort class and doc citations.
+- **Storage classification (R4)**: per-flow buckets — Walrus blob,
+  Walrus + Seal, keep-offchain, review — plus explicit Seal verdicts
+  including **not-needed** (contract roles map to capabilities, not Seal).
+- Always writes `docs/features_memory/sui-migration-impact.html`
+  (light editorial theme, embedded `chaos-sui-migration-manifest`) and
+  returns a compact JSON summary (capped lists, `*_omitted` counts,
+  provenance breadcrumbs, coverage honesty notes).
+- **Demo fixture (R5)**: `examples/sui-migration-demo/` — an ERC-721 gallery
+  with Ownable + ipfs:// metadata, an ethers + Pinata client, a Lit-gated
+  bonus-content flow, and a Hardhat config.
+
+Maps impact only: generates no Move code, makes no correctness claims, and
+recommends Walrus/Seal only where evidence supports them.
+
 ## 0.14.0 — 2026-06-10
 
 The tech-stack release: "what is this repo built with?" is now a first-class

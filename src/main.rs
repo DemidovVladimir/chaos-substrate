@@ -30,6 +30,8 @@ mod simple_graph_optimizer;
 mod stack;
 mod storage;
 mod struct_features;
+mod sui_docs;
+mod sui_migration;
 mod theme;
 mod user_story;
 mod weights;
@@ -186,6 +188,32 @@ enum Commands {
         feature_limit: usize,
         #[arg(long, default_value_t = 8)]
         nodes_per_feature: usize,
+    },
+    /// Build a SUI MIGRATION IMPACT report for an indexed Ethereum/Solana/mixed
+    /// Web3 repository: detects the source stack (Solidity/Hardhat/OpenZeppelin,
+    /// Anchor/SPL/PDAs, client SDKs, IPFS/Arweave/S3 storage, encryption/gating),
+    /// maps the evidence onto the existing L1 feature communities, triggers
+    /// source-pattern → Sui concept mappings backed by the compiled-in
+    /// sui-official docs profile (Sui / Walrus / Seal), classifies storage and
+    /// access-control flows, and proposes a review order. Read-only and
+    /// embedder-free; ALWAYS writes docs/features_memory/sui-migration-impact.html
+    /// and prints a compact JSON summary. Maps impact only — generates no Move
+    /// code and makes no correctness claims.
+    SuiMigrationImpact {
+        repo: String,
+        /// Source stack: ethereum, solana, mixed, or auto (detect from evidence).
+        #[arg(long, default_value = "auto")]
+        source: String,
+        /// Override the default docs/features_memory/sui-migration-impact.html path.
+        #[arg(long)]
+        output_html: Option<PathBuf>,
+        /// Feature-page directory for prior-page correlation (default
+        /// <repo>/docs/features_memory).
+        #[arg(long)]
+        features_dir: Option<PathBuf>,
+        /// Max affected features in the compact return.
+        #[arg(long, default_value_t = 12)]
+        limit: usize,
     },
     /// Decompose a change into the features (communities) it spans, with a
     /// dependency-aware check order. Matches the description against community
@@ -696,6 +724,23 @@ async fn main() -> Result<()> {
             let summary = impact::run(&storage, embedder.as_ref(), &repo, &feature, &opts).await?;
             println!("{}", serde_json::to_string_pretty(&summary)?);
         }
+        Commands::SuiMigrationImpact {
+            repo,
+            source,
+            output_html,
+            features_dir,
+            limit,
+        } => {
+            let storage = Storage::connect(&config.storage.database_url).await?;
+            let opts = sui_migration::SuiMigrationOptions {
+                source: Some(source),
+                output_html,
+                features_dir,
+                limit,
+            };
+            let summary = sui_migration::run(&storage, &repo, &opts).await?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
         Commands::ChangePlan {
             repo,
             change,
@@ -1040,6 +1085,7 @@ fn print_agent_help(topic: Option<&str>) -> Result<()> {
          \x20 grasp a big area  chaos components /path/to/repo \"payments\"\n\
          \x20 list features     chaos features /path/to/repo client\n\
          \x20 scope a change    chaos change-plan /path/to/repo \"add rate limiting\" --since main\n\
+         \x20 sui migration     chaos sui-migration-impact /path/to/repo --source auto\n\
          \x20 cross-repo        chaos project create app && chaos project add-repo app /repo --alias backend\n\
          \x20                   chaos features --project app\n\
          \x20 fresh start       chaos clean --artifacts\n\

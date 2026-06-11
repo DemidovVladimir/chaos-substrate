@@ -214,6 +214,21 @@ pub async fn run(config: Config) -> Result<()> {
                             }
                         },
                         {
+                            "name": "chaos_sui_migration_impact",
+                            "description": "Build a SUI MIGRATION IMPACT report for an indexed Ethereum/Solana/mixed Web3 repository — answers 'if this project moves to Sui, which existing features are affected, which Sui primitives map to them, and what should be reviewed first?'. Detects the source stack from the persisted index (Solidity/Hardhat/OpenZeppelin/ERC standards, Anchor/SPL/Metaplex/PDAs, ethers/viem/wagmi/@solana clients, IPFS/Arweave/S3 storage, encryption/token-gating) plus disk probes for toolchain configs; maps evidence files onto the L1 feature communities; triggers source-pattern → Sui concept mappings (objects/dynamic fields, Coin/Kiosk/Display, capabilities, PTBs, package upgrades, events+GraphQL) each citing the compiled-in 'sui-official' docs profile (official Sui / Walrus / Seal pages with URL + verified date); classifies storage flows (Walrus blob / Walrus+Seal / keep-offchain / review) and gives explicit Seal verdicts including 'not-needed'; correlates prior generated feature pages; proposes a review order. Read-only and embedder-free. ALWAYS writes docs/features_memory/sui-migration-impact.html (manifest embedded under id=\"chaos-sui-migration-manifest\") and returns a COMPACT JSON summary (capped lists with *_omitted counts) with provenance breadcrumbs. Evidence-triggered only: no signal, no claim — and it maps impact, it does NOT generate Move code or promise automatic migration.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo": {"type": "string"},
+                                    "source": {"type": "string", "enum": ["auto", "ethereum", "solana", "mixed"], "default": "auto", "description": "Source stack; auto detects from evidence."},
+                                    "output_html": {"type": "string", "description": "Override the default docs/features_memory/sui-migration-impact.html path."},
+                                    "features_dir": {"type": "string", "description": "Feature-page directory for prior-page correlation."},
+                                    "limit": {"type": "integer", "default": 12, "description": "Max affected features in the compact return."}
+                                },
+                                "required": ["repo"]
+                            }
+                        },
+                        {
                             "name": "chaos_change_plan",
                             "description": "Decompose a proposed change into the FEATURES (L1 communities / god-nodes) it spans, with a dependency-aware check order — the top-down counterpart to flat retrieval. Matches the change description against community summary embeddings, ALSO seeding from a real git diff (`since`) AND from previously generated feature pages it correlates with (shared files → communities), so a curated existing feature deepens the decomposition. Each feature reports how it was surfaced via `+`-joined sources (semantic/diff/manifest) plus matched_by breadcrumbs, and the plan carries top-level provenance breadcrumbs. ALWAYS writes an interactive HTML plan to docs/features_memory/<slug>-plan.html and returns a COMPACT JSON summary (counts + per-feature label/confidence/via/check_order/top symbols + provenance + the HTML path), so it won't flood your context. Use it to answer 'how many features does this change involve, and in what order should I check them?'. Requires the repo to be indexed (chaos_analyze/chaos_add build the hierarchy).",
                             "inputSchema": {
@@ -538,6 +553,26 @@ async fn handle_tool_call(
                     .unwrap_or(8) as usize,
             };
             let summary = crate::impact::run(storage, embedder, repo, feature, &opts).await?;
+            Ok(tool_text(serde_json::to_string_pretty(&summary)?))
+        }
+        "chaos_sui_migration_impact" => {
+            let repo = args
+                .get("repo")
+                .and_then(Value::as_str)
+                .context("repo is required")?;
+            let opts = crate::sui_migration::SuiMigrationOptions {
+                source: args.get("source").and_then(Value::as_str).map(String::from),
+                output_html: args
+                    .get("output_html")
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from),
+                features_dir: args
+                    .get("features_dir")
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from),
+                limit: args.get("limit").and_then(Value::as_u64).unwrap_or(12) as usize,
+            };
+            let summary = crate::sui_migration::run(storage, repo, &opts).await?;
             Ok(tool_text(serde_json::to_string_pretty(&summary)?))
         }
         "chaos_write_feature_website" => {

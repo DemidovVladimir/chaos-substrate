@@ -1,0 +1,11 @@
+{
+  "name": "onchain-gallery",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": ["contracts", "client"],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "deploy": "npm run deploy --workspace contracts",
+    "mint": "npm run mint --workspace client"
+  }
+}

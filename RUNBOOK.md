@@ -170,6 +170,27 @@ prints a compact JSON summary (capped lists with `*_omitted` counts). The output
 coverage explicitly — Dockerfiles, CI workflows, pyproject.toml, foundry.toml and Terraform are not
 indexed yet and are named as such rather than silently omitted.
 
+## Sui Migration Impact
+
+```sh
+# Sui migration impact report for an indexed Ethereum/Solana/mixed Web3 repo
+chaos sui-migration-impact /path/to/repo --source auto
+chaos sui-migration-impact /path/to/repo --source ethereum --limit 20
+```
+
+Answers "if this project moves to Sui, which existing features are affected, which Sui primitives
+map to them, and what should be reviewed first?". Read-only and embedder-free: detects the source
+stack from the persisted index (Solidity/Hardhat/OpenZeppelin/ERC standards, Anchor/SPL/Metaplex/
+PDAs, ethers/viem/wagmi and @solana clients, IPFS/Arweave/S3 storage, encryption/token-gating) plus
+disk probes for toolchain configs, maps the evidence files onto the L1 feature communities,
+triggers source-pattern → Sui concept mappings (each citing the compiled-in `sui-official` docs
+profile of official Sui / Walrus / Seal pages, URL + verified date), classifies storage flows
+(Walrus blob / Walrus+Seal / keep-offchain / review), gives explicit Seal verdicts including
+"not-needed", and proposes a review order. Always writes
+`docs/features_memory/sui-migration-impact.html` and prints a compact JSON summary. Maps impact
+only — generates no Move code and makes no correctness claims. Demo fixture:
+`examples/sui-migration-demo/`.
+
 ## Feature Context
 
 ```sh
@@ -341,9 +362,9 @@ Use the release binary directly:
 target/release/chaos --config chaos-substrate.toml mcp
 ```
 
-Exposes exactly 18 tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_query`,
+Exposes exactly 19 tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_query`,
 `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
-`chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`, `chaos_clean`, `chaos_graph` (see README.md "MCP Tools" for the
+`chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_sui_migration_impact`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`, `chaos_clean`, `chaos_graph` (see README.md "MCP Tools" for the
 full reference).
 
 Validate the server responds with a single JSON line:
