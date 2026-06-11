@@ -233,6 +233,21 @@ If MCP tools are available, prefer them over shelling out:
     those files directly if they matter, and say so instead of presenting the inventory as a
     complete scan. Do NOT fall back to grepping package.json/Cargo.toml for stack questions when
     this tool is available. It mirrors `chaos stack <repo> [--output-html out.html]`.
+19. Use `chaos_pages` to see what chaos has ALREADY extracted for a repo — the generated
+    feature-memory pages. It scans `docs/features_memory` (or `features_dir`, e.g. a project
+    workspace) and lists every HTML page with its KIND (`feature` / `story` / `components` /
+    `features` / `stack` / `impact` / `change-plan` / `feature-map`; unrecognised files appear as
+    `other`, never hidden), the tool that writes that kind, its title, and its modified time,
+    newest first, plus by-kind counts. Read-only, embedder-free, pure filesystem (works on a plain
+    directory even if the repo row is missing). Use it INSTEAD of `ls`/globbing or shell scripts to
+    check whether a feature page already exists before starting a new deep-dive, and to find the
+    page to reopen or refresh. It mirrors `chaos pages <repo> [--features-dir DIR]`.
+
+NEVER answer feature-extraction questions about an indexed repo by falling back to `rg`/`grep`,
+`ls`, or generated scripts against the target repo: retrieval goes through `chaos_query` /
+`chaos_feature_context` / `chaos_components` / `chaos_features`, page discovery goes through
+`chaos_pages`, and stack questions go through `chaos_stack`. If a needed capability is missing,
+say so — the fix is a new chaos tool, not a shell workaround.
 
 Treat `chaos_feature_context.warnings` as blocking for generated feature websites. If it says a
 filesystem path exists but no Postgres hits referenced it, or that docs exist but no docs were
@@ -403,7 +418,7 @@ Use a real Postgres database with pgvector for persistence tests. Use real OpenA
 - MCP transport is stdio.
 - The process should be launched directly by the agent client.
 - Keep stdout protocol-clean; diagnostics should go to stderr or structured logging that does not corrupt MCP messages.
-- The MCP server exposes EIGHTEEN tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_query`,
+- The MCP server exposes NINETEEN tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_pages`, `chaos_query`,
   `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
   `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`, `chaos_clean`, and `chaos_graph`.
 - `chaos_add` incrementally indexes only git-changed files (or explicit `paths`), refreshes the

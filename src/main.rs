@@ -22,6 +22,7 @@ mod mcp;
 mod merkle;
 mod models;
 mod obsidian_export;
+mod pages;
 mod project;
 mod provenance;
 mod query;
@@ -143,6 +144,18 @@ enum Commands {
         /// Output HTML path (default <repo>/docs/features_memory/stack.html).
         #[arg(long)]
         output_html: Option<PathBuf>,
+    },
+    /// List the GENERATED feature-memory pages of a repository: every HTML
+    /// page under docs/features_memory with its kind (feature / story /
+    /// components / features / stack / impact / change-plan / feature-map),
+    /// the tool that writes it, its title, and its modified time. Read-only
+    /// and embedder-free — the chaos-native way to see what has already been
+    /// extracted, instead of `ls`.
+    Pages {
+        repo: String,
+        /// Scan this directory instead of <repo>/docs/features_memory.
+        #[arg(long)]
+        features_dir: Option<PathBuf>,
     },
     /// Query an already indexed repository.
     Query {
@@ -605,6 +618,12 @@ async fn main() -> Result<()> {
             let summary = stack::run(&storage, &repo, &opts).await?;
             println!("{}", serde_json::to_string_pretty(&summary)?);
         }
+        Commands::Pages { repo, features_dir } => {
+            let storage = Storage::connect(&config.storage.database_url).await?;
+            let opts = pages::PagesOptions { features_dir };
+            let summary = pages::run(&storage, &repo, &opts).await?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
         Commands::Query {
             repo,
             question,
@@ -1039,6 +1058,7 @@ fn print_agent_help(topic: Option<&str>) -> Result<()> {
          \x20 what's the stack  chaos stack /path/to/repo\n\
          \x20 grasp a big area  chaos components /path/to/repo \"payments\"\n\
          \x20 list features     chaos features /path/to/repo client\n\
+         \x20 what's extracted  chaos pages /path/to/repo\n\
          \x20 scope a change    chaos change-plan /path/to/repo \"add rate limiting\" --since main\n\
          \x20 cross-repo        chaos project create app && chaos project add-repo app /repo --alias backend\n\
          \x20                   chaos features --project app\n\

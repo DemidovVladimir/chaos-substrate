@@ -111,6 +111,18 @@ pub async fn run(config: Config) -> Result<()> {
                             }
                         },
                         {
+                            "name": "chaos_pages",
+                            "description": "List the GENERATED feature-memory pages of a repository — what chaos has ALREADY extracted. Scans docs/features_memory (or features_dir) and returns every HTML page with its KIND (feature / story / components / features / stack / impact / change-plan / feature-map; unrecognised files are listed as `other`, never hidden), the tool that writes that kind, its title, and its modified time, newest first, plus by-kind counts. Read-only, embedder-free, pure filesystem. Use this INSTEAD of `ls`/globbing to check whether a feature was already extracted before running a new deep-dive, and to find the page to reopen.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo": {"type": "string", "description": "Indexed repo name/path, or any directory containing generated pages."},
+                                    "features_dir": {"type": "string", "description": "Scan this directory instead of <repo>/docs/features_memory (e.g. a project workspace)."}
+                                },
+                                "required": ["repo"]
+                            }
+                        },
+                        {
                             "name": "chaos_query",
                             "description": "Query persisted code knowledge memory with hybrid semantic, keyword, and graph context routing. Set hierarchical=true for top-down retrieval: the query is matched against feature (L1 community) summaries first and the surfaced features are returned alongside chunk hits boosted toward them (falls back to flat search when the repo has no hierarchy).",
                             "inputSchema": {
@@ -419,6 +431,20 @@ async fn handle_tool_call(
                     .map(PathBuf::from),
             };
             let summary = crate::stack::run(storage, repo, &opts).await?;
+            Ok(tool_text(serde_json::to_string_pretty(&summary)?))
+        }
+        "chaos_pages" => {
+            let repo = args
+                .get("repo")
+                .and_then(Value::as_str)
+                .context("repo is required")?;
+            let opts = crate::pages::PagesOptions {
+                features_dir: args
+                    .get("features_dir")
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from),
+            };
+            let summary = crate::pages::run(storage, repo, &opts).await?;
             Ok(tool_text(serde_json::to_string_pretty(&summary)?))
         }
         "chaos_query" => {
@@ -864,6 +890,7 @@ WORKFLOWS
   after editing      chaos_add {repo_path, message}  — index only the git-changed files, refresh artifacts, write a feature/bug page
   sanity-check       chaos_stats {repo}  — what the index holds (read-only, embedder-free)
   what's the stack   chaos_stack {repo}  — declared dependencies, scripts, CDK stacks/resources, configs, languages — LISTED, with explicit coverage notes (embedder-free)
+  what's extracted   chaos_pages {repo}  — list the generated pages (kind, title, modified) — use INSTEAD of ls/globbing docs/features_memory (embedder-free)
   ask a question     chaos_query {repo, question, hierarchical: true}  — feature-routed retrieval; flat search without the flag
   grasp a big area   chaos_components {repo, area?}  — curated component overview with a read order (run BEFORE feature work)
   list features      chaos_features {repo | project, filter?}  — exhaustive inventory; filter auto-detects folder | layer (exact word OR by meaning: 'backend', 'client app') | topic; after composing your answer, call again with curation {groups: [{title, icon?, blurb?, features: [{label, note?}]}]} so the HTML carries your human domains + notes
@@ -959,9 +986,12 @@ fn write_manifest_feature_website(
         }
         map.entry("subtitle").or_insert_with(|| json!(""));
     }
-    let parsed: crate::feature_context::FeatureManifest = serde_json::from_value(value).context(
-        "manifest must match the FeatureManifest schema (feature, title, subtitle, claims, modes, nodes, edges, story)",
-    )?;
+    let parsed: crate::feature_context::FeatureManifest =
+        serde_json::from_value(value).map_err(|err| {
+            anyhow::anyhow!(
+                "manifest does not match the FeatureManifest schema: {err}. Field shapes: nodes[].evidence and edges[].evidence are OBJECTS {{source, method, notes}} (not strings); claims need {{id, title, body, confidence, node_ids}}; modes {{id, title, node_ids}}; edges {{source, target, label}}; story steps {{id, title, body, node_ids}}"
+            )
+        })?;
     let slug = safe_slug(slug);
     let output = Path::new(repo_root)
         .join("docs/features_memory")
@@ -1212,6 +1242,7 @@ mod tests {
             "chaos_project",
             "chaos_clean",
             "chaos_graph",
+            "chaos_pages",
         ] {
             assert!(AGENT_GUIDE.contains(tool), "guide missing {tool}");
         }

@@ -4,6 +4,32 @@ All notable changes to Chaos Substrate are documented here. Versions before
 0.12.0 predate this file; see the git history (`P0`–`P5` commits) for the
 hierarchical-memory build-out.
 
+## 0.15.0 — 2026-06-11
+
+The page-discovery release: "what has chaos already extracted here?" is now a
+first-class question. Observed in a real desci-infra session: the agent used
+chaos correctly for retrieval, then fell back to `ls`/globbing
+`docs/features_memory` (and regex over source) because no tool would list the
+generated pages. Listing extracted features is chaos's job — shelling out is
+now also called out as a hard anti-pattern in CLAUDE.md and SKILL.md.
+
+### Added — `chaos_pages` MCP tool + `chaos pages` CLI (19 tools)
+
+Lists the generated feature-memory pages of a repository. Scans
+`docs/features_memory` (or `--features-dir`, e.g. a project workspace),
+recognises every chaos-generated HTML page by its embedded manifest/data block
+(`chaos-feature-manifest`, `chaos-storyboard-manifest`,
+`chaos-components-manifest`, `chaos-features-manifest`, `chaos-stack-manifest`,
+`chaos-impact-data`, `chaos-plan-data`, `chaos-feature-map-data`), and returns
+each page's kind, the tool that writes that kind, its title (whichever field
+the manifest kind uses: `title` / `task` / `change`), and its modified time —
+newest first, with by-kind counts and a provenance breadcrumb. HTML files
+without a recognised block are listed as `other` (title from `<title>`) —
+nothing in the directory is hidden.
+
+Read-only, embedder-free, pure filesystem: the repo argument resolves against
+the index first, but a plain directory path works even when unindexed.
+
 ## 0.14.0 — 2026-06-10
 
 The tech-stack release: "what is this repo built with?" is now a first-class

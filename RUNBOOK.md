@@ -170,6 +170,23 @@ prints a compact JSON summary (capped lists with `*_omitted` counts). The output
 coverage explicitly — Dockerfiles, CI workflows, pyproject.toml, foundry.toml and Terraform are not
 indexed yet and are named as such rather than silently omitted.
 
+## Pages
+
+```sh
+# List the generated feature-memory pages — what chaos has already extracted
+chaos pages /path/to/repo
+chaos pages /path/to/repo --features-dir ~/.chaos/projects/myapp   # scan a project workspace instead
+```
+
+The chaos-native replacement for `ls docs/features_memory`: scans the features directory, recognises
+every chaos-generated HTML page by its embedded manifest block, and lists each one with its kind
+(`feature` / `story` / `components` / `features` / `stack` / `impact` / `change-plan` /
+`feature-map`), the tool that writes that kind, its title, and its modified time, newest first, plus
+by-kind counts. HTML files without a recognised block are listed as `other` — nothing is hidden.
+Read-only and embedder-free; the repo argument is resolved against the index first, but a plain
+directory path works even if unindexed (the scan is pure filesystem). Use it to check whether a
+feature was already extracted before running a new deep-dive.
+
 ## Feature Context
 
 ```sh
@@ -341,7 +358,7 @@ Use the release binary directly:
 target/release/chaos --config chaos-substrate.toml mcp
 ```
 
-Exposes exactly 18 tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_query`,
+Exposes exactly 19 tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_pages`, `chaos_query`,
 `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
 `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`, `chaos_clean`, `chaos_graph` (see README.md "MCP Tools" for the
 full reference).
