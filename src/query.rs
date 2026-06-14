@@ -70,6 +70,20 @@ const LABEL_ROUTE_LIMIT: usize = 5;
 /// Minimum query-token length considered for the label-match fallback.
 const MIN_ROUTE_TOKEN: usize = 3;
 
+/// Per-channel fusion weights for the chunk-level hybrid retrieval. Each
+/// channel's raw scores are normalized to [0,1] (by its own max) and then scaled
+/// by these weights before the channels are merged, so the literal channel's
+/// FIXED scores (0.75/1.5) can no longer out-rank a strong semantic cosine hit —
+/// the bug behind "semantic 0, keyword 0, literal 10" on an abstract query.
+/// Semantic (meaning) leads; keyword (full-text) and literal (substring) are
+/// lexical fallbacks.
+const SEMANTIC_WEIGHT: f64 = 1.0;
+const KEYWORD_WEIGHT: f64 = 0.6;
+const LITERAL_WEIGHT: f64 = 0.4;
+/// Upper bound on the window slots reserved for semantic hits by
+/// [`guarantee_method_recall`] (mirrors [`SUBJECT_RECALL_MAX`]).
+const METHOD_RECALL_MAX: usize = 6;
+
 /// Top-down retrieval: match the query against community summary embeddings
 /// first, then run the flat hybrid search and boost hits whose node lives in a
 /// matched feature. Falls back to the flat path when no communities exist
@@ -214,9 +228,15 @@ pub async fn query_feature_context_repo(
     task: &str,
     limit: i64,
 ) -> Result<QueryResponse> {
-    let expansions = feature_context_queries(task);
-    let query_refs = expansions.iter().map(String::as_str).collect::<Vec<_>>();
-    query_repo_with_expansions(storage, repo_id, embedder, task, limit, &query_refs, None).await
+    // ONE semantic search on the raw task — the same single-vector shape the
+    // working community-summary path (`community_semantic_search`) uses. This
+    // replaced a 4-5 way fan-out of WORD-PADDED variants ("<task> documentation
+    // docs README guide architecture", …), each running its own
+    // semantic+keyword+literal sweep: the padding diluted the query vector
+    // (lowering every cosine score) and multiplied cost for no recall gain. The
+    // keyword OR-query and per-term literal recall in `retrieve_query_hits`
+    // already cover lexical breadth without per-variant embedding.
+    query_repo_with_expansions(storage, repo_id, embedder, task, limit, &[task], None).await
 }
 
 /// `first_query_embedding`: a precomputed embedding of `queries[0]`, when the
@@ -267,6 +287,7 @@ async fn query_repo_with_expansions(
     suppress_dependency_noise(&mut hits, original_query, limit as usize);
     retain_supplemental_context(&mut hits, limit as usize);
     guarantee_subject_recall(&mut hits, original_query, limit as usize);
+    guarantee_method_recall(&mut hits, limit as usize);
     hits.truncate(limit as usize);
 
     let node_ids = hits.iter().filter_map(|h| h.node_id).collect::<Vec<_>>();
@@ -290,6 +311,8 @@ async fn retrieve_query_hits(
         Some(v) => v.to_vec(),
         None => embedder.embed(query).await?,
     };
+    // Channel 1 — semantic (meaning). Normalized to [0,1] and weighted so its
+    // cosine scores become comparable to the other channels' scales.
     let mut hits = storage
         .semantic_search(
             repo_id,
@@ -301,23 +324,75 @@ async fn retrieve_query_hits(
         )
         .await?;
     tag_retrieved_by(&mut hits, "semantic");
-    let mut keyword_hits = storage
-        .keyword_search(repo_id, query, candidate_limit)
-        .await?;
-    tag_retrieved_by(&mut keyword_hits, "keyword");
-    merge_hits(&mut hits, keyword_hits);
-    // Small fixed literal budget per term. The DB-side per-file cap
-    // (`storage::LITERAL_HITS_PER_FILE`) already stops one path-matching
-    // folder from flooding these slots, and the graph page's SUBJECT tint —
-    // not a widened literal sweep — is what surfaces named-but-low-ranked
-    // files (`desci-infra/.../ocl-*.ts`). So the evidence list stays small and
-    // honest instead of being padded to win a highlight it no longer drives.
+    normalize_channel(&mut hits, SEMANTIC_WEIGHT);
+
+    // Channel 2 — keyword (full-text). `websearch_to_tsquery` AND-joins the words
+    // of a multi-word description, so an abstract feature string matched NO chunk
+    // (the "keyword 0" leg). OR-join the distinctive terms instead (websearch
+    // reads the lowercase word "or" as the OR operator) so the channel returns
+    // rows; then normalize+weight it like the others.
+    let keyword_expr = keyword_or_query(query);
+    if !keyword_expr.is_empty() {
+        let mut keyword_hits = storage
+            .keyword_search(repo_id, &keyword_expr, candidate_limit)
+            .await?;
+        tag_retrieved_by(&mut keyword_hits, "keyword");
+        normalize_channel(&mut keyword_hits, KEYWORD_WEIGHT);
+        merge_hits(&mut hits, keyword_hits);
+    }
+
+    // Channel 3 — literal (substring). Gathered across the distinctive terms into
+    // ONE channel, deduped, then normalized together — so a flood of weak-token
+    // matches is scaled as a whole and can't dominate the meaning channel. The
+    // DB-side per-file cap (`storage::LITERAL_HITS_PER_FILE`) still stops one
+    // path-matching folder from flooding the slots.
+    let mut literal_hits = Vec::new();
     for term in literal_search_terms(query).into_iter().take(10) {
-        let mut literal_hits = storage.literal_search(repo_id, &term, 12).await?;
-        tag_retrieved_by(&mut literal_hits, "literal");
+        let mut term_hits = storage.literal_search(repo_id, &term, 12).await?;
+        tag_retrieved_by(&mut term_hits, "literal");
+        literal_hits.append(&mut term_hits);
+    }
+    if !literal_hits.is_empty() {
+        merge_duplicate_hits(&mut literal_hits);
+        normalize_channel(&mut literal_hits, LITERAL_WEIGHT);
         merge_hits(&mut hits, literal_hits);
     }
     Ok(hits)
+}
+
+/// Scale a single retrieval channel's scores to `[0, weight]` by dividing by the
+/// channel's own maximum, so channels with incomparable raw scales (semantic
+/// cosine ~0.3-0.6, keyword `ts_rank` ~0.0X, literal fixed 0.75/1.5) fuse on
+/// equal footing. A non-positive max (empty channel, or all scores ≤ 0) leaves
+/// the hits untouched.
+fn normalize_channel(hits: &mut [SearchHit], weight: f64) {
+    let max = hits.iter().map(|hit| hit.score).fold(0.0_f64, f64::max);
+    if max <= 0.0 {
+        return;
+    }
+    for hit in hits.iter_mut() {
+        hit.score = (hit.score / max) * weight;
+    }
+}
+
+/// Build an OR full-text expression from a query's distinctive terms for
+/// `websearch_to_tsquery`, which treats the lowercase word `or` as the OR
+/// operator. Terms are the alphanumeric tokens of length > 2 minus the
+/// literal-search and routing stopwords; `websearch_to_tsquery` then stems them
+/// and drops any residual English stopwords. Empty when the query carries no
+/// distinctive term (caller skips the keyword channel).
+fn keyword_or_query(query: &str) -> String {
+    let mut terms = search_tokens(query)
+        .into_iter()
+        .filter(|token| {
+            token.len() > 2
+                && !LITERAL_SEARCH_STOP_TERMS.contains(&token.as_str())
+                && !ROUTE_STOP_WORDS.contains(&token.as_str())
+        })
+        .collect::<Vec<_>>();
+    terms.sort();
+    terms.dedup();
+    terms.join(" or ")
 }
 
 /// Stamp every hit's metadata with the retrieval method that produced it
@@ -509,25 +584,6 @@ fn rerank_hits(hits: &mut [SearchHit], query: &str) {
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-}
-
-fn feature_context_queries(task: &str) -> Vec<String> {
-    let mut queries = vec![
-        task.to_string(),
-        format!("{task} documentation docs README guide architecture"),
-        format!("{task} source implementation contracts services hooks tests"),
-        format!("{task} workflow user story infrastructure deployment configuration"),
-    ];
-    let normalized = task
-        .replace(['-', '_'], " ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    if normalized != task {
-        queries.push(normalized);
-    }
-    queries.dedup();
-    queries
 }
 
 fn search_tokens(query: &str) -> Vec<String> {
@@ -734,6 +790,70 @@ fn guarantee_subject_recall(hits: &mut [SearchHit], query: &str, limit: usize) {
     let demote: Vec<usize> = (0..limit)
         .rev()
         .filter(|&i| !is_subject(&hits[i]))
+        .collect();
+    for (k, &from) in promote.iter().enumerate() {
+        if let Some(&to) = demote.get(k) {
+            hits.swap(from, to);
+        }
+    }
+}
+
+/// True when a hit was produced (at least in part) by retrieval `method`
+/// (its `metadata.retrieved_by` array contains `method`).
+fn hit_has_method(hit: &SearchHit, method: &str) -> bool {
+    hit.metadata
+        .get("retrieved_by")
+        .and_then(|value| value.as_array())
+        .is_some_and(|methods| methods.iter().any(|m| m.as_str() == Some(method)))
+}
+
+/// Guarantee the MEANING-based channels survive truncation. The sibling of
+/// [`guarantee_subject_recall`], keyed on `metadata.retrieved_by` instead of
+/// filename subject: reserve up to half the window for the strongest semantic
+/// hits and at least one keyword hit, displacing only the lowest-scored
+/// literal-ONLY hits (never a semantic, keyword, or subject hit). This is the
+/// hard floor that makes the all-literal top-N ("semantic 0, keyword 0,
+/// literal N") impossible even if a flood of substring matches out-scores the
+/// meaning channel. No-op when nothing was truncated.
+fn guarantee_method_recall(hits: &mut [SearchHit], limit: usize) {
+    if limit == 0 || hits.len() <= limit {
+        return;
+    }
+    let semantic_reserve = (limit / 2).clamp(1, METHOD_RECALL_MAX);
+    promote_method_into_window(hits, limit, "semantic", semantic_reserve);
+    promote_method_into_window(hits, limit, "keyword", 1);
+}
+
+/// Ensure at least `reserve` hits carrying `method` sit inside the top-`limit`
+/// window, promoting the strongest below-cut method hits into the lowest-scored
+/// literal-only slots. Never demotes a semantic/keyword/subject hit, so the
+/// channel floors and the subject floor compose without fighting.
+fn promote_method_into_window(hits: &mut [SearchHit], limit: usize, method: &str, reserve: usize) {
+    let in_window = hits
+        .iter()
+        .take(limit)
+        .filter(|hit| hit_has_method(hit, method))
+        .count();
+    if in_window >= reserve {
+        return;
+    }
+    // Strongest method hits sitting just below the cut (hits stay score-sorted).
+    let promote: Vec<usize> = hits
+        .iter()
+        .enumerate()
+        .skip(limit)
+        .filter(|(_, hit)| hit_has_method(hit, method))
+        .map(|(idx, _)| idx)
+        .take(reserve - in_window)
+        .collect();
+    // Lowest-scored literal-ONLY hits inside the window (highest indices first).
+    let demote: Vec<usize> = (0..limit)
+        .rev()
+        .filter(|&i| {
+            !hit_has_method(&hits[i], "semantic")
+                && !hit_has_method(&hits[i], "keyword")
+                && !hit_has_method(&hits[i], "subject")
+        })
         .collect();
     for (k, &from) in promote.iter().enumerate() {
         if let Some(&to) = demote.get(k) {
@@ -1005,12 +1125,61 @@ mod tests {
     }
 
     #[test]
-    fn feature_context_queries_request_docs_and_infra() {
-        let queries = feature_context_queries("OCL On-Chain Lab");
+    fn normalize_channel_scales_to_weight() {
+        let mut hits = vec![hit(json!({}), 0.5), hit(json!({}), 0.25)];
+        normalize_channel(&mut hits, 0.4);
+        // The best hit reaches the weight; others scale proportionally.
+        assert!((hits[0].score - 0.4).abs() < 1e-9);
+        assert!((hits[1].score - 0.2).abs() < 1e-9);
+        // An all-zero (or empty) channel is left untouched — nothing to scale.
+        let mut zero = vec![hit(json!({}), 0.0)];
+        normalize_channel(&mut zero, 0.4);
+        assert_eq!(zero[0].score, 0.0);
+    }
 
-        assert!(queries.iter().any(|query| query.contains("documentation")));
-        assert!(queries.iter().any(|query| query.contains("infrastructure")));
-        assert!(queries.iter().any(|query| query.contains("contracts")));
+    #[test]
+    fn keyword_or_query_or_joins_distinctive_terms() {
+        let expr = keyword_or_query("mark members as banned reputation state");
+        // OR semantics for websearch_to_tsquery, distinctive terms kept.
+        assert!(expr.contains(" or "));
+        assert!(expr.split(" or ").any(|t| t == "banned"));
+        assert!(expr.split(" or ").any(|t| t == "reputation"));
+        // Two-letter and stopword tokens are dropped.
+        assert!(!expr.split(" or ").any(|t| t == "as"));
+        // A query with no distinctive term yields an empty expression.
+        assert!(keyword_or_query("a to of").is_empty());
+    }
+
+    #[test]
+    fn method_recall_rescues_semantic_from_a_literal_flood() {
+        // Window = 3, the top three are literal-only, a semantic hit sits below.
+        let mut hits = vec![
+            tagged_hit("literal", 0.90),
+            tagged_hit("literal", 0.85),
+            tagged_hit("literal", 0.80),
+            tagged_hit("semantic", 0.50),
+            tagged_hit("literal", 0.40),
+        ];
+        guarantee_method_recall(&mut hits, 3);
+        hits.truncate(3);
+        assert!(
+            hits.iter().any(|h| hit_has_method(h, "semantic")),
+            "a semantic hit must be reserved into the window"
+        );
+    }
+
+    #[test]
+    fn method_recall_keeps_keyword_and_never_demotes_semantic() {
+        let mut hits = vec![
+            tagged_hit("literal", 0.90),
+            tagged_hit("semantic", 0.85), // already in window — must remain
+            tagged_hit("literal", 0.80),
+            tagged_hit("keyword", 0.50), // below the cut — should be rescued
+        ];
+        guarantee_method_recall(&mut hits, 3);
+        hits.truncate(3);
+        assert!(hits.iter().any(|h| hit_has_method(h, "semantic")));
+        assert!(hits.iter().any(|h| hit_has_method(h, "keyword")));
     }
 
     #[test]
@@ -1082,5 +1251,11 @@ mod tests {
             content: "deploy stack cdk".into(),
             metadata,
         }
+    }
+
+    fn tagged_hit(method: &str, score: f64) -> SearchHit {
+        let mut h = hit(json!({}), score);
+        tag_retrieved_by(std::slice::from_mut(&mut h), method);
+        h
     }
 }
