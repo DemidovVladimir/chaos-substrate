@@ -249,6 +249,23 @@ impact summary + the evidence dashboard) to `docs/features_memory/<slug>-impact.
 a feature maps onto the codebase as it is today (the "before"). Unlike `feature-context` (which only
 writes HTML when `--output-html` is passed), `impact` always produces the page.
 
+## Sui Migration Impact
+
+```sh
+chaos sui-migration-impact /path/to/repo
+chaos sui-migration-impact /path/to/repo --source ethereum
+chaos sui-migration-impact /path/to/repo --source auto --output-html out/sui-plan.html
+chaos sui-migration-impact /path/to/repo --source mixed --limit 12
+```
+
+Produces a Sui migration impact report for an indexed Ethereum, Solana, or mixed Web3 repo.
+Auto-detects the source stack by default (`--source auto`); override with `ethereum`, `solana`, or
+`mixed`. Maps each L1 feature onto Sui primitives — objects/dynamic fields, Coin/Kiosk/Display,
+capabilities, PTBs, events+GraphQL — with Walrus/Seal storage and access-control verdicts, each
+citing the compiled-in Sui official docs profile. **Always** writes
+`docs/features_memory/sui-migration-impact.html` and prints a compact JSON summary. Read-only and
+embedder-free. Maps impact only — does not generate Move code.
+
 ## Feature guide (storyboard)
 
 ```sh
@@ -404,8 +421,8 @@ Use the release binary directly:
 target/release/chaos --config chaos-substrate.toml mcp
 ```
 
-Exposes exactly 21 tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_pages`, `chaos_gaps`, `chaos_query`,
-`chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
+Exposes exactly 22 tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_pages`, `chaos_gaps`, `chaos_query`,
+`chaos_feature_context`, `chaos_impact`, `chaos_sui_migration_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
 `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_compose`, `chaos_project`, `chaos_help`, `chaos_clean`, `chaos_graph` (see README.md "MCP Tools" for the
 full reference).
 
@@ -430,7 +447,7 @@ chaos setup --scope user              # scope: user | local | project
 chaos setup --scope project
 ```
 
-Claude Code — full plugin (skill + 20 MCP tools + hooks) or MCP server only:
+Claude Code — full plugin (skill + 22 MCP tools + hooks) or MCP server only:
 
 ```sh
 claude --plugin-dir /abs/path/to/chaos-substrate     # plugin, local testing

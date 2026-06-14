@@ -23,7 +23,7 @@ docs/OBSIDIAN_EXPORT.md — export the knowledge base to an Obsidian vault.
 
 # Key directories
 src/ — Rust runtime (extractor.rs, lang/, models.rs, weights.rs, mcp.rs, main.rs).
-migrations/ — sqlx SQL migrations (001_init.sql … 006_summary_cache.sql) for the Postgres schema.
+migrations/ — sqlx SQL migrations (001_init.sql … 008_identifier_tokens.sql) for the Postgres schema.
 skills/ — self-contained agent skill contract (chaos-substrate/SKILL.md).
 docs/ — operational, architecture, and feature guides.
 .claude-plugin/ + .codex-plugin/ — plugin manifests and hooks that launch the release binary over stdio.

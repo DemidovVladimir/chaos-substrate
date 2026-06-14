@@ -84,7 +84,17 @@ If MCP tools are available, prefer them over shelling out:
    path. The full evidence lives only in the HTML, so it will not flood an agent context like a raw
    `chaos_feature_context` dump. Use it to see how a proposed feature maps onto the codebase as it
    exists today (the before). It mirrors the `chaos impact <repo> <feature>` CLI command.
-7. Use `chaos_write_feature_website` only after reading `chaos_feature_context` output. Compose a
+7. Use `chaos_sui_migration_impact` to produce a **Sui migration impact report** for an indexed
+   Ethereum, Solana, or mixed Web3 repo. It auto-detects the source stack (or you specify
+   `source`: auto/ethereum/solana/mixed), maps each L1 feature onto Sui primitives
+   (objects/dynamic fields, Coin/Kiosk/Display, capabilities, PTBs, events+GraphQL) with
+   Walrus/Seal storage and access-control verdicts, each verdict citing the compiled-in Sui
+   official docs profile. Read-only and embedder-free. It ALWAYS writes
+   `docs/features_memory/sui-migration-impact.html` and returns a COMPACT JSON summary — per-feature
+   Sui mappings, verdicts, provenance, and the HTML path. Maps impact only — does not generate
+   Move code. It mirrors the
+   `chaos sui-migration-impact <repo> [--source auto|ethereum|solana|mixed]` CLI command.
+8. Use `chaos_write_feature_website` only after reading `chaos_feature_context` output. Compose a
    feature-specific MANIFEST (purpose, feature, title, subtitle, examples, claims, modes, nodes
    with file/lines/code, edges, story) and pass it WITHOUT the `html` argument — Chaos renders the
    full interactive page deterministically (the same renderer `chaos add` uses), so you never
@@ -96,15 +106,15 @@ If MCP tools are available, prefer them over shelling out:
    `node_ids` highlight the code path on the graph. The LLM still decides the story, claims,
    nodes, and flow from evidence; the tool owns the rendering. (Passing `html` yourself is a
    legacy path.)
-8. Use `chaos_obsidian` to export an already-indexed repository as an Obsidian vault from the
+9. Use `chaos_obsidian` to export an already-indexed repository as an Obsidian vault from the
    persisted graph; run it after `chaos_analyze` (which never writes files) when you want browsable
    docs. This lets an MCP-only agent generate the vault without shelling out to the CLI.
-9. Use `chaos_refresh` to regenerate project-local artifacts from the persisted index without
+10. Use `chaos_refresh` to regenerate project-local artifacts from the persisted index without
    re-indexing: it rewrites the Obsidian vault and, with `all_features=true`, re-renders the
    deterministic feature pages in `docs/features_memory` from their embedded manifests. This lets an
    MCP-only agent refresh pages without shelling out to the CLI; run `chaos_analyze` or `chaos_add`
    first.
-10. Use `chaos_write_storyboard` to produce a CLIENT/USER-FACING explanation of a feature — a
+11. Use `chaos_write_storyboard` to produce a CLIENT/USER-FACING explanation of a feature — a
     UI/UX user-story page with NO code, meant to be handed to a stakeholder or end user as an
     interactive presentation. You supply only a structured, code-free manifest: `personas`,
     `stories` ("As a … I want … so that …" with plain-language `acceptance` criteria), `frames`
@@ -156,7 +166,7 @@ If MCP tools are available, prefer them over shelling out:
     5. **Keep images portable.** A `preview.src`/`hero_image` must be a `data:` URI (self-contained)
        or a path **relative to the output HTML** whose file you place alongside it — never an
        absolute or temp path, or the images vanish when the page is shared.
-11. Use `chaos_change_plan` to decompose a proposed change into the FEATURES (L1 communities /
+12. Use `chaos_change_plan` to decompose a proposed change into the FEATURES (L1 communities /
     god-nodes) it spans, with a dependency-aware check order. It matches the change description
     against community summary embeddings, **also seeding from a real git diff via `since` and from
     previously generated feature pages it correlates with** (shared files → communities), then ALWAYS
@@ -165,7 +175,7 @@ If MCP tools are available, prefer them over shelling out:
     breadcrumbs, check order, top symbols, top-level `provenance`, and the HTML path. The full plan
     lives only in the HTML, so it will not flood an agent context. It mirrors the
     `chaos change-plan <repo> "<change>" [--since <ref>]` CLI command.
-12. Use `chaos_components` to explain the CORE COMPONENTS of a big area — the orientation step
+13. Use `chaos_components` to explain the CORE COMPONENTS of a big area — the orientation step
     BEFORE feature extraction. An area like "OCL" is bigger than a single feature (it spans several
     L1 communities); pass an `area` (or omit it for a repo-level overview) and it surfaces those
     communities as COMPONENTS, each with its L3 summary, key symbols/files, languages, and a
@@ -178,7 +188,7 @@ If MCP tools are available, prefer them over shelling out:
     understand a large subsystem before drilling into any single feature, then follow up with
     `chaos_feature_context` / `chaos_write_feature_website` per component. It mirrors the
     `chaos components <repo> ["<area>"]` CLI command.
-13. Use `chaos_features` to list ALL god-node FEATURES (L1 communities) that match a filter, grouped
+14. Use `chaos_features` to list ALL god-node FEATURES (L1 communities) that match a filter, grouped
     by journey layer (entry → interface → core → foundation) — the EXHAUSTIVE, uncurated counterpart
     to `chaos_components`. Where `chaos_components` curates and orders ONE area, `chaos_features`
     answers "give me EVERY feature [in this layer / under this folder / about this topic]". The single
@@ -198,7 +208,7 @@ If MCP tools are available, prefer them over shelling out:
     journey-layered inventory — each card tagged with its repo alias and annotated with the
     project's cross-repo links; the HTML goes to the project workspace
     (`$CHAOS_PROJECT_DIR/<slug>/` or `~/.chaos/projects/<slug>/`).
-14. Use `chaos_project` to work ACROSS REPOSITORIES. A project is a named set of indexed repos
+15. Use `chaos_project` to work ACROSS REPOSITORIES. A project is a named set of indexed repos
     (client, backend, smart contracts, infra, …); Chaos detects FEATURE→FEATURE CROSS-REPO LINKS
     between members from the persisted index (consumer → provider): `package_dep` (one repo imports
     a package the other publishes), `abi` (client/backend code references a Solidity contract defined
@@ -213,16 +223,16 @@ If MCP tools are available, prefer them over shelling out:
     `relink` (manual, `force` overrides the gate). All member repos must share ONE embedder config;
     `status` warns on mismatch. It mirrors the `chaos project create|add-repo|list|status|relink`
     CLI commands.
-15. Use `chaos_help` (no arguments) when unsure which tool fits: it returns the recommended tool
+16. Use `chaos_help` (no arguments) when unsure which tool fits: it returns the recommended tool
     order and typical workflows as static text — no database or embedder work, zero tokens until
     called. The server's MCP `instructions` carry the one-line version automatically.
-16. Use `chaos_clean` ONLY when the user explicitly asks to clean/reset. It is DESTRUCTIVE: wipes
+17. Use `chaos_clean` ONLY when the user explicitly asks to clean/reset. It is DESTRUCTIVE: wipes
     the persisted index for one repo (`repo`) or everything (omit it); `artifacts: true` also
     deletes the generated files on disk (vault, feature pages, project workspaces). It requires
     `confirm: true` and reports exactly what was removed; the schema survives. Cleaning does NOT
     imply re-indexing — stop after the wipe unless the user also asked to rebuild; the index stays
     empty until a `chaos_analyze` is requested. It mirrors `chaos clean [<repo>] [--artifacts]`.
-17. Use `chaos_graph` to export the standalone interactive L0 node/edge HTML from the persisted
+18. Use `chaos_graph` to export the standalone interactive L0 node/edge HTML from the persisted
     index (embedder-free). It defaults to `docs/features_memory/graph.html` inside the repo;
     override with `output`. The feature-level map (`feature-map.html`) comes from
     `chaos_obsidian`/`chaos_refresh` instead. It mirrors `chaos graph <repo> -o graph.html`.
@@ -251,7 +261,7 @@ If MCP tools are available, prefer them over shelling out:
     folder README, then `chaos_add` those paths. NEVER pause or block indexing waiting for the
     answer — the knowledge belongs in the repo, not in a prompt. Read-only and embedder-free; it
     mirrors `chaos gaps <repo>`.
-18. Use `chaos_stack` when the user asks "what is this repo built with / what's the tech stack /
+19. Use `chaos_stack` when the user asks "what is this repo built with / what's the tech stack /
     what infrastructure does it use". It LISTS what `chaos_stats` only counts, read from the
     persisted index (read-only, embedder-free): manifest-DECLARED dependencies by ecosystem
     (npm/cargo — name, versions, runtime-vs-dev scope, how many workspace manifests declare each,
@@ -264,7 +274,7 @@ If MCP tools are available, prefer them over shelling out:
     those files directly if they matter, and say so instead of presenting the inventory as a
     complete scan. Do NOT fall back to grepping package.json/Cargo.toml for stack questions when
     this tool is available. It mirrors `chaos stack <repo> [--output-html out.html]`.
-19. Use `chaos_pages` to see what chaos has ALREADY extracted for a repo — the generated
+20. Use `chaos_pages` to see what chaos has ALREADY extracted for a repo — the generated
     feature-memory pages. It scans `docs/features_memory` (or `features_dir`, e.g. a project
     workspace) and lists every HTML page with its KIND (`feature` / `story` / `components` /
     `features` / `stack` / `impact` / `change-plan` / `feature-map`; unrecognised files appear as
@@ -273,7 +283,7 @@ If MCP tools are available, prefer them over shelling out:
     directory even if the repo row is missing). Use it INSTEAD of `ls`/globbing or shell scripts to
     check whether a feature page already exists before starting a new deep-dive, and to find the
     page to reopen or refresh. It mirrors `chaos pages <repo> [--features-dir DIR]`.
-20. Use `chaos_compose` as THE page-generation surface: whenever the user asks for a webpage,
+21. Use `chaos_compose` as THE page-generation surface: whenever the user asks for a webpage,
     website, or interactive info page over chaos knowledge, route the request here instead of
     stitching together the side-pages of `chaos_features`/`chaos_stack`/`chaos_components` (those
     remain data/inventory tools). It builds ONE page from knowledge-base-backed SECTIONS instead of
@@ -485,8 +495,8 @@ Use a real Postgres database with pgvector for persistence tests. Use real OpenA
 - MCP transport is stdio.
 - The process should be launched directly by the agent client.
 - Keep stdout protocol-clean; diagnostics should go to stderr or structured logging that does not corrupt MCP messages.
-- The MCP server exposes TWENTY-ONE tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_pages`, `chaos_gaps`, `chaos_query`,
-  `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
+- The MCP server exposes TWENTY-TWO tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_pages`, `chaos_gaps`, `chaos_query`,
+  `chaos_feature_context`, `chaos_impact`, `chaos_sui_migration_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
   `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_compose`, `chaos_project`, `chaos_help`, `chaos_clean`, and `chaos_graph`.
 - `chaos_add` incrementally indexes only git-changed files (or explicit `paths`), refreshes the
   Obsidian vault, and writes a feature/bug page in one call; use it instead of a full

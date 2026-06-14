@@ -4,7 +4,40 @@ All notable changes to Chaos Substrate are documented here. Versions before
 0.12.0 predate this file; see the git history (`P0`–`P5` commits) for the
 hierarchical-memory build-out.
 
-## Unreleased
+## 0.20.0 — 2026-06-14
+
+The retrieval-quality + Sui-impact release, and the point where the accumulated
+0.16–0.19 working tree was consolidated onto `main` as the single source of
+truth. Headline: identifier-aware keyword tokenization (migration 008) and the
+acronym-aware hierarchical router make camelCase code reachable from
+natural-language queries; two new read-only surfaces (`chaos gaps`,
+`graph --serve`) validate and harden retrieval; and a 22nd tool,
+`chaos sui-migration-impact`, maps a Web3 repo's features onto Sui primitives.
+Migration-only upgrade for the index changes: run `chaos migrate` for the
+identifier tokens (no re-analyze); a `chaos analyze` is only needed for the
+0.19 chunk/community shapes if you skipped that release.
+
+### Added — `chaos sui-migration-impact` / `chaos_sui_migration_impact`: Sui migration impact report (22nd tool)
+
+- A read-only, embedder-free report that answers "if this project moves to Sui,
+  which existing features are affected, which Sui primitives map to them, and
+  what should be reviewed first?". It detects the SOURCE Web3 stack from the
+  persisted index (Solidity/Hardhat/OpenZeppelin/ERC, Anchor/SPL/Metaplex/PDAs,
+  ethers/viem/wagmi/@solana clients, IPFS/Arweave/S3 storage, encryption/
+  token-gating) plus disk probes for toolchain configs; maps the evidence files
+  onto the L1 feature communities; triggers source-pattern → Sui concept
+  mappings (objects/dynamic fields, Coin/Kiosk/Display, capabilities, PTBs,
+  package upgrades, events+GraphQL); classifies storage flows (Walrus blob /
+  Walrus+Seal / keep-offchain / review) with explicit Seal verdicts including
+  `not-needed`; correlates prior generated feature pages; and proposes a review
+  order. Every mapping cites the compiled-in `sui-official` docs profile
+  (`src/sui_docs.rs` — official Sui / Walrus / Seal pages with URL + verified
+  date) via a new `docs-profile` provenance bucket. Evidence-triggered only —
+  no signal, no claim. ALWAYS writes
+  `docs/features_memory/sui-migration-impact.html` and returns a compact JSON
+  summary (capped lists with `*_omitted` counts). It MAPS IMPACT: it generates
+  no Move code and makes no correctness claims. (`examples/sui-migration-demo`
+  ships a minimal Hardhat+OpenZeppelin+ethers fixture with a sample report.)
 
 ### Changed — L3 summaries v4, acronym routing, embedder robustness
 
@@ -116,6 +149,19 @@ at index time is the structural fix.
   substring fallback. The sidebar's existing "Filter nodes" box remains a
   plain case-insensitive substring filter (it matches `ocl` inside
   `LogoCloudItem`); the semantic panel is the meaning-based counterpart.
+
+### Fixed — parallel-test flake in the summary hash-gate
+
+- `summary_hash_gate_skips_unchanged_communities` could fail under the default
+  multi-threaded `cargo test` (never in isolation): its `two_cluster_fixture`
+  built byte-identical chunk content across tests, so the rolled-up community
+  subtree-hashes collided, and the content-addressed `community_summary_cache`
+  (which deliberately survives repo wipes) could be pre-populated by a
+  concurrent test — making the "first pass embeds everything" assertion see a
+  cache hit (`embed_calls 1 != total 2`). The fixture now folds the per-test
+  `repo_id` into the chunk content, so each test's hashes are unique and the
+  cache can no longer bleed between tests. Whole suite is green under the
+  default parallel runner.
 
 ## 0.19.0 — 2026-06-12
 
