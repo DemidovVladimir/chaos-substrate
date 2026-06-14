@@ -1,0 +1,18 @@
+{
+  "name": "@onchain-gallery/client",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "build": "tsc -p .",
+    "mint": "ts-node src/mint.ts"
+  },
+  "dependencies": {
+    "ethers": "^6.13.0",
+    "@pinata/sdk": "^2.1.0",
+    "@lit-protocol/lit-node-client": "^6.4.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "ts-node": "^10.9.2"
+  }
+}
