@@ -19,7 +19,7 @@
 
 use crate::{
     embedding::Embedder,
-    export_util::escape_script_json,
+    export_util::{escape_script_json, html_escape},
     extractor::hash,
     feature_context::correlate_feature_manifests,
     feature_inventory::{self, FeatureInventoryOptions},
@@ -558,7 +558,7 @@ async fn resolve_persona(
         // Max-pool per level: a level is as close as its closest phrasing.
         let mut best: Vec<(&str, f64, &str)> = Vec::new();
         for ((lvl, text), vec) in PERSONA_PROTOTYPES.iter().zip(protos.iter()) {
-            let score = cosine(&query, vec);
+            let score = feature_inventory::cosine(&query, vec);
             match best.iter_mut().find(|(l, _, _)| l == lvl) {
                 Some(slot) if score > slot.1 => *slot = (lvl, score, text),
                 Some(_) => {}
@@ -614,17 +614,6 @@ async fn persona_prototype_embeddings(emb: &dyn Embedder) -> Result<PrototypeVec
     let vecs = std::sync::Arc::new(emb.embed_batch(&texts).await?);
     cache.lock().unwrap().insert(key, vecs.clone());
     Ok(vecs)
-}
-
-fn cosine(a: &[f32], b: &[f32]) -> f64 {
-    let dot: f64 = a.iter().zip(b).map(|(x, y)| *x as f64 * *y as f64).sum();
-    let na: f64 = a.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
-    let nb: f64 = b.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
-    if na == 0.0 || nb == 0.0 {
-        0.0
-    } else {
-        dot / (na * nb)
-    }
 }
 
 /// The features section: every selected card with its concise L3 explanation.
@@ -1192,14 +1181,6 @@ fn safe_slug(input: &str) -> String {
     } else {
         slug.chars().take(80).collect()
     }
-}
-
-fn html_escape(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 /// Render the composed page: shared theme + optional style-preset token

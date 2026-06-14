@@ -98,10 +98,7 @@ async fn respond(request_line: &str, server: &GraphServer) -> (&'static str, &'s
             json!({"error": "GET only"}).to_string(),
         );
     }
-    let (path, query) = match target.split_once('?') {
-        Some((path, query)) => (path, query),
-        None => (target, ""),
-    };
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
     match path {
         "/" | "/index.html" => ("200 OK", "text/html; charset=utf-8", server.html.clone()),
         "/api/health" => (

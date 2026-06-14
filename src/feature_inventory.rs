@@ -612,7 +612,7 @@ const LAYER_PROTOTYPES: &[(Layer, &str)] = &[
 const LAYER_ROUTE_FLOOR: f64 = 0.65;
 const LAYER_ROUTE_MARGIN: f64 = 0.06;
 
-fn cosine(a: &[f32], b: &[f32]) -> f64 {
+pub(crate) fn cosine(a: &[f32], b: &[f32]) -> f64 {
     let dot: f64 = a.iter().zip(b).map(|(x, y)| *x as f64 * *y as f64).sum();
     let na: f64 = a.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
     let nb: f64 = b.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();

@@ -711,13 +711,11 @@ fn apply_brand_preset(manifest: &mut StoryboardManifest) -> Result<()> {
     Ok(())
 }
 
+/// The shared HTML escape plus `'` — this page emits single-quoted attribute
+/// values, so the apostrophe must be escaped too. The apostrophe pass runs
+/// last, matching the shared helper's `&`-first ordering.
 fn html_escape(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#039;")
+    crate::export_util::html_escape(input).replace('\'', "&#039;")
 }
 
 fn safe_slug(input: &str) -> String {

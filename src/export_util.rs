@@ -12,3 +12,16 @@ pub(crate) fn escape_script_json(json: &str) -> String {
         .replace('<', "\\u003c")
         .replace('>', "\\u003e")
 }
+
+/// Escape text for embedding in HTML body content or double-quoted attributes.
+///
+/// Replacement order matters: `&` is escaped first so the entities introduced
+/// by the later replacements are not themselves re-escaped. Pages that emit
+/// single-quoted attribute values additionally escape `'` (see `user_story`).
+pub(crate) fn html_escape(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}

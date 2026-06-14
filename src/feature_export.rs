@@ -1,5 +1,5 @@
 use crate::{
-    export_util::escape_script_json,
+    export_util::{escape_script_json, html_escape},
     feature_context::{read_feature_manifest, FeatureContextNode, FeatureManifest},
     graph_export::GraphExport,
     hierarchy_export::{write_hierarchy, CommunityHierarchy},
@@ -153,14 +153,6 @@ pub(crate) fn render_feature_website(manifest: &FeatureManifest) -> Result<Strin
         .replace("__SUBTITLE__", &html_escape(&manifest.subtitle))
         .replace("__FEATURE_ID__", &html_escape(&manifest.feature.id))
         .replace("__MANIFEST__", &escape_script_json(&manifest_json)))
-}
-
-fn html_escape(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 const FEATURE_HTML: &str = r##"<!doctype html>

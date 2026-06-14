@@ -381,21 +381,21 @@ pub(crate) fn span_lines<T: Spanned>(node: &T) -> (usize, usize) {
 
 /// Does any `#[derive(…)]` on these attrs name `trait_name` (last path segment)?
 fn derives(attrs: &[syn::Attribute], trait_name: &str) -> bool {
-    let mut found = false;
-    for attr in attrs {
-        if !attr.path().is_ident("derive") {
-            continue;
-        }
-        let _ = attr.parse_nested_meta(|meta| {
-            if let Some(seg) = meta.path.segments.last() {
-                if seg.ident == trait_name {
-                    found = true;
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("derive"))
+        .any(|attr| {
+            let mut found = false;
+            let _ = attr.parse_nested_meta(|meta| {
+                if let Some(seg) = meta.path.segments.last() {
+                    if seg.ident == trait_name {
+                        found = true;
+                    }
                 }
-            }
-            Ok(())
-        });
-    }
-    found
+                Ok(())
+            });
+            found
+        })
 }
 
 /// `#[command(name = "x")]` override, if present.
@@ -425,24 +425,25 @@ fn command_name_attr(attrs: &[syn::Attribute]) -> Option<String> {
 
 /// First line of the `///` doc comment, or empty string.
 fn doc_first_line(attrs: &[syn::Attribute]) -> String {
-    for attr in attrs {
-        if !attr.path().is_ident("doc") {
-            continue;
-        }
-        if let syn::Meta::NameValue(nv) = &attr.meta {
-            if let syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Str(s),
-                ..
-            }) = &nv.value
-            {
-                let line = s.value().trim().to_string();
-                if !line.is_empty() {
-                    return line;
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("doc"))
+        .find_map(|attr| {
+            if let syn::Meta::NameValue(nv) = &attr.meta {
+                if let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(s),
+                    ..
+                }) = &nv.value
+                {
+                    let line = s.value().trim().to_string();
+                    if !line.is_empty() {
+                        return Some(line);
+                    }
                 }
             }
-        }
-    }
-    String::new()
+            None
+        })
+        .unwrap_or_default()
 }
 
 /// First string literal among an attribute's arguments: the `"/path"` in
