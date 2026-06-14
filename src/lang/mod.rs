@@ -6,8 +6,8 @@
 
 use crate::{
     extractor::{
-        chunk_for_node, edge, import_stable_id, is_bare_module_specifier, is_external_import,
-        slice_lines,
+        chunk_for_node, edge, is_bare_module_specifier, is_external_import,
+        normalize_relative_import, python_relative_target, slice_lines,
     },
     models::{EdgeKind, ExtractionResult, KnowledgeNode, NodeKind, SourceFile},
     weights::EdgeWeight,
@@ -64,6 +64,19 @@ pub(crate) struct CallSite {
     pub line: i32,
 }
 
+/// How `emit_dependency` decides which imports are internal (kept, deduped
+/// repo-wide) and which are external (dropped — the repo's real dependency
+/// list lives in the manifest nodes).
+pub(crate) enum ImportFilter<'a> {
+    /// JS/TS and Solidity: bare specifiers are kept only when they name one of
+    /// the repo's own workspace packages; relative/alias paths are internal.
+    NpmWorkspace(&'a HashSet<String>),
+    /// Python: absolute modules are kept only when their first dotted segment
+    /// is one of the repo's own top-level module roots; leading-dot relative
+    /// imports are internal. Stdlib/site-packages imports are dropped.
+    PythonRoots(&'a HashSet<String>),
+}
+
 /// Per-file extraction context shared by the language submodules.
 pub(crate) struct FileExtraction<'a> {
     pub repo_id: Uuid,
@@ -73,12 +86,8 @@ pub(crate) struct FileExtraction<'a> {
     pub symbol_names: &'a mut HashMap<String, Uuid>,
     pub result: &'a mut ExtractionResult,
     pub calls: &'a mut Vec<CallSite>,
-    /// The repo's own workspace package names, for JS/TS only. When `Some`, an
-    /// import that resolves outside the repo (a third-party `node_modules`
-    /// package) is dropped instead of becoming a god-node feature. `None` for
-    /// languages where we can't yet tell internal-absolute from third-party
-    /// imports (Python, Solidity) — those keep every import, unchanged.
-    pub workspace_packages: Option<&'a HashSet<String>>,
+    /// Internal-vs-external import classification for this file's language.
+    pub import_filter: ImportFilter<'a>,
 }
 
 impl<'a> FileExtraction<'a> {
@@ -103,6 +112,10 @@ impl<'a> FileExtraction<'a> {
     /// - `start_off`       – byte offset of the symbol start
     /// - `end_off`         – byte offset of the symbol end
     /// - `chunk_meta`      – full metadata object for the `KnowledgeChunk`
+    /// - `code_override`   – chunk body to use instead of the full span slice
+    ///   (e.g. a class header + fields + method roster, when the methods are
+    ///   extracted as their own symbols and a full-body chunk would duplicate
+    ///   them); `None` keeps the span slice
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn emit_code_symbol(
         &mut self,
@@ -117,10 +130,14 @@ impl<'a> FileExtraction<'a> {
         start_off: usize,
         end_off: usize,
         chunk_meta: Value,
+        code_override: Option<&str>,
     ) {
         let line = self.lines.line(start_off);
         let end_line = self.lines.line(end_off);
-        let code = slice_lines(&self.file.content, line, end_line);
+        let code = match code_override {
+            Some(code) => code.to_string(),
+            None => slice_lines(&self.file.content, line, end_line),
+        };
 
         let node = KnowledgeNode {
             id: Uuid::new_v4(),
@@ -162,6 +179,56 @@ impl<'a> FileExtraction<'a> {
         self.result.nodes.push(node);
     }
 
+    /// Emit a whole-file chunk when symbol extraction produced no chunks for
+    /// this file, mirroring the Markdown sectionless fallback. Files made of
+    /// `export default {...}` configs, `.d.ts` declarations, top-level test
+    /// calls, or data literals collect no symbols and would otherwise be
+    /// invisible to retrieval (the file gets a graph node but zero chunks).
+    /// The chunk attaches to the file node; oversized content is split later
+    /// by `split_large_chunks`.
+    ///
+    /// `chunks_before` is `result.chunks.len()` captured before the language
+    /// module started emitting for this file (`result` accumulates across
+    /// files, so an absolute emptiness check would be wrong).
+    pub(crate) fn emit_whole_file_fallback(&mut self, chunks_before: usize, reason: &str) {
+        if self.result.chunks.len() > chunks_before {
+            return;
+        }
+        let file = self.file;
+        self.result.chunks.push(chunk_for_node(
+            self.repo_id,
+            Some(file.id),
+            Some(self.file_node_id),
+            "code",
+            &format!(
+                "Language: {language}\nFile: {path}\nKind: whole-file fallback\nLines: 1-{line_count}\n\n{content}",
+                language = file.language.as_str(),
+                path = file.path,
+                line_count = file.line_count,
+                content = file.content,
+            ),
+            Some(1),
+            Some(file.line_count),
+            serde_json::json!({
+                "kind": "whole_file_fallback",
+                "file": file.path,
+                "reason": reason,
+            }),
+        ));
+    }
+
+    /// Emit the user-surface entries (CLI commands, HTTP routes, env-var
+    /// reads) collected by a language module. See [`crate::user_surface`].
+    pub(crate) fn emit_user_surface(&mut self, entries: Vec<crate::user_surface::SurfaceEntry>) {
+        crate::user_surface::emit_surface_entries(
+            self.repo_id,
+            self.file,
+            self.file_node_id,
+            entries,
+            self.result,
+        );
+    }
+
     /// Emit a dependency (import) node and its `Imports` edge.
     ///
     /// Covers the common pattern shared by JavaScript/TypeScript, Python, and
@@ -180,34 +247,33 @@ impl<'a> FileExtraction<'a> {
         import_weight: EdgeWeight,
         offset: usize,
     ) {
-        // Drop third-party (node_modules) imports from the graph entirely: they
-        // form and name giant "features" (a shared `import:bare:react` hub glues
-        // every file that imports react into one blob and gets picked as its
-        // label). The repo's real dependency list still lives in the package.json
-        // dependency nodes. Only applied when we have the workspace package set
-        // (JS/TS); internal/workspace imports fall through and are kept.
-        if let Some(workspace) = self.workspace_packages {
-            if is_external_import(module, workspace) {
-                return;
-            }
-        }
-
+        // External (third-party / stdlib) imports are dropped from the graph
+        // entirely: a shared `import:bare:react` hub glues every file that
+        // imports react into one blob and gets picked as its label. The repo's
+        // real dependency list still lives in the manifest dependency nodes.
+        //
+        // Internal imports dedupe to ONE node per imported module repo-wide
+        // (two files importing the same `../lib/utils` share a node — they ARE
+        // coupled through it). Shared nodes carry no file_id/lines; the
+        // per-importer file and line live on each `Imports` edge.
+        let Some((stable_id, canonical, scope)) = self.classify_import(module) else {
+            return;
+        };
         let line = self.lines.line(offset) as i32;
-        let is_bare = is_bare_module_specifier(module);
 
         let node = KnowledgeNode {
             id: Uuid::new_v4(),
             repo_id: self.repo_id,
-            file_id: if is_bare { None } else { Some(self.file.id) },
+            file_id: None,
             kind: NodeKind::Dependency,
-            stable_id: import_stable_id(self.file, module, is_bare),
-            name: module.to_string(),
-            line_start: if is_bare { None } else { Some(line) },
-            line_end: if is_bare { None } else { Some(line) },
+            stable_id,
+            name: canonical.clone(),
+            line_start: None,
+            line_end: None,
             metadata: serde_json::json!({
-                "module": module,
+                "module": canonical,
                 "language": language,
-                "scope": if is_bare { "bare" } else { "relative" }
+                "scope": scope
             }),
         };
 
@@ -221,6 +287,45 @@ impl<'a> FileExtraction<'a> {
         ));
 
         self.result.nodes.push(node);
+    }
+
+    /// Classify an import as internal (returning its repo-wide stable id,
+    /// canonical module name, and scope label) or external (`None` — dropped).
+    fn classify_import(&self, module: &str) -> Option<(String, String, &'static str)> {
+        match &self.import_filter {
+            ImportFilter::NpmWorkspace(workspace) => {
+                if is_bare_module_specifier(module) {
+                    if is_external_import(module, workspace) {
+                        return None;
+                    }
+                    Some((format!("import:bare:{module}"), module.to_string(), "bare"))
+                } else if module.starts_with('.') {
+                    let target = normalize_relative_import(&self.file.path, module);
+                    Some((format!("import:path:{target}"), target, "path"))
+                } else {
+                    // Root-anchored alias (`@/`, `~/`, `/`): the same specifier
+                    // means the same target from any file.
+                    Some((
+                        format!("import:alias:{module}"),
+                        module.to_string(),
+                        "alias",
+                    ))
+                }
+            }
+            ImportFilter::PythonRoots(roots) => {
+                if module.starts_with('.') {
+                    let target = python_relative_target(&self.file.path, module);
+                    Some((format!("import:path:{target}"), target, "path"))
+                } else {
+                    let first = module.split('.').next().unwrap_or("");
+                    if !roots.contains(first) {
+                        return None;
+                    }
+                    let target = module.replace('.', "/");
+                    Some((format!("import:path:{target}"), target, "path"))
+                }
+            }
+        }
     }
 }
 

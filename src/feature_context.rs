@@ -50,6 +50,15 @@ pub struct FeatureManifest {
     pub feature: FeatureDefinition,
     pub title: String,
     pub subtitle: String,
+    /// Plain-language answer to "what was this feature made for" — who uses it
+    /// and what problem it solves. Rendered as the page's opening band, before
+    /// any graph or evidence, so a reader gets the why first.
+    #[serde(default)]
+    pub purpose: String,
+    /// Simple, concrete usage examples ("How you'd use it"). Each can point at
+    /// the graph nodes it exercises so clicking the example highlights them.
+    #[serde(default)]
+    pub examples: Vec<FeatureExample>,
     #[serde(default)]
     pub claims: Vec<FeatureClaim>,
     #[serde(default)]
@@ -67,6 +76,30 @@ pub struct FeatureManifest {
     /// files/symbols), so a reader sees the related existing features.
     #[serde(default)]
     pub related_features: Vec<FeatureCorrelation>,
+}
+
+/// A simple, concrete usage example rendered in the page's "How you'd use it"
+/// section — the actionable half of the "what was this made for" answer.
+/// Everything beyond `title` is optional: prose, numbered steps, and/or a
+/// short copy-pasteable snippet (a call, command, or payload).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct FeatureExample {
+    #[serde(default)]
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    /// Numbered walkthrough steps in plain language.
+    #[serde(default)]
+    pub steps: Vec<String>,
+    /// Short copy-pasteable snippet; shown verbatim in a code block.
+    #[serde(default)]
+    pub code: String,
+    #[serde(default)]
+    pub language: String,
+    /// Graph nodes this example exercises — clicking the example highlights them.
+    #[serde(default)]
+    pub node_ids: Vec<String>,
 }
 
 /// A previously generated feature page that overlaps the current change/feature

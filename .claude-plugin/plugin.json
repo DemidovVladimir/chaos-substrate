@@ -1,7 +1,7 @@
 {
   "name": "chaos-substrate",
   "description": "Persistent code knowledge memory with MCP tools for indexing, querying, feature context, change-plan decomposition over a layered feature hierarchy, feature explanation pages, and client-facing interactive feature guides (Access-Control-style scrollytelling with real-UI previews and an end mini-game).",
-  "version": "0.15.0",
+  "version": "0.19.0",
   "author": {
     "name": "Chaos Substrate"
   },
@@ -26,7 +26,9 @@
     "longDescription": "Agent workflow, MCP tools, and helper commands for initializing, updating, querying, building feature context, generating feature-memory websites, and composing client/user-facing feature storyboards with the Rust-only Chaos Substrate code knowledge memory.",
     "developerName": "Chaos Substrate",
     "category": "Productivity",
-    "capabilities": ["Write"],
+    "capabilities": [
+      "Write"
+    ],
     "defaultPrompt": [
       "Index this project with Chaos Substrate.",
       "Explain this feature with Chaos Substrate.",

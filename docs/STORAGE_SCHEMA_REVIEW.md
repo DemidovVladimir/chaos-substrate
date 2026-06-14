@@ -2,9 +2,16 @@
 
 Validation checklist for a Rust code knowledge memory backed by Postgres and pgvector.
 
-The generic requirement names below are mapped to the **real Chaos Substrate tables**
-(`migrations/001_init.sql`): `repositories`, `analysis_runs`, `files`, `nodes`, `edges`,
-`chunks`, and `embeddings`, plus the `_sqlx_migrations` ledger maintained by `sqlx::migrate!`.
+The generic requirement names below are mapped to the **real Chaos Substrate tables**. The L0 core
+schema (`migrations/001_init.sql`) provides `repositories`, `analysis_runs`, `files`, `nodes`,
+`edges`, `chunks`, and `embeddings`, plus the `_sqlx_migrations` ledger maintained by
+`sqlx::migrate!`. Later migrations add the layered-memory and project tables:
+`communities`, `community_members`, `community_edges` (`002_communities.sql`, L1 god-nodes),
+file/community/repo `subtree_hash` columns (`003_subtree_hash.sql`, L2 Merkle rollup),
+`community_embeddings` (`004_community_summary.sql`, L3 summaries), `projects`, `project_repos`,
+`cross_repo_links` (`005_projects.sql`, cross-repo layer), and `community_summary_cache`
+(`006_summary_cache.sql`, content-addressed summary reuse). The checklist below covers the L0
+core; the layered tables are additive and FK-isolated from it.
 Use the mapped names when validating so this checklist does not report false schema drift.
 
 ## Required Tables

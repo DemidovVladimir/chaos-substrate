@@ -1,6 +1,6 @@
 [package]
 name = "chaos-substrate"
-version = "0.15.0"
+version = "0.19.0"
 edition = "2021"
 license = "MIT"
 
@@ -18,12 +18,18 @@ dotenvy = "0.15"
 futures = "0.3"
 ignore = "0.4"
 pdf-extract = "0.10"
+# Heading-aware markdown sectioning for documentation chunks; default features
+# off keeps it a plain CommonMark pull parser with no extra deps.
+pulldown-cmark = { version = "0.13", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }
 syn = { version = "2", features = ["full", "visit"] }
+# span-locations lets the user-surface collector read real line numbers from
+# syn spans outside a proc-macro context (clap/env/route extraction).
+proc-macro2 = { version = "1", features = ["span-locations"] }
 oxc_allocator = "0.116"
 oxc_ast = "0.116"
 oxc_ast_visit = "0.116"
@@ -38,7 +44,8 @@ rustpython-parser = "0.4"
 # solang-parser 0.3.5 is effectively unmaintained and drags in thiserror 1.x;
 # pinned for stability, future work may migrate to solar/slang.
 solang-parser = "0.3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util"] }
+# "net" backs the localhost listener of `graph --serve` (semantic-search validation UI).
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "net"] }
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

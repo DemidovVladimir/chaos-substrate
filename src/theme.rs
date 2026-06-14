@@ -168,6 +168,66 @@ pub fn render_brand(brand: &Brand, context: &str) -> String {
     }
 }
 
+/// Names of the shipped style presets, for honest "unknown style" errors.
+pub const STYLE_PRESETS: &[&str] = &["editorial", "blade-runner"];
+
+/// Resolve a style preset to a CSS token-override block appended AFTER
+/// `THEME_CSS`. Every component reads the shared tokens, so overriding the
+/// token values restyles the whole page — no per-component dark variants.
+/// `None` for an unknown name (callers must error loudly, never fall back).
+pub fn style_preset(name: &str) -> Option<&'static str> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "" | "editorial" | "light" | "default" => Some(""),
+        "blade-runner" | "bladerunner" | "blade_runner" | "noir" => Some(BLADE_RUNNER_CSS),
+        _ => None,
+    }
+}
+
+/// Dark neon token override — the "blade runner" look: near-black blue
+/// surfaces, light ink, cyan primary accent, magenta/violet secondaries, glow
+/// shadows. Same chrome, same components; only the tokens change.
+const BLADE_RUNNER_CSS: &str = r#"
+/* ===== style preset: blade-runner (dark neon token override) ===== */
+:root{
+  --color-ink-900:rgb(236,248,255);
+  --color-ink-800:rgb(224,241,252);
+  --color-ink-700:rgb(209,233,249);
+  --color-ink-600:rgb(187,215,237);
+  --color-ink-500:rgb(159,189,215);
+  --color-ink-400:rgb(127,157,187);
+  --color-ink-300:rgb(99,131,165);
+  --color-ink-200:rgb(112,130,158);
+  --color-ink-100:rgb(72,88,114);
+  --color-border:rgb(39,53,86);
+  --color-border-soft:rgb(27,37,61);
+  --color-surface-0:rgb(7,10,20);
+  --color-surface-1:rgb(11,15,28);
+  --color-surface-2:rgb(14,20,36);
+  --color-surface-3:rgb(20,28,48);
+  --color-blue-50:rgb(10,14,26);
+  --color-blue-100:rgb(12,18,34);
+  --color-blue-150:rgb(14,22,40);
+  --color-blue-200:rgb(18,28,50);
+  --color-blue-300:rgb(26,42,72);
+  --color-blue-400:rgb(0,180,255);
+  --color-blue-500:rgb(64,200,255);
+  --color-blue-600:rgb(0,210,255);
+  --color-blue-700:rgb(0,229,255);
+  --color-blue-800:rgb(120,240,255);
+  --color-blue-900:rgb(202,250,255);
+  --color-purple-500:rgb(190,122,255);
+  --color-purple-100:rgb(30,22,52);
+  --color-magenta-500:rgb(255,60,220);
+  --color-violet-500:rgb(168,120,255);
+  --bg-sky-soft:linear-gradient(180deg,rgb(10,14,30) 0%,rgb(17,11,38) 100%);
+  --shadow-xs:0 1px 2px rgba(0,229,255,.05);
+  --shadow-sm:0 2px 10px rgba(0,229,255,.08);
+  --shadow-md:0 8px 26px rgba(0,229,255,.09),0 1px 2px rgba(255,60,220,.05);
+  --shadow-lg:0 20px 44px rgba(0,0,0,.55),0 2px 10px rgba(0,229,255,.10);
+  --shadow-focus:0 0 0 3px rgba(0,229,255,.35);
+}
+"#;
+
 /// The shared, de-branded design system: colour/spacing/type tokens, base
 /// element resets, and the cross-page chrome (`.wrap`, `.topbar`, `.hero`,
 /// `.nutshell`, `section.block`, `footer`). Pages embed this once, then add

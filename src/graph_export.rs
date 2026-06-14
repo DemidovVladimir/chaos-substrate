@@ -44,10 +44,15 @@ pub struct GraphExportEdge {
 }
 
 pub fn write_graph_html(path: &Path, graph: &GraphExport) -> Result<()> {
-    let json = serde_json::to_string(graph)?;
-    let html = render_graph_html(&json);
-    std::fs::write(path, html)?;
+    std::fs::write(path, render_graph_export(graph)?)?;
     Ok(())
+}
+
+/// Render the page to a string — `graph --serve` serves the same bytes the
+/// file export writes, so the served and written pages can never drift.
+pub fn render_graph_export(graph: &GraphExport) -> Result<String> {
+    let json = serde_json::to_string(graph)?;
+    Ok(render_graph_html(&json))
 }
 
 fn render_graph_html(graph_json: &str) -> String {
@@ -240,6 +245,45 @@ pre {
   font-size: 12px;
   line-height: 1.35;
 }
+.sem-list { display: grid; gap: 8px; margin-top: 12px; }
+.sem-head {
+  color: #657086;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.sem-item {
+  padding: 8px 10px;
+  border: 1px solid #e1e7f0;
+  border-radius: 8px;
+  background: #ffffff;
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.sem-item:hover { border-color: #0f9f95; background: #f0fbfa; }
+.sem-item.sem-unlinked { cursor: default; opacity: .75; }
+.sem-score {
+  color: #08756f;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  margin-right: 4px;
+}
+.sem-meta { color: #657086; font-size: 11px; }
+.sem-badges { margin-top: 4px; }
+.sem-badges span {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #eef2f9;
+  color: #36435a;
+  font-size: 10px;
+}
+.sem-badges .semantic { background: #e6fbf8; color: #08756f; }
+.sem-badges .keyword { background: #fff4e0; color: #9a5b00; }
+.sem-badges .literal { background: #efe7fd; color: #5b21b6; }
 @media (max-width: 1000px) {
   .app { grid-template-columns: 260px 1fr; }
   .details { display: none; }
@@ -263,6 +307,18 @@ pre {
       <button id="reset">Reset</button>
     </div>
     <div class="render-status" id="renderMeta"></div>
+    <h2>Semantic search</h2>
+    <div class="hint" id="semanticHint">Checking for a live index&hellip;</div>
+    <div id="semanticPanel" hidden>
+      <input id="semanticInput" type="search" placeholder="Ask the index (real embedder)">
+      <div class="toolbar">
+        <button id="semanticRun">Search</button>
+        <button id="semanticClear">Clear</button>
+      </div>
+      <div class="render-status" id="semanticStatus" hidden></div>
+      <div id="semanticFeatures" class="sem-list"></div>
+      <div id="semanticHits" class="sem-list"></div>
+    </div>
     <h2>Kinds</h2>
     <div id="kinds"></div>
     <h2>Edges</h2>
@@ -298,6 +354,10 @@ const state = {
   renderNodeIds: new Set(),
   renderQueued: false
 };
+// Live retrieval (graph --serve only): the SAME pipeline feature extraction
+// runs. byNode = node_id -> {score, relative} for each returned hit; the halos
+// it draws are exactly the evidence feature extraction would gather.
+const semantic = { active: false, byNode: new Map(), embedder: null };
 const palette = {
   repository: '#174ea6',
   file: '#64748b',
@@ -549,6 +609,17 @@ function applyFilters() {
   }
   state.renderNodes = render.slice(0, state.renderLimit + renderedTopics.size);
   state.renderNodeIds = new Set(state.renderNodes.map(node => node.id));
+  // Semantic hits must stay on stage even when the kind/substring filters
+  // would drop them — they are the result being validated.
+  if (semantic.active) {
+    for (const id of semantic.byNode.keys()) {
+      const node = nodeById.get(id);
+      if (node && !state.renderNodeIds.has(node.id)) {
+        state.renderNodes.push(node);
+        state.renderNodeIds.add(node.id);
+      }
+    }
+  }
   for (const node of nodes) {
     node.visible = state.renderNodeIds.has(node.id);
   }
@@ -746,6 +817,8 @@ function draw() {
     const point = worldToScreen(node.x, node.y);
     const radius = radiusFor(node) * state.scale;
     if (!isOnScreen(point, Math.max(20, radius + 80), w, h)) continue;
+    const highlight = semantic.active ? semantic.byNode.get(node.id) : null;
+    ctx.globalAlpha = semantic.active && !highlight && node.kind !== 'topic' ? 0.25 : 1;
     ctx.fillStyle = colorFor(node.kind);
     ctx.strokeStyle = state.selected === node ? '#111827' : state.hover === node ? '#202124' : '#ffffff';
     ctx.lineWidth = state.selected === node ? 3 : 2;
@@ -753,7 +826,16 @@ function draw() {
     ctx.arc(point.x, point.y, Math.max(3, radius), 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
-    if (node.kind === 'topic' || (state.scale > 0.45 && (radius > 6 || state.hover === node || state.selected === node))) {
+    if (highlight) {
+      // Halo sized by the hit's score relative to the best hit.
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = '#0f9f95';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(point.x, point.y, Math.max(3, radius) + 4 + highlight.relative * 5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    if (node.kind === 'topic' || highlight || (state.scale > 0.45 && (radius > 6 || state.hover === node || state.selected === node))) {
       ctx.fillStyle = '#172033';
       ctx.font = node.kind === 'topic'
         ? '700 13px ui-sans-serif, system-ui, sans-serif'
@@ -761,6 +843,7 @@ function draw() {
       ctx.fillText(node.name.slice(0, 42), point.x + radius + 4, point.y + 4);
     }
   }
+  ctx.globalAlpha = 1;
 }
 
 function fitVisible() {
@@ -786,6 +869,111 @@ function fitVisible() {
 
 fitVisible();
 requestRender();
+
+// ---- Semantic search (graph --serve only) ------------------------------
+// The endpoints run the SAME hierarchical retrieval pipeline the agent tools
+// use (real embedder + pgvector + hybrid rerank). A static file:// export has
+// no server: the probe fails and the panel stays hidden, with a hint on how
+// to start one. Failures stay loud — there is no substring fallback here.
+const semanticHint = document.getElementById('semanticHint');
+const semanticPanel = document.getElementById('semanticPanel');
+const semanticStatus = document.getElementById('semanticStatus');
+fetch('api/health')
+  .then(res => res.json())
+  .then(info => {
+    if (!info.ok) throw new Error('health probe not ok');
+    semantic.embedder = info.embedder;
+    semanticPanel.hidden = false;
+    semanticHint.textContent = `Live: ${info.embedder.provider}:${info.embedder.model} (${info.embedder.dimensions}d) — the same hybrid retrieval the agent tools use.`;
+  })
+  .catch(() => {
+    semanticHint.textContent = 'Static export. For live semantic search run: chaos graph ' + graphData.repository.root_path + ' --serve';
+  });
+
+document.getElementById('semanticRun').addEventListener('click', runSemanticSearch);
+document.getElementById('semanticInput').addEventListener('keydown', event => {
+  if (event.key === 'Enter') runSemanticSearch();
+});
+document.getElementById('semanticClear').addEventListener('click', () => {
+  semantic.active = false;
+  semantic.byNode.clear();
+  document.getElementById('semanticFeatures').innerHTML = '';
+  document.getElementById('semanticHits').innerHTML = '';
+  semanticStatus.hidden = true;
+  applyFilters();
+  requestRender();
+});
+
+async function runSemanticSearch() {
+  const query = document.getElementById('semanticInput').value.trim();
+  if (!query) return;
+  semanticStatus.hidden = false;
+  semanticStatus.textContent = 'Embedding the query and searching pgvector…';
+  document.getElementById('semanticFeatures').innerHTML = '';
+  document.getElementById('semanticHits').innerHTML = '';
+  try {
+    const started = performance.now();
+    const res = await fetch('api/search?q=' + encodeURIComponent(query) + '&limit=25');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    renderSemanticResults(data, performance.now() - started);
+  } catch (err) {
+    semantic.active = false;
+    semantic.byNode.clear();
+    semanticStatus.textContent = 'Search failed: ' + err.message + ' — no fallback; fix the embedder/database and retry.';
+    applyFilters();
+    requestRender();
+  }
+}
+
+function renderSemanticResults(data, elapsedMs) {
+  semantic.byNode.clear();
+  let bestScore = 0;
+  for (const hit of data.hits) bestScore = Math.max(bestScore, hit.score);
+  for (const hit of data.hits) {
+    if (!hit.node_id || !nodeById.has(hit.node_id)) continue;
+    const existing = semantic.byNode.get(hit.node_id);
+    if (!existing || hit.score > existing.score) {
+      semantic.byNode.set(hit.node_id, {
+        score: hit.score,
+        relative: bestScore > 0 ? hit.score / bestScore : 0
+      });
+    }
+  }
+  semantic.active = true;
+  semanticStatus.hidden = false;
+  semanticStatus.textContent = `Feature-extraction retrieval: ${data.hits.length} hit(s) (${semantic.byNode.size} graph nodes highlighted) in ${Math.round(elapsedMs)} ms — the same evidence feature extraction gathers.`;
+
+  document.getElementById('semanticFeatures').innerHTML = '';
+
+  const hitBox = document.getElementById('semanticHits');
+  const head = document.createElement('div');
+  head.className = 'sem-head';
+  head.textContent = 'Evidence hits (feature-extraction retrieval)';
+  hitBox.append(head);
+  for (const hit of data.hits) {
+    const node = hit.node_id ? nodeById.get(hit.node_id) : null;
+    const methods = Array.isArray(hit.metadata && hit.metadata.retrieved_by) ? hit.metadata.retrieved_by : [];
+    const lines = hit.line_start ? `:${hit.line_start}${hit.line_end ? '-' + hit.line_end : ''}` : '';
+    const item = document.createElement('div');
+    item.className = 'sem-item' + (node ? '' : ' sem-unlinked');
+    item.innerHTML = `<div><span class="sem-score">${hit.score.toFixed(3)}</span>${escapeHtml(node ? node.name : '(chunk without a node)')}</div>
+      <div class="sem-meta">${escapeHtml((hit.file_path || '') + lines)}</div>
+      <div class="sem-badges">${methods.map(method => `<span class="${escapeHtml(method)}">${escapeHtml(method)}</span>`).join('')}</div>`;
+    if (node) item.addEventListener('click', () => focusNode(node));
+    hitBox.append(item);
+  }
+  applyFilters();
+  requestRender();
+}
+
+function focusNode(node) {
+  const ratio = window.devicePixelRatio || 1;
+  state.scale = Math.max(state.scale, 1.1);
+  state.offsetX = canvas.width / ratio / 2 - node.x * state.scale;
+  state.offsetY = canvas.height / ratio / 2 - node.y * state.scale;
+  selectNode(node);
+}
 </script>
 </body>
 </html>

@@ -18,6 +18,16 @@ pub struct Storage {
     pool: PgPool,
 }
 
+/// Cap on literal-search hits contributed by ONE file, so a folder whose
+/// path matches the term (e.g. `onchainlabs/` for "onchainlabs") adds breadth
+/// across files instead of flooding the limit with its first lines.
+const LITERAL_HITS_PER_FILE: i64 = 2;
+
+/// Cap on subject-search hits contributed by ONE file (see [`Storage::subject_search`]):
+/// the recall floor wants BREADTH across the files named after the query, not a
+/// deep dive into any single one.
+const SUBJECT_HITS_PER_FILE: i64 = 2;
+
 impl Storage {
     pub async fn connect(database_url: &str) -> Result<Self> {
         let pool = PgPoolOptions::new()
@@ -1320,37 +1330,6 @@ impl Storage {
         })
     }
 
-    /// Map of node id -> the communities it belongs to, for a set of nodes.
-    /// Used by hierarchical retrieval to boost hits inside matched god-nodes.
-    pub async fn node_communities(
-        &self,
-        repo_id: Uuid,
-        node_ids: &[Uuid],
-    ) -> Result<HashMap<Uuid, Vec<Uuid>>> {
-        if node_ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-        let rows = sqlx::query(
-            r#"
-            select cm.node_id, cm.community_id
-            from community_members cm
-            join communities c on c.id = cm.community_id
-            where c.repo_id = $1 and cm.node_id = any($2)
-            "#,
-        )
-        .bind(repo_id)
-        .bind(node_ids)
-        .fetch_all(&self.pool)
-        .await?;
-        let mut map: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
-        for row in rows {
-            map.entry(row.get::<Uuid, _>("node_id"))
-                .or_default()
-                .push(row.get::<Uuid, _>("community_id"));
-        }
-        Ok(map)
-    }
-
     /// Directed dependency links between the given communities, derived from L0
     /// edge direction (an edge from a node in A to a node in B ⇒ A → B). Used to
     /// topo-sort a change plan's check order. Returns `(src, dst, count)`.
@@ -1695,6 +1674,53 @@ impl Storage {
         Ok(rows.into_iter().map(row_to_search_hit).collect())
     }
 
+    /// Latest-indexed text of every file, aggregated from persisted chunks.
+    /// Read-only; feeds the knowledge-gaps detector (`src/gaps.rs`).
+    pub async fn load_file_texts(&self, repo_id: Uuid) -> Result<Vec<crate::gaps::FileText>> {
+        let rows = sqlx::query(
+            r#"
+            with latest as (
+                select distinct on (path) id, path, language, line_count
+                from files
+                where repo_id = $1
+                order by path, indexed_at desc
+            )
+            select l.path, l.language, l.line_count,
+                   coalesce(string_agg(c.content, ' '), '') as text,
+                   count(c.id) as chunk_count
+            from latest l
+            left join chunks c on c.file_id = l.id
+            group by l.path, l.language, l.line_count
+            order by l.path
+            "#,
+        )
+        .bind(repo_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| crate::gaps::FileText {
+                path: row.get("path"),
+                language: row.get("language"),
+                line_count: row.get("line_count"),
+                text: row.get("text"),
+                chunk_count: row.get("chunk_count"),
+            })
+            .collect())
+    }
+
+    /// Exact-substring retrieval over chunk content and file paths.
+    ///
+    /// Ranking constraints learned from real validation (a term like
+    /// "onchainlabs" path-matches an entire repo folder):
+    /// - CONTENT matches weigh the same as path matches — a chunk that
+    ///   mentions the term is at least as related as a chunk that merely
+    ///   lives under a matching path. The old 1.5-path / 0.35-content split
+    ///   let one folder's line-1 chunks flood every slot and shadow
+    ///   content-matching files elsewhere in the tree.
+    /// - At most [`LITERAL_HITS_PER_FILE`] hits per file (content matches
+    ///   preferred within a file), so a path-matching folder contributes
+    ///   breadth, not a wall of its first lines.
     pub async fn literal_search(
         &self,
         repo_id: Uuid,
@@ -1704,23 +1730,85 @@ impl Storage {
         let pattern = format!("%{term}%");
         let rows = sqlx::query(
             r#"
-            select c.id as chunk_id, c.node_id, f.path as file_path, c.line_start, c.line_end,
-                   (
-                     case when lower(coalesce(f.path, '')) like lower($2) then 1.5 else 0 end +
-                     case when lower(c.content) like lower($2) then 0.35 else 0 end
-                   )::float8 as score,
-                   c.content, c.metadata
-            from chunks c
-            left join files f on f.id = c.file_id
-            where c.repo_id = $1
-              and (lower(coalesce(f.path, '')) like lower($2) or lower(c.content) like lower($2))
-            order by score desc, c.line_start nulls last
+            with matches as (
+                select c.id as chunk_id, c.node_id, f.path as file_path, c.line_start, c.line_end,
+                       (
+                         case when lower(coalesce(f.path, '')) like lower($2) then 0.75 else 0 end +
+                         case when lower(c.content) like lower($2) then 0.75 else 0 end
+                       )::float8 as score,
+                       c.content, c.metadata,
+                       row_number() over (
+                         partition by coalesce(f.path, c.id::text)
+                         order by case when lower(c.content) like lower($2) then 0 else 1 end,
+                                  c.line_start nulls last
+                       ) as file_rank
+                from chunks c
+                left join files f on f.id = c.file_id
+                where c.repo_id = $1
+                  and (lower(coalesce(f.path, '')) like lower($2) or lower(c.content) like lower($2))
+            )
+            select chunk_id, node_id, file_path, line_start, line_end, score, content, metadata
+            from matches
+            where file_rank <= $4
+            order by score desc, file_path nulls last, line_start nulls last
             limit $3
             "#,
         )
         .bind(repo_id)
         .bind(pattern)
         .bind(limit)
+        .bind(LITERAL_HITS_PER_FILE)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(row_to_search_hit).collect())
+    }
+
+    /// Chunks whose FILE BASENAME carries one of the subject `terms` (the query's
+    /// acronym / distinctive tokens) — the files NAMED AFTER the query. Returned
+    /// so the shared retrieval can GUARANTEE these into the evidence (see
+    /// `query::guarantee_subject_recall`): a named-feature query must surface the
+    /// files that ARE the feature, not just whatever the common words rank.
+    ///
+    /// Basename-scoped, not full path, so `ocl` matches `ocl-service.ts` but NOT
+    /// every file under an `onchainlabs/` folder — the recall floor stays precise.
+    /// Coarse `ILIKE` here; the caller refines with the segment-exact
+    /// `query::node_is_subject`. A modest baseline score lets a subject that ALSO
+    /// matched content outrank a name-only one when slots are reserved. Capped per
+    /// file ([`SUBJECT_HITS_PER_FILE`]) so one file can't claim the budget.
+    pub async fn subject_search(
+        &self,
+        repo_id: Uuid,
+        terms: &[String],
+        limit: i64,
+    ) -> Result<Vec<SearchHit>> {
+        if terms.is_empty() {
+            return Ok(Vec::new());
+        }
+        let patterns: Vec<String> = terms.iter().map(|term| format!("%{term}%")).collect();
+        let rows = sqlx::query(
+            r#"
+            with matches as (
+                select c.id as chunk_id, c.node_id, f.path as file_path, c.line_start, c.line_end,
+                       0.7::float8 as score, c.content, c.metadata,
+                       row_number() over (
+                         partition by f.path order by c.line_start nulls last
+                       ) as file_rank
+                from chunks c
+                join files f on f.id = c.file_id
+                where c.repo_id = $1
+                  and lower(reverse(split_part(reverse(f.path), '/', 1))) ilike any($2)
+            )
+            select chunk_id, node_id, file_path, line_start, line_end, score, content, metadata
+            from matches
+            where file_rank <= $4
+            order by file_path, line_start nulls last
+            limit $3
+            "#,
+        )
+        .bind(repo_id)
+        .bind(&patterns)
+        .bind(limit)
+        .bind(SUBJECT_HITS_PER_FILE)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(row_to_search_hit).collect())
@@ -2647,7 +2735,9 @@ async fn insert_chunk(
     sqlx::query(
         r#"
         insert into chunks (id, repo_id, file_id, node_id, chunk_type, content, content_hash, line_start, line_end, metadata, search_vector)
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, to_tsvector('english', $6))
+        -- Index original content PLUS its identifier-split rendering (008) so
+        -- "on chain labs" keyword-matches code naming listAllOnChainLabs.
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, to_tsvector('english', $6 || ' ' || chaos_identifier_text($6)))
         "#,
     )
     .bind(chunk.id)
@@ -2802,8 +2892,12 @@ mod db_tests {
                 funcs.push((ci, node_id));
                 result.nodes.push(nd);
                 // One chunk per symbol, with distinct content ⇒ distinct,
-                // non-empty file subtree hashes for the Merkle rollup.
-                let content = format!("fn {file}::c{ci}_f{k} body");
+                // non-empty file subtree hashes for the Merkle rollup. The
+                // `repo_id` makes the content (and its rolled-up subtree
+                // hashes) unique per test, so the content-addressed summary
+                // cache — which deliberately survives repo wipes — can never
+                // bleed between concurrent tests sharing one database.
+                let content = format!("fn {file}::c{ci}_f{k} body // {repo_id}");
                 result.chunks.push(KnowledgeChunk {
                     id: Uuid::new_v4(),
                     repo_id,
@@ -3161,6 +3255,19 @@ mod db_tests {
         let total = storage.count_hashed_communities(repo.id).await.unwrap();
         assert!(total >= 2);
 
+        // The content-addressed summary cache deliberately survives repo
+        // wipes, and this fixture's content is deterministic — a previous run
+        // of this test would otherwise serve pass 1 from cache and break the
+        // "first pass embeds everything" assertion. Clear just our rows.
+        sqlx::query(
+            "delete from community_summary_cache where content_hash in \
+             (select subtree_hash from communities where repo_id = $1)",
+        )
+        .bind(repo.id)
+        .execute(&storage.pool)
+        .await
+        .expect("clear summary cache for fixture content");
+
         // First pass: everything summarized.
         let first = crate::community_summary::summarize_repo(&storage, embedder.as_ref(), repo.id)
             .await
@@ -3191,6 +3298,16 @@ mod db_tests {
         crate::merkle::compute_and_persist(&storage, repo.id)
             .await
             .expect("merkle2");
+        // The mutated content is deterministic too — clear its cache rows so
+        // the changed community embeds for real instead of restoring.
+        sqlx::query(
+            "delete from community_summary_cache where content_hash in \
+             (select subtree_hash from communities where repo_id = $1)",
+        )
+        .bind(repo.id)
+        .execute(&storage.pool)
+        .await
+        .expect("clear summary cache for mutated content");
         let third = crate::community_summary::summarize_repo(&storage, embedder.as_ref(), repo.id)
             .await
             .expect("summarize3");

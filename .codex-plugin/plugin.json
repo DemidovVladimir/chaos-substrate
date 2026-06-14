@@ -1,6 +1,6 @@
 {
   "name": "chaos-substrate",
-  "version": "0.15.0",
+  "version": "0.19.0",
   "description": "Agent guidance, MCP tools, and wrappers for indexing projects, querying code memory, decomposing changes into features over a layered hierarchy, generating feature-context explanations, and composing client-facing feature storyboards with real-UI previews.",
   "author": {
     "name": "Chaos Substrate"
@@ -8,7 +8,16 @@
   "homepage": "https://github.com/chaos-substrate/chaos-substrate",
   "repository": "https://github.com/chaos-substrate/chaos-substrate",
   "license": "MIT",
-  "keywords": ["code-memory", "knowledge-graph", "mcp", "rust", "typescript", "javascript", "python", "solidity"],
+  "keywords": [
+    "code-memory",
+    "knowledge-graph",
+    "mcp",
+    "rust",
+    "typescript",
+    "javascript",
+    "python",
+    "solidity"
+  ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
@@ -17,7 +26,9 @@
     "longDescription": "Agent workflow, MCP tools, and helper commands for initializing, updating, querying, building feature context, and generating feature-memory websites with the Rust-only Chaos Substrate code knowledge memory.",
     "developerName": "Chaos Substrate",
     "category": "Productivity",
-    "capabilities": ["Write"],
+    "capabilities": [
+      "Write"
+    ],
     "defaultPrompt": [
       "Index this project with Chaos Substrate.",
       "Explain this feature with Chaos Substrate.",

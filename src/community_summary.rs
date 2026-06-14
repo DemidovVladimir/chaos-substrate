@@ -44,7 +44,7 @@ const MAX_KEY_SYMBOLS: usize = 24;
 /// adds a human role (journey layer), prefers real defined symbols over import
 /// references for "Key symbols", and names the related features it connects to —
 /// so a summary explains *what it is and where it sits*, not just lists imports.
-pub const SUMMARY_ALGO_VERSION: u32 = 3;
+pub const SUMMARY_ALGO_VERSION: u32 = 4;
 
 /// Tag folded into the summary hash gate (see [`SUMMARY_ALGO_VERSION`]).
 pub fn algo_tag() -> String {
@@ -175,6 +175,20 @@ pub fn compose_summary(inputs: &CommunitySummaryInputs) -> String {
     };
     if !key_symbols.is_empty() {
         out.push_str(&format!("Key symbols: {}.\n", key_symbols.join(", ")));
+        // The same symbols AS WORDS (camelCase/snake_case split) — code names
+        // carry the feature's meaning, but `listAllOnChainLabs` embeds nowhere
+        // near the query "on chain labs" while "list all on chain labs" does
+        // (v4; the query-side counterpart of the search_vector split in
+        // migration 008). Deduplicated, order-preserving.
+        let mut seen = std::collections::BTreeSet::new();
+        let phrases = key_symbols
+            .iter()
+            .map(|name| identifier_phrase(name))
+            .filter(|phrase| !phrase.is_empty() && seen.insert(phrase.clone()))
+            .collect::<Vec<_>>();
+        if !phrases.is_empty() {
+            out.push_str(&format!("In words: {}.\n", phrases.join("; ")));
+        }
     }
 
     // Distinct files (ordered).
@@ -271,16 +285,24 @@ fn role_phrase(layer: crate::layering::Layer) -> &'static str {
 /// the natural tokens (`onchainlabs/src/Foo.sol` → also `onchainlabs src Foo
 /// sol`). Pure and deterministic.
 fn humanize_label(label: &str) -> String {
-    let words = label
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
+    let words = identifier_phrase(label);
     if words.is_empty() || words == label {
         label.to_string()
     } else {
         format!("{label} ({words})")
     }
+}
+
+/// An identifier (or path-ish label) rendered as lowercase words: splits on
+/// non-alphanumerics AND camel boundaries via [`crate::gaps::split_camel`].
+/// `listAllOnChainLabs` → "list all on chain labs".
+fn identifier_phrase(name: &str) -> String {
+    name.split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .flat_map(crate::gaps::split_camel)
+        .map(|word| word.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
@@ -327,8 +349,15 @@ mod tests {
         // v2: no shared structural prefix — leads with the domain signal (label).
         assert!(!a.starts_with("Feature:"));
         assert!(a.starts_with("ipnft"));
-        // Humanized label exposes the separator-split words for the embedder.
-        assert!(a.contains("ipnft Tokenizer"));
+        // Humanized label exposes the separator+camel-split words (v4,
+        // lowercase) for the embedder.
+        assert!(a.contains("ipnft tokenizer"));
+        // v4: key symbols also rendered AS WORDS so camelCase names embed
+        // near natural-language queries ("tokenize ipnft", not tokenizeIpnft).
+        assert!(
+            a.contains("In words: tokenizer; tokenize ipnft."),
+            "summary spells key symbols as words"
+        );
         // v3: states a role and names the related features it connects to.
         assert!(a.contains("Role: foundation"), "summary states the role");
         assert!(

@@ -43,6 +43,7 @@ const PAGE_MARKERS: &[(&str, &str, &str)] = &[
         "chaos_components",
     ),
     ("chaos-features-manifest", "features", "chaos_features"),
+    ("chaos-composed-manifest", "composed", "chaos_compose"),
     ("chaos-stack-manifest", "stack", "chaos_stack"),
     ("chaos-impact-data", "impact", "chaos_impact"),
     ("chaos-plan-data", "change-plan", "chaos_change_plan"),

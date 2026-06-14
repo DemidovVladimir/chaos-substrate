@@ -197,7 +197,27 @@ pub async fn run(storage: &Storage, repo: &str, opts: &StackOptions) -> Result<V
         .await?
         .with_context(|| format!("repository is not indexed: {repo}"))?;
     let repo_root = PathBuf::from(&repo.root_path);
+    let manifest = build_manifest(storage, &repo).await?;
 
+    let output = opts
+        .output_html
+        .clone()
+        .unwrap_or_else(|| repo_root.join("docs/features_memory/stack.html"));
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    write_stack_html(&output, &manifest)?;
+
+    Ok(compact_return(&manifest, &output, repo.id))
+}
+
+/// Build the stack manifest from the persisted index alone — no HTML write.
+/// Shared by `run` (which writes the standalone stack page) and `chaos compose`
+/// (which embeds the manifest as one section of a composed page).
+pub(crate) async fn build_manifest(
+    storage: &Storage,
+    repo: &crate::models::Repository,
+) -> Result<StackManifest> {
     let mut provenance: Vec<Breadcrumb> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
 
@@ -276,7 +296,7 @@ pub async fn run(storage: &Storage, repo: &str, opts: &StackOptions) -> Result<V
         &totals,
     );
 
-    let manifest = StackManifest {
+    Ok(StackManifest {
         schema_version: "stack-inventory-1".to_string(),
         repo_name: repo.name.clone(),
         title: format!("{} — tech stack", repo.name),
@@ -293,18 +313,7 @@ pub async fn run(storage: &Storage, repo: &str, opts: &StackOptions) -> Result<V
         coverage: Coverage::current(),
         provenance,
         warnings,
-    };
-
-    let output = opts
-        .output_html
-        .clone()
-        .unwrap_or_else(|| repo_root.join("docs/features_memory/stack.html"));
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    write_stack_html(&output, &manifest)?;
-
-    Ok(compact_return(&manifest, &output, repo.id))
+    })
 }
 
 /// Map a manifest section to runtime/dev scope. These are the section names the

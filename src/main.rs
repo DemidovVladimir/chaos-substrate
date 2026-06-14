@@ -3,6 +3,7 @@ mod change_plan;
 mod community;
 mod community_summary;
 mod components;
+mod compose;
 mod config;
 mod embedding;
 mod export_util;
@@ -10,8 +11,10 @@ mod extractor;
 mod feature_context;
 mod feature_export;
 mod feature_inventory;
+mod gaps;
 mod graph;
 mod graph_export;
+mod graph_serve;
 mod hierarchy_export;
 mod hook;
 mod impact;
@@ -33,6 +36,7 @@ mod storage;
 mod struct_features;
 mod theme;
 mod user_story;
+mod user_surface;
 mod weights;
 
 pub use config::Config;
@@ -281,6 +285,49 @@ enum Commands {
         #[arg(long)]
         curation: Option<PathBuf>,
     },
+    /// Compose ONE page from knowledge-base-backed sections (features with
+    /// concise explanations, file correlations, tech stack) instead of several
+    /// standalone pages — tailored to an audience (persona/level) and a style
+    /// preset (editorial | blade-runner). Uses ONLY the chaos knowledge base;
+    /// a section it cannot serve is a loud error, never a fallback. The result
+    /// is content-hashed: recomposing the same request over unchanged data is
+    /// a cached no-op.
+    Compose {
+        repo: String,
+        /// Sections to include, comma-separated: features,correlations,stack.
+        #[arg(long, value_delimiter = ',', required = true)]
+        sections: Vec<String>,
+        /// Free-text audience ("a beginner engineer new to this stack") —
+        /// resolved to a detail level by meaning (needs the embedder).
+        #[arg(long)]
+        persona: Option<String>,
+        /// Explicit detail level (beginner|practitioner|expert), embedder-free.
+        #[arg(long)]
+        level: Option<String>,
+        /// Style preset: editorial (default light) | blade-runner (dark neon).
+        #[arg(long)]
+        style: Option<String>,
+        /// Brand preset shipped inside Chaos (e.g. molecule).
+        #[arg(long)]
+        brand_preset: Option<String>,
+        /// Feature filter, auto-detected as folder / layer / topic.
+        #[arg(long)]
+        filter: Option<String>,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        slug: Option<String>,
+        /// Override the default docs/features_memory/<slug>-composed.html path.
+        #[arg(long)]
+        output_html: Option<PathBuf>,
+        /// Cap features in the features section; 0 = all.
+        #[arg(long, default_value_t = 0)]
+        limit: usize,
+        /// SITE MODE: also write one hash-gated page per feature (under
+        /// <slug>-composed/) and make the index's feature cards link to them.
+        #[arg(long)]
+        feature_pages: bool,
+    },
     /// Manage cross-repository projects: group indexed repos (client, backend,
     /// contracts, infra, …) under one name and maintain feature→feature
     /// cross-repo links between them. Links refresh automatically after
@@ -314,11 +361,38 @@ enum Commands {
         #[arg(long)]
         brand_preset: Option<String>,
     },
+    /// List KNOWLEDGE GAPS: indexed code files whose text carries too little
+    /// distinctive vocabulary to match any meaningful query (single-letter
+    /// names, no docstrings), plus files that produced no chunks at all. The
+    /// fix is repo content — a file-top docstring or folder README — followed
+    /// by `chaos add` on those paths; indexing is never blocked on it.
+    /// Read-only and embedder-free.
+    Gaps {
+        /// Indexed repository (omit when using --project).
+        repo: Option<String>,
+        /// Scan EVERY member repo of a cross-repo project instead.
+        #[arg(long, conflicts_with = "repo")]
+        project: Option<String>,
+        /// Restrict flagging to files under this path prefix (a sub-app
+        /// inside a monorepo-indexed repo).
+        #[arg(long)]
+        folder: Option<String>,
+    },
     /// Export an indexed repository as an interactive standalone HTML graph.
     Graph {
         repo: String,
         #[arg(short, long, default_value = "graph.html")]
         output: PathBuf,
+        /// Serve the graph at http://127.0.0.1:<port>/ with LIVE semantic
+        /// search: the page gains a search mode that runs the same
+        /// hierarchical retrieval the agent tools use (real embedder +
+        /// pgvector + hybrid rerank) and highlights the hits with scores —
+        /// a validation surface for the retrieval pipeline itself.
+        #[arg(long)]
+        serve: bool,
+        /// Port for --serve.
+        #[arg(long, default_value_t = 7878)]
+        port: u16,
     },
     /// Export an indexed repository as an Obsidian vault.
     Obsidian {
@@ -751,6 +825,40 @@ async fn main() -> Result<()> {
                 components::run(&storage, embedder.as_ref(), &repo, area.as_deref(), &opts).await?;
             println!("{}", serde_json::to_string_pretty(&summary)?);
         }
+        Commands::Compose {
+            repo,
+            sections,
+            persona,
+            level,
+            style,
+            brand_preset,
+            filter,
+            title,
+            slug,
+            output_html,
+            limit,
+            feature_pages,
+        } => {
+            let storage = Storage::connect(&config.storage.database_url).await?;
+            // Explicit level / no persona stays embedder-free; a free-text
+            // persona (and a topic filter) resolves by meaning when available.
+            let embedder = build_embedder(&config.embedding).ok();
+            let opts = compose::ComposeOptions {
+                sections,
+                persona,
+                level,
+                style,
+                brand_preset,
+                filter,
+                title,
+                slug,
+                output_html,
+                limit,
+                feature_pages,
+            };
+            let summary = compose::run(&storage, embedder.as_deref(), &repo, &opts).await?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
         Commands::Features {
             repo,
             filter,
@@ -870,7 +978,33 @@ async fn main() -> Result<()> {
                 }))?
             );
         }
-        Commands::Graph { repo, output } => {
+        Commands::Gaps {
+            repo,
+            project,
+            folder,
+        } => {
+            let storage = Storage::connect(&config.storage.database_url).await?;
+            if let Some(project) = project {
+                let report = gaps::build_project_gaps_report(&storage, &project).await?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                let repo = repo.context("pass a repository, or --project <name>")?;
+                let repo = storage
+                    .find_repository(&repo)
+                    .await?
+                    .with_context(|| format!("repository is not indexed: {repo}"))?;
+                let report =
+                    gaps::build_gaps_report(&storage, repo.id, &repo.name, folder.as_deref())
+                        .await?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            }
+        }
+        Commands::Graph {
+            repo,
+            output,
+            serve,
+            port,
+        } => {
             let storage = Storage::connect(&config.storage.database_url).await?;
             let repo = storage
                 .find_repository(&repo)
@@ -884,9 +1018,26 @@ async fn main() -> Result<()> {
                     "output": output,
                     "repo_id": repo.id,
                     "nodes": graph.nodes.len(),
-                    "edges": graph.edges.len()
+                    "edges": graph.edges.len(),
+                    "serving": serve.then(|| format!("http://127.0.0.1:{port}/")),
                 }))?
             );
+            if serve {
+                // Live semantic search needs the real embedder; fail here,
+                // loudly, rather than serving a page whose search would lie.
+                let embedder = build_embedder(&config.embedding)?;
+                let html = graph_export::render_graph_export(&graph)?;
+                graph_serve::serve(
+                    graph_serve::GraphServer {
+                        storage,
+                        embedder: std::sync::Arc::from(embedder),
+                        repo_id: repo.id,
+                        html,
+                    },
+                    port,
+                )
+                .await?;
+            }
         }
         Commands::Obsidian { repo, output } => {
             let storage = Storage::connect(&config.storage.database_url).await?;

@@ -190,6 +190,15 @@ svg{width:100%;min-height:690px;display:block;background:linear-gradient(rgba(27
 .inspector{padding:0;overflow:hidden}.head{padding:16px;border-bottom:var(--border-hairline)}.badge{display:inline-flex;border-radius:var(--radius-pill);color:#fff;padding:5px 11px;font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px;background:var(--color-blue-700)}.meta{color:var(--fg-tertiary);font:var(--type-body-sm);line-height:1.45;overflow-wrap:anywhere}.body{padding:15px 16px 16px;overflow:auto;max-height:610px}.explain{line-height:1.55;color:var(--color-ink-500)}.section{color:var(--color-blue-500);font:var(--type-overline-sm);font-weight:600;text-transform:uppercase;letter-spacing:.1em;margin-top:14px}.relation{padding:10px 11px;border:var(--border-hairline);border-radius:var(--radius-md);background:var(--color-surface-1);font:var(--type-body-sm);margin-top:8px;cursor:pointer;transition:border-color .15s}.relation:hover{border-color:var(--color-blue-400)}.relation strong{color:var(--color-blue-700)}
 pre{margin:10px 0 0;padding:14px;border-radius:var(--radius-md);background:var(--color-surface-2);color:var(--color-ink-700);overflow:auto;font:var(--type-body-sm);font-family:var(--font-mono);line-height:1.48;border:var(--border-hairline)}
 pre code{background:none;padding:0}
+[hidden]{display:none!important}
+.usage{padding:28px 0 4px}.usage h2{margin:0 0 4px;font:var(--type-h4);color:var(--color-ink-700)}.usage .usage-sub{color:var(--fg-tertiary);font:var(--type-body-sm);margin:0 0 14px}
+.examples{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
+.example{background:var(--color-surface-0);border:var(--border-hairline);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);padding:16px 18px}
+.example strong{display:block;color:var(--color-ink-700);font:var(--type-h5)}
+.example p{margin:8px 0 0;color:var(--color-ink-500);line-height:1.55;font:var(--type-body-sm)}
+.example ol{margin:10px 0 0;padding-left:20px;color:var(--color-ink-500);font:var(--type-body-sm);line-height:1.6}
+.example.linked{cursor:pointer;transition:border-color .15s,box-shadow .15s}.example.linked:hover,.example.linked:focus-visible{border-color:var(--color-blue-400);box-shadow:var(--shadow-xs)}
+.example .ex-lang{display:inline-flex;margin-top:10px;border-radius:var(--radius-pill);padding:3px 9px;font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.06em;background:var(--color-surface-2);color:var(--color-ink-400)}
 @media(max-width:1050px){.layout{grid-template-columns:1fr}svg{min-height:600px}}
 </style>
 </head>
@@ -197,6 +206,13 @@ pre code{background:none;padding:0}
 <div class="topbar"><div class="wrap">__BRAND_TOPBAR__<span class="crumb">Feature<span class="sep">&rsaquo;</span><b>__TITLE__</b></span><span class="sp"></span><span class="pilltag">Feature</span></div></div>
 <div data-chaos-feature-website data-feature-id="__FEATURE_ID__">
 <header class="hero"><div class="wrap"><div><div class="eyebrow">Feature website</div><h1>__TITLE__</h1><div class="subtitle">__SUBTITLE__</div></div></div></header>
+<div class="nutshell" data-chaos-purpose hidden>
+  <div class="wrap">
+    <div class="mark" aria-hidden="true"><svg viewBox="0 0 256 256" fill="none" stroke="currentColor" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"><circle cx="128" cy="128" r="88"/><path d="M128 80v56l36 28"/></svg></div>
+    <p id="purpose"></p>
+  </div>
+</div>
+<section class="wrap wide usage" data-chaos-examples hidden><h2>How you'd use it</h2><p class="usage-sub">Concrete examples of what this feature was made for — click one to highlight the code path it exercises.</p><div id="examples" class="examples"></div></section>
 <main class="wrap wide layout">
 <section class="panel"><div class="toolbar"><div class="legend"><span><i class="dot" style="background:var(--grp-api)"></i>api/read</span><span><i class="dot" style="background:var(--grp-ui)"></i>ui/crypto</span><span><i class="dot" style="background:var(--grp-infra)"></i>infra</span><span><i class="dot" style="background:var(--grp-backend)"></i>backend</span><span><i class="dot" style="background:var(--grp-data)"></i>data</span></div><button id="resetBtn" type="button">Reset</button></div>
 <svg data-chaos-graph id="graph" viewBox="0 0 1180 760"><defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="rgb(193,220,230)"></path></marker></defs></svg></section>
@@ -219,7 +235,7 @@ __MANIFEST__
 <script>
 (function(){
 var M=JSON.parse(document.getElementById("chaos-feature-manifest").textContent);
-var NODES=M.nodes||[],EDGES=M.edges||[],CLAIMS=M.claims||[],MODES=M.modes||[],STORY=M.story||[],PROVENANCE=M.provenance||[],RELATED=M.related_features||[];
+var NODES=M.nodes||[],EDGES=M.edges||[],CLAIMS=M.claims||[],MODES=M.modes||[],STORY=M.story||[],PROVENANCE=M.provenance||[],RELATED=M.related_features||[],PURPOSE=M.purpose||"",EXAMPLES=M.examples||[];
 var colors={ui:"rgb(0,200,187)",crypto:"rgb(0,200,187)",frontend:"rgb(0,200,187)",api:"rgb(27,88,156)",read:"rgb(27,88,156)",backend:"rgb(193,60,60)",infra:"rgb(176,124,15)",data:"rgb(128,68,255)"};
 var NS="http://www.w3.org/2000/svg";
 var graph=document.querySelector("[data-chaos-graph]");
@@ -272,7 +288,17 @@ function buildStory(){var root=document.getElementById("steps");STORY.forEach(fu
 btn.addEventListener("click",function(){var ids=storyIds(s,i);if(ids.length)select(ids[0],new Set(ids));document.querySelectorAll("[data-story-step]").forEach(function(x){x.classList.toggle("active",x===btn);});});li.appendChild(btn);root.appendChild(li);});}
 function buildProvenance(){var root=document.getElementById("provenance");if(!root)return;if(!PROVENANCE.length){root.innerHTML='<div class="meta">No breadcrumbs recorded.</div>';return;}PROVENANCE.forEach(function(c){var el=document.createElement("div");el.className="relation";el.innerHTML="<strong>"+esc(c.source)+"</strong> "+esc(c.method)+"<br>"+esc(c.detail)+(c.locator?'<br><span class="meta">'+esc(c.locator)+"</span>":"");root.appendChild(el);});}
 function buildRelated(){var root=document.getElementById("related");if(!root)return;if(!RELATED.length){root.innerHTML='<div class="meta">No correlated existing features.</div>';return;}RELATED.forEach(function(r){var el=document.createElement("div");el.className="relation";el.innerHTML="<strong>"+esc(r.title||r.feature_id)+'</strong><br><span class="meta">'+esc(r.page)+" &middot; "+((r.shared_files||[]).length)+" shared file(s), "+((r.shared_symbols||[]).length)+" shared symbol(s)</span>";root.appendChild(el);});}
-drawGraph();buildEvidence();buildModes();buildFlow();buildStory();buildProvenance();buildRelated();
+function buildPurpose(){if(!PURPOSE.trim())return;var band=document.querySelector("[data-chaos-purpose]");if(!band)return;document.getElementById("purpose").textContent=PURPOSE;band.hidden=false;}
+function buildExamples(){if(!EXAMPLES.length)return;var sec=document.querySelector("[data-chaos-examples]");if(!sec)return;var root=document.getElementById("examples");
+EXAMPLES.forEach(function(x){var el=document.createElement("div");el.className="example";el.setAttribute("data-example-id",x.id||"");
+var h="<strong>"+esc(x.title)+"</strong>";if(x.description)h+="<p>"+esc(x.description)+"</p>";
+if((x.steps||[]).length)h+="<ol>"+x.steps.map(function(s){return "<li>"+esc(s)+"</li>";}).join("")+"</ol>";
+if(x.code)h+="<pre><code>"+esc(x.code)+"</code></pre>";if(x.language)h+='<span class="ex-lang">'+esc(x.language)+"</span>";
+el.innerHTML=h;
+var ids=(x.node_ids||[]).filter(function(id){return byId[id];});
+if(ids.length){el.classList.add("linked");el.tabIndex=0;var go=function(){select(ids[0],new Set(ids));};el.addEventListener("click",go);el.addEventListener("keydown",function(ev){if(ev.key==="Enter"||ev.key===" "){ev.preventDefault();go();}});}
+root.appendChild(el);});sec.hidden=false;}
+drawGraph();buildPurpose();buildExamples();buildEvidence();buildModes();buildFlow();buildStory();buildProvenance();buildRelated();
 var resetBtn=document.getElementById("resetBtn");if(resetBtn)resetBtn.addEventListener("click",function(){var k=Object.keys(byId);if(k.length)select(k[0]);});
 var keys=Object.keys(byId);if(keys.length)select(keys[0]);
 })();
@@ -285,8 +311,8 @@ var keys=Object.keys(byId);if(keys.length)select(keys[0]);
 mod tests {
     use super::*;
     use crate::feature_context::{
-        FeatureClaim, FeatureContextEdge, FeatureContextNode, FeatureDefinition, FeatureManifest,
-        FeatureMode, FeatureStoryStep,
+        FeatureClaim, FeatureContextEdge, FeatureContextNode, FeatureDefinition, FeatureExample,
+        FeatureManifest, FeatureMode, FeatureStoryStep,
     };
 
     fn node(id: &str, file: &str, lines: &str, code: &str) -> FeatureContextNode {
@@ -326,6 +352,16 @@ mod tests {
             },
             title: "Sample Feature Map".into(),
             subtitle: "subtitle".into(),
+            purpose: "Lets a maintainer trace the sample flow end to end.".into(),
+            examples: vec![FeatureExample {
+                title: "Trace one request".into(),
+                description: "Follow a call from entry to storage.".into(),
+                steps: vec!["Call a".into(), "Watch b forward to c".into()],
+                code: "a(request)".into(),
+                language: "ts".into(),
+                node_ids: vec!["a".into(), "b".into()],
+                ..Default::default()
+            }],
             claims: vec![
                 FeatureClaim {
                     id: "c1".into(),
@@ -403,6 +439,9 @@ mod tests {
         crate::mcp::validate_feature_website_contract(&html, &value).unwrap();
         // And it must embed the manifest so it can be refreshed again later.
         assert!(html.contains(r#"id="chaos-feature-manifest""#));
+        // Purpose band + usage examples are part of the page surface.
+        assert!(html.contains("data-chaos-purpose"));
+        assert!(html.contains("data-chaos-examples"));
         let parsed = crate::feature_context::read_feature_manifest_from_html(&html)
             .unwrap()
             .expect("rendered page exposes a manifest");

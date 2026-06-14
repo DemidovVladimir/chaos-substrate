@@ -8,8 +8,12 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::time::Duration;
 
-/// Per-request timeout for embedding HTTP calls.
-const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
+/// Per-request timeout for embedding HTTP calls. Generous on purpose: a
+/// local Ollama serializes requests, so under indexing load a batch's wall
+/// time includes the whole queue ahead of it — observed live as repeated
+/// "operation timed out" failures mid-analyze at 60s while the server was
+/// healthy (a probe queued behind two 16-text batches answered in >10s).
+const HTTP_TIMEOUT: Duration = Duration::from_secs(300);
 /// Maximum number of retries after the initial attempt for transient failures
 /// (so up to 1 + this many total attempts).
 const MAX_RETRY_TIMES: usize = 3;
@@ -74,9 +78,12 @@ pub trait Embedder: Send + Sync {
 
 /// Texts per batched embedding request during indexing.
 const EMBED_BATCH_SIZE: usize = 16;
-/// Batched requests in flight at once (16 × 2 ≈ the old 8-way single-text
-/// concurrency, with far fewer round-trips).
-const EMBED_BATCH_CONCURRENCY: usize = 2;
+/// Batched requests in flight at once. ONE: a local Ollama executes requests
+/// serially, so a second in-flight batch buys no throughput — it only sits in
+/// the queue accruing wall time against [`HTTP_TIMEOUT`] (and starves
+/// interactive queries, e.g. the graph --serve search, for the duration).
+/// Remote providers (OpenAI) lose a little pipelining; correctness first.
+const EMBED_BATCH_CONCURRENCY: usize = 1;
 
 /// Embed every chunk in `missing` and persist the vectors — the one shared
 /// indexing loop (analyze / add / MCP analyze all call this). Batches requests

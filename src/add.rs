@@ -898,6 +898,15 @@ fn build_manifest(
                 .map(|sha| format!(" · {}", &sha[..sha.len().min(8)]))
                 .unwrap_or_default()
         ),
+        // Deterministic, grounded opener: what the page is FOR, not just what
+        // it contains. Bespoke usage examples come from LLM-composed pages
+        // (chaos_write_feature_website), not from this extractive path.
+        purpose: format!(
+            "Records the \"{title}\" {kind}: the {} symbol(s) it changed across {} file(s) and the code they connect to, so a later reader or agent understands what this change was made for without re-reading the diff.",
+            changed.len(),
+            changed_rel.len()
+        ),
+        examples: Vec::new(),
         claims,
         modes,
         nodes,

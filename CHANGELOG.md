@@ -4,6 +4,381 @@ All notable changes to Chaos Substrate are documented here. Versions before
 0.12.0 predate this file; see the git history (`P0`–`P5` commits) for the
 hierarchical-memory build-out.
 
+## Unreleased
+
+### Changed — L3 summaries v4, acronym routing, embedder robustness
+
+- Community summaries v4 (`SUMMARY_ALGO_VERSION` 4): key symbols are also
+  rendered AS WORDS ("In words: list all on chain labs; …") and labels are
+  camel-split — the embedding-side counterpart of migration 008, so features
+  named in camelCase embed near natural-language queries. One-time full
+  re-summarize on the next analyze.
+- Hierarchical router: label routes are now ADDITIVE to cosine routes (was:
+  fallback only when cosine found nothing), and short queries (2–4 words)
+  contribute their ACRONYM as a label token — "on chain labs" → `ocl` →
+  routes `ocl-repository`/`ocl-*` features no embedder could reach. Bounded
+  by the existing LABEL_ROUTE_LIMIT, deduped against cosine routes.
+- Hierarchical retrieval re-rank: the flat pool is fetched 3× wider than the
+  requested limit and truncated AFTER boosting (a boost can only promote a
+  hit that exists); short-phrase ACRONYMS are also literal-search terms and
+  files whose path segment IS the acronym get a 2× boost inside the flat
+  pipeline; the final hierarchical return collapses same-file duplicates
+  toward the tail (a landscape surface should span files, not return two
+  chunks each of the few strongest docs). Literal budget raised to half the
+  candidate pool. Net effect, validated live: "on chain labs" went from one
+  folder's doc headers to 25 distinct OCL-related files spanning
+  onchainlabs + desci-ecosystem + desci-infra, with desci-infra's
+  ocl-repository feature routed. KNOWN GAP: the ocl-processor lambda's
+  chunks still score below peer ocl files for the broad phrase (targeted
+  queries hit it #1) — needs per-hit score instrumentation of the
+  merge/rerank arithmetic, and L1 membership quality (the lambda clusters
+  into a generic utils community, so feature boosts miss it).
+
+- Embedding client: HTTP timeout 60s → 300s and batch concurrency 2 → 1.
+  Observed live: a local Ollama serializes requests, so concurrent batches
+  plus timeout-retries created a self-inflicted thundering herd that timed
+  out full analyzes ("operation timed out" while the server was healthy).
+
+### Added — identifier-aware keyword tokenization (migration 008)
+
+- Code carries most of its meaning in compound identifiers, but Postgres FTS
+  treated `listAllOnChainLabs` as ONE lexeme, so a query for "on chain labs"
+  could never keyword-match the code implementing it. Migration
+  `008_identifier_tokens.sql` adds `chaos_identifier_text()` (SQL, immutable:
+  splits camelCase/PascalCase/ACRONYMWord boundaries and `_-.` separators)
+  and rebuilds every chunk's `search_vector` as original content PLUS the
+  split rendering — both vocabularies match. `insert_chunk` uses the same
+  expression for new chunks. **`chaos migrate` is the only step** — the
+  backfill recomputes from already-stored text: no re-analyze, no
+  re-embedding, embedder-free. Validated live: "ocl processor" now returns
+  the OCL processor lambda's handler as hit #1 via all three retrieval
+  methods; "on chain labs" keyword-reaches code that only says `OnChainLab`.
+
+### Added — `chaos gaps` / `chaos_gaps`: knowledge-gap detection
+
+- Retrieval can only be as good as the words a file brings to the index. The
+  new read-only, embedder-free surface (`src/gaps.rs`) flags two kinds of
+  unfindable code: `vocabulary_gaps` — chunked files with almost no
+  DISTINCTIVE vocabulary left after identifier splitting (background words
+  are derived from the repo's own document frequencies, not a hardcoded stop
+  list); and `coverage_gaps` — files that produced NO chunks at all,
+  invisible to every retrieval method. The fix for a vocabulary gap is repo
+  content (file-top docstring or folder README, then `chaos add` on those
+  paths) — indexing is NEVER paused to ask; a coverage gap is a chunking
+  finding to re-add or report. Scopes match the rest of the surface: `repo`
+  for one repository, `repo` + `folder` for a sub-app inside a
+  monorepo-indexed repo (background vocabulary still comes from the whole
+  corpus), or `project` for every member repo of a cross-repo project in one
+  repo-tagged report (background stays per member — contracts boilerplate is
+  not client boilerplate). First run on molecule_core: 272 code files with
+  zero chunks (mostly configs, some e2e specs, and 300+-line GraphQL query
+  files under desci-infra) and 2 docstring candidates — the no-chunks count
+  is itself a chunking-coverage signal.
+
+### Fixed — literal retrieval: folder flooding and top-of-file bias
+
+First findings from the `graph --serve` validation surface (searching "ocl" /
+"on chain labs" on molecule_core):
+
+- `literal_search` scored a path match 1.5 vs a content match 0.35 and
+  tie-broke by line number, so a term matching a whole folder's path (e.g.
+  `onchainlabs/` for "onchainlabs") flooded every slot with that folder's
+  line-1 chunks — env-var declarations and doc headers shadowed the actual
+  logic, and content-matching files OUTSIDE the folder never surfaced. Now:
+  path and content matches weigh equally (0.75 each), at most 2 hits per
+  file (content-matching chunks preferred within a file), ordered
+  deterministically.
+- The per-term literal budget was a fixed 12 hits (vs 40–200 candidates for
+  the semantic/keyword methods); it now scales with the candidate pool
+  (24–50). The reranker can only promote candidates that exist.
+
+Known remaining gap (by design of chunk-level retrieval, documented for the
+next calibration pass): identifier vocabulary does not tokenize — a chunk
+saying `listAllOnChainLabs` matches neither FTS keyword search for "on chain
+labs" (one lexeme) nor the embedder strongly; identifier-aware tokenization
+at index time is the structural fix.
+
+### Added — `graph --serve`: live semantic search in the graph page
+
+- `chaos graph <repo> --serve [--port 7878]` serves the interactive graph
+  from a localhost HTTP server (`src/graph_serve.rs`, no new crates — tokio
+  `net` only) and adds a **Semantic search** panel to the page. The panel's
+  `GET /api/search?q=…` runs the SAME hierarchical retrieval pipeline the
+  agent tools use (`query_repo_hierarchical`: real embedder → L1 community
+  routing over L3 summary embeddings → hybrid semantic/keyword/literal chunk
+  search with merge + rerank) and renders the result as a validation
+  surface: matched features with cosine scores, ranked chunk hits with
+  `retrieved_by` badges, and score-sized halos on the graph nodes (non-hits
+  dim; hits stay rendered even when kind/substring filters would drop them;
+  clicking a hit focuses its node). `GET /api/health` reports the embedder;
+  a static `file://` export keeps today's behavior and shows a hint to run
+  `--serve`. An embedder/database failure is a loud in-page error — never a
+  substring fallback. The sidebar's existing "Filter nodes" box remains a
+  plain case-insensitive substring filter (it matches `ocl` inside
+  `LogoCloudItem`); the semantic panel is the meaning-based counterpart.
+
+## 0.19.0 — 2026-06-12
+
+The graph-deflation + smart-chunking release: the index stops over-producing
+nodes/edges/communities, and chunks follow code/document STRUCTURE instead of
+blind 2,000-char slices. **Run a full `chaos analyze` on existing repos to get
+the new shapes** — until then old indexes keep answering queries unchanged.
+The first re-analyze after upgrading re-embeds most chunks once (headers and
+line stamps change content hashes) and re-summarizes communities once; both
+are hash-gated afterwards as usual.
+
+### Changed — tiny-community consolidation (detection v2)
+
+- Louvain can never merge zero-edge nodes, so every isolated file became its
+  own singleton "community" (molecule_core: 1,212 communities, only 287 of
+  them real features). A deterministic post-Louvain pass now folds
+  sub-threshold fragments (< 4 members) into real communities: connected
+  fragments merge into their folder-preferred best-coupled neighbor, isolates
+  fold into the folder-dominant community (deepest ancestor first), and
+  no-match isolates stay singletons (already filtered by `member_count >= 2`).
+- `DETECTION_VERSION` bumped to 2; `detection_params` records
+  `merge: {min_size, merged}`. One-time community-id churn on the first
+  re-detect (ids are UUIDv5 of the min-member stable_id; absorbing a
+  lower-sorting member renames the community). `repo_root_hash` is unchanged;
+  only communities whose membership changed re-summarize, and cross-repo
+  projects relink automatically through the existing hash gate.
+
+### Changed — source-import dedup + external-import filtering (all languages)
+
+- Internal imports now dedupe to ONE node per imported module repo-wide:
+  `import:path:{normalized}` for relative specifiers (pure-lexical resolution
+  against the importing file, so `./utils` and `../lib/utils` meet at one
+  node), `import:alias:{module}` for root-anchored aliases, `import:bare:`
+  unchanged, `import:rust:{hash}` for identical `use` statements. Shared nodes
+  carry no `file_id`; the per-importer file/line lives on each `Imports` edge.
+  (molecule_core had 4,189 dependency nodes — 31% of the graph — mostly
+  one-per-import-per-file.)
+- External imports are dropped at extraction for Rust (`std`/`core`/`alloc`/
+  third-party crates; workspace crate names from indexed `Cargo.toml`s) and
+  Python (stdlib/site-packages; repo module roots from top-level `.py` files
+  and packages), matching the JS/TS behavior. Solidity npm-style imports
+  (`@openzeppelin/...`) now go through the same workspace filter. Declared
+  dependency lists still live in the per-manifest nodes (`chaos stack` is
+  unaffected).
+
+### Changed — call-edge ambiguity gate
+
+- The global fallback that resolved a callee name across files bound ambiguous
+  names (`new`, `run`, `handle`) to whichever file was walked first, gluing
+  unrelated features. It now applies only when the name has exactly ONE
+  definition in the repo; same-file resolution is unchanged.
+
+### Fixed — quadratic FK cascades made `chaos clean`/`chaos add` crawl
+
+- A repo-scoped `chaos clean` on molecule_core ran 16+ minutes. Cause: the FK
+  columns the delete triggers probe (`edges.source_node_id`,
+  `edges.target_node_id`, `chunks.node_id`, `chunks.file_id`, `nodes.file_id`)
+  were only covered by composite `(repo_id, …)` indexes, which a
+  single-column FK lookup cannot use — every deleted node seq-scanned edges
+  twice and chunks once, and rows deleted earlier in the same transaction are
+  dead but still scannable, so the purge went quadratic (pg_stat: 617M tuples
+  read across 178k seq scans on edges). The same cascade cost hit every
+  incremental `chaos add` (`files → nodes → edges/chunks` against live rows).
+  Migration `007_fk_indexes.sql` adds the five plain FK indexes; cascades are
+  btree probes now. Run `chaos migrate` once after upgrading.
+
+### Changed — context paths share the community strength model
+
+- `chaos_query`'s context paths (the "how do these hits relate" routes) now
+  traverse edges at `cost / confidence` — the exact inverse of the
+  `coupling_weight` used by L1 community detection — so a low-confidence
+  heuristic call edge no longer beats a parser-certain route of equal raw
+  cost. Edge order is canonicalized before routing (equal-cost routes used to
+  tie-break on database row order), and when paths are truncated, CROSS-FILE
+  paths are kept ahead of trivial same-file adjacencies. Query-time only — no
+  re-index needed.
+
+### Changed — chunking follows structure
+
+- `MAX_CHUNK_CHARS` 2,000 → 6,000 (EmbeddingGemma's 2,048-token window was
+  never the constraint at 2,000 chars ≈ 500 tokens). Oversized chunks now
+  split at STRUCTURAL boundaries — blank lines, dedents back to the part's
+  base indentation — instead of raw character cuts, and every split part
+  carries its REAL source line range instead of inheriting the parent's.
+- Markdown is parsed (pulldown-cmark) into HEADING SECTIONS: one
+  `documentation` chunk per section (depth ≤ 3) with a heading-path header
+  (`README.md > Setup > Docker`), real line ranges, and `heading_path`
+  metadata; the preamble is its own section; files without headings keep the
+  single whole-file chunk. Previously 96–99% of documentation chunks were
+  blind 2,000-char slices. Sections are chunks only — no new graph nodes.
+- OVERSIZED sections are packed at markdown BLOCK boundaries instead of
+  falling through to the generic splitter (which happily cut inside a
+  GraphQL fence or mid-table — observed live in `labs-api.md` / `ipt.md`):
+  whole blocks (paragraphs, fenced code, tables, lists) are packed greedily;
+  a fence bigger than the cap is split at blank lines INSIDE it and each
+  piece re-wrapped in fences with the original language tag; an oversized
+  table repeats its header + separator rows on every slice; sub-headings
+  start a new part once one is ~60% full. Every part keeps the full
+  heading-path context header (`Documentation: file > path (part i/n)`) and
+  exact line ranges — no more `Symbol: unknown` orphan fragments.
+- Oversized PDF text is packed at page (`\f`) and paragraph boundaries with a
+  `PDF document: file (part i/n)` header and a `pages` range in metadata when
+  the extractor emitted form feeds. Documentation/PDF chunks now never pass
+  through the generic splitter.
+- Rust impl METHODS are first-class: each `ImplItem::Fn` becomes a `method`
+  node + chunk (stable_id `{file}:method:{Impl}::{name}`), contained by its
+  impl and registered for call resolution; the impl chunk shrinks to header +
+  consts/types + a method roster (one impl here used to split into 46 blind
+  parts). Inline `mod` items are extracted individually with a `tests::`-style
+  stable_id prefix; module chunks shrink to their header. All Rust symbol
+  line ranges now come from syn spans (doc comments included) instead of text
+  search.
+- TS/JS class chunks no longer duplicate method bodies (methods were already
+  separate symbols): header + fields + a method roster.
+
+### Added — user-surface extraction (`cli_command` / `http_route` / `env_var` nodes)
+
+The index now captures HOW A USER OPERATES THE PRODUCT as first-class,
+parser-certain facts — the raw material a storyboard/usage page needs that
+previously only lived in docs:
+
+- **CLI commands** (`cli_command`): clap derive (`#[derive(Parser)]` programs,
+  `#[derive(Subcommand)]` variants with their `///` help and
+  `#[command(name = …)]` overrides) and builder (`Command::new`), commander/
+  yargs-style `.command('name …')` in JS/TS, argparse `add_parser` (with
+  `help=`) and click `@cli.command()` in Python.
+- **HTTP routes** (`http_route`, named `METHOD /path`): framework-shaped
+  registrations only, mirroring the linker's provider markers so axios clients
+  don't masquerade as servers — `app/router/fastify/server.get('/x')` in JS/TS,
+  FastAPI `@app.get("/x")` and Flask `@app.route("/x", methods=[…])` in Python,
+  axum `.route("/x", get(h))` and actix/rocket `#[get("/x")]` in Rust.
+- **Environment variables** (`env_var`): `std::env::var` / `env!` /
+  `option_env!`, `process.env.X` / `process.env["X"]`,
+  `os.environ["X"]` / `os.environ.get` / `os.getenv` — with the access path
+  recorded in metadata.
+- Nodes are PER-FILE (`{path}:env:{VAR}`), never repo-wide hubs: a shared
+  `DATABASE_URL` node would glue unrelated files into one Louvain community
+  (the god-node failure mode the bare-import drop already solved). Entrypoints
+  attach via `Defines` (new `DEFINES_ENTRYPOINT` weight, parser-certain), env
+  reads via `Configures` (new `READS_ENV`). Each node carries a typed chunk
+  (`User surface: …`), so operator questions rank them in retrieval.
+- Journey layering now uses the node kind as a stronger signal than folder
+  names: `cli_command` → entry, `http_route` → interface.
+- New `src/user_surface.rs` owns the shared entry shape, the emitter, and the
+  syn-based Rust collector (with `proc-macro2` `span-locations` for real line
+  numbers); the oxc/rustpython collectors live in their language modules.
+- Purely additive: kinds are stored as text, no migration; older indexes are
+  unaffected. Verified live on this repo: 37 `cli_command` + 15 `env_var`
+  nodes, and "environment variable CHAOS_PROJECT_DIR project workspace
+  directory" now returns the `env_var` chunk as the top hit.
+
+## 0.18.0 — 2026-06-11
+
+The composed-site release: `chaos_compose` is now THE page-generation surface —
+when a user asks for a webpage/website/interactive info page, agents route it
+here instead of stitching the side-pages of other tools — and it can build a
+whole static SITE, not just one page.
+
+### Added — site mode (`feature_pages: true` / `--feature-pages`)
+
+- The composed index's feature cards become CLICKABLE links to one page per
+  feature, written under `docs/features_memory/<slug>-composed/` with readable
+  slugged file names.
+- Each per-feature page shows, all from the persisted graph: the feature's
+  code/files (symbols table, key files; expanded for experts, collapsed for
+  beginners), its QUOTIENT-GRAPH RELATIONS to the rest of the stack (direction,
+  kind, weight; in-scope neighbours cross-linked to their own pages,
+  out-of-scope ones honestly labelled; Solidity neighbours tagged as **smart
+  contracts**), prior generated pages that overlap it, and a deterministic
+  persona-adapted WALKTHROUGH (What this is / Where it sits / How it connects /
+  Where the code lives). Every page carries an honesty note: the walkthrough
+  describes real structure, not invented user journeys — `chaos_write_storyboard`
+  remains the tool for UX storyboards with real screens.
+- **Per-page hash gating.** Every page — index and per-feature alike — embeds
+  its own `chaos-composed-manifest` with its own `content_hash`. The index hash
+  covers all per-page hashes; the return reports `written` vs `cached` page
+  counts, so an agent never re-ingests an unchanged page. Verified live on
+  molecule_core/desci-infra: 45 feature pages written, then 45 cached / 0
+  written on the identical re-run.
+- Routing rule encoded in the tool description, agent guide, SKILL.md,
+  CLAUDE.md, README: user-facing webpage requests go to `chaos_compose`;
+  `chaos_features`/`chaos_stack`/`chaos_components` remain data/inventory
+  tools.
+- Internals: `feature_inventory::language_tally` made crate-visible (languages
+  for out-of-scope relation neighbours from their member files).
+
+## 0.17.0 — 2026-06-11
+
+The composable-page release: instead of generating a bunch of similar
+standalone pages, the caller says which sections they need, for whom, and in
+which style — and Chaos assembles ONE page from the knowledge base.
+
+### Added — `chaos_compose` MCP tool + `chaos compose` CLI (20 tools)
+
+- **Sections** (`features` — the inventory with each feature's concise L3
+  explanation; `correlations` — files shared between those features plus prior
+  generated pages that overlap them; `stack`), rendered in request order on one
+  page. `filter` scopes features exactly like `chaos_features` (folder | layer
+  | topic, auto-detected). Unknown section names are a loud error listing the
+  vocabulary.
+- **Persona by meaning.** Free-text `persona` ("a very beginner software
+  engineer who has no idea about the stack") resolves to
+  beginner|practitioner|expert via prototype-embedding cosine — no query-side
+  keyword list (`PERSONA_PROTOTYPES`, floor 0.45 with an explicit
+  default-to-practitioner warning below it). Explicit `level` is the
+  embedder-free path. The level adapts rendering density: beginners get plain
+  explanations and read-order hints, experts get symbols/files expanded.
+- **Style presets.** `theme.rs` gains `style_preset()`: `editorial` (the light
+  default) and `blade-runner` — a dark neon TOKEN OVERRIDE (near-black blue
+  surfaces, cyan/magenta accents, glow shadows) appended after `THEME_CSS`, so
+  the same components restyle wholesale. `brand_preset` (e.g. `molecule`)
+  brands the chrome. Unknown style = error, no improvisation.
+- **Chaos-only, honest failures.** Every section resolves from the persisted
+  index + prior generated manifests; compose never parses source files. An
+  unservable section (unindexed repo, missing L1 hierarchy) errors naming the
+  fix, and the tool description instructs agents to REPORT a compose failure
+  rather than faking the page with shell tools.
+- **Content-hash dedup for agent memory.** The composed manifest (request +
+  section data) is sha256-hashed; the hash lives in the embedded
+  `chaos-composed-manifest` and the compact return. Re-composing the same
+  request over unchanged knowledge returns `cached: true` and skips the write —
+  the agent's signal to not re-ingest a memory it already holds.
+- `chaos_pages` recognises the new kind (`chaos-composed-manifest` →
+  `composed`).
+- Internals: `stack::build_manifest` and `feature_inventory::collect` split the
+  build-only halves out of their page-writing `run` paths so compose can embed
+  their data without spawning side artifacts.
+
+Verified end-to-end against the live molecule_core index: a beginner persona
+routed at cosine 0.96, `desci-infra` auto-detected as a folder (45 features),
+and an identical re-run returned `cached: true` with zero writes.
+
+## 0.16.0 — 2026-06-11
+
+The purpose-first page release: the engineer feature page now reads like the
+Feature guide. Observed in a real molecule_core RBAC session: the generated
+page showed the graph, claims, and correlated files, but never said what the
+feature was *made for* or how you'd use it — a reader had to reverse-engineer
+the why from the evidence, while the storyboard sibling opened with exactly
+that. The pages share one theme; what differed was content structure.
+
+### Changed — feature pages open with purpose and usage examples
+
+`FeatureManifest` gains two additive fields, rendered by the shared
+deterministic renderer (so `chaos add` pages and `chaos_write_feature_website`
+pages both carry them, and `chaos_refresh --all-features` re-renders older
+pages unchanged):
+
+- `purpose` (REQUIRED for new writes): a plain-language "what this feature was
+  made for — who uses it, what problem it solves", rendered as the page's
+  opening nutshell band before any graph or evidence (the same band the
+  storyboard opens with). `chaos add` derives a grounded one automatically;
+  the MCP write path rejects manifests without it. Older pages on disk still
+  parse and render (the band simply stays hidden).
+- `examples[]` (recommended): simple usage examples
+  `{title, description, steps[], code, language, node_ids}` rendered as a
+  full-width "How you'd use it" section; clicking an example highlights the
+  graph nodes its `node_ids` name, keeping the page interactive for humans
+  while the embedded `chaos-feature-manifest` stays complete for agents.
+
+Tool description, agent guide (`chaos_help`), SKILL.md, README, and CLAUDE.md
+document the new contract.
+
 ## 0.15.0 — 2026-06-11
 
 The page-discovery release: "what has chaos already extracted here?" is now a

@@ -172,14 +172,14 @@ pub async fn run(config: Config) -> Result<()> {
                         },
                         {
                             "name": "chaos_write_feature_website",
-                            "description": "Write an interactive feature website into docs/features_memory with an embedded chaos-feature-manifest JSON block. PREFERRED: pass ONLY the structured `manifest` (feature, title, subtitle, claims>=3, modes>=2, nodes>=5 with file/lines/code, edges>=3, story>=3) and OMIT `html` — Chaos renders the full interactive page deterministically (same renderer as chaos add), so you never spend tokens authoring or transmitting raw HTML. Use after chaos_feature_context, not as a substitute for understanding the feature. Legacy: passing `html` still works but must include the interactive graph/story/architecture/code/evidence markers.",
+                            "description": "Write an interactive feature website into docs/features_memory with an embedded chaos-feature-manifest JSON block. PREFERRED: pass ONLY the structured `manifest` (purpose [REQUIRED], feature, title, subtitle, examples, claims>=3, modes>=2, nodes>=5 with file/lines/code, edges>=3, story>=3) and OMIT `html` — Chaos renders the full interactive page deterministically (same renderer as chaos add), so you never spend tokens authoring or transmitting raw HTML. The page opens with the `purpose` band (plain language: what the feature was made for, who uses it) and a 'How you'd use it' section from `examples` — include at least one simple example whenever the feature has a callable surface; each example's node_ids highlight the code path it exercises. Use after chaos_feature_context, not as a substitute for understanding the feature. Legacy: passing `html` still works but must include the interactive graph/story/architecture/code/evidence markers.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
                                     "repo": {"type": "string"},
                                     "slug": {"type": "string"},
                                     "title": {"type": "string"},
-                                    "manifest": {"type": "object", "description": "FeatureManifest: {feature:{id,title,domain,summary}, title, subtitle, claims[], modes[], nodes[{id,label,subtitle,group,file,lines,role,code,evidence,confidence}], edges[{source,target,label,kind}], story[{id,title,body,node_ids}]}. Chaos renders the page from this."},
+                                    "manifest": {"type": "object", "description": "FeatureManifest: {purpose (REQUIRED plain-language 'what this was made for'), feature:{id,title,domain,summary}, title, subtitle, examples[{title,description,steps[],code,language,node_ids}] (>=1 simple usage example recommended), claims[], modes[], nodes[{id,label,subtitle,group,file,lines,role,code,evidence,confidence}], edges[{source,target,label,kind}], story[{id,title,body,node_ids}]}. Chaos renders the page from this."},
                                     "html": {"type": "string", "description": "LEGACY ONLY — omit to let Chaos render from the manifest (cheaper and consistent)."}
                                 },
                                 "required": ["repo", "slug", "title", "manifest"]
@@ -213,7 +213,7 @@ pub async fn run(config: Config) -> Result<()> {
                         },
                         {
                             "name": "chaos_write_storyboard",
-                            "description": "Write a CLIENT/USER-FACING interactive 'Feature guide' into docs/features_memory/<slug>-story.html: the feature explained as a code-free UI/UX user story (role-card personas, 'As a … I want … so that …' stories, a step-by-step scrollytelling walkthrough, outcomes), rendered by Chaos in the light editorial theme — you pass a structured manifest only, never HTML. Each walkthrough frame may carry a `preview` showing the REAL client UI (a captured screenshot, or a live iframe of a running route); Chaos cannot synthesise screens, so frames without a preview show an honest placeholder — ask for real captures. Optional extras: `brand_preset` (e.g. 'molecule') or `brand`/`hero_image`, persona `who`/`icon`/`includes`/`tier`, a permission `matrix`, a `callout`, and an end-of-page `game`. Confidence values are metadata, never shown to end users. Use for stakeholder/end-user presentations; use chaos_write_feature_website for the engineer-facing page. Compose from real understanding (chaos_feature_context / chaos_impact first); do not invent UI.",
+                            "description": "Write a CLIENT/USER-FACING interactive 'Feature guide' into docs/features_memory/<slug>-story.html: the feature explained as a code-free UI/UX user story (role-card personas, 'As a … I want … so that …' stories, a step-by-step scrollytelling walkthrough, outcomes), rendered by Chaos in the light editorial theme — you pass a structured manifest only, never HTML. Each walkthrough frame may carry a `preview` showing the REAL client UI (a captured screenshot, or a live iframe of a running route); Chaos cannot synthesise screens, so frames without a preview render text-only (no mockup, no placeholder); add real captures when you have them. Optional extras: `brand_preset` (e.g. 'molecule') or `brand`/`hero_image`, persona `who`/`icon`/`includes`/`tier`, a permission `matrix`, a `callout`, and an end-of-page `game`. Confidence values are metadata, never shown to end users. Use for stakeholder/end-user presentations; use chaos_write_feature_website for the engineer-facing page. Compose from real understanding (chaos_feature_context / chaos_impact first); do not invent UI.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
@@ -278,6 +278,28 @@ pub async fn run(config: Config) -> Result<()> {
                             }
                         },
                         {
+                            "name": "chaos_compose",
+                            "description": "THE page-generation surface: whenever the user asks for a webpage, website, or interactive info page over chaos knowledge, use THIS tool — do not stitch together the side-pages of chaos_features/chaos_stack/chaos_components (those remain data/inventory tools). Composes ONE page (or a SITE, with feature_pages=true) from knowledge-base-backed SECTIONS instead of generating several similar standalone pages. Pick the sections ('features' — the feature inventory with each feature's concise L3 explanation; 'correlations' — files shared between those features plus prior generated pages that overlap them; 'stack' — declared dependencies/scripts/deployment resources), an AUDIENCE (free-text `persona` like 'a very beginner software engineer who has no idea about the stack', resolved to beginner|practitioner|expert BY MEANING via prototype embeddings — or an explicit `level`, embedder-free), and a STYLE preset ('editorial' light default | 'blade-runner' dark neon; plus `brand_preset` e.g. 'molecule'). Chaos resolves every section from the PERSISTED INDEX and prior generated manifests ONLY — it never parses source files, and a section it cannot serve (repo not indexed, no L1 hierarchy, unknown section/style) is a LOUD ERROR naming what is missing and the command that fixes it. If this tool fails, REPORT the failure to the user as-is; do NOT fall back to rg/grep/scripts to fake the page. Writes docs/features_memory/<slug>-composed.html with an embedded `chaos-composed-manifest` carrying every section's full data for agent consumption, and returns a COMPACT JSON summary. The composition is CONTENT-HASHED (`content_hash` in manifest and return): recomposing the same request over unchanged knowledge returns `cached: true` without writing — treat the hash as your dedup key and do not re-ingest a composition you already hold.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo": {"type": "string"},
+                                    "sections": {"type": "array", "items": {"type": "string"}, "description": "Sections in render order: features | correlations | stack (aliases: explanations→features, tech-stack→stack). Unknown names are an error listing the vocabulary."},
+                                    "persona": {"type": "string", "description": "Free-text audience description; routed to a detail level by embedding cosine against prototype phrasings (no keyword list). Needs the embedder — otherwise pass `level`."},
+                                    "level": {"type": "string", "enum": ["beginner", "practitioner", "expert"], "description": "Explicit detail level (embedder-free). beginner = plain language, jargon collapsed, read-order hints; expert = symbols/files expanded."},
+                                    "style": {"type": "string", "description": "Style preset: editorial (default light) | blade-runner (dark neon token override). Unknown style = error, no improvisation."},
+                                    "brand_preset": {"type": "string", "description": "Brand preset shipped inside Chaos (e.g. 'molecule')."},
+                                    "filter": {"type": "string", "description": "Feature filter for the features/correlations sections, auto-detected as folder | layer | topic (same routing as chaos_features) — e.g. 'desci-infra' scopes to that folder."},
+                                    "title": {"type": "string"},
+                                    "slug": {"type": "string"},
+                                    "output_html": {"type": "string", "description": "Override the default docs/features_memory/<slug>-composed.html path."},
+                                    "limit": {"type": "integer", "default": 0, "description": "Cap features in the features section; 0 = all."},
+                                    "feature_pages": {"type": "boolean", "default": false, "description": "SITE MODE: also write one page per feature under <slug>-composed/ and make the index's feature cards CLICKABLE links to them. Each per-feature page shows the feature's code/files, its quotient-graph relations to the rest of the stack (Solidity neighbours tagged as smart contracts, in-scope neighbours cross-linked), prior overlapping pages, and a deterministic persona-adapted walkthrough built ONLY from indexed data (the page says so). Every per-feature page embeds its own chaos-composed-manifest with its own content_hash and is individually hash-gated — unchanged features are never rewritten, and the return reports written vs cached counts so you do not re-ingest unchanged pages."}
+                                },
+                                "required": ["repo", "sections"]
+                            }
+                        },
+                        {
                             "name": "chaos_project",
                             "description": "Manage CROSS-REPOSITORY projects: a named set of indexed repos (client, backend, contracts, infra, …). Chaos detects feature→feature CROSS-REPO LINKS between members from the persisted index (consumer → provider): `package_dep` (imports a package another member publishes), `abi` (references a Solidity contract defined elsewhere), `http_route` (a fetch/axios call path matches a registered route). Links attach at the feature (L1) level with evidence + provenance, and refresh AUTOMATICALLY after chaos_analyze/chaos_add on any member (hash-gated — a no-change re-index relinks nothing). Actions: create (idempotent), add_repo (attach an INDEXED repo under an alias; links immediately), list (also returns EVERY indexed repository — the discovery call when you don't know what Chaos already knows; a sub-app inside one indexed repo is a chaos_features folder/layer filter, not a project), status (members, staleness, links by kind, embedder consistency), relink (`force` overrides the gate). Use chaos_features with `project` for the cross-repo feature inventory.",
                             "inputSchema": {
@@ -306,8 +328,20 @@ pub async fn run(config: Config) -> Result<()> {
                             }
                         },
                         {
+                            "name": "chaos_gaps",
+                            "description": "List KNOWLEDGE GAPS — code retrieval cannot find. Two kinds: coverage_gaps (files that produced NO chunks — invisible to every retrieval method; re-add them, report a chunking bug if they stay empty) and vocabulary_gaps (chunked code whose indexed text carries too little DISTINCTIVE vocabulary to match any meaningful query: single-letter names, abbreviation soup, no docstrings). Corpus-driven and deterministic (background vocabulary is derived from each repo's own document frequencies, not a hardcoded stop list), read-only, embedder-free, COMPACT return with per-file evidence samples and a `next` instruction. Pass `repo` for one repository (optionally `folder` to scope flagging to a sub-app path inside a monorepo-indexed repo), or `project` to scan EVERY member repo of a cross-repo project in one repo-tagged report. The FIX for a vocabulary gap is repo content — ask the user what the file is for, write a file-top docstring or folder README capturing it, then run chaos_add with those paths; NEVER block or pause indexing waiting for the answer.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo": {"type": "string", "description": "Indexed repository path or name (omit when passing project)."},
+                                    "project": {"type": "string", "description": "Cross-repo project name — scans every member repo."},
+                                    "folder": {"type": "string", "description": "Path prefix inside the repo to scope flagging to (repo mode only)."}
+                                }
+                            }
+                        },
+                        {
                             "name": "chaos_graph",
-                            "description": "Export an already-indexed repository as a standalone interactive HTML graph (the full L0 node/edge view) read from the persisted index — embedder-free, writes one self-contained file. Defaults to docs/features_memory/graph.html inside the repo (so chaos_clean --artifacts sweeps it); override with `output`. For the feature-level map (L1 communities + quotient graph) use chaos_obsidian / chaos_refresh instead, which write feature-map.html.",
+                            "description": "Export an already-indexed repository as a standalone interactive HTML graph (the full L0 node/edge view) read from the persisted index — embedder-free, writes one self-contained file. Defaults to docs/features_memory/graph.html inside the repo (so chaos_clean --artifacts sweeps it); override with `output`. The static page's search box is a SUBSTRING filter; for LIVE semantic search in the page (a human validation surface running the same hierarchical retrieval pipeline as chaos_query), tell the user to run `chaos graph <repo> --serve` in a terminal — a long-running local server, deliberately not an MCP tool. For the feature-level map (L1 communities + quotient graph) use chaos_obsidian / chaos_refresh instead, which write feature-map.html.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
@@ -758,6 +792,50 @@ async fn handle_tool_call(
             let summary = crate::components::run(storage, embedder, repo, area, &opts).await?;
             Ok(tool_text(serde_json::to_string_pretty(&summary)?))
         }
+        "chaos_compose" => {
+            let repo = args
+                .get("repo")
+                .and_then(Value::as_str)
+                .context("repo is required")?;
+            let sections = args
+                .get("sections")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let opts = crate::compose::ComposeOptions {
+                sections,
+                persona: args
+                    .get("persona")
+                    .and_then(Value::as_str)
+                    .map(String::from),
+                level: args.get("level").and_then(Value::as_str).map(String::from),
+                style: args.get("style").and_then(Value::as_str).map(String::from),
+                brand_preset: args
+                    .get("brand_preset")
+                    .and_then(Value::as_str)
+                    .map(String::from),
+                filter: args.get("filter").and_then(Value::as_str).map(String::from),
+                title: args.get("title").and_then(Value::as_str).map(String::from),
+                slug: args.get("slug").and_then(Value::as_str).map(String::from),
+                output_html: args
+                    .get("output_html")
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from),
+                limit: args.get("limit").and_then(Value::as_u64).unwrap_or(0) as usize,
+                feature_pages: args
+                    .get("feature_pages")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            };
+            // Explicit level / no persona stays embedder-free.
+            let summary = crate::compose::run(storage, Some(embedder), repo, &opts).await?;
+            Ok(tool_text(serde_json::to_string_pretty(&summary)?))
+        }
         "chaos_features" => {
             let repo = args.get("repo").and_then(Value::as_str);
             let project = args.get("project").and_then(Value::as_str);
@@ -847,6 +925,24 @@ async fn handle_tool_call(
             let summary = crate::run_clean(storage, repo, artifacts).await?;
             Ok(tool_text(serde_json::to_string_pretty(&summary)?))
         }
+        "chaos_gaps" => {
+            if let Some(project) = args.get("project").and_then(Value::as_str) {
+                let report = crate::gaps::build_project_gaps_report(storage, project).await?;
+                return Ok(tool_text(serde_json::to_string_pretty(&report)?));
+            }
+            let repo = args
+                .get("repo")
+                .and_then(Value::as_str)
+                .context("pass repo (one repository) or project (every member repo)")?;
+            let repo = storage
+                .find_repository(repo)
+                .await?
+                .context("repository is not indexed")?;
+            let folder = args.get("folder").and_then(Value::as_str);
+            let report =
+                crate::gaps::build_gaps_report(storage, repo.id, &repo.name, folder).await?;
+            Ok(tool_text(serde_json::to_string_pretty(&report)?))
+        }
         "chaos_graph" => {
             let repo = args
                 .get("repo")
@@ -872,7 +968,11 @@ async fn handle_tool_call(
                 "output": output,
                 "repo_id": repo.id,
                 "nodes": graph.nodes.len(),
-                "edges": graph.edges.len()
+                "edges": graph.edges.len(),
+                "semantic_search": format!(
+                    "static page = substring filter only; for live semantic search run: chaos graph {} --serve",
+                    repo.root_path
+                ),
             }))?))
         }
         _ => anyhow::bail!("unknown tool: {name}"),
@@ -891,14 +991,16 @@ WORKFLOWS
   sanity-check       chaos_stats {repo}  — what the index holds (read-only, embedder-free)
   what's the stack   chaos_stack {repo}  — declared dependencies, scripts, CDK stacks/resources, configs, languages — LISTED, with explicit coverage notes (embedder-free)
   what's extracted   chaos_pages {repo}  — list the generated pages (kind, title, modified) — use INSTEAD of ls/globbing docs/features_memory (embedder-free)
+  knowledge gaps     chaos_gaps {repo | project, folder?}  — code retrieval can't find: no chunks at all, or no distinctive vocabulary after identifier splitting; project scans every member repo, folder scopes to a sub-app; fix = file-top docstring or folder README, then chaos_add those paths — never pause indexing on it (embedder-free)
   ask a question     chaos_query {repo, question, hierarchical: true}  — feature-routed retrieval; flat search without the flag
   grasp a big area   chaos_components {repo, area?}  — curated component overview with a read order (run BEFORE feature work)
   list features      chaos_features {repo | project, filter?}  — exhaustive inventory; filter auto-detects folder | layer (exact word OR by meaning: 'backend', 'client app') | topic; after composing your answer, call again with curation {groups: [{title, icon?, blurb?, features: [{label, note?}]}]} so the HTML carries your human domains + notes
   scope a change     chaos_change_plan {repo, change_description, since?}  — which features a change spans, in check order
   gather evidence    chaos_feature_context {repo, task}  — implementation context; treat its warnings as blockers; FINISH the drill-down with chaos_write_feature_website so the explanation persists as a page
   impact (before)    chaos_impact {repo, feature}  — how a proposed feature maps onto today's code, compact return + HTML
-  document (eng)     chaos_write_feature_website {repo, slug, title, manifest}  — OMIT html: Chaos renders the page from the manifest
+  document (eng)     chaos_write_feature_website {repo, slug, title, manifest}  — OMIT html: Chaos renders the page from the manifest; manifest.purpose (REQUIRED) opens the page with what the feature was made for, manifest.examples[] add a clickable 'How you'd use it' section
   document (users)   chaos_write_storyboard {repo, slug, title, manifest}  — code-free feature guide for stakeholders
+  compose a page     chaos_compose {repo, sections: [features|correlations|stack], persona?|level?, style?, filter?, feature_pages?}  — THE surface for any user-facing webpage/website request: ONE page (or a SITE: feature_pages=true adds one hash-gated, cross-linked page per feature with code/files, stack relations [smart contracts tagged], persona-fitted walkthrough); persona routes by meaning; style: editorial | blade-runner; brand_preset: molecule; everything content-hashed (cached: true = you already hold it, do NOT re-ingest); if it fails, REPORT the failure — never fake the page with shell tools
   cross-repo         chaos_project {action: create | add_repo | list | status | relink}  — link client/backend/contracts/infra repos; then chaos_features {project}
   exports            chaos_obsidian / chaos_refresh  — regenerate vault + pages from the index, no embedder
   graph view         chaos_graph {repo, output?}  — standalone interactive L0 node/edge HTML (feature map comes from obsidian/refresh)
@@ -989,7 +1091,7 @@ fn write_manifest_feature_website(
     let parsed: crate::feature_context::FeatureManifest =
         serde_json::from_value(value).map_err(|err| {
             anyhow::anyhow!(
-                "manifest does not match the FeatureManifest schema: {err}. Field shapes: nodes[].evidence and edges[].evidence are OBJECTS {{source, method, notes}} (not strings); claims need {{id, title, body, confidence, node_ids}}; modes {{id, title, node_ids}}; edges {{source, target, label}}; story steps {{id, title, body, node_ids}}"
+                "manifest does not match the FeatureManifest schema: {err}. Field shapes: purpose is a plain STRING; examples[] are {{title, description, steps[], code, language, node_ids}}; nodes[].evidence and edges[].evidence are OBJECTS {{source, method, notes}} (not strings); claims need {{id, title, body, confidence, node_ids}}; modes {{id, title, node_ids}}; edges {{source, target, label}}; story steps {{id, title, body, node_ids}}"
             )
         })?;
     let slug = safe_slug(slug);
@@ -1008,6 +1110,21 @@ fn write_manifest_feature_website(
 
 /// Minimum-evidence contract shared by both rendering paths.
 pub(crate) fn validate_manifest_minimums(manifest: &Value) -> Result<()> {
+    // The page must open with WHY the feature exists, not just what it
+    // contains — a reader should never have to reverse-engineer the purpose
+    // from the graph. (Older pages on disk without it still parse; this gate
+    // applies to new writes only.)
+    let purpose_len = manifest
+        .get("purpose")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .map(str::len)
+        .unwrap_or(0);
+    if purpose_len == 0 {
+        anyhow::bail!(
+            "manifest.purpose must explain in plain language what this feature was made for (who uses it, what problem it solves); it renders as the page's opening band. Add a simple usage example in manifest.examples too when the feature has a callable surface."
+        );
+    }
     let required_manifest = [
         ("claims", 3usize),
         ("modes", 2usize),
@@ -1212,6 +1329,7 @@ mod tests {
 
     fn valid_manifest() -> Value {
         json!({
+            "purpose": "Explains what the sample feature is for.",
             "claims": [{}, {}, {}],
             "modes": [{}, {}],
             "nodes": [{}, {}, {}, {}, {}],
@@ -1239,10 +1357,12 @@ mod tests {
             "chaos_change_plan",
             "chaos_components",
             "chaos_features",
+            "chaos_compose",
             "chaos_project",
             "chaos_clean",
             "chaos_graph",
             "chaos_pages",
+            "chaos_gaps",
         ] {
             assert!(AGENT_GUIDE.contains(tool), "guide missing {tool}");
         }
@@ -1262,6 +1382,15 @@ mod tests {
             "feature": {"id": "f1", "title": "Auth", "domain": "core", "summary": "sums"},
             "title": "Auth feature",
             "subtitle": "How auth works",
+            "purpose": "Lets a signed-in user prove who they are before touching protected routes.",
+            "examples": [{
+                "title": "Sign in and call a protected route",
+                "description": "The happy path a new integrator follows.",
+                "steps": ["POST /login", "Send the returned token as a Bearer header"],
+                "code": "curl -H 'Authorization: Bearer <token>' /api/me",
+                "language": "sh",
+                "node_ids": ["n1", "n2"]
+            }],
             "claims": [
                 {"id": "c1", "title": "t", "body": "b", "confidence": 0.9, "node_ids": ["n1"]},
                 {"id": "c2", "title": "t", "body": "b", "confidence": 0.9, "node_ids": ["n2"]},
@@ -1293,9 +1422,25 @@ mod tests {
         let html = std::fs::read_to_string(&path).unwrap();
         assert!(html.contains("chaos-feature-manifest"), "manifest embedded");
         assert!(html.contains("Auth feature"));
+        // Purpose + example survive into the embedded manifest the page renders from.
+        assert!(html.contains("Lets a signed-in user prove who they are"));
+        assert!(html.contains("Sign in and call a protected route"));
+
+        // A manifest without a purpose is rejected: the page must open with
+        // what the feature was made for.
+        let mut no_purpose = manifest.clone();
+        no_purpose.as_object_mut().unwrap().remove("purpose");
+        let err = write_manifest_feature_website(
+            dir.path().to_str().unwrap(),
+            "no-purpose",
+            "No purpose",
+            &no_purpose,
+        )
+        .expect_err("purpose is required");
+        assert!(err.to_string().contains("manifest.purpose"));
 
         // Thin manifests are still rejected (the evidence contract holds).
-        let thin = json!({"claims": [], "modes": [], "nodes": [], "edges": [], "story": []});
+        let thin = json!({"purpose": "p", "claims": [], "modes": [], "nodes": [], "edges": [], "story": []});
         assert!(write_manifest_feature_website(
             dir.path().to_str().unwrap(),
             "thin",

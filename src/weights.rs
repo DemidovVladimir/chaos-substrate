@@ -62,3 +62,10 @@ pub const IMPORTS_SOLIDITY: EdgeWeight = EdgeWeight::new(0.30, 1.00);
 pub const CALLS_HEURISTIC: EdgeWeight = EdgeWeight::new(0.35, 0.70);
 /// Type/contract inheritance or trait implementation (AST-exact for Solidity; small discount for cross-language heuristics).
 pub const IMPLEMENTS: EdgeWeight = EdgeWeight::new(0.20, 0.95);
+/// File defines a user-facing entrypoint — a CLI command or an HTTP route
+/// (parser-certain: clap/commander/argparse/click definitions, framework-shaped
+/// route registrations).
+pub const DEFINES_ENTRYPOINT: EdgeWeight = EdgeWeight::new(0.08, 1.00);
+/// Code reads an environment variable (parser-certain read site; the variable's
+/// meaning is still up to the operator).
+pub const READS_ENV: EdgeWeight = EdgeWeight::new(0.15, 1.00);

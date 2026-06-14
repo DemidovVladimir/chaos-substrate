@@ -44,7 +44,7 @@ Everything is additive: a repository indexed before the hierarchy existed still 
 ## Hard Boundaries
 
 - Do not edit `Cargo.toml` or `src/` unless the user explicitly asks.
-- Do not add mock embeddings, fake vector stores, in-memory persistence, HTTP APIs, Python services, TypeScript services, or live browser services. A standalone Rust-generated `graph.html` export is allowed for persisted graph validation. TypeScript, JavaScript, Python, and Solidity are analysis targets only: their extraction belongs in the Rust extractor, never in a sidecar runtime in another language.
+- Do not add mock embeddings, fake vector stores, in-memory persistence, HTTP APIs, Python services, TypeScript services, or live browser services. Two Rust-side carve-outs exist for persisted-graph validation: the standalone `graph.html` export, and `chaos graph --serve` — a localhost-only Rust HTTP server that gives that same page live semantic search through the real retrieval pipeline (it must never grow into a general API; MCP stays on stdio). TypeScript, JavaScript, Python, and Solidity are analysis targets only: their extraction belongs in the Rust extractor, never in a sidecar runtime in another language.
 - Do not downgrade persistence guarantees; memory must survive process restarts.
 - Do not replace real embedders with deterministic test-only behavior in production paths.
 
@@ -85,11 +85,17 @@ If MCP tools are available, prefer them over shelling out:
    `chaos_feature_context` dump. Use it to see how a proposed feature maps onto the codebase as it
    exists today (the before). It mirrors the `chaos impact <repo> <feature>` CLI command.
 7. Use `chaos_write_feature_website` only after reading `chaos_feature_context` output. Compose a
-   feature-specific MANIFEST (feature, title, subtitle, claims, modes, nodes with file/lines/code,
-   edges, story) and pass it WITHOUT the `html` argument — Chaos renders the full interactive page
-   deterministically (the same renderer `chaos add` uses), so you never spend tokens authoring or
-   transmitting raw HTML. The LLM still decides the story, claims, nodes, and flow from evidence;
-   the tool owns the rendering. (Passing `html` yourself is a legacy path.)
+   feature-specific MANIFEST (purpose, feature, title, subtitle, examples, claims, modes, nodes
+   with file/lines/code, edges, story) and pass it WITHOUT the `html` argument — Chaos renders the
+   full interactive page deterministically (the same renderer `chaos add` uses), so you never
+   spend tokens authoring or transmitting raw HTML. `purpose` is REQUIRED: a plain-language
+   sentence or two on what the feature was made for (who uses it, what problem it solves), rendered
+   as the page's opening band before any graph or evidence. Add at least one simple usage example
+   in `examples` (`{title, description, steps[], code, language, node_ids}`) whenever the feature
+   has a callable surface — examples render as a clickable "How you'd use it" section whose
+   `node_ids` highlight the code path on the graph. The LLM still decides the story, claims,
+   nodes, and flow from evidence; the tool owns the rendering. (Passing `html` yourself is a
+   legacy path.)
 8. Use `chaos_obsidian` to export an already-indexed repository as an Obsidian vault from the
    persisted graph; run it after `chaos_analyze` (which never writes files) when you want browsable
    docs. This lets an MCP-only agent generate the vault without shelling out to the CLI.
@@ -137,9 +143,9 @@ If MCP tools are available, prefer them over shelling out:
        admin/CLI-only operation) does NOT belong in a user guide — drop it. Match each frame to the
        real screen and route (e.g. `Members › Invite member`), not an imagined one.
     2. **Use real screen captures.** Each frame's `preview` must be a REAL screenshot or a live
-       route — Chaos cannot draw the client UI, and a frame with no `preview` renders an honest
-       "add a screenshot" placeholder. ASK the user/dev to capture the screens (or point you at a
-       running dev-server route); never hand-wave a mock.
+       route — Chaos cannot draw the client UI, and a frame with no `preview` renders text-only
+       (full-width copy, no mockup or placeholder). Offer to embed real captures (or a running
+       dev-server route) when available; never hand-wave a mock.
     3. **Don't show confidence.** `confidence`/`overall_confidence` are optional internal metadata
        and are not rendered — omit them or leave them, but never describe them to the reader.
     4. **Brand it.** Easiest: set `"brand_preset": "molecule"` — a preset **shipped inside Chaos**
@@ -220,6 +226,31 @@ If MCP tools are available, prefer them over shelling out:
     index (embedder-free). It defaults to `docs/features_memory/graph.html` inside the repo;
     override with `output`. The feature-level map (`feature-map.html`) comes from
     `chaos_obsidian`/`chaos_refresh` instead. It mirrors `chaos graph <repo> -o graph.html`.
+    The static page's search box is a substring filter only. When the user wants to VALIDATE
+    semantic retrieval visually, have them run `chaos graph <repo> --serve [--port 7878]` in a
+    terminal: it serves the same page at `http://127.0.0.1:<port>/` with a live "Semantic search"
+    panel that runs the SAME hierarchical pipeline as `chaos_query` (real embedder → L1 feature
+    routing → hybrid chunk search) and shows cosine scores, `retrieved_by` badges, and highlighted
+    nodes. It is a long-running CLI server on purpose — there is no MCP wrapper for it, so do not
+    try to launch it through MCP; an embedder failure surfaces as a loud in-page error.
+    Use `chaos_gaps` when retrieval misses a file the user insists is relevant, or to audit what
+    the index can NEVER find: it lists `coverage_gaps` (files that produced no chunks — invisible
+    to every retrieval method; re-add them, and report a chunking bug if they stay empty) and
+    `vocabulary_gaps` (chunked code with no distinctive words left after identifier splitting).
+    Scope it like the other surfaces: `repo` alone, `repo` + `folder` for one sub-app of a
+    monorepo-indexed repo, or `project` for every member repo of a cross-repo project. A gaps
+    check is chaos_gaps ONLY — do not improvise one with find/grep/git or file counting; if
+    chaos_gaps is missing from the tool list, the MCP server binary is stale (rebuild + restart),
+    which is a finding to report, not a reason to fall back to shell.
+    A gaps check ENDS at the report. Coverage gaps (and any other suspected Chaos bug) are
+    findings to PRESENT to the user — never start reading or editing the chaos-substrate source
+    from a session whose working directory is a TARGET repository, even if you know its path
+    from the MCP config. Fixing Chaos is its own task, done in a chaos-substrate session the
+    user opens deliberately; two sessions editing that working tree at once corrupt each other.
+    For a vocabulary gap, ask the user what the file is for, write that as a file-top docstring or
+    folder README, then `chaos_add` those paths. NEVER pause or block indexing waiting for the
+    answer — the knowledge belongs in the repo, not in a prompt. Read-only and embedder-free; it
+    mirrors `chaos gaps <repo>`.
 18. Use `chaos_stack` when the user asks "what is this repo built with / what's the tech stack /
     what infrastructure does it use". It LISTS what `chaos_stats` only counts, read from the
     persisted index (read-only, embedder-free): manifest-DECLARED dependencies by ecosystem
@@ -242,6 +273,41 @@ If MCP tools are available, prefer them over shelling out:
     directory even if the repo row is missing). Use it INSTEAD of `ls`/globbing or shell scripts to
     check whether a feature page already exists before starting a new deep-dive, and to find the
     page to reopen or refresh. It mirrors `chaos pages <repo> [--features-dir DIR]`.
+20. Use `chaos_compose` as THE page-generation surface: whenever the user asks for a webpage,
+    website, or interactive info page over chaos knowledge, route the request here instead of
+    stitching together the side-pages of `chaos_features`/`chaos_stack`/`chaos_components` (those
+    remain data/inventory tools). It builds ONE page from knowledge-base-backed SECTIONS instead of
+    generating several similar standalone pages — or a whole SITE: `feature_pages: true` writes one
+    page per feature under `<slug>-composed/`, makes the index's feature cards CLICKABLE links, and
+    gives each per-feature page the feature's code/files, its quotient-graph relations to the rest
+    of the stack (Solidity neighbours tagged as smart contracts, in-scope neighbours cross-linked,
+    out-of-scope ones honestly labelled), prior overlapping generated pages, and a deterministic
+    persona-adapted walkthrough built ONLY from indexed data (each page carries an honesty note
+    saying exactly that — for UX storyboards with real screens, `chaos_write_storyboard` remains
+    the tool). Every page — index and per-feature alike — embeds its own `chaos-composed-manifest`
+    with its own `content_hash` and is INDIVIDUALLY hash-gated: the return reports written vs
+    cached page counts, and a `cached` page means you already hold that memory — do not re-read or
+    re-ingest it. Pick `sections` in render order — `features`
+    (the inventory with each feature's concise L3 explanation), `correlations` (files shared
+    between those features plus prior generated pages that overlap them), `stack` — plus an
+    AUDIENCE and a STYLE: free-text `persona` ("a very beginner software engineer who has no idea
+    about the stack") is resolved to beginner|practitioner|expert BY MEANING via prototype
+    embeddings (no keyword list; explicit `level` is the embedder-free path), `style` picks
+    `editorial` (light default) or `blade-runner` (dark neon), and `brand_preset` (e.g.
+    `molecule`) brands the page. `filter` scopes the features sections exactly like
+    `chaos_features` (folder | layer | topic, auto-detected — "desci-infra" scopes to that
+    folder). Chaos resolves EVERY section from the persisted index and prior generated manifests
+    ONLY — it never parses source files; a section it cannot serve (repo not indexed, no L1
+    hierarchy, unknown section or style name) is a LOUD ERROR naming what is missing and the
+    command that fixes it. If `chaos_compose` fails, REPORT that failure to the user as-is — do
+    NOT fall back to rg/grep/scripts to assemble a lookalike page. The page lands at
+    `docs/features_memory/<slug>-composed.html` with an embedded `chaos-composed-manifest` whose
+    sections carry full data for agent consumption, and the composition is CONTENT-HASHED: the
+    return's `content_hash` is your dedup key, and re-composing the same request over unchanged
+    knowledge returns `cached: true` with no write — when you see `cached: true`, reuse what you
+    already hold instead of re-ingesting the manifest as new memory. It mirrors
+    `chaos compose <repo> --sections features,correlations,stack [--persona "…"] [--level …]
+    [--style …] [--filter …]`.
 
 NEVER answer feature-extraction questions about an indexed repo by falling back to `rg`/`grep`,
 `ls`, or generated scripts against the target repo: retrieval goes through `chaos_query` /
@@ -262,8 +328,9 @@ interactive graph/story/architecture/code/evidence surfaces when you pass a mani
 (`data-story-step`) / `data-chaos-architecture` / `data-chaos-flow` / `data-chaos-code` /
 `data-chaos-evidence` markers and JavaScript `addEventListener` interactivity.
 
-The manifest must include at least three claims, two modes, five nodes, three edges, and three story
-steps. If evidence is too thin for that, do not write a weak page; ask to index/query more first.
+The manifest must include a non-empty `purpose` plus at least three claims, two modes, five nodes,
+three edges, and three story steps. If evidence is too thin for that, do not write a weak page; ask
+to index/query more first.
 If the feature context has warnings, preserve them in your response and resolve them before writing
 the page.
 
@@ -418,9 +485,9 @@ Use a real Postgres database with pgvector for persistence tests. Use real OpenA
 - MCP transport is stdio.
 - The process should be launched directly by the agent client.
 - Keep stdout protocol-clean; diagnostics should go to stderr or structured logging that does not corrupt MCP messages.
-- The MCP server exposes NINETEEN tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_pages`, `chaos_query`,
+- The MCP server exposes TWENTY-ONE tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_pages`, `chaos_gaps`, `chaos_query`,
   `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
-  `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`, `chaos_clean`, and `chaos_graph`.
+  `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_compose`, `chaos_project`, `chaos_help`, `chaos_clean`, and `chaos_graph`.
 - `chaos_add` incrementally indexes only git-changed files (or explicit `paths`), refreshes the
   Obsidian vault, and writes a feature/bug page in one call; use it instead of a full
   `chaos_analyze` after small edits. The page carries provenance breadcrumbs and correlates the
@@ -466,8 +533,8 @@ Use a real Postgres database with pgvector for persistence tests. Use real OpenA
   `story.frame_ids`/persona reference must resolve. Each walkthrough step pairs with a device mockup
   built from the frame's optional `preview` — `image` (a REAL screenshot/clip you captured; offline
   and private) or `iframe` (a live embed of a running app route); Chaos can't synthesise the client's
-  screens, so a frame with no `preview` shows an honest "add a screenshot" placeholder (ask the
-  user/dev for real captures). `src`/`url` must not use
+  screens, so a frame with no `preview` renders text-only — full-width copy, no mockup or
+  placeholder (embed real captures when available). `src`/`url` must not use
   `javascript:`/`data:text/html`. Optional, backward-compatible extras let you match the full
   Access-Control look: `hero_image` + `brand` (your logo/company), persona `who`/`icon`/`includes`/
   `tier`, a permission `matrix`, an agent-style `callout`, and an end-of-page `game` (a click-to-check

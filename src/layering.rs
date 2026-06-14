@@ -57,6 +57,14 @@ impl Layer {
 /// directory names first (a `repositories/` folder is data-access even when it
 /// lives under `infra/lambda/`), so segment order resolves the common conflicts.
 pub fn classify_path(path: &str, kind: &str) -> Layer {
+    // User-surface kinds carry a stronger layer signal than any folder name:
+    // a CLI command is what the user types (entry) and an HTTP route is the
+    // API surface (interface), wherever the file lives.
+    match kind {
+        "cli_command" => return Layer::Entry,
+        "http_route" => return Layer::Interface,
+        _ => {}
+    }
     if path.is_empty() {
         // No path — fall back to the node kind for the few signals it carries.
         return match kind {

@@ -127,7 +127,7 @@ impl FilterKind {
     }
 }
 
-struct ResolvedFilter {
+pub(crate) struct ResolvedFilter {
     kind: FilterKind,
     value: Option<String>,
     /// True when the kind was inferred from the positional filter (vs forced by a flag).
@@ -244,27 +244,32 @@ pub struct FeatureSymbol {
     pub file: String,
 }
 
-/// Run the single-repo inventory: resolve filter → select features → group by
-/// layer → write HTML → return compact JSON.
-pub async fn run(
+/// Feature cards collected from the persisted index for one repo — the
+/// build-only half of the inventory, shared by `run` (which writes the
+/// standalone features page) and `chaos compose` (which embeds the cards as
+/// one section of a composed page).
+pub(crate) struct CollectedFeatures {
+    pub(crate) cards: Vec<(Layer, FeatureCard)>,
+    pub(crate) filter: FilterInfo,
+    pub(crate) provenance: Vec<Breadcrumb>,
+    pub(crate) warnings: Vec<String>,
+}
+
+/// Resolve the filter and select feature cards — no HTML write. Returns the
+/// resolved filter alongside so `run` can keep using it for output naming.
+pub(crate) async fn collect(
     storage: &Storage,
     embedder: Option<&dyn Embedder>,
-    repo: &str,
+    repo: &crate::models::Repository,
     filter: Option<&str>,
     opts: &FeatureInventoryOptions,
-) -> Result<Value> {
-    let repo = storage
-        .find_repository(repo)
-        .await?
-        .with_context(|| format!("repository is not indexed: {repo}"))?;
+) -> Result<(CollectedFeatures, ResolvedFilter)> {
     let repo_root = PathBuf::from(&repo.root_path);
-
     let mut warnings: Vec<String> = Vec::new();
     let mut provenance: Vec<Breadcrumb> = Vec::new();
 
     // 1. Load every feature community once (read-only, embedder-free).
-    let hierarchy: CommunityHierarchy =
-        storage.load_community_hierarchy(&repo, TOP_MEMBERS).await?;
+    let hierarchy: CommunityHierarchy = storage.load_community_hierarchy(repo, TOP_MEMBERS).await?;
     let detail_by_id: HashMap<Uuid, &CommunityDetail> =
         hierarchy.communities.iter().map(|c| (c.id, c)).collect();
     provenance.push(Breadcrumb::new(
@@ -286,7 +291,7 @@ pub async fn run(
     let mut resolved = resolve_filter(filter, opts, std::slice::from_ref(&repo_root));
     push_filter_breadcrumb(&resolved, &mut provenance);
 
-    // 3–5. Select, build cards, assemble (shared with the project listing).
+    // 3–5. Select and build cards.
     let topic_embedding = topic_embedding_for(embedder, &resolved).await?;
     maybe_route_layers_by_meaning(
         embedder,
@@ -310,6 +315,48 @@ pub async fn run(
     .await?;
     let cards = build_cards(&selected, &detail_by_id, None, &HashMap::new());
 
+    let filter_info = filter_info(&resolved);
+    Ok((
+        CollectedFeatures {
+            cards,
+            filter: filter_info,
+            provenance,
+            warnings,
+        },
+        resolved,
+    ))
+}
+
+/// Public view of how the filter was read.
+fn filter_info(resolved: &ResolvedFilter) -> FilterInfo {
+    FilterInfo {
+        kind: resolved.kind.as_str().to_string(),
+        value: resolved.value.clone(),
+        detected: resolved.detected,
+        layers: resolved
+            .layers
+            .as_ref()
+            .map(|ls| ls.iter().map(|l| l.as_str().to_string()).collect()),
+    }
+}
+
+/// Run the single-repo inventory: resolve filter → select features → group by
+/// layer → write HTML → return compact JSON.
+pub async fn run(
+    storage: &Storage,
+    embedder: Option<&dyn Embedder>,
+    repo: &str,
+    filter: Option<&str>,
+    opts: &FeatureInventoryOptions,
+) -> Result<Value> {
+    let repo = storage
+        .find_repository(repo)
+        .await?
+        .with_context(|| format!("repository is not indexed: {repo}"))?;
+    let repo_root = PathBuf::from(&repo.root_path);
+
+    let (collected, resolved) = collect(storage, embedder, &repo, filter, opts).await?;
+
     let output = opts.output_html.clone().unwrap_or_else(|| {
         default_output(
             &repo_root.join("docs/features_memory"),
@@ -318,11 +365,11 @@ pub async fn run(
         )
     });
     assemble_and_write(
-        cards,
+        collected.cards,
         &resolved,
         &repo.name,
-        provenance,
-        warnings,
+        collected.provenance,
+        collected.warnings,
         &output,
         opts.limit,
         opts.curation.as_ref(),
@@ -1050,15 +1097,7 @@ fn assemble_and_write(
         repo_name: display_name.to_string(),
         title,
         subtitle,
-        filter: FilterInfo {
-            kind: resolved.kind.as_str().to_string(),
-            value: resolved.value.clone(),
-            detected: resolved.detected,
-            layers: resolved
-                .layers
-                .as_ref()
-                .map(|ls| ls.iter().map(|l| l.as_str().to_string()).collect()),
-        },
+        filter: filter_info(resolved),
         overview,
         total,
         layer_counts,
@@ -1526,7 +1565,7 @@ fn top_folders(files: &[String]) -> Vec<String> {
     out.into_iter().take(4).map(|(f, _)| f).collect()
 }
 
-fn language_tally(files: &[String]) -> Vec<LangCount> {
+pub(crate) fn language_tally(files: &[String]) -> Vec<LangCount> {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for f in files {
         let lang = language_for(f);

@@ -13,6 +13,7 @@ use crate::{
     },
     lang::FileExtraction,
     models::{EdgeKind, KnowledgeNode, NodeKind},
+    user_surface::{Surface, SurfaceEntry},
     weights,
 };
 use anyhow::Result;
@@ -54,11 +55,25 @@ impl CollectedNodeKind {
     }
 }
 
+/// Byte spans needed to build a class chunk that excludes method bodies:
+/// the methods are separately captured as `Function` symbols, so the class
+/// chunk keeps only its declaration header, field/property declarations and
+/// a method-name roster (no duplicated bodies, no blind splitting).
+struct ClassParts {
+    /// Byte offset where the class body (`{`) starts.
+    body_start: u32,
+    /// Byte spans of property/field declarations (incl. index signatures).
+    property_spans: Vec<(u32, u32)>,
+    /// Method names in source order, for the roster line.
+    method_names: Vec<String>,
+}
+
 struct JsSymbol {
     name: String,
     kind: CollectedNodeKind,
     start: u32,
     end: u32,
+    class_parts: Option<ClassParts>,
 }
 
 struct JsImport {
@@ -74,7 +89,20 @@ struct Collector {
     stacks: Vec<(String, u32, u32)>,
     constructs: Vec<(String, String, u32, u32)>,
     calls: Vec<(String, u32)>,
+    /// (METHOD, "/path", receiver, start, end) — framework-shaped route
+    /// registrations (`app.get('/x', …)`), mirroring the linker's provider
+    /// markers so a bare axios instance doesn't masquerade as a server.
+    routes: Vec<(String, String, String, u32, u32)>,
+    /// (VAR, start) — `process.env.X` / `process.env["X"]` reads.
+    env_reads: Vec<(String, u32)>,
+    /// (name, start, end) — commander/yargs-style `.command('name …')`.
+    cli_commands: Vec<(String, u32, u32)>,
 }
+
+/// Receivers whose `.get(`/`.post(`/… calls count as server-side route
+/// registrations (same shape as the linker's provider markers).
+const ROUTE_RECEIVERS: &[&str] = &["app", "router", "fastify", "server"];
+const ROUTE_METHODS: &[&str] = &["get", "post", "put", "patch", "delete", "all"];
 
 impl<'a> Visit<'a> for Collector {
     fn visit_function(&mut self, it: &Function<'a>, flags: ScopeFlags) {
@@ -84,6 +112,7 @@ impl<'a> Visit<'a> for Collector {
                 kind: CollectedNodeKind::Function,
                 start: it.span.start,
                 end: it.span.end,
+                class_parts: None,
             });
         }
         walk::walk_function(self, it, flags);
@@ -101,6 +130,7 @@ impl<'a> Visit<'a> for Collector {
                     kind: CollectedNodeKind::Function,
                     start: it.span.start,
                     end: it.span.end,
+                    class_parts: None,
                 });
             }
         }
@@ -110,11 +140,38 @@ impl<'a> Visit<'a> for Collector {
     fn visit_class(&mut self, it: &Class<'a>) {
         if let Some(id) = &it.id {
             let class_name = id.name.to_string();
+            let mut property_spans = Vec::new();
+            let mut method_names = Vec::new();
+            for element in &it.body.body {
+                use oxc_ast::ast::ClassElement;
+                match element {
+                    ClassElement::PropertyDefinition(p) => {
+                        property_spans.push((p.span.start, p.span.end));
+                    }
+                    ClassElement::AccessorProperty(p) => {
+                        property_spans.push((p.span.start, p.span.end));
+                    }
+                    ClassElement::TSIndexSignature(p) => {
+                        property_spans.push((p.span.start, p.span.end));
+                    }
+                    ClassElement::MethodDefinition(m) => {
+                        if let Some(name) = m.key.static_name() {
+                            method_names.push(name.to_string());
+                        }
+                    }
+                    ClassElement::StaticBlock(_) => {}
+                }
+            }
             self.symbols.push(JsSymbol {
                 name: class_name.clone(),
                 kind: CollectedNodeKind::Struct,
                 start: it.span.start,
                 end: it.span.end,
+                class_parts: Some(ClassParts {
+                    body_start: it.body.span.start,
+                    property_spans,
+                    method_names,
+                }),
             });
             // CDK stack detection: class X extends <prefix.>Stack
             if self.is_cdk {
@@ -166,6 +223,7 @@ impl<'a> Visit<'a> for Collector {
                 kind: CollectedNodeKind::Function,
                 start: it.span().start,
                 end: it.span().end,
+                class_parts: None,
             });
         }
         walk::walk_method_definition(self, it);
@@ -177,6 +235,7 @@ impl<'a> Visit<'a> for Collector {
             kind: CollectedNodeKind::Trait,
             start: it.span.start,
             end: it.span.end,
+            class_parts: None,
         });
         walk::walk_ts_interface_declaration(self, it);
     }
@@ -187,6 +246,7 @@ impl<'a> Visit<'a> for Collector {
             kind: CollectedNodeKind::Enum,
             start: it.span.start,
             end: it.span.end,
+            class_parts: None,
         });
         walk::walk_ts_enum_declaration(self, it);
     }
@@ -197,6 +257,7 @@ impl<'a> Visit<'a> for Collector {
             kind: CollectedNodeKind::TypeAlias,
             start: it.span.start,
             end: it.span.end,
+            class_parts: None,
         });
         walk::walk_ts_type_alias_declaration(self, it);
     }
@@ -215,9 +276,91 @@ impl<'a> Visit<'a> for Collector {
         } else if let oxc_ast::ast::Expression::StaticMemberExpression(m) = &it.callee {
             self.calls
                 .push((m.property.name.to_string(), it.span.start));
+            self.collect_user_surface_call(m, it);
         }
         walk::walk_call_expression(self, it);
     }
+
+    fn visit_static_member_expression(&mut self, it: &oxc_ast::ast::StaticMemberExpression<'a>) {
+        // process.env.FOO
+        if is_process_env(&it.object) {
+            self.env_reads
+                .push((it.property.name.to_string(), it.span.start));
+        }
+        walk::walk_static_member_expression(self, it);
+    }
+
+    fn visit_computed_member_expression(
+        &mut self,
+        it: &oxc_ast::ast::ComputedMemberExpression<'a>,
+    ) {
+        // process.env["FOO"]
+        if is_process_env(&it.object) {
+            if let Expression::StringLiteral(s) = &it.expression {
+                self.env_reads.push((s.value.to_string(), it.span.start));
+            }
+        }
+        walk::walk_computed_member_expression(self, it);
+    }
+}
+
+impl Collector {
+    /// Route registrations (`app.get('/x', …)`) and CLI command definitions
+    /// (`program.command('serve …')`) from a member-call expression.
+    fn collect_user_surface_call(
+        &mut self,
+        m: &oxc_ast::ast::StaticMemberExpression<'_>,
+        it: &oxc_ast::ast::CallExpression<'_>,
+    ) {
+        let property = m.property.name.as_str();
+        let first_string = it.arguments.first().and_then(|arg| match arg {
+            oxc_ast::ast::Argument::StringLiteral(s) => Some(s.value.to_string()),
+            _ => None,
+        });
+
+        if ROUTE_METHODS.contains(&property) {
+            if let Expression::Identifier(receiver) = &m.object {
+                if ROUTE_RECEIVERS.contains(&receiver.name.as_str()) {
+                    if let Some(path) = first_string.as_deref() {
+                        if path.starts_with('/') {
+                            self.routes.push((
+                                property.to_ascii_uppercase(),
+                                path.to_string(),
+                                receiver.name.to_string(),
+                                it.span.start,
+                                it.span.end,
+                            ));
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
+        if property == "command" {
+            if let Some(spec) = first_string {
+                // commander specs look like "serve [options] <port>"; the
+                // command name is the first token. A leading '/' means it's
+                // a path, not a command.
+                let name = spec.split_whitespace().next().unwrap_or("").to_string();
+                if !name.is_empty() && !name.starts_with('/') {
+                    self.cli_commands.push((name, it.span.start, it.span.end));
+                }
+            }
+        }
+    }
+}
+
+/// Is this expression literally `process.env`?
+fn is_process_env(expr: &Expression<'_>) -> bool {
+    if let Expression::StaticMemberExpression(inner) = expr {
+        if inner.property.name == "env" {
+            if let Expression::Identifier(obj) = &inner.object {
+                return obj.name == "process";
+            }
+        }
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -246,9 +389,12 @@ pub(crate) fn extract(ctx: &mut FileExtraction<'_>) -> Result<()> {
     let source_type = SourceType::from_path(ctx.file.path.as_str()).unwrap_or_default();
     let ret = Parser::new(&allocator, &content, source_type).parse();
 
+    let chunks_before = ctx.result.chunks.len();
+
     // Graceful degrade: if parse produced no usable AST
     if !ret.errors.is_empty() && ret.program.body.is_empty() {
         crate::lang::warn_parse_failure(&ctx.file.path, &format!("{} errors", ret.errors.len()));
+        ctx.emit_whole_file_fallback(chunks_before, "parse_failed");
         return Ok(());
     }
 
@@ -283,6 +429,50 @@ pub(crate) fn extract(ctx: &mut FileExtraction<'_>) -> Result<()> {
         });
     }
 
+    // Config objects, .d.ts declarations, top-level test() specs, and data
+    // literals collect no symbols; without a fallback chunk the file is
+    // invisible to retrieval. Checked before user-surface emission so a lone
+    // env-read chunk doesn't mask an unindexed file body.
+    ctx.emit_whole_file_fallback(chunks_before, "no_symbols_extracted");
+
+    let mut surface: Vec<SurfaceEntry> = Vec::new();
+    for (method, path, receiver, start, end) in collector.routes {
+        surface.push(SurfaceEntry {
+            surface: Surface::Route,
+            name: format!("{method} {path}"),
+            framework: if receiver == "fastify" {
+                "fastify"
+            } else {
+                "express-like"
+            },
+            detail: json!({"method": method, "route_path": path, "receiver": receiver}),
+            line_start: ctx.lines.line(start as usize),
+            line_end: ctx.lines.line(end as usize),
+        });
+    }
+    for (name, start, end) in collector.cli_commands {
+        surface.push(SurfaceEntry {
+            surface: Surface::Cli,
+            name,
+            framework: "commander-like",
+            detail: json!({"role": "command"}),
+            line_start: ctx.lines.line(start as usize),
+            line_end: ctx.lines.line(end as usize),
+        });
+    }
+    for (var, start) in collector.env_reads {
+        let line = ctx.lines.line(start as usize);
+        surface.push(SurfaceEntry {
+            surface: Surface::Env,
+            name: var,
+            framework: "process.env",
+            detail: json!({"access": "process.env"}),
+            line_start: line,
+            line_end: line,
+        });
+    }
+    ctx.emit_user_surface(surface);
+
     Ok(())
 }
 
@@ -306,6 +496,31 @@ fn emit_symbol(sym: &JsSymbol, ctx: &mut FileExtraction<'_>) {
     let language = ctx.file.language.as_str();
     let stable_id = format!("{}:{}:{}", ctx.file.path, kind.as_str(), name);
 
+    // Class chunks exclude method bodies (methods are separate symbols with
+    // their own chunks): declaration header + fields + a method roster. The
+    // roster lists bare names with no parentheses so the `name(` call
+    // heuristic cannot fabricate call edges from it.
+    let code_override = sym.class_parts.as_ref().map(|parts| {
+        let header_start = ctx.lines.line(sym.start as usize);
+        let header_end = ctx.lines.line(parts.body_start as usize);
+        let mut body = slice_lines(&ctx.file.content, header_start, header_end);
+        for (start, end) in &parts.property_spans {
+            body.push('\n');
+            body.push_str(&slice_lines(
+                &ctx.file.content,
+                ctx.lines.line(*start as usize),
+                ctx.lines.line(*end as usize),
+            ));
+        }
+        if !parts.method_names.is_empty() {
+            body.push_str(&format!(
+                "\nMethods (extracted separately): {}",
+                parts.method_names.join(", ")
+            ));
+        }
+        body
+    });
+
     ctx.emit_code_symbol(
         name,
         kind.clone(),
@@ -318,6 +533,7 @@ fn emit_symbol(sym: &JsSymbol, ctx: &mut FileExtraction<'_>) {
         sym.start as usize,
         sym.end as usize,
         json!({ "symbol": name, "kind": kind.as_str(), "file": ctx.file.path }),
+        code_override.as_deref(),
     );
 }
 

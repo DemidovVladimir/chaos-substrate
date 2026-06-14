@@ -25,6 +25,40 @@ chaos help              # every command + typical workflows; works anywhere, nee
 chaos help <command>    # full flags for one command
 ```
 
+## Fresh machine (zero to running)
+
+Install the system prerequisites once, in this order:
+
+```sh
+# 1. Docker — runs the bundled Postgres + pgvector.
+#    macOS: brew install --cask docker (or Docker Desktop from docker.com)
+#    Linux: Docker Engine + compose plugin — https://docs.docker.com/engine/install/
+docker compose version          # must succeed
+
+# 2. Rust toolchain — the runtime is a single Rust binary.
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+cargo --version                 # must succeed
+
+# 3. Clone and bootstrap everything in one shot:
+#    builds the release binary, starts Postgres, installs/starts Ollama and
+#    pulls embeddinggemma, runs `chaos migrate`, then `chaos doctor`.
+git clone https://github.com/chaos-substrate/chaos-substrate.git
+cd chaos-substrate
+cp chaos-substrate.example.toml chaos-substrate.toml
+bin/chaos bootstrap
+export PATH="$HOME/.local/bin:$PATH"    # `chaos` wrapper on PATH
+```
+
+Variants: OpenAI embeddings instead of Ollama (uncomment `open_ai` in the config, comment out
+`ollama`, `export OPENAI_API_KEY=...`); external Postgres instead of Docker (`CHAOS_NO_DOCKER=1`
+plus your own `DATABASE_URL`).
+
+Then register the agent integration — see [Editor Install](#editor-install) below for Claude Code
+and Codex (and Cursor / Windsurf / OpenCode).
+
+The manual step-by-step equivalent of `bin/chaos bootstrap` follows.
+
 ## Bootstrap
 
 ```sh
@@ -35,8 +69,9 @@ docker compose up -d
 cp chaos-substrate.example.toml chaos-substrate.toml   # if you keep an example; otherwise edit chaos-substrate.toml
 
 # 3. Apply database migrations (sqlx::migrate!, tracked in _sqlx_migrations)
-#    Includes the hierarchy layers: 002_communities (L1 god-nodes),
-#    003_subtree_hash (L2 Merkle rollup), 004_community_summary (L3 summaries).
+#    Includes the layered memory: 002_communities (L1 god-nodes),
+#    003_subtree_hash (L2 Merkle rollup), 004_community_summary (L3 summaries),
+#    005_projects (cross-repo projects), 006_summary_cache (summary reuse cache).
 cargo run -- migrate
 # or: target/release/chaos --config chaos-substrate.toml migrate
 
@@ -228,7 +263,7 @@ path renders one you already have. Notes for an accurate, shippable page:
   the end user does in a screen vs. backend/server-only — drop the latter (it doesn't belong in a
   user guide).
 - **Previews are real captures.** Each frame's `preview` is a real screenshot/clip or a live route;
-  Chaos never fakes screens — a frame with no preview shows an "add a screenshot" placeholder.
+  Chaos never fakes screens — a frame with no preview renders text-only (no mockup, no placeholder).
 - **Branding:** pass `--brand-preset molecule` (or set `"brand_preset": "molecule"` in the manifest)
   to apply a preset **shipped inside Chaos** — embedded in the binary, so it works on any install
   with no local files. It fills the logo/hero/company for any empty `brand`/`hero_image` fields;
@@ -341,6 +376,17 @@ to overlapping pages (`related_features`) and `change-plan` seeds features from 
 # Interactive HTML graph of nodes/edges
 chaos graph /path/to/repo -o graph.html
 
+# Serve the graph with LIVE semantic search — a validation surface for the
+# retrieval pipeline. The page gains a "Semantic search" panel that calls
+# http://127.0.0.1:7878/api/search, which runs the SAME hierarchical
+# retrieval the agent tools use (real embedder → L1 community routing →
+# hybrid semantic/keyword/literal chunk search) and highlights the hits on
+# the graph with cosine scores and retrieved_by badges. Embedder down =
+# loud error, never a substring fallback. The sidebar's plain "Filter
+# nodes" box stays a substring filter.
+chaos graph /path/to/repo --serve            # default port 7878
+chaos graph /path/to/repo --serve --port 9000
+
 # Obsidian vault export
 chaos obsidian /path/to/repo
 chaos obsidian /path/to/repo -o vault
@@ -358,9 +404,9 @@ Use the release binary directly:
 target/release/chaos --config chaos-substrate.toml mcp
 ```
 
-Exposes exactly 19 tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_pages`, `chaos_query`,
+Exposes exactly 21 tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_pages`, `chaos_gaps`, `chaos_query`,
 `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
-`chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`, `chaos_clean`, `chaos_graph` (see README.md "MCP Tools" for the
+`chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_compose`, `chaos_project`, `chaos_help`, `chaos_clean`, `chaos_graph` (see README.md "MCP Tools" for the
 full reference).
 
 Validate the server responds with a single JSON line:
@@ -384,7 +430,28 @@ chaos setup --scope user              # scope: user | local | project
 chaos setup --scope project
 ```
 
-Per-editor manual setup details: see `docs/EDITOR_SETUP.md`.
+Claude Code — full plugin (skill + 20 MCP tools + hooks) or MCP server only:
+
+```sh
+claude --plugin-dir /abs/path/to/chaos-substrate     # plugin, local testing
+# real install: add .claude-plugin/marketplace.json, install from the /plugin UI
+
+bin/chaos claude-code-add local                              # MCP only, machine-local
+bin/chaos claude-code-add project /abs/path/to/target-repo   # MCP only, shareable .mcp.json
+```
+
+Codex — plugin marketplace or MCP server only:
+
+```sh
+codex plugin marketplace add /abs/path/to/chaos-substrate    # reads .agents/plugins/marketplace.json
+# restart Codex, enable chaos-substrate from the plugin UI
+
+codex mcp add chaos-substrate -- /abs/path/to/chaos-substrate/target/release/chaos \
+  --config /abs/path/to/chaos-substrate/chaos-substrate.toml mcp
+```
+
+Per-editor manual setup details (incl. Cursor / Windsurf / OpenCode): see `docs/EDITOR_SETUP.md`;
+plugin packaging and marketplace flow: `docs/PLUGIN_INSTALL.md`.
 
 ## Plugin Hook
 

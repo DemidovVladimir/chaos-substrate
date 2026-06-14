@@ -6,7 +6,7 @@
 //! or end user: a UI/UX **user story** with **no code**. The feature is broken
 //! into **frames** that render as an alternating, scroll-driven **walkthrough**
 //! (each step paired with a device mockup built from the frame's real `preview`,
-//! or an honest "add a screenshot" placeholder when none — Chaos never fakes the
+//! or rendered text-only when none — Chaos never fakes the
 //! client UI), and the **user stories** are spelled out ("As a … I want … so
 //! that …"). `confidence` values are optional metadata and are *not* rendered to
 //! the end user. Optional sections — a hero key-visual, branding, a
@@ -890,6 +890,8 @@ table.matrix tbody tr:hover td{background:var(--color-surface-2)}
   border-top:var(--border-hairline)}
 .step:first-of-type{border-top:0}
 .step.flip .step-art{order:-1}
+.step.no-art{grid-template-columns:1fr}
+.step.no-art .step-detail,.step.no-art .step-why{max-width:68ch}
 .step-num{display:flex;align-items:center;gap:12px;margin-bottom:14px}
 .num-badge{flex:0 0 auto;width:36px;height:36px;border-radius:var(--radius-md);background:var(--color-surface-2);
   border:var(--border-hairline);display:grid;place-items:center;font:var(--type-overline);font-family:var(--font-mono);
@@ -1261,10 +1263,9 @@ function mockArt(f){
  var title=(f.ui_hint||f.title||f.stage||"Screen");
  var bar='<div class="mock-bar"><i></i><i></i><i></i><span>'+esc(title)+'</span></div>';
  if(f.preview&&f.preview.kind)return '<div class="mock">'+bar+previewHtml(f.preview,f.title)+'</div>';
- // No real UI supplied — Chaos can't synthesise the client's screens, so show an
- // honest placeholder that invites a real screenshot or live route instead of a
- // fake mock that doesn't match the product.
- return '<div class="mock">'+bar+'<div class="mock-empty"><span class="mock-empty-ic">'+ICONS.image+'</span><b>No preview yet</b><span>Add a screenshot of this screen — or point to a live route — via this step’s preview.</span></div></div>';
+ // No real UI supplied — Chaos can't synthesise the client's screens, so the
+ // step renders text-only (full-width copy, no device mockup or placeholder).
+ return "";
 }
 
 var stepRoot=document.getElementById("steps");
@@ -1282,9 +1283,9 @@ stages.forEach(function(s){
   n++;var num=("0"+n).slice(-2);
   var art=mockArt(f);
   var copy='<div class="step-copy"><div class="step-num"><span class="num-badge">'+num+'</span></div><h3>'+esc(f.title)+'</h3>'+(f.ui_hint?'<div class="d-ui">'+esc(f.ui_hint)+'</div>':"")+'<p class="step-detail">'+esc(f.detail||f.summary||"")+'</p>'+(f.user_value?'<div class="d-sec">Why it matters</div><p class="step-why">'+esc(f.user_value)+'</p>':"")+(((f.persona_ids||[]).length)?'<div class="step-personas">'+(f.persona_ids||[]).map(function(pid){return '<span class="chip">'+esc(personaName(pid))+'</span>';}).join("")+'</div>':"")+'</div>';
-  var artCol='<div class="step-art">'+art+'</div>';
+  var artCol=art?'<div class="step-art">'+art+'</div>':"";
   var step=document.createElement("article");
-  step.className="step"+(n%2===0?" flip":"");
+  step.className="step"+(art?(n%2===0?" flip":""):" no-art");
   step.setAttribute("data-frame-id",f.id);step.setAttribute("data-stage",s);step.setAttribute("data-index",n-1);
   step.innerHTML=(n%2===0?artCol+copy:copy+artCol);
   stepRoot.appendChild(step);

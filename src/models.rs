@@ -49,6 +49,9 @@ pub enum NodeKind {
     Script,
     TypeAlias,
     DeploymentResource,
+    CliCommand,
+    HttpRoute,
+    EnvVar,
 }
 
 impl NodeKind {
@@ -69,6 +72,9 @@ impl NodeKind {
             Self::Script => "script",
             Self::TypeAlias => "type_alias",
             Self::DeploymentResource => "deployment_resource",
+            Self::CliCommand => "cli_command",
+            Self::HttpRoute => "http_route",
+            Self::EnvVar => "env_var",
         }
     }
 }

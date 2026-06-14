@@ -109,15 +109,17 @@ pub async fn query_repo_hierarchical(
         }
     }
 
-    // Lexical label fallback: the extractive L3 summaries embed weakly, so a
-    // path/label-named feature (e.g. "OCL") often never clears the cosine floor
-    // and the router would silently drop to flat. Match the query's significant
-    // tokens against community LABELS (path-derived) — the same rescue
-    // `chaos_components` relies on. A TRUE fallback: it only runs when the
-    // cosine pass routed nothing, so a fixed-score label route can never
-    // outrank or dilute genuine semantic routes.
+    // Lexical label routes — ADDITIVE to the cosine routes (since v4): a
+    // community whose path-derived label literally contains a query token (or
+    // the query's acronym — "on chain labs" → `ocl-*`) is relevant no matter
+    // where its summary lands in embedding space. Observed live: the
+    // desci-infra `ocl-repository` feature sat at cosine 0.36 while the top-8
+    // routes cut off at 0.45, so abbreviation-named consumers of a feature
+    // never routed and never got the hierarchical boost. Bounded by
+    // LABEL_ROUTE_LIMIT and deduped against cosine routes, so it widens
+    // routing without displacing semantic matches.
     let tokens = router_label_tokens(query);
-    if route_map.is_empty() && !tokens.is_empty() {
+    if !tokens.is_empty() {
         let labels = storage.community_labels(repo_id).await?;
         let mut lexical: Vec<(Uuid, String, i32)> = labels
             .into_iter()
@@ -159,7 +161,9 @@ pub async fn query_repo_hierarchical(
     }
 
     // Reuse the query embedding computed for community routing — the flat
-    // search would otherwise embed the identical text a second time.
+    // search would otherwise embed the identical text a second time. The pool
+    // is the caller's `limit`: there are no longer any post-hoc boosts that
+    // would need a deeper pool to promote from (see below).
     let flat = query_repo_with_expansions(
         storage,
         repo_id,
@@ -170,41 +174,23 @@ pub async fn query_repo_hierarchical(
         Some(&query_embedding),
     )
     .await?;
-    if routes.is_empty() {
-        return Ok(HierarchicalResponse {
-            mode: "flat-fallback",
-            communities: Vec::new(),
-            hits: flat.hits,
-            context_paths: flat.context_paths,
-        });
-    }
 
-    // Boost hits whose node belongs to a matched feature, then re-rank.
-    let top_ids: std::collections::HashSet<Uuid> = routes.iter().map(|r| r.id).collect();
-    let node_ids: Vec<Uuid> = flat.hits.iter().filter_map(|h| h.node_id).collect();
-    let membership = storage.node_communities(repo_id, &node_ids).await?;
+    // Hits come from the shared flat pipeline (semantic/keyword/literal + the
+    // subject-recall floor in `query_repo_with_expansions`), and feature
+    // relevance is surfaced separately as the routed-community list above —
+    // never by reordering the evidence here. An earlier ×1.5 "boost every hit
+    // inside a matched feature" pass did exactly that and backfired: on a
+    // 25-slot list it floated one large routed feature's members to the top and
+    // starved the rest (the desci-infra `ocl-*` services lost their slots to
+    // onchainlabs contract interfaces that merely shared a routed community).
     let mut hits = flat.hits;
-    for hit in &mut hits {
-        if let Some(node_id) = hit.node_id {
-            if membership
-                .get(&node_id)
-                .is_some_and(|comms| comms.iter().any(|c| top_ids.contains(c)))
-            {
-                hit.score *= 1.5;
-            }
-        }
-    }
-    hits.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    // The hierarchical response is a return-only surface (no HTML consumer):
-    // cap chunk contents here.
     cap_hits_for_return(&mut hits);
-
     Ok(HierarchicalResponse {
-        mode: "hierarchical",
+        mode: if routes.is_empty() {
+            "flat-fallback"
+        } else {
+            "hierarchical"
+        },
         communities: routes,
         hits,
         context_paths: flat.context_paths,
@@ -261,9 +247,26 @@ async fn query_repo_with_expansions(
         hits.append(&mut query_hits);
     }
     merge_duplicate_hits(&mut hits);
+    // Subject recall: pull every file NAMED after the query (its acronym /
+    // distinctive tokens — see `subject_terms`) into the candidate pool, so the
+    // guarantee below can keep a bounded number through truncation. This is the
+    // ONE shared, principled replacement for the removed per-file score boosts:
+    // feature extraction (and the graph debug mirror that now runs this exact
+    // path) surface the files the query is about — e.g. desci-infra's
+    // `ocl-*.ts` for "on chain labs" — instead of only the common-word matches.
+    let subject = subject_terms(original_query);
+    if !subject.is_empty() {
+        let mut subject_hits = storage
+            .subject_search(repo_id, &subject, candidate_limit)
+            .await?;
+        subject_hits.retain(|hit| node_is_subject(hit.file_path.as_deref(), "", &subject));
+        tag_retrieved_by(&mut subject_hits, "subject");
+        merge_hits(&mut hits, subject_hits);
+    }
     rerank_hits(&mut hits, original_query);
     suppress_dependency_noise(&mut hits, original_query, limit as usize);
     retain_supplemental_context(&mut hits, limit as usize);
+    guarantee_subject_recall(&mut hits, original_query, limit as usize);
     hits.truncate(limit as usize);
 
     let node_ids = hits.iter().filter_map(|h| h.node_id).collect::<Vec<_>>();
@@ -303,6 +306,12 @@ async fn retrieve_query_hits(
         .await?;
     tag_retrieved_by(&mut keyword_hits, "keyword");
     merge_hits(&mut hits, keyword_hits);
+    // Small fixed literal budget per term. The DB-side per-file cap
+    // (`storage::LITERAL_HITS_PER_FILE`) already stops one path-matching
+    // folder from flooding these slots, and the graph page's SUBJECT tint —
+    // not a widened literal sweep — is what surfaces named-but-low-ranked
+    // files (`desci-infra/.../ocl-*.ts`). So the evidence list stays small and
+    // honest instead of being padded to win a highlight it no longer drives.
     for term in literal_search_terms(query).into_iter().take(10) {
         let mut literal_hits = storage.literal_search(repo_id, &term, 12).await?;
         tag_retrieved_by(&mut literal_hits, "literal");
@@ -542,9 +551,37 @@ fn literal_search_terms(query: &str) -> Vec<String> {
     if compact.len() > 4 {
         terms.push(compact);
     }
+    // The acronym bridge, applied at the chunk level too: "on chain labs"
+    // also literal-searches `ocl`, so abbreviation-named files
+    // (ocl-processor, ocl-repository) enter the hit pool for the spelled-out
+    // phrase — the router-side label match (see `router_label_tokens`) can
+    // surface the feature, but only a hit can highlight the file.
+    if let Some(acronym) = query_acronym(query) {
+        terms.push(acronym);
+    }
     terms.sort();
     terms.dedup();
     terms
+}
+
+/// Initials of a SHORT phrase (2–4 alphabetic words) — "on chain labs" →
+/// "ocl". None for sentences (their initials are noise) and for initials
+/// below [`MIN_ROUTE_TOKEN`]. Shared by router label matching and literal
+/// term expansion.
+fn query_acronym(query: &str) -> Option<String> {
+    let words: Vec<&str> = query
+        .split(|ch: char| !ch.is_ascii_alphabetic())
+        .filter(|w| !w.is_empty())
+        .collect();
+    if !(2..=4).contains(&words.len()) {
+        return None;
+    }
+    let acronym: String = words
+        .iter()
+        .filter_map(|w| w.chars().next())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    (acronym.len() >= MIN_ROUTE_TOKEN).then_some(acronym)
 }
 
 const LITERAL_SEARCH_STOP_TERMS: &[&str] = &[
@@ -578,6 +615,13 @@ fn router_label_tokens(query: &str) -> Vec<String> {
                 && !ROUTE_STOP_WORDS.contains(&t.as_str())
         })
         .collect();
+    // Acronym bridge: codebases name things by initials ("on chain labs" →
+    // `ocl-repository.ts`), and no embedder can recover that mapping.
+    // Segment-exact label matching keeps it precise ("ocl" only hits an
+    // `ocl` segment). See [`query_acronym`].
+    if let Some(acronym) = query_acronym(query) {
+        tokens.push(acronym);
+    }
     tokens.sort();
     tokens.dedup();
     tokens
@@ -601,6 +645,101 @@ fn label_matches_tokens(label: &str, tokens: &[String]) -> bool {
             .iter()
             .any(|s| s == t || (t.len() >= 6 && s.starts_with(t.as_str())))
     })
+}
+
+/// Distinctive "subject" terms of a query — the basis of the shared retrieval's
+/// SUBJECT RECALL: the files NAMED AFTER the query are the highest-precision
+/// evidence for a named-feature query and must not be buried by a flood of
+/// common-word matches. Deliberately narrow: the query's acronym (`on chain
+/// labs` → `ocl`), its compact alphanumeric form (`onchainlabs`), and any token
+/// of length ≥ 6. SHORT common words (`chain`, `labs`) are excluded — as name
+/// segments they would pull in whole unrelated trees. Matched segment-exactly
+/// by [`node_is_subject`], which reuses the router's [`label_matches_tokens`]
+/// so there is ONE matching rule.
+pub fn subject_terms(query: &str) -> Vec<String> {
+    let mut terms: Vec<String> = search_tokens(query)
+        .into_iter()
+        .filter(|t| t.len() >= 6 && !LITERAL_SEARCH_STOP_TERMS.contains(&t.as_str()))
+        .collect();
+    let compact = query
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if compact.len() > 4 {
+        terms.push(compact);
+    }
+    if let Some(acronym) = query_acronym(query) {
+        terms.push(acronym);
+    }
+    terms.sort();
+    terms.dedup();
+    terms
+}
+
+/// True when a hit/node is part of the query's subject: its file BASENAME (or
+/// symbol name) carries a [`subject_terms`] entry as a segment. Basename-scoped
+/// on purpose — `ocl` must hit `ocl-service.ts` but NOT every file under an
+/// `onchainlabs/` folder, so the recall guarantee stays precise. Reuses the
+/// router's [`label_matches_tokens`] (one matching rule, no duplication).
+pub fn node_is_subject(file_path: Option<&str>, name: &str, terms: &[String]) -> bool {
+    if terms.is_empty() {
+        return false;
+    }
+    let basename = file_path
+        .and_then(|path| path.rsplit('/').next())
+        .unwrap_or("");
+    let haystack = format!("{basename} {name}");
+    label_matches_tokens(&haystack, terms)
+}
+
+/// Hardest cap on how much of one evidence set the subject-recall floor can
+/// claim, so even a very large `limit` keeps slots for ranked evidence.
+const SUBJECT_RECALL_MAX: usize = 12;
+
+/// Guarantee that files NAMED AFTER the query survive truncation. `hits` is
+/// score-sorted; if the top `limit` window holds fewer than the reserve
+/// (~limit/3, capped) subject hits, promote the strongest below-cut subject
+/// hits into the lowest-scored NON-subject slots inside the window. A recall
+/// FLOOR, not a score boost — bounded, order-preserving for everything else,
+/// and it can never create the score ties a multiplier did. No-op when the
+/// query names no subject (`subject_terms` empty) or nothing was truncated.
+fn guarantee_subject_recall(hits: &mut [SearchHit], query: &str, limit: usize) {
+    if limit == 0 || hits.len() <= limit {
+        return;
+    }
+    let terms = subject_terms(query);
+    if terms.is_empty() {
+        return;
+    }
+    let is_subject = |hit: &SearchHit| node_is_subject(hit.file_path.as_deref(), "", &terms);
+    // A named-feature query's named files ARE the subject, so reserve up to half
+    // the window for them (bounded by SUBJECT_RECALL_MAX). When fewer subject
+    // files exist than the reserve, only those that exist are promoted.
+    let reserve = (limit / 2).clamp(2, SUBJECT_RECALL_MAX);
+    let in_window = hits.iter().take(limit).filter(|h| is_subject(h)).count();
+    if in_window >= reserve {
+        return;
+    }
+    // Strongest subject hits sitting just below the cut (hits stay score-sorted).
+    let promote: Vec<usize> = hits
+        .iter()
+        .enumerate()
+        .skip(limit)
+        .filter(|(_, hit)| is_subject(hit))
+        .map(|(idx, _)| idx)
+        .take(reserve - in_window)
+        .collect();
+    // Lowest-scored non-subject hits inside the window (highest indices first).
+    let demote: Vec<usize> = (0..limit)
+        .rev()
+        .filter(|&i| !is_subject(&hits[i]))
+        .collect();
+    for (k, &from) in promote.iter().enumerate() {
+        if let Some(&to) = demote.get(k) {
+            hits.swap(from, to);
+        }
+    }
 }
 
 /// Question filler plus ubiquitous path segments (`api`, `src`, …) that appear
@@ -766,6 +905,32 @@ mod tests {
     }
 
     #[test]
+    fn literal_terms_include_short_phrase_acronym() {
+        let terms = literal_search_terms("on chain labs");
+        assert!(terms.contains(&"ocl".to_string()));
+        assert!(
+            !literal_search_terms("how does the on chain labs processor work")
+                .iter()
+                .any(|t| t == "hdtoclpw")
+        );
+    }
+
+    #[test]
+    fn short_phrase_contributes_its_acronym_token() {
+        // "on chain labs" → "ocl": the abbreviation bridge no embedder can
+        // recover. Only for 2–4 word phrases; sentences skip it.
+        assert!(router_label_tokens("on chain labs").contains(&"ocl".to_string()));
+        assert!(router_label_tokens("On Chain Labs processor").contains(&"oclp".to_string()));
+        assert!(
+            !router_label_tokens("how does the on chain labs processor work")
+                .iter()
+                .any(|t| t == "hdtoclpw")
+        );
+        // Two-letter initials stay below MIN_ROUTE_TOKEN and are dropped.
+        assert!(!router_label_tokens("chain labs").iter().any(|t| t == "cl"));
+    }
+
+    #[test]
     fn label_match_is_segment_scoped() {
         let tokens = vec!["ocl".to_string(), "onchain".to_string()];
         // Exact segment match ("ocl" in ocl.ts) and prefix for longer tokens.
@@ -781,6 +946,43 @@ mod tests {
             "onchainlabs/x.ts",
             &["lab".to_string()]
         ));
+    }
+
+    #[test]
+    fn subject_terms_keep_acronym_and_compact_drop_short_words() {
+        let terms = subject_terms("on chain labs");
+        assert!(terms.contains(&"ocl".to_string()));
+        assert!(terms.contains(&"onchainlabs".to_string()));
+        // Short common words must NOT become subject terms — as segments they
+        // would tint every `labs/` or `chain/` tree in the repo.
+        assert!(!terms.contains(&"chain".to_string()));
+        assert!(!terms.contains(&"labs".to_string()));
+    }
+
+    #[test]
+    fn node_is_subject_matches_named_files_segment_exactly() {
+        let terms = subject_terms("on chain labs");
+        // The two desci-infra services this whole investigation was about:
+        // their PATH carries the `ocl` segment even though the symbol names
+        // (handleOclTransfer) do not split on it.
+        assert!(node_is_subject(
+            Some("desci-infra/lambda/common/services/ocl-service.ts"),
+            "handleOclTransfer",
+            &terms
+        ));
+        assert!(node_is_subject(
+            Some("desci-infra/lambda/common/services/ocl-sync-service.ts"),
+            "handleOclDataSync",
+            &terms
+        ));
+        // A sibling utility with no ocl/onchainlabs segment is NOT the subject.
+        assert!(!node_is_subject(
+            Some("desci-infra/lambda/common/utils/extract-secret.ts"),
+            "extractSecret",
+            &terms
+        ));
+        // Empty terms never match (a blank or stopword-only query).
+        assert!(!node_is_subject(Some("ocl-service.ts"), "x", &[]));
     }
 
     #[test]

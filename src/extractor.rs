@@ -11,7 +11,7 @@ use ignore::WalkBuilder;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -23,7 +23,10 @@ pub struct RustRepositoryExtractor {
     indexing: IndexingConfig,
 }
 
-const MAX_CHUNK_CHARS: usize = 2_000;
+/// Calibrated against the embedder context window (EmbeddingGemma: 2,048
+/// tokens). Code tokenizes at roughly 3.3 chars/token, so 6,000 chars plus the
+/// ~150-char context header stays under the window with margin.
+const MAX_CHUNK_CHARS: usize = 6_000;
 
 impl RustRepositoryExtractor {
     pub fn new(indexing: IndexingConfig) -> Self {
@@ -92,10 +95,14 @@ impl RustRepositoryExtractor {
 
         let mut symbol_names: HashMap<String, Uuid> = HashMap::new();
         let mut calls: Vec<crate::lang::CallSite> = Vec::new();
-        // The repo's own workspace package names, so JS/TS extraction can tell an
-        // internal workspace import (kept) from a third-party node_modules one
-        // (dropped, so it doesn't form or name a god-node feature).
+        // The repo's own workspace package names, so JS/TS/Solidity extraction
+        // can tell an internal workspace import (kept) from a third-party
+        // node_modules one (dropped, so it doesn't form or name a god-node
+        // feature). The crate and Python module roots do the same for `use`
+        // statements and Python absolute imports.
         let workspace_packages = self.workspace_package_names(root);
+        let workspace_crates = self.workspace_crate_names(root);
+        let python_roots = self.python_module_roots(root);
         for path in paths {
             let rel = path
                 .strip_prefix(root)
@@ -138,6 +145,7 @@ impl RustRepositoryExtractor {
                     repo_node.id,
                     &mut symbol_names,
                     &mut calls,
+                    &workspace_packages,
                     &mut result,
                 )?;
                 continue;
@@ -162,6 +170,7 @@ impl RustRepositoryExtractor {
                     repo_node.id,
                     &mut symbol_names,
                     &mut calls,
+                    &python_roots,
                     &mut result,
                 )?;
                 continue;
@@ -174,6 +183,7 @@ impl RustRepositoryExtractor {
                     commit_sha.clone(),
                     repo_node.id,
                     &mut symbol_names,
+                    &workspace_crates,
                     &mut result,
                 )?;
             }
@@ -249,6 +259,78 @@ impl RustRepositoryExtractor {
         names
     }
 
+    /// Collect the repo's own crate names — the `[package].name` of every
+    /// `Cargo.toml` in the tree, normalized `-`→`_` as they appear in `use`
+    /// paths. A `use` whose first segment is none of these (and not
+    /// `crate`/`self`/`super`) is external (std/third-party) and dropped.
+    fn workspace_crate_names(&self, root: &Path) -> HashSet<String> {
+        let skip_dirs = self.indexing.skip_dirs.clone();
+        let mut builder = WalkBuilder::new(root);
+        builder.hidden(false).filter_entry(move |entry| {
+            let name = entry.file_name().to_string_lossy();
+            !skip_dirs.iter().any(|skip| skip == &name)
+        });
+        let mut names = HashSet::new();
+        for entry in builder.build().filter_map(Result::ok) {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) != Some("Cargo.toml") {
+                continue;
+            }
+            let Ok(content) = fs::read_to_string(path) else {
+                continue;
+            };
+            let Ok(value) = content.parse::<toml::Value>() else {
+                continue;
+            };
+            if let Some(name) = value
+                .get("package")
+                .and_then(|p| p.get("name"))
+                .and_then(|n| n.as_str())
+            {
+                if !name.is_empty() {
+                    names.insert(name.replace('-', "_"));
+                }
+            }
+        }
+        names
+    }
+
+    /// Collect the repo's own top-level Python module roots: `*.py` stems and
+    /// directories containing Python files, at the repo root and under `src/`.
+    /// An absolute `import x.y` whose first segment is none of these is
+    /// external (stdlib or site-packages) and dropped.
+    fn python_module_roots(&self, root: &Path) -> HashSet<String> {
+        let mut roots = HashSet::new();
+        for base in [root.to_path_buf(), root.join("src")] {
+            let Ok(entries) = fs::read_dir(&base) else {
+                continue;
+            };
+            for entry in entries.filter_map(Result::ok) {
+                let path = entry.path();
+                let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                if self.indexing.skip_dirs.iter().any(|skip| skip == name) {
+                    continue;
+                }
+                if path.is_dir() {
+                    let has_python = path.join("__init__.py").exists()
+                        || fs::read_dir(&path).is_ok_and(|dir| {
+                            dir.filter_map(Result::ok).any(|e| {
+                                e.path().extension().and_then(|x| x.to_str()) == Some("py")
+                            })
+                        });
+                    if has_python {
+                        roots.insert(name.to_string());
+                    }
+                } else if path.extension().and_then(|x| x.to_str()) == Some("py") {
+                    roots.insert(name.to_string());
+                }
+            }
+        }
+        roots
+    }
+
     fn extract_markdown_file(
         &self,
         root: &Path,
@@ -272,21 +354,102 @@ impl RustRepositoryExtractor {
         let content = file.content.clone();
         let rel = file.path.clone();
 
-        result.chunks.push(chunk_for_node(
-            repo_id,
-            Some(file.id),
-            Some(file_node_id),
-            "documentation",
-            &format!("Documentation file: {rel}\n\n{content}"),
-            Some(1),
-            Some(file.line_count),
-            json!({
+        // Heading-aware sectioning: one chunk per heading section keeps each
+        // embedded unit semantically whole (a blind size split of a long README
+        // cuts mid-topic and embeds poorly). Sections are chunks only — they
+        // all attach to the file node, so the graph gains no extra nodes.
+        let sections = markdown_sections(&content);
+        if sections.is_empty() {
+            result.chunks.push(chunk_for_node(
+                repo_id,
+                Some(file.id),
+                Some(file_node_id),
+                "documentation",
+                &format!("Documentation file: {rel}\n\n{content}"),
+                Some(1),
+                Some(file.line_count),
+                json!({
+                    "kind": "documentation",
+                    "file": rel,
+                    "source_priority": "supplemental",
+                    "guidance": "Documentation can add context but source code should be prioritized when they disagree."
+                }),
+            ));
+            return Ok(());
+        }
+
+        for section in sections {
+            let title_path = if section.heading_path.is_empty() {
+                rel.clone()
+            } else {
+                format!("{rel} > {}", section.heading_path.join(" > "))
+            };
+            let section_name = section
+                .heading_path
+                .last()
+                .cloned()
+                .unwrap_or_else(|| "preamble".to_string());
+            let base_meta = json!({
                 "kind": "documentation",
                 "file": rel,
+                "section": section_name,
+                "heading_path": section.heading_path,
                 "source_priority": "supplemental",
                 "guidance": "Documentation can add context but source code should be prioritized when they disagree."
-            }),
-        ));
+            });
+
+            let full = format!("Documentation: {title_path}\n\n{}", section.text);
+            if full.len() <= MAX_CHUNK_CHARS {
+                result.chunks.push(chunk_for_node(
+                    repo_id,
+                    Some(file.id),
+                    Some(file_node_id),
+                    "documentation",
+                    &full,
+                    Some(section.line_start as i32),
+                    Some(section.line_end as i32),
+                    base_meta,
+                ));
+                continue;
+            }
+
+            // Oversized section: pack whole markdown BLOCKS into parts (the
+            // generic splitter would happily cut inside a code fence or a
+            // table). Every part keeps the heading-path context header and
+            // the split metadata, so stats/dedup see them like any split.
+            let parts = pack_markdown_section(
+                &section.text,
+                MAX_CHUNK_CHARS.saturating_sub(DOC_HEADER_ALLOWANCE),
+            );
+            let total = parts.len();
+            let parent_hash = hash(&full);
+            for (idx, part) in parts.into_iter().enumerate() {
+                let mut metadata = base_meta.clone();
+                if let Some(obj) = metadata.as_object_mut() {
+                    obj.insert("split_part".into(), json!(idx + 1));
+                    obj.insert("split_total".into(), json!(total));
+                    obj.insert("parent_content_hash".into(), json!(parent_hash));
+                }
+                let line_start = section.line_start + part.line_offset;
+                let line_end =
+                    (line_start + part.line_count.saturating_sub(1)).min(section.line_end);
+                result.chunks.push(chunk_for_node(
+                    repo_id,
+                    Some(file.id),
+                    Some(file_node_id),
+                    "documentation",
+                    &format!(
+                        "Documentation: {title_path} (part {}/{})\n\n{}",
+                        idx + 1,
+                        total,
+                        part.text
+                    ),
+                    Some(line_start as i32),
+                    Some(line_end.max(line_start) as i32),
+                    metadata,
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -328,22 +491,71 @@ impl RustRepositoryExtractor {
             json!({"source_priority": "supplemental", "extractor": "pdf_text"}),
         ));
         if !content.trim().is_empty() {
-            result.chunks.push(chunk_for_node(
-                repo_id,
-                Some(file.id),
-                Some(file_node.id),
-                "pdf_documentation",
-                &format!("PDF document: {rel}\n\n{content}"),
-                Some(1),
-                Some(line_count),
-                json!({
-                    "kind": "documentation",
-                    "file": rel,
-                    "source_priority": "supplemental",
-                    "format": "pdf",
-                    "guidance": "PDF text can add context but source code should be prioritized when they disagree."
-                }),
-            ));
+            let base_meta = json!({
+                "kind": "documentation",
+                "file": rel,
+                "source_priority": "supplemental",
+                "format": "pdf",
+                "guidance": "PDF text can add context but source code should be prioritized when they disagree."
+            });
+            let full = format!("PDF document: {rel}\n\n{content}");
+            if full.len() <= MAX_CHUNK_CHARS {
+                result.chunks.push(chunk_for_node(
+                    repo_id,
+                    Some(file.id),
+                    Some(file_node.id),
+                    "pdf_documentation",
+                    &full,
+                    Some(1),
+                    Some(line_count),
+                    base_meta,
+                ));
+            } else {
+                // Oversized PDF text: pack at page (`\f`) and paragraph
+                // boundaries with a document-context header per part, instead
+                // of letting the generic splitter cut mid-flow.
+                let budget = MAX_CHUNK_CHARS.saturating_sub(DOC_HEADER_ALLOWANCE);
+                let has_pages = content.contains('\u{c}');
+                let parts = pack_pdf_units(pdf_doc_units(&content, budget), budget);
+                let total = parts.len();
+                let parent_hash = hash(&full);
+                for (idx, pdf_part) in parts.into_iter().enumerate() {
+                    let mut metadata = base_meta.clone();
+                    if let Some(obj) = metadata.as_object_mut() {
+                        obj.insert("split_part".into(), json!(idx + 1));
+                        obj.insert("split_total".into(), json!(total));
+                        obj.insert("parent_content_hash".into(), json!(parent_hash));
+                        if has_pages {
+                            obj.insert(
+                                "pages".into(),
+                                json!(format!("{}-{}", pdf_part.page_start, pdf_part.page_end)),
+                            );
+                        }
+                    }
+                    let pages_line = if has_pages {
+                        format!("\nPages: {}-{}", pdf_part.page_start, pdf_part.page_end)
+                    } else {
+                        String::new()
+                    };
+                    let line_start = (pdf_part.part.line_offset + 1) as i32;
+                    let line_end = (pdf_part.part.line_offset + pdf_part.part.line_count) as i32;
+                    result.chunks.push(chunk_for_node(
+                        repo_id,
+                        Some(file.id),
+                        Some(file_node.id),
+                        "pdf_documentation",
+                        &format!(
+                            "PDF document: {rel} (part {}/{}){pages_line}\n\n{}",
+                            idx + 1,
+                            total,
+                            pdf_part.part.text
+                        ),
+                        Some(line_start),
+                        Some(line_end.min(line_count).max(line_start)),
+                        metadata,
+                    ));
+                }
+            }
         }
         result.nodes.push(file_node);
         Ok(())
@@ -693,6 +905,7 @@ impl RustRepositoryExtractor {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn extract_rust_file(
         &self,
         root: &Path,
@@ -701,6 +914,7 @@ impl RustRepositoryExtractor {
         commit_sha: Option<String>,
         repo_node_id: Uuid,
         symbol_names: &mut HashMap<String, Uuid>,
+        workspace_crates: &HashSet<String>,
         result: &mut ExtractionResult,
     ) -> Result<()> {
         let (file, file_node_id) = begin_file(
@@ -720,107 +934,232 @@ impl RustRepositoryExtractor {
         let syntax = syn::parse_file(&content)
             .with_context(|| format!("failed to parse Rust syntax in {rel}"))?;
 
-        for item in syntax.items {
-            match item {
-                Item::Fn(item) => {
-                    let name = item.sig.ident.to_string();
-                    let kind = if item.attrs.iter().any(|a| a.path().is_ident("test")) {
-                        NodeKind::Test
-                    } else {
-                        NodeKind::Function
-                    };
-                    self.add_symbol(
-                        repo_id,
-                        &file,
-                        file_node_id,
-                        kind,
-                        &name,
-                        "fn",
-                        &content,
-                        symbol_names,
-                        result,
-                    );
-                }
-                Item::Struct(item) => self.add_symbol(
-                    repo_id,
-                    &file,
-                    file_node_id,
-                    NodeKind::Struct,
-                    &item.ident.to_string(),
-                    "struct",
-                    &content,
-                    symbol_names,
-                    result,
-                ),
-                Item::Enum(item) => self.add_symbol(
-                    repo_id,
-                    &file,
-                    file_node_id,
-                    NodeKind::Enum,
-                    &item.ident.to_string(),
-                    "enum",
-                    &content,
-                    symbol_names,
-                    result,
-                ),
-                Item::Trait(item) => self.add_symbol(
-                    repo_id,
-                    &file,
-                    file_node_id,
-                    NodeKind::Trait,
-                    &item.ident.to_string(),
-                    "trait",
-                    &content,
-                    symbol_names,
-                    result,
-                ),
-                Item::Mod(item) => self.add_symbol(
-                    repo_id,
-                    &file,
-                    file_node_id,
-                    NodeKind::Module,
-                    &item.ident.to_string(),
-                    "mod",
-                    &content,
-                    symbol_names,
-                    result,
-                ),
-                Item::Impl(item) => self.add_impl(
-                    repo_id,
-                    &file,
-                    file_node_id,
-                    &item,
-                    &content,
-                    symbol_names,
-                    result,
-                ),
-                Item::Use(item) => {
-                    let text = quote_use(&item);
-                    let node = KnowledgeNode {
-                        id: Uuid::new_v4(),
-                        repo_id,
-                        file_id: Some(file.id),
-                        kind: NodeKind::Concept,
-                        stable_id: format!("{}:use:{}", rel, hash(&text)),
-                        name: text.clone(),
-                        line_start: find_line(&content, &text).map(|v| v as i32),
-                        line_end: find_line(&content, &text).map(|v| v as i32),
-                        metadata: json!({"import": text}),
-                    };
-                    result.edges.push(edge(
-                        repo_id,
-                        file_node_id,
-                        node.id,
-                        EdgeKind::Imports,
-                        weights::IMPORTS_RUST,
-                        json!({}),
-                    ));
-                    result.nodes.push(node);
-                }
-                _ => {}
-            }
+        crate::user_surface::emit_surface_entries(
+            repo_id,
+            &file,
+            file_node_id,
+            crate::user_surface::collect_rust_surface(&syntax),
+            result,
+        );
+
+        for item in &syntax.items {
+            self.add_rust_item(
+                repo_id,
+                &file,
+                file_node_id,
+                item,
+                &[],
+                workspace_crates,
+                &content,
+                symbol_names,
+                result,
+            );
         }
         Ok(())
+    }
+
+    /// Emit one top-level (or inline-module-nested) Rust item. `mod_path` is
+    /// the chain of inline module names leading here; nested items get it as
+    /// a `tests::`-style stable_id prefix so `mod tests { fn helper() }`
+    /// cannot collide with a top-level `helper`.
+    #[allow(clippy::too_many_arguments)]
+    fn add_rust_item(
+        &self,
+        repo_id: Uuid,
+        file: &SourceFile,
+        file_node_id: Uuid,
+        item: &Item,
+        mod_path: &[String],
+        workspace_crates: &HashSet<String>,
+        content: &str,
+        symbol_names: &mut HashMap<String, Uuid>,
+        result: &mut ExtractionResult,
+    ) {
+        use crate::user_surface::span_lines;
+        match item {
+            Item::Fn(item) => {
+                let name = item.sig.ident.to_string();
+                let kind = if item.attrs.iter().any(|a| a.path().is_ident("test")) {
+                    NodeKind::Test
+                } else {
+                    NodeKind::Function
+                };
+                let (start, end) = span_lines(item);
+                self.add_symbol(
+                    repo_id,
+                    file,
+                    file_node_id,
+                    weights::CONTAINS_CODE,
+                    kind.clone(),
+                    &name,
+                    rust_stable_id(&file.path, &kind, mod_path, &name),
+                    start,
+                    end,
+                    &slice_lines(content, start, end),
+                    symbol_names,
+                    result,
+                );
+            }
+            Item::Struct(item) => {
+                let name = item.ident.to_string();
+                let (start, end) = span_lines(item);
+                self.add_symbol(
+                    repo_id,
+                    file,
+                    file_node_id,
+                    weights::CONTAINS_CODE,
+                    NodeKind::Struct,
+                    &name,
+                    rust_stable_id(&file.path, &NodeKind::Struct, mod_path, &name),
+                    start,
+                    end,
+                    &slice_lines(content, start, end),
+                    symbol_names,
+                    result,
+                );
+            }
+            Item::Enum(item) => {
+                let name = item.ident.to_string();
+                let (start, end) = span_lines(item);
+                self.add_symbol(
+                    repo_id,
+                    file,
+                    file_node_id,
+                    weights::CONTAINS_CODE,
+                    NodeKind::Enum,
+                    &name,
+                    rust_stable_id(&file.path, &NodeKind::Enum, mod_path, &name),
+                    start,
+                    end,
+                    &slice_lines(content, start, end),
+                    symbol_names,
+                    result,
+                );
+            }
+            Item::Trait(item) => {
+                let name = item.ident.to_string();
+                let (start, end) = span_lines(item);
+                self.add_symbol(
+                    repo_id,
+                    file,
+                    file_node_id,
+                    weights::CONTAINS_CODE,
+                    NodeKind::Trait,
+                    &name,
+                    rust_stable_id(&file.path, &NodeKind::Trait, mod_path, &name),
+                    start,
+                    end,
+                    &slice_lines(content, start, end),
+                    symbol_names,
+                    result,
+                );
+            }
+            Item::Mod(item) => {
+                let name = item.ident.to_string();
+                let (start, end) = span_lines(item);
+                match &item.content {
+                    Some((_, items)) => {
+                        // Inline module: the chunk is just the doc comments and
+                        // the `mod name {` header — the items inside are
+                        // extracted individually below, so a whole-body chunk
+                        // would only duplicate them (and blind-split).
+                        let (ident_line, _) = span_lines(&item.ident);
+                        let header = slice_lines(content, start, ident_line.max(start));
+                        self.add_symbol(
+                            repo_id,
+                            file,
+                            file_node_id,
+                            weights::CONTAINS_CODE,
+                            NodeKind::Module,
+                            &name,
+                            rust_stable_id(&file.path, &NodeKind::Module, mod_path, &name),
+                            start,
+                            end,
+                            &header,
+                            symbol_names,
+                            result,
+                        );
+                        let mut nested = mod_path.to_vec();
+                        nested.push(name);
+                        for inner in items {
+                            self.add_rust_item(
+                                repo_id,
+                                file,
+                                file_node_id,
+                                inner,
+                                &nested,
+                                workspace_crates,
+                                content,
+                                symbol_names,
+                                result,
+                            );
+                        }
+                    }
+                    None => {
+                        // `mod foo;` file-module declaration — one tiny chunk.
+                        self.add_symbol(
+                            repo_id,
+                            file,
+                            file_node_id,
+                            weights::CONTAINS_CODE,
+                            NodeKind::Module,
+                            &name,
+                            rust_stable_id(&file.path, &NodeKind::Module, mod_path, &name),
+                            start,
+                            end,
+                            &slice_lines(content, start, end),
+                            symbol_names,
+                            result,
+                        );
+                    }
+                }
+            }
+            Item::Impl(item) => self.add_impl(
+                repo_id,
+                file,
+                file_node_id,
+                item,
+                mod_path,
+                content,
+                symbol_names,
+                result,
+            ),
+            Item::Use(item) => {
+                // External uses (std/core/alloc/third-party crates) are
+                // dropped — the declared dependency list lives in the
+                // Cargo.toml nodes. Internal uses dedupe to one node per
+                // identical statement repo-wide; the per-importer file and
+                // line live on the `Imports` edge.
+                if !use_tree_is_internal(&item.tree, workspace_crates) {
+                    return;
+                }
+                let text = quote_use(item);
+                let node = KnowledgeNode {
+                    id: Uuid::new_v4(),
+                    repo_id,
+                    file_id: None,
+                    kind: NodeKind::Concept,
+                    stable_id: format!("import:rust:{}", hash(&text)),
+                    name: text.clone(),
+                    line_start: None,
+                    line_end: None,
+                    metadata: json!({"import": text}),
+                };
+                result.edges.push(edge(
+                    repo_id,
+                    file_node_id,
+                    node.id,
+                    EdgeKind::Imports,
+                    weights::IMPORTS_RUST,
+                    json!({
+                        "file": file.path,
+                        "line": find_line(content, &text)
+                    }),
+                ));
+                result.nodes.push(node);
+            }
+            _ => {}
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -856,10 +1195,7 @@ impl RustRepositoryExtractor {
             symbol_names,
             result,
             calls,
-            // JS/TS is the one language where we can reliably separate internal
-            // workspace imports from third-party ones, so it gets the set; the
-            // others pass None and keep every import (no regression).
-            workspace_packages: Some(workspace_packages),
+            import_filter: crate::lang::ImportFilter::NpmWorkspace(workspace_packages),
         };
         crate::lang::javascript::extract(&mut ctx)?;
 
@@ -876,6 +1212,7 @@ impl RustRepositoryExtractor {
         repo_node_id: Uuid,
         symbol_names: &mut HashMap<String, Uuid>,
         calls: &mut Vec<crate::lang::CallSite>,
+        workspace_packages: &HashSet<String>,
         result: &mut ExtractionResult,
     ) -> Result<()> {
         let (file, file_node_id) = begin_file(
@@ -897,7 +1234,9 @@ impl RustRepositoryExtractor {
             symbol_names,
             result,
             calls,
-            workspace_packages: None,
+            // npm-style bare imports (`@openzeppelin/...`) are external unless
+            // they name a workspace package; relative `.sol` imports dedupe.
+            import_filter: crate::lang::ImportFilter::NpmWorkspace(workspace_packages),
         };
         crate::lang::solidity::extract(&mut ctx)?;
         Ok(())
@@ -913,6 +1252,7 @@ impl RustRepositoryExtractor {
         repo_node_id: Uuid,
         symbol_names: &mut HashMap<String, Uuid>,
         calls: &mut Vec<crate::lang::CallSite>,
+        python_roots: &HashSet<String>,
         result: &mut ExtractionResult,
     ) -> Result<()> {
         let (file, file_node_id) = begin_file(
@@ -934,12 +1274,18 @@ impl RustRepositoryExtractor {
             symbol_names,
             result,
             calls,
-            workspace_packages: None,
+            import_filter: crate::lang::ImportFilter::PythonRoots(python_roots),
         };
         crate::lang::python::extract(&mut ctx)?;
         Ok(())
     }
 
+    /// Emit an impl block: the Impl node's chunk carries only the impl header,
+    /// the non-fn items (consts/types), and a method ROSTER — each method is
+    /// extracted as its own `Method` node + chunk, contained by the impl (a
+    /// local star, like Solidity contract→member). The roster deliberately
+    /// lists bare names with no parentheses so the `name(` call heuristic
+    /// cannot fabricate call edges from it.
     #[allow(clippy::too_many_arguments)]
     fn add_impl(
         &self,
@@ -947,58 +1293,137 @@ impl RustRepositoryExtractor {
         file: &SourceFile,
         file_node_id: Uuid,
         item: &ItemImpl,
+        mod_path: &[String],
         content: &str,
         symbol_names: &mut HashMap<String, Uuid>,
         result: &mut ExtractionResult,
     ) {
+        use crate::user_surface::span_lines;
         let name = impl_name(item);
-        self.add_symbol(
+        let (start, end) = span_lines(item);
+
+        let mut methods: Vec<&syn::ImplItemFn> = Vec::new();
+        let mut extra = String::new();
+        for inner in &item.items {
+            match inner {
+                syn::ImplItem::Fn(f) => methods.push(f),
+                syn::ImplItem::Const(c) => {
+                    let (s, e) = span_lines(c);
+                    extra.push_str(&slice_lines(content, s, e));
+                    extra.push('\n');
+                }
+                syn::ImplItem::Type(t) => {
+                    let (s, e) = span_lines(t);
+                    extra.push_str(&slice_lines(content, s, e));
+                    extra.push('\n');
+                }
+                _ => {}
+            }
+        }
+
+        let header_end = item
+            .items
+            .first()
+            .map(|first| span_lines(first).0.saturating_sub(1).max(start))
+            .unwrap_or(end);
+        let mut body = slice_lines(content, start, header_end);
+        if !extra.trim().is_empty() {
+            body.push('\n');
+            body.push_str(extra.trim_end());
+            body.push('\n');
+        }
+        if !methods.is_empty() {
+            let names: Vec<String> = methods.iter().map(|f| f.sig.ident.to_string()).collect();
+            body.push_str(&format!(
+                "\nMethods (extracted separately): {}",
+                names.join(", ")
+            ));
+        }
+
+        let impl_node_id = self.add_symbol(
             repo_id,
             file,
             file_node_id,
+            weights::CONTAINS_CODE,
             NodeKind::Impl,
             &name,
-            "impl",
-            content,
+            rust_stable_id(&file.path, &NodeKind::Impl, mod_path, &name),
+            start,
+            end,
+            &body,
             symbol_names,
             result,
         );
+
+        for f in methods {
+            let method_name = f.sig.ident.to_string();
+            let kind = if f.attrs.iter().any(|a| a.path().is_ident("test")) {
+                NodeKind::Test
+            } else {
+                NodeKind::Method
+            };
+            let (m_start, m_end) = span_lines(f);
+            let qualified = if mod_path.is_empty() {
+                format!("{name}::{method_name}")
+            } else {
+                format!("{}::{}::{}", mod_path.join("::"), name, method_name)
+            };
+            self.add_symbol(
+                repo_id,
+                file,
+                impl_node_id,
+                weights::CONTAINS_MEMBER,
+                kind,
+                &method_name,
+                format!("{}:method:{}", file.path, qualified),
+                m_start,
+                m_end,
+                &slice_lines(content, m_start, m_end),
+                symbol_names,
+                result,
+            );
+        }
     }
 
+    /// Emit one Rust symbol node, its `Contains` edge from `parent_node_id`,
+    /// and its chunk. Line ranges come from syn spans (span-exact, doc
+    /// comments included); `code` is the chunk body. Returns the node id so
+    /// impls can parent their methods.
     #[allow(clippy::too_many_arguments)]
     fn add_symbol(
         &self,
         repo_id: Uuid,
         file: &SourceFile,
-        file_node_id: Uuid,
+        parent_node_id: Uuid,
+        contains_weight: EdgeWeight,
         kind: NodeKind,
         name: &str,
-        keyword: &str,
-        content: &str,
+        stable_id: String,
+        line_start: usize,
+        line_end: usize,
+        code: &str,
         symbol_names: &mut HashMap<String, Uuid>,
         result: &mut ExtractionResult,
-    ) {
-        let line = find_item_line(content, keyword, name).unwrap_or(1);
-        let end = find_block_end(content, line).unwrap_or(line);
-        let code = slice_lines(content, line, end);
+    ) -> Uuid {
         let node = KnowledgeNode {
             id: Uuid::new_v4(),
             repo_id,
             file_id: Some(file.id),
             kind: kind.clone(),
-            stable_id: format!("{}:{}:{}", file.path, kind.as_str(), name),
+            stable_id,
             name: name.to_string(),
-            line_start: Some(line as i32),
-            line_end: Some(end as i32),
+            line_start: Some(line_start as i32),
+            line_end: Some(line_end as i32),
             metadata: json!({"language": "rust", "file": file.path}),
         };
+        let node_id = node.id;
         symbol_names.entry(name.to_string()).or_insert(node.id);
         result.edges.push(edge(
             repo_id,
-            file_node_id,
+            parent_node_id,
             node.id,
             EdgeKind::Contains,
-            weights::CONTAINS_CODE,
+            contains_weight,
             json!({}),
         ));
         result.chunks.push(chunk_for_node(
@@ -1011,15 +1436,33 @@ impl RustRepositoryExtractor {
                 file.path,
                 name,
                 kind.as_str(),
-                line,
-                end,
+                line_start,
+                line_end,
                 code
             ),
-            Some(line as i32),
-            Some(end as i32),
+            Some(line_start as i32),
+            Some(line_end as i32),
             json!({"symbol": name, "kind": kind.as_str(), "file": file.path}),
         ));
         result.nodes.push(node);
+        node_id
+    }
+}
+
+/// Stable id for a Rust symbol: `{file}:{kind}:{name}`, with the inline-module
+/// path inserted (`{file}:{kind}:tests::name`) so nested names can't collide
+/// with top-level ones. Top-level ids keep their historical shape (no churn).
+fn rust_stable_id(file_path: &str, kind: &NodeKind, mod_path: &[String], name: &str) -> String {
+    if mod_path.is_empty() {
+        format!("{}:{}:{}", file_path, kind.as_str(), name)
+    } else {
+        format!(
+            "{}:{}:{}::{}",
+            file_path,
+            kind.as_str(),
+            mod_path.join("::"),
+            name
+        )
     }
 }
 
@@ -1058,6 +1501,7 @@ fn is_code_symbol_kind(kind: &NodeKind) -> bool {
     matches!(
         kind,
         NodeKind::Function
+            | NodeKind::Method
             | NodeKind::Struct
             | NodeKind::Trait
             | NodeKind::Enum
@@ -1071,11 +1515,14 @@ fn is_code_symbol_kind(kind: &NodeKind) -> bool {
 /// Resolve discovered call sites to `Calls` edges.
 ///
 /// AST languages (Python/Solidity/JS-TS) contribute precise `CallSite`s that
-/// are resolved file-scoped first (prefer a same-file definition of the callee)
-/// then globally. Rust keeps the legacy `content.contains("name(")` heuristic
-/// (its syn spans lack line numbers in normal builds) but now also resolves
-/// callees file-scoped first. A `(source, target)` set dedups across both
-/// passes so at most one `Calls` edge exists per ordered pair.
+/// are resolved file-scoped first (prefer a same-file definition of the
+/// callee) then globally. Rust keeps the legacy `content.contains("name(")`
+/// heuristic but also resolves callees file-scoped first. The global
+/// fallback is GATED on the callee name having exactly one definition in the
+/// repo: a name defined in several places (`new`, `handle`, `run`, …) would
+/// bind to whichever file happened to be walked first and glue unrelated
+/// features together. A `(source, target)` set dedups across both passes so
+/// at most one `Calls` edge exists per ordered pair.
 fn add_call_edges(
     repo_id: Uuid,
     result: &mut ExtractionResult,
@@ -1085,9 +1532,13 @@ fn add_call_edges(
     // Index code-symbol nodes for resolution.
     let mut by_file_name: HashMap<(String, String), Uuid> = HashMap::new();
     let mut file_symbols: HashMap<String, Vec<(Uuid, i32, i32)>> = HashMap::new();
+    // How many definitions each symbol name has repo-wide (any language) —
+    // the ambiguity gate for the global fallbacks below.
+    let mut global_count: HashMap<String, usize> = HashMap::new();
     // Rust-only global map (kept separate so non-rust callees can't shadow the
-    // legacy rust heuristic, and vice versa).
-    let mut rust_global: HashMap<String, Uuid> = HashMap::new();
+    // legacy rust heuristic, and vice versa); BTreeMap so the scan below emits
+    // edges in canonical name order. Carries (first definition, count).
+    let mut rust_global: BTreeMap<String, (Uuid, usize)> = BTreeMap::new();
     // Ids of rust symbol nodes, for O(1) "is this chunk a rust source?" lookups.
     let mut rust_source_ids: HashSet<Uuid> = HashSet::new();
 
@@ -1108,8 +1559,10 @@ fn add_call_edges(
             .entry(file.to_string())
             .or_default()
             .push((node.id, start, end));
+        *global_count.entry(node.name.clone()).or_default() += 1;
         if node.metadata.get("language").and_then(|v| v.as_str()) == Some("rust") {
-            rust_global.entry(node.name.clone()).or_insert(node.id);
+            let entry = rust_global.entry(node.name.clone()).or_insert((node.id, 0));
+            entry.1 += 1;
             rust_source_ids.insert(node.id);
         }
     }
@@ -1124,7 +1577,12 @@ fn add_call_edges(
         let Some(target) = by_file_name
             .get(&(cs.file.clone(), cs.callee.clone()))
             .copied()
-            .or_else(|| global_symbols.get(&cs.callee).copied())
+            .or_else(|| {
+                // Global fallback only for repo-unique callee names.
+                (global_count.get(&cs.callee).copied() == Some(1))
+                    .then(|| global_symbols.get(&cs.callee).copied())
+                    .flatten()
+            })
         else {
             continue;
         };
@@ -1164,15 +1622,20 @@ fn add_call_edges(
         .collect();
 
     for (source, chunk_file, content) in rust_chunks {
-        for (name, global_id) in &rust_global {
+        for (name, (global_id, count)) in &rust_global {
             if !content.contains(&format!("{name}(")) {
                 continue;
             }
-            // Prefer a same-file rust symbol named `name`; else global.
-            let target = chunk_file
+            // Prefer a same-file rust symbol named `name`; the global fallback
+            // applies only when the name has a single rust definition.
+            let same_file = chunk_file
                 .as_deref()
-                .and_then(|f| by_file_name.get(&(f.to_string(), name.clone())).copied())
-                .unwrap_or(*global_id);
+                .and_then(|f| by_file_name.get(&(f.to_string(), name.clone())).copied());
+            let target = match same_file {
+                Some(target) => target,
+                None if *count == 1 => *global_id,
+                None => continue,
+            };
             if target == source {
                 continue;
             }
@@ -1466,6 +1929,17 @@ fn split_large_chunks(result: &mut ExtractionResult) {
             continue;
         }
 
+        // Every chunk_for_node caller prefixes a header block followed by one
+        // blank line before the body, and the body's first line corresponds to
+        // the chunk's line_start. Counting the header lines once lets each
+        // split part carry its real source line range instead of inheriting
+        // the parent's full range.
+        let body_start = chunk
+            .content
+            .lines()
+            .position(|l| l.trim().is_empty())
+            .map(|i| i + 1)
+            .unwrap_or(0);
         let parts = split_content(&chunk.content, MAX_CHUNK_CHARS);
         let part_count = parts.len();
         for (idx, part) in parts.into_iter().enumerate() {
@@ -1475,12 +1949,13 @@ fn split_large_chunks(result: &mut ExtractionResult) {
                 obj.insert("split_total".into(), json!(part_count));
                 obj.insert("parent_content_hash".into(), json!(chunk.content_hash));
             }
+            let (line_start, line_end) = part_line_range(&chunk, body_start, &part);
             let content = format!(
                 "{}\nChunk part: {}/{}\n\n{}",
                 chunk_context_header(&chunk),
                 idx + 1,
                 part_count,
-                part
+                part.content
             );
             chunks.push(KnowledgeChunk {
                 id: Uuid::new_v4(),
@@ -1490,13 +1965,39 @@ fn split_large_chunks(result: &mut ExtractionResult) {
                 chunk_type: chunk.chunk_type.clone(),
                 content_hash: hash(&content),
                 content,
-                line_start: chunk.line_start,
-                line_end: chunk.line_end,
+                line_start,
+                line_end,
                 metadata,
             });
         }
     }
     result.chunks = chunks;
+}
+
+/// Map a split part's position within the parent chunk content back to real
+/// source lines. `body_start` is the number of content lines (header + blank)
+/// preceding the body, whose first line is the parent's `line_start`.
+fn part_line_range(
+    chunk: &KnowledgeChunk,
+    body_start: usize,
+    part: &SplitPart,
+) -> (Option<i32>, Option<i32>) {
+    let Some(parent_start) = chunk.line_start else {
+        return (chunk.line_start, chunk.line_end);
+    };
+    let body_off = part.line_offset.saturating_sub(body_start);
+    let body_end = (part.line_offset + part.line_count).saturating_sub(body_start);
+    if body_end == 0 {
+        // The part is entirely inside the synthetic header.
+        return (Some(parent_start), Some(parent_start));
+    }
+    let mut start = parent_start.saturating_add(body_off as i32);
+    let mut end = parent_start.saturating_add(body_end.saturating_sub(1) as i32);
+    if let Some(parent_end) = chunk.line_end {
+        start = start.min(parent_end);
+        end = end.min(parent_end);
+    }
+    (Some(start), Some(end.max(start)))
 }
 
 fn chunk_context_header(chunk: &KnowledgeChunk) -> String {
@@ -1516,35 +2017,560 @@ fn chunk_context_header(chunk: &KnowledgeChunk) -> String {
     )
 }
 
-fn split_content(content: &str, max_chars: usize) -> Vec<String> {
-    let mut parts = Vec::new();
-    let mut current = String::new();
+/// Maximum heading depth that starts a new documentation section; deeper
+/// headings (H4+) stay inside their parent section so API-reference style
+/// documents don't shatter into confetti.
+const MARKDOWN_SECTION_DEPTH: usize = 3;
 
-    for line in content.lines() {
-        if current.len() + line.len() + 1 > max_chars && !current.is_empty() {
-            parts.push(current.trim_end().to_string());
-            current.clear();
+/// One heading-delimited section of a markdown document, with its real
+/// 1-based line range and the heading titles leading to it.
+struct MdSection {
+    heading_path: Vec<String>,
+    line_start: usize,
+    line_end: usize,
+    text: String,
+}
+
+/// Split markdown into heading-delimited sections using a real CommonMark
+/// parser (so `#` lines inside fenced code blocks are NOT treated as
+/// headings). Returns an empty vec when the document has no headings at or
+/// above [`MARKDOWN_SECTION_DEPTH`] — the caller falls back to one
+/// whole-file chunk.
+fn markdown_sections(content: &str) -> Vec<MdSection> {
+    use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+
+    // (byte offset of the heading start, level, heading text)
+    let mut boundaries: Vec<(usize, usize, String)> = Vec::new();
+    let mut iter = Parser::new(content).into_offset_iter();
+    while let Some((event, range)) = iter.next() {
+        let Event::Start(Tag::Heading { level, .. }) = event else {
+            continue;
+        };
+        let level = level as usize;
+        if level > MARKDOWN_SECTION_DEPTH {
+            continue;
         }
+        let mut title = String::new();
+        for (inner, _) in iter.by_ref() {
+            match inner {
+                Event::End(TagEnd::Heading(_)) => break,
+                Event::Text(t) => title.push_str(&t),
+                Event::Code(t) => title.push_str(&t),
+                _ => {}
+            }
+        }
+        boundaries.push((range.start, level, title.trim().to_string()));
+    }
+    if boundaries.is_empty() {
+        return Vec::new();
+    }
+
+    let lines = crate::lang::LineIndex::new(content);
+    let mut sections = Vec::new();
+    let mut path: Vec<(usize, String)> = Vec::new();
+
+    let mut push_section = |path: &[(usize, String)], start: usize, end: usize| {
+        let text = content[start..end].trim_end();
+        if text.trim().is_empty() {
+            return;
+        }
+        sections.push(MdSection {
+            heading_path: path.iter().map(|(_, t)| t.clone()).collect(),
+            line_start: lines.line(start),
+            line_end: lines.line(start + text.len().saturating_sub(1)),
+            text: text.to_string(),
+        });
+    };
+
+    // Preamble before the first heading is its own (path-less) section.
+    push_section(&[], 0, boundaries[0].0);
+    for (i, (start, level, title)) in boundaries.iter().enumerate() {
+        let end = boundaries
+            .get(i + 1)
+            .map(|(next, _, _)| *next)
+            .unwrap_or(content.len());
+        path.retain(|(l, _)| l < level);
+        path.push((*level, title.clone()));
+        push_section(&path, *start, end);
+    }
+    sections
+}
+
+/// Headroom reserved for the per-part `Documentation: … (part i/n)` context
+/// header when packing oversized documentation into parts.
+const DOC_HEADER_ALLOWANCE: usize = 256;
+
+/// Top-level markdown block classification, for atomicity decisions: code
+/// fences, tables and lists must never be cut mid-block.
+enum MdBlockKind {
+    /// Fenced (with its info string) or indented code.
+    Code(Option<String>),
+    Table,
+    Heading,
+    Other,
+}
+
+/// One packable unit of a documentation section: a whole top-level markdown
+/// block, or a structure-preserving piece of an oversized one (a re-fenced
+/// code slice, a table slice with its header repeated). `line_offset` is
+/// 0-based within the source text the unit came from.
+struct DocUnit {
+    text: String,
+    line_offset: usize,
+    line_count: usize,
+    /// Prefer starting a new part here (sub-headings) once a part is
+    /// reasonably full, so parts align with the document's own structure.
+    starts_group: bool,
+}
+
+/// A packed documentation part, positioned within its source text.
+struct DocPart {
+    text: String,
+    line_offset: usize,
+    line_count: usize,
+}
+
+/// Collect the byte ranges of every TOP-LEVEL block of a markdown text using
+/// the real parser — so a blank line inside a code fence is part of the
+/// fence, not a break opportunity.
+fn collect_markdown_blocks(text: &str) -> Vec<(std::ops::Range<usize>, MdBlockKind)> {
+    use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag};
+    let mut blocks = Vec::new();
+    let mut depth = 0usize;
+    let mut current: Option<(usize, MdBlockKind)> = None;
+    // Tables are a GFM extension — without this option a table parses as one
+    // big paragraph and loses its atomicity/header-repeat handling.
+    for (event, range) in Parser::new_ext(text, Options::ENABLE_TABLES).into_offset_iter() {
+        match event {
+            Event::Start(tag) => {
+                if depth == 0 {
+                    let kind = match &tag {
+                        Tag::CodeBlock(CodeBlockKind::Fenced(info)) => {
+                            MdBlockKind::Code(Some(info.to_string()))
+                        }
+                        Tag::CodeBlock(CodeBlockKind::Indented) => MdBlockKind::Code(None),
+                        Tag::Table(_) => MdBlockKind::Table,
+                        Tag::Heading { .. } => MdBlockKind::Heading,
+                        _ => MdBlockKind::Other,
+                    };
+                    current = Some((range.start, kind));
+                }
+                depth += 1;
+            }
+            Event::End(_) => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    if let Some((start, kind)) = current.take() {
+                        blocks.push((start..range.end.max(start), kind));
+                    }
+                }
+            }
+            Event::Rule if depth == 0 => {
+                blocks.push((range.start..range.end, MdBlockKind::Other));
+            }
+            _ => {}
+        }
+    }
+    blocks
+}
+
+/// Expand a section's top-level blocks into packable units no larger than
+/// `budget`. Whole blocks stay atomic; an oversized code fence is split at
+/// blank lines INSIDE it and each piece re-wrapped in fences (with the
+/// original info string) so every part remains valid markdown; an oversized
+/// table repeats its header + separator rows on each slice; anything else
+/// falls back to the generic structural splitter.
+fn section_doc_units(text: &str, budget: usize) -> Vec<DocUnit> {
+    let lines = crate::lang::LineIndex::new(text);
+    let mut units = Vec::new();
+    for (range, kind) in collect_markdown_blocks(text) {
+        let block_text = text[range.clone()].trim_end();
+        if block_text.is_empty() {
+            continue;
+        }
+        let line_offset = lines.line(range.start).saturating_sub(1);
+        let line_count = block_text.lines().count().max(1);
+        if block_text.len() <= budget {
+            units.push(DocUnit {
+                text: block_text.to_string(),
+                line_offset,
+                line_count,
+                starts_group: matches!(kind, MdBlockKind::Heading),
+            });
+            continue;
+        }
+        match kind {
+            MdBlockKind::Code(Some(info)) => {
+                let block_lines: Vec<&str> = block_text.lines().collect();
+                let opens = block_lines.first().is_some_and(|l| {
+                    l.trim_start().starts_with("```") || l.trim_start().starts_with("~~~")
+                });
+                let closes = block_lines.len() > 1
+                    && block_lines.last().is_some_and(|l| {
+                        l.trim_start().starts_with("```") || l.trim_start().starts_with("~~~")
+                    });
+                let inner_start = usize::from(opens);
+                let inner_end = block_lines.len() - usize::from(closes);
+                let inner = block_lines[inner_start..inner_end].join("\n");
+                let fence_overhead = info.len() + 10;
+                for piece in split_content(&inner, budget.saturating_sub(fence_overhead).max(64)) {
+                    units.push(DocUnit {
+                        text: format!("```{info}\n{}\n```", piece.content),
+                        line_offset: line_offset + inner_start + piece.line_offset,
+                        line_count: piece.line_count,
+                        starts_group: false,
+                    });
+                }
+            }
+            MdBlockKind::Table => {
+                let block_lines: Vec<&str> = block_text.lines().collect();
+                if block_lines.len() <= 2 {
+                    units.push(DocUnit {
+                        text: block_text.to_string(),
+                        line_offset,
+                        line_count,
+                        starts_group: false,
+                    });
+                    continue;
+                }
+                let header = format!("{}\n{}", block_lines[0], block_lines[1]);
+                let mut row_idx = 2usize;
+                while row_idx < block_lines.len() {
+                    let mut slice = header.clone();
+                    let slice_first_row = row_idx;
+                    while row_idx < block_lines.len()
+                        && slice.len() + block_lines[row_idx].len() < budget
+                    {
+                        slice.push('\n');
+                        slice.push_str(block_lines[row_idx]);
+                        row_idx += 1;
+                    }
+                    if row_idx == slice_first_row {
+                        // A single row larger than the budget: take it anyway
+                        // rather than loop forever.
+                        slice.push('\n');
+                        slice.push_str(block_lines[row_idx]);
+                        row_idx += 1;
+                    }
+                    units.push(DocUnit {
+                        text: slice,
+                        line_offset: line_offset + slice_first_row,
+                        line_count: row_idx - slice_first_row,
+                        starts_group: false,
+                    });
+                }
+            }
+            _ => {
+                for piece in split_content(block_text, budget) {
+                    units.push(DocUnit {
+                        text: piece.content,
+                        line_offset: line_offset + piece.line_offset,
+                        line_count: piece.line_count,
+                        starts_group: false,
+                    });
+                }
+            }
+        }
+    }
+    units
+}
+
+/// Greedily pack units into parts of at most `budget` chars, joining with
+/// blank lines (block separation). A sub-heading unit starts a new part once
+/// the current one is ≥ 60% full, so parts align with document structure.
+fn pack_doc_units(units: Vec<DocUnit>, budget: usize) -> Vec<DocPart> {
+    let mut parts: Vec<DocPart> = Vec::new();
+    let mut text = String::new();
+    let mut offset = 0usize;
+    let mut end = 0usize;
+    for unit in units {
+        let separator = if text.is_empty() { 0 } else { 2 };
+        let overflow = text.len() + separator + unit.text.len() > budget;
+        let group_break = unit.starts_group && text.len() >= budget * 3 / 5;
+        if !text.is_empty() && (overflow || group_break) {
+            parts.push(DocPart {
+                text: std::mem::take(&mut text),
+                line_offset: offset,
+                line_count: end.saturating_sub(offset).max(1),
+            });
+        }
+        if text.is_empty() {
+            offset = unit.line_offset;
+        } else {
+            text.push_str("\n\n");
+        }
+        text.push_str(&unit.text);
+        end = unit.line_offset + unit.line_count;
+    }
+    if !text.trim().is_empty() {
+        parts.push(DocPart {
+            text,
+            line_offset: offset,
+            line_count: end.saturating_sub(offset).max(1),
+        });
+    }
+    parts
+}
+
+/// A packed PDF part with the 1-based page range it covers (pages are only
+/// known when the text extractor emitted form feeds).
+struct PdfPart {
+    part: DocPart,
+    page_start: usize,
+    page_end: usize,
+}
+
+/// Build packable units from extracted PDF text: form feeds (`\f`) are page
+/// breaks, blank lines are paragraph breaks. Each unit carries its 1-based
+/// page number (always 1 when there are no form feeds).
+fn pdf_doc_units(content: &str, budget: usize) -> Vec<(DocUnit, usize)> {
+    fn push_paragraph(
+        units: &mut Vec<(DocUnit, usize)>,
+        para: &[&str],
+        line_offset: usize,
+        page: usize,
+        budget: usize,
+    ) {
+        let text = para.join("\n");
+        if text.trim().is_empty() {
+            return;
+        }
+        if text.len() <= budget {
+            units.push((
+                DocUnit {
+                    text: text.trim_end().to_string(),
+                    line_offset,
+                    line_count: para.len(),
+                    starts_group: false,
+                },
+                page,
+            ));
+        } else {
+            for piece in split_content(&text, budget) {
+                units.push((
+                    DocUnit {
+                        text: piece.content,
+                        line_offset: line_offset + piece.line_offset,
+                        line_count: piece.line_count,
+                        starts_group: false,
+                    },
+                    page,
+                ));
+            }
+        }
+    }
+
+    let mut units = Vec::new();
+    let mut line_base = 0usize;
+    for (page_idx, page_text) in content.split('\u{c}').enumerate() {
+        let lines: Vec<&str> = page_text.lines().collect();
+        let mut para: Vec<&str> = Vec::new();
+        let mut para_start = 0usize;
+        for (i, line) in lines.iter().enumerate() {
+            if line.trim().is_empty() {
+                push_paragraph(
+                    &mut units,
+                    &para,
+                    line_base + para_start,
+                    page_idx + 1,
+                    budget,
+                );
+                para.clear();
+            } else {
+                if para.is_empty() {
+                    para_start = i;
+                }
+                para.push(line);
+            }
+        }
+        push_paragraph(
+            &mut units,
+            &para,
+            line_base + para_start,
+            page_idx + 1,
+            budget,
+        );
+        line_base += lines.len();
+    }
+    units
+}
+
+/// Greedy paragraph packing for PDF text, tracking the page range each part
+/// covers. Same packing rule as [`pack_doc_units`].
+fn pack_pdf_units(units: Vec<(DocUnit, usize)>, budget: usize) -> Vec<PdfPart> {
+    let mut parts: Vec<PdfPart> = Vec::new();
+    let mut text = String::new();
+    let mut offset = 0usize;
+    let mut end = 0usize;
+    let mut page_start = 1usize;
+    let mut page_end = 1usize;
+    for (unit, page) in units {
+        let separator = if text.is_empty() { 0 } else { 2 };
+        if !text.is_empty() && text.len() + separator + unit.text.len() > budget {
+            parts.push(PdfPart {
+                part: DocPart {
+                    text: std::mem::take(&mut text),
+                    line_offset: offset,
+                    line_count: end.saturating_sub(offset).max(1),
+                },
+                page_start,
+                page_end,
+            });
+        }
+        if text.is_empty() {
+            offset = unit.line_offset;
+            page_start = page;
+        } else {
+            text.push_str("\n\n");
+        }
+        text.push_str(&unit.text);
+        end = unit.line_offset + unit.line_count;
+        page_end = page;
+    }
+    if !text.trim().is_empty() {
+        parts.push(PdfPart {
+            part: DocPart {
+                text,
+                line_offset: offset,
+                line_count: end.saturating_sub(offset).max(1),
+            },
+            page_start,
+            page_end,
+        });
+    }
+    parts
+}
+
+/// Split an oversized markdown section into structure-respecting parts.
+/// Falls back to the generic structural splitter when the parser finds no
+/// blocks at all (pathological input).
+fn pack_markdown_section(text: &str, budget: usize) -> Vec<DocPart> {
+    let units = section_doc_units(text, budget);
+    if units.is_empty() {
+        return split_content(text, budget)
+            .into_iter()
+            .map(|piece| DocPart {
+                text: piece.content,
+                line_offset: piece.line_offset,
+                line_count: piece.line_count,
+            })
+            .collect();
+    }
+    pack_doc_units(units, budget)
+}
+
+/// One part of an oversized chunk: the text plus its position within the
+/// parent content (0-based line offset and number of source lines consumed),
+/// so `split_large_chunks` can attribute a real line range to each part.
+struct SplitPart {
+    content: String,
+    line_offset: usize,
+    line_count: usize,
+}
+
+/// A structural boundary is only taken once the current part has reached this
+/// fraction of `max_chars`; below it the splitter hard-breaks at the cap,
+/// avoiding degenerate tiny parts when boundaries cluster near a part's start.
+const SPLIT_MIN_FILL_RATIO: f64 = 0.4;
+
+/// Split oversized chunk content at structural boundaries instead of raw
+/// character positions: a part preferably ends right before a line that
+/// follows a blank line (paragraph/statement-group break) or a line whose
+/// indentation returns to the part's first content line (top-of-block).
+fn split_content(content: &str, max_chars: usize) -> Vec<SplitPart> {
+    let lines: Vec<&str> = content.lines().collect();
+    let min_fill = (max_chars as f64 * SPLIT_MIN_FILL_RATIO) as usize;
+    let mut parts: Vec<SplitPart> = Vec::new();
+    let mut start = 0usize;
+    let mut idx = 0usize;
+    let mut current_len = 0usize;
+    let mut base_indent: Option<usize> = None;
+    // (line index to break before, accumulated chars up to that line)
+    let mut last_boundary: Option<(usize, usize)> = None;
+
+    let flush = |parts: &mut Vec<SplitPart>, from: usize, to: usize| {
+        if to <= from {
+            return;
+        }
+        let text = lines[from..to].join("\n");
+        if !text.trim().is_empty() {
+            parts.push(SplitPart {
+                content: text.trim_end().to_string(),
+                line_offset: from,
+                line_count: to - from,
+            });
+        }
+    };
+
+    while idx < lines.len() {
+        let line = lines[idx];
 
         if line.len() > max_chars {
+            flush(&mut parts, start, idx);
             for piece in split_long_line(line, max_chars) {
-                if !current.is_empty() {
-                    parts.push(current.trim_end().to_string());
-                    current.clear();
-                }
-                parts.push(piece);
+                parts.push(SplitPart {
+                    content: piece,
+                    line_offset: idx,
+                    line_count: 1,
+                });
             }
-        } else {
-            current.push_str(line);
-            current.push('\n');
+            idx += 1;
+            start = idx;
+            current_len = 0;
+            base_indent = None;
+            last_boundary = None;
+            continue;
         }
+
+        if current_len + line.len() + 1 > max_chars && idx > start {
+            match last_boundary {
+                Some((boundary, chars)) if boundary > start && chars >= min_fill => {
+                    flush(&mut parts, start, boundary);
+                    start = boundary;
+                }
+                _ => {
+                    flush(&mut parts, start, idx);
+                    start = idx;
+                }
+            }
+            current_len = lines[start..idx].iter().map(|l| l.len() + 1).sum::<usize>();
+            base_indent = lines[start..=idx.min(lines.len() - 1)]
+                .iter()
+                .find(|l| !l.trim().is_empty())
+                .map(|l| indent_width(l));
+            last_boundary = None;
+        }
+
+        if base_indent.is_none() && !line.trim().is_empty() {
+            base_indent = Some(indent_width(line));
+        }
+        if idx > start {
+            let after_blank = lines[idx - 1].trim().is_empty();
+            // A dedent boundary sits between two lines at the part's base
+            // indentation (a new top-level construct after a completed one);
+            // requiring the previous line at base too avoids breaking right
+            // before a closing brace/bracket line.
+            let dedented = !after_blank
+                && !line.trim().is_empty()
+                && base_indent.is_some_and(|base| {
+                    indent_width(line) <= base && indent_width(lines[idx - 1]) <= base
+                });
+            if after_blank || dedented {
+                last_boundary = Some((idx, current_len));
+            }
+        }
+
+        current_len += line.len() + 1;
+        idx += 1;
     }
 
-    if !current.trim().is_empty() {
-        parts.push(current.trim_end().to_string());
-    }
-
+    flush(&mut parts, start, lines.len());
     parts
+}
+
+/// Leading whitespace width of a line (tabs count as one column).
+fn indent_width(line: &str) -> usize {
+    line.chars().take_while(|c| c.is_whitespace()).count()
 }
 
 fn split_long_line(line: &str, max_chars: usize) -> Vec<String> {
@@ -1563,12 +2589,42 @@ fn split_long_line(line: &str, max_chars: usize) -> Vec<String> {
     parts
 }
 
-pub(crate) fn import_stable_id(file: &SourceFile, module: &str, is_bare: bool) -> String {
-    if is_bare {
-        format!("import:bare:{module}")
-    } else {
-        format!("{}:import:{}", file.path, hash(module))
+/// Resolve a `./`/`../` import specifier against the importing file's
+/// directory, purely lexically (no filesystem access, so it is deterministic
+/// and works for extensionless TS-style specifiers). Two files importing the
+/// same target produce the same normalized path and share one node.
+pub(crate) fn normalize_relative_import(file_path: &str, module: &str) -> String {
+    let mut segments: Vec<&str> = file_path.split('/').collect();
+    segments.pop(); // drop the file name
+    for part in module.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            other => segments.push(other),
+        }
     }
+    segments.join("/")
+}
+
+/// Resolve a Python leading-dot import (`.mod`, `..pkg.mod`, emitted by the
+/// parser as dots + dotted path) against the importing file's package
+/// directory: one dot = the current package, each further dot one level up.
+pub(crate) fn python_relative_target(file_path: &str, module: &str) -> String {
+    let dots = module.bytes().take_while(|b| *b == b'.').count();
+    let rest = &module[dots..];
+    let mut segments: Vec<&str> = file_path.split('/').collect();
+    segments.pop(); // drop the file name; one dot = this package
+    for _ in 1..dots {
+        segments.pop();
+    }
+    for part in rest.split('.') {
+        if !part.is_empty() {
+            segments.push(part);
+        }
+    }
+    segments.join("/")
 }
 
 pub(crate) fn is_bare_module_specifier(module: &str) -> bool {
@@ -1628,6 +2684,34 @@ fn quote_use(item: &syn::ItemUse) -> String {
     format!("use {}", use_tree_to_string(&item.tree))
 }
 
+/// True when a `use` tree resolves inside the repo: its first path segment is
+/// `crate`/`self`/`super` or one of the repo's own crate names. Top-level
+/// groups (`use {a, b}`) are internal when any branch is.
+fn use_tree_is_internal(tree: &syn::UseTree, workspace_crates: &HashSet<String>) -> bool {
+    match tree {
+        syn::UseTree::Path(path) => {
+            let first = path.ident.to_string();
+            matches!(first.as_str(), "crate" | "self" | "super")
+                || workspace_crates.contains(&first)
+        }
+        syn::UseTree::Name(name) => {
+            let first = name.ident.to_string();
+            matches!(first.as_str(), "crate" | "self" | "super")
+                || workspace_crates.contains(&first)
+        }
+        syn::UseTree::Rename(rename) => {
+            let first = rename.ident.to_string();
+            matches!(first.as_str(), "crate" | "self" | "super")
+                || workspace_crates.contains(&first)
+        }
+        syn::UseTree::Glob(_) => false,
+        syn::UseTree::Group(group) => group
+            .items
+            .iter()
+            .any(|item| use_tree_is_internal(item, workspace_crates)),
+    }
+}
+
 fn use_tree_to_string(tree: &syn::UseTree) -> String {
     match tree {
         syn::UseTree::Path(path) => format!("{}::{}", path.ident, use_tree_to_string(&path.tree)),
@@ -1665,115 +2749,11 @@ fn impl_name(item: &ItemImpl) -> String {
     }
 }
 
-/// Find the 1-based line where `keyword` is followed (across whitespace) by
-/// `name`, with word boundaries on both ends — the equivalent of the regex
-/// `\b{keyword}\s+{name}\b` but without compiling a regex per call.
-///
-/// Falls back to the first line merely containing `name` when no
-/// keyword+name pair is found, matching the previous behavior.
-fn find_item_line(content: &str, keyword: &str, name: &str) -> Option<usize> {
-    content
-        .lines()
-        .position(|line| line_has_keyword_name(line, keyword, name))
-        .map(|idx| idx + 1)
-        .or_else(|| find_line(content, name))
-}
-
-/// True when `line` contains `keyword` followed by `name` separated only by
-/// ASCII whitespace, both flanked by word boundaries (Unicode-aware, matching
-/// the regex engine's `\b` over `\w`).
-fn line_has_keyword_name(line: &str, keyword: &str, name: &str) -> bool {
-    if keyword.is_empty() || name.is_empty() {
-        return false;
-    }
-    let bytes = line.as_bytes();
-    let mut search_from = 0;
-    while let Some(rel) = line[search_from..].find(keyword) {
-        let kw_start = search_from + rel;
-        let kw_end = kw_start + keyword.len();
-        // Word boundary before `keyword`: previous char must not be a word char.
-        let boundary_before = !is_word_char(prev_char(line, kw_start));
-        if boundary_before {
-            // Require at least one whitespace char immediately after `keyword`.
-            let mut cursor = kw_end;
-            let ws_end = skip_whitespace(bytes, cursor);
-            if ws_end > cursor {
-                cursor = ws_end;
-                // `name` must appear immediately after the whitespace run.
-                if line[cursor..].starts_with(name) {
-                    let name_end = cursor + name.len();
-                    // Word boundary after `name`: next char must not be a word char.
-                    if !is_word_char(next_char(line, name_end)) {
-                        return true;
-                    }
-                }
-            }
-        }
-        // Advance past this occurrence to find later matches on the same line.
-        search_from = kw_start + 1;
-    }
-    false
-}
-
-/// The character immediately before `idx`, if any.
-fn prev_char(line: &str, idx: usize) -> Option<char> {
-    line[..idx].chars().next_back()
-}
-
-/// The character at or after `idx`, if any.
-fn next_char(line: &str, idx: usize) -> Option<char> {
-    line[idx..].chars().next()
-}
-
-/// A `\w` character (alphanumeric or `_`) on either side breaks a word
-/// boundary. `None` (string edge) is treated as a boundary (i.e. not a word
-/// char).
-fn is_word_char(ch: Option<char>) -> bool {
-    matches!(ch, Some(c) if c.is_alphanumeric() || c == '_')
-}
-
-/// Index of the first non-whitespace byte at or after `from`.
-fn skip_whitespace(bytes: &[u8], from: usize) -> usize {
-    let mut i = from;
-    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    i
-}
-
 fn find_line(content: &str, needle: &str) -> Option<usize> {
     content
         .lines()
         .position(|line| line.contains(needle))
         .map(|idx| idx + 1)
-}
-
-fn find_block_end(content: &str, start_line: usize) -> Option<usize> {
-    let mut depth = 0_i32;
-    let mut saw_brace = false;
-    for (idx, line) in content
-        .lines()
-        .enumerate()
-        .skip(start_line.saturating_sub(1))
-    {
-        for ch in line.chars() {
-            match ch {
-                '{' => {
-                    saw_brace = true;
-                    depth += 1;
-                }
-                '}' => depth -= 1,
-                _ => {}
-            }
-        }
-        if saw_brace && depth <= 0 {
-            return Some(idx + 1);
-        }
-        if !saw_brace && line.trim_end().ends_with(';') {
-            return Some(idx + 1);
-        }
-    }
-    Some(start_line)
 }
 
 pub(crate) fn slice_lines(content: &str, start: usize, end: usize) -> String {
@@ -1791,32 +2771,6 @@ mod tests {
     use lopdf::{dictionary, Document, Object, Stream};
     use std::fs;
     use std::path::Path;
-
-    #[test]
-    fn find_item_line_matches_keyword_then_name_with_word_boundaries() {
-        let src = "use foo;\npub fn handler() {}\nstruct Other;\n";
-        // `fn handler` on line 2 (1-based).
-        assert_eq!(find_item_line(src, "fn", "handler"), Some(2));
-        // `struct Other` on line 3.
-        assert_eq!(find_item_line(src, "struct", "Other"), Some(3));
-    }
-
-    #[test]
-    fn find_item_line_respects_word_boundaries() {
-        // `function` must not match keyword `fn`; `handler2` must not match
-        // name `handler`. Falls back to the first line merely containing `name`.
-        let src = "function handler2() {}\nfn handler() {}\n";
-        assert_eq!(find_item_line(src, "fn", "handler"), Some(2));
-        // No `fn` + `nope` pair anywhere; falls back to find_line (None here).
-        assert_eq!(find_item_line(src, "fn", "nope"), None);
-    }
-
-    #[test]
-    fn find_item_line_requires_whitespace_between_keyword_and_name() {
-        // Adjacent without whitespace must not match the keyword+name form.
-        let src = "fnhandler\nfn handler\n";
-        assert_eq!(find_item_line(src, "fn", "handler"), Some(2));
-    }
 
     #[test]
     fn extract_paths_indexes_only_supplied_indexable_files() {
@@ -2181,6 +3135,198 @@ mod tests {
     }
 
     #[test]
+    fn markdown_splits_into_heading_sections() {
+        let content = "intro line\n\n# Setup\n\ninstall things\n\n## Docker\n\nrun the container\n\n# Usage\n\ncall the cli\n";
+        let sections = markdown_sections(content);
+        assert_eq!(sections.len(), 4);
+        assert_eq!(sections[0].heading_path, Vec::<String>::new()); // preamble
+        assert_eq!(sections[0].line_start, 1);
+        assert_eq!(sections[1].heading_path, vec!["Setup"]);
+        assert_eq!(sections[2].heading_path, vec!["Setup", "Docker"]);
+        assert!(sections[2].text.contains("run the container"));
+        assert!(!sections[2].text.contains("install things"));
+        assert_eq!(sections[3].heading_path, vec!["Usage"]);
+        // Line ranges advance and match the source.
+        assert_eq!(sections[1].line_start, 3);
+        assert!(sections[2].line_start > sections[1].line_start);
+        assert!(sections[3].line_end >= sections[3].line_start);
+    }
+
+    #[test]
+    fn markdown_preamble_becomes_own_section() {
+        let sections = markdown_sections("frontmatter prose\n\n# First\n\nbody\n");
+        assert_eq!(sections.len(), 2);
+        assert!(sections[0].heading_path.is_empty());
+        assert!(sections[0].text.contains("frontmatter prose"));
+    }
+
+    #[test]
+    fn markdown_without_headings_falls_back_to_single_chunk() {
+        assert!(markdown_sections("just prose\n\nno headings here\n").is_empty());
+
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("NOTES.md"), "just prose\n\nno headings\n").unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+        let docs: Vec<_> = result
+            .chunks
+            .iter()
+            .filter(|c| c.chunk_type == "documentation")
+            .collect();
+        assert_eq!(docs.len(), 1);
+        assert!(docs[0].content.starts_with("Documentation file: NOTES.md"));
+    }
+
+    #[test]
+    fn markdown_deep_headings_stay_in_parent_section() {
+        let content =
+            "# Api\n\n## Client\n\n### Methods\n\n#### get\n\ndetails\n\n#### post\n\nmore\n";
+        let sections = markdown_sections(content);
+        // H4 headings don't open sections; they stay inside "Methods".
+        assert_eq!(sections.len(), 3);
+        let methods = sections.last().unwrap();
+        assert_eq!(methods.heading_path, vec!["Api", "Client", "Methods"]);
+        assert!(methods.text.contains("#### get"));
+        assert!(methods.text.contains("#### post"));
+    }
+
+    #[test]
+    fn markdown_headings_inside_code_fences_are_not_sections() {
+        let content = "# Real\n\n```sh\n# not a heading\necho hi\n```\n\nafter\n";
+        let sections = markdown_sections(content);
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].heading_path, vec!["Real"]);
+        assert!(sections[0].text.contains("# not a heading"));
+    }
+
+    /// Count of fence-delimiter lines must be even in every part — an odd
+    /// count means a part starts or ends inside a code block.
+    fn fence_lines(text: &str) -> usize {
+        text.lines()
+            .filter(|l| l.trim_start().starts_with("```"))
+            .count()
+    }
+
+    #[test]
+    fn oversized_markdown_section_keeps_code_fences_whole() {
+        // Paragraphs + fenced blocks with BLANK LINES INSIDE (the trap the
+        // generic splitter falls into) — no part may cut a fence open.
+        let para = "Some prose explaining the API in a sentence or two.";
+        let fence = format!(
+            "```graphql\nmutation {{\n  doThing(arg: 1)\n\n  andMore(arg: 2)\n}}\n\n{}```",
+            "query { x }\n".repeat(8)
+        );
+        let text = format!("{para}\n\n{fence}\n\n{para}\n\n{para}\n\n{fence}\n\n{para}\n");
+        let parts = pack_markdown_section(&text, 300);
+        assert!(parts.len() > 1);
+        for part in &parts {
+            assert_eq!(
+                fence_lines(&part.text) % 2,
+                0,
+                "part cuts a code fence open:\n{}",
+                part.text
+            );
+        }
+    }
+
+    #[test]
+    fn oversized_code_fence_splits_rewrapped() {
+        // A single fence far bigger than the budget: pieces must each be
+        // re-wrapped as valid fenced blocks with the original language tag.
+        let body = "select column_a, column_b from some_table;\n".repeat(40);
+        let text = format!("```sql\n{body}```");
+        let parts = pack_markdown_section(&text, 400);
+        assert!(parts.len() > 1);
+        for part in &parts {
+            for piece in part.text.split("\n\n") {
+                if piece.contains("select") {
+                    assert!(piece.starts_with("```sql"), "piece lost its fence: {piece}");
+                    assert!(piece.trim_end().ends_with("```"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn oversized_table_repeats_header_on_each_part() {
+        let mut table = String::from("| Event | Description |\n| --- | --- |\n");
+        for i in 0..60 {
+            table.push_str(&format!(
+                "| Transfer{i} | Emitted when token {i} moves between two accounts somewhere |\n"
+            ));
+        }
+        let parts = pack_markdown_section(&table, 500);
+        assert!(parts.len() > 1);
+        for part in &parts {
+            let mut lines = part.text.lines();
+            assert_eq!(lines.next(), Some("| Event | Description |"));
+            assert_eq!(lines.next(), Some("| --- | --- |"));
+        }
+    }
+
+    #[test]
+    fn oversized_doc_sections_keep_heading_context_per_part() {
+        let dir = tempfile::tempdir().unwrap();
+        let fence = format!("```js\n{}```", "callApi(arg);\n".repeat(500));
+        let body = format!("# Api\n\n## Mutations\n\nIntro paragraph.\n\n{fence}\n\nOutro.\n");
+        assert!(body.len() > MAX_CHUNK_CHARS);
+        fs::write(dir.path().join("REF.md"), &body).unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        let parts: Vec<_> = result
+            .chunks
+            .iter()
+            .filter(|c| c.chunk_type == "documentation" && c.metadata.get("split_part").is_some())
+            .collect();
+        assert!(
+            parts.len() > 1,
+            "oversized section must be packed into parts"
+        );
+        let mut prev_end = 0i32;
+        for part in &parts {
+            // Every part carries the heading-path context header…
+            assert!(
+                part.content
+                    .starts_with("Documentation: REF.md > Api > Mutations (part"),
+                "missing context header: {}",
+                &part.content[..part.content.len().min(90)]
+            );
+            // …keeps fences balanced…
+            assert_eq!(fence_lines(&part.content) % 2, 0);
+            // …and advances through real line ranges.
+            assert!(part.line_start.unwrap() > prev_end);
+            prev_end = part.line_end.unwrap();
+        }
+        // The generic splitter must NOT have touched documentation chunks.
+        assert!(parts.iter().all(|p| !p.content.contains("Chunk part:")));
+    }
+
+    #[test]
+    fn pdf_text_packs_at_page_and_paragraph_boundaries() {
+        let page = format!(
+            "{}\n\n{}\n\n{}",
+            "First paragraph of the page with some words.",
+            "Second paragraph that is reasonably long as well.",
+            "Third paragraph closing the page."
+        );
+        let content = format!("{page}\u{c}{page}\u{c}{page}");
+        let budget = 220usize;
+        let parts = pack_pdf_units(pdf_doc_units(&content, budget), budget);
+        assert!(parts.len() > 1);
+        for p in &parts {
+            assert!(p.part.text.len() <= budget);
+            assert!(p.page_end >= p.page_start);
+            // Paragraphs stay whole: every piece present is a complete one.
+            for piece in p.part.text.split("\n\n") {
+                assert!(piece.ends_with('.'), "paragraph cut mid-flow: {piece}");
+            }
+        }
+        assert_eq!(parts.first().unwrap().page_start, 1);
+        assert_eq!(parts.last().unwrap().page_end, 3);
+    }
+
+    #[test]
     fn extracts_solidity_contracts_members_imports_and_inheritance() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(
@@ -2231,10 +3377,12 @@ contract OnChainLab is Ownable, IValidator {
             .nodes
             .iter()
             .any(|node| { node.name == "AccountProvisioned" && node.kind == NodeKind::Concept }));
-        assert!(result
+        // Third-party npm-style solidity imports are external — dropped like
+        // JS/TS externals; the dependency list lives in the manifest nodes.
+        assert!(!result
             .nodes
             .iter()
-            .any(|node| { node.name == "@openzeppelin/contracts/access/Ownable.sol" }));
+            .any(|node| { node.name.contains("@openzeppelin") }));
         assert!(result
             .edges
             .iter()
@@ -2298,11 +3446,17 @@ def login(user):
             .nodes
             .iter()
             .any(|node| node.name == "login" && node.kind == NodeKind::Function));
-        assert!(result
+        // Stdlib/site-packages imports are external — dropped from the graph.
+        assert!(!result
             .nodes
             .iter()
             .any(|node| node.kind == NodeKind::Dependency && node.name == "os"));
-        assert!(result.nodes.iter().any(|node| node.name == "typing"));
+        assert!(!result.nodes.iter().any(|node| node.name == "typing"));
+        // The relative import is internal: normalized against the file's
+        // package directory and deduped repo-wide.
+        assert!(result.nodes.iter().any(|node| {
+            node.kind == NodeKind::Dependency && node.stable_id == "import:path:helpers"
+        }));
         assert!(result.edges.iter().any(|edge| edge.kind == EdgeKind::Calls));
         assert!(result
             .chunks
@@ -2328,10 +3482,11 @@ def login(user):
             .nodes
             .iter()
             .any(|n| n.name == "run" && n.kind == NodeKind::Function));
+        // `.util` normalizes against the importing file's package directory.
         assert!(result
             .nodes
             .iter()
-            .any(|n| n.kind == NodeKind::Dependency && n.name == ".util"));
+            .any(|n| n.kind == NodeKind::Dependency && n.stable_id == "import:path:util"));
     }
 
     #[test]
@@ -2462,8 +3617,412 @@ def login(user):
         // the user's own code, a legitimate feature relationship.
         assert_eq!(count("@acme/ui"), 1, "workspace `@acme/ui` kept");
         assert_eq!(count("@acme/ui/card"), 1, "workspace subpath kept");
-        // Relative imports are kept, one per importing file.
-        assert_eq!(count("./helper"), 2, "relative `./helper` kept per file");
+        // Both files import the same relative target — ONE shared node, named
+        // by its normalized path, with one Imports edge per importing file.
+        assert_eq!(count("helper"), 1, "relative `./helper` deduped repo-wide");
+        let helper = result
+            .nodes
+            .iter()
+            .find(|n| n.stable_id == "import:path:helper")
+            .expect("normalized relative import node");
+        assert_eq!(
+            helper.file_id, None,
+            "shared node must not belong to one file"
+        );
+        assert_eq!(
+            result
+                .edges
+                .iter()
+                .filter(|e| e.kind == EdgeKind::Imports && e.target_node_id == helper.id)
+                .count(),
+            2,
+            "one Imports edge per importing file"
+        );
+    }
+
+    #[test]
+    fn rust_impl_methods_become_method_nodes_and_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("svc.rs"),
+            r#"pub struct Service;
+
+impl Service {
+    pub const LIMIT: usize = 8;
+
+    pub fn new() -> Self {
+        Service
+    }
+
+    pub fn run(&self) -> usize {
+        Self::LIMIT
+    }
+}
+"#,
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        let impl_node = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Impl && n.name == "Service")
+            .expect("impl node");
+        let new_method = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Method && n.name == "new")
+            .expect("method node for new");
+        let run_method = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Method && n.name == "run")
+            .expect("method node for run");
+        assert_eq!(new_method.stable_id, "svc.rs:method:Service::new");
+        // Span-exact method lines.
+        assert_eq!(new_method.line_start, Some(6));
+        assert_eq!(new_method.line_end, Some(8));
+        // Methods are contained by the impl (local star), not the file.
+        assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Contains
+            && e.source_node_id == impl_node.id
+            && e.target_node_id == run_method.id));
+        // The impl chunk has the const + roster but no method bodies.
+        let impl_chunk = result
+            .chunks
+            .iter()
+            .find(|c| c.node_id == Some(impl_node.id))
+            .expect("impl chunk");
+        assert!(impl_chunk.content.contains("LIMIT"));
+        assert!(impl_chunk
+            .content
+            .contains("Methods (extracted separately): new, run"));
+        assert!(!impl_chunk.content.contains("Service\n    }"));
+        // Each method has its own chunk with its body.
+        let run_chunk = result
+            .chunks
+            .iter()
+            .find(|c| c.node_id == Some(run_method.id))
+            .expect("method chunk");
+        assert!(run_chunk.content.contains("Self::LIMIT"));
+        assert_eq!(run_chunk.chunk_type, "method");
+    }
+
+    #[test]
+    fn rust_trait_impl_method_stable_ids_disambiguate() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("fmt.rs"),
+            r#"pub struct Thing;
+
+impl Thing {
+    pub fn fmt(&self) -> String {
+        String::new()
+    }
+}
+
+impl std::fmt::Display for Thing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "thing")
+    }
+}
+"#,
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        let fmt_ids: Vec<&str> = result
+            .nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Method && n.name == "fmt")
+            .map(|n| n.stable_id.as_str())
+            .collect();
+        assert_eq!(fmt_ids.len(), 2, "both fmt methods extracted: {fmt_ids:?}");
+        assert!(fmt_ids.contains(&"fmt.rs:method:Thing::fmt"));
+        assert!(fmt_ids
+            .iter()
+            .any(|id| id.contains("Display") && id.ends_with("::fmt")));
+    }
+
+    #[test]
+    fn rust_inline_module_items_extracted_individually() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("lib.rs"),
+            r#"pub fn helper() -> usize {
+    1
+}
+
+mod tests {
+    #[test]
+    fn helper() {
+        assert_eq!(1, 1);
+    }
+}
+"#,
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        // Top-level fn keeps its historical stable_id; the nested test fn gets
+        // the module prefix, so the two `helper`s don't dedupe into one node.
+        assert!(result
+            .nodes
+            .iter()
+            .any(|n| n.stable_id == "lib.rs:function:helper"));
+        let nested = result
+            .nodes
+            .iter()
+            .find(|n| n.stable_id == "lib.rs:test:tests::helper")
+            .expect("nested test fn extracted with mod prefix");
+        assert_eq!(nested.kind, NodeKind::Test);
+        // The module chunk is header-only: no test body inside.
+        let module = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Module && n.name == "tests")
+            .expect("module node");
+        let module_chunk = result
+            .chunks
+            .iter()
+            .find(|c| c.node_id == Some(module.id))
+            .expect("module chunk");
+        assert!(!module_chunk.content.contains("assert_eq!"));
+    }
+
+    #[test]
+    fn rust_span_lines_are_exact() {
+        let dir = tempfile::tempdir().unwrap();
+        // A comment mentioning `fn target` BEFORE the real definition would
+        // fool the old text-search line attribution; spans are exact.
+        fs::write(
+            dir.path().join("x.rs"),
+            "// the fn target lives below\n\npub fn target() -> usize {\n    1\n}\n",
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+        let target = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "target" && n.kind == NodeKind::Function)
+            .unwrap();
+        assert_eq!(target.line_start, Some(3));
+        assert_eq!(target.line_end, Some(5));
+    }
+
+    #[test]
+    fn rust_method_call_edges_resolve() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("a.rs"),
+            "pub struct S;\n\nimpl S {\n    pub fn uniquely_named_helper(&self) -> usize {\n        1\n    }\n\n    pub fn driver(&self) -> usize {\n        self.uniquely_named_helper()\n    }\n}\n",
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+        let helper = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "uniquely_named_helper" && n.kind == NodeKind::Method)
+            .unwrap();
+        let driver = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "driver" && n.kind == NodeKind::Method)
+            .unwrap();
+        assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Calls
+            && e.source_node_id == driver.id
+            && e.target_node_id == helper.id));
+    }
+
+    #[test]
+    fn impl_roster_does_not_fabricate_call_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        // `solo` is called nowhere; it must not gain a Calls edge merely from
+        // appearing in the impl chunk's method roster.
+        fs::write(
+            dir.path().join("a.rs"),
+            "pub struct S;\n\nimpl S {\n    pub fn solo_method_name(&self) -> usize {\n        1\n    }\n}\n",
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+        let solo = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "solo_method_name")
+            .unwrap();
+        assert!(!result
+            .edges
+            .iter()
+            .any(|e| e.kind == EdgeKind::Calls && e.target_node_id == solo.id));
+    }
+
+    #[test]
+    fn ts_class_chunk_excludes_method_bodies() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("widget.ts"),
+            r#"export class Widget {
+  private count: number = 0;
+  readonly label: string = "w";
+
+  render(): string {
+    return uniqueRenderBody();
+  }
+
+  reset(): void {
+    this.count = 0;
+  }
+}
+
+function uniqueRenderBody(): string {
+  return "x";
+}
+"#,
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        let class = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "Widget" && n.kind == NodeKind::Struct)
+            .expect("class node");
+        let class_chunk = result
+            .chunks
+            .iter()
+            .find(|c| c.node_id == Some(class.id))
+            .expect("class chunk");
+        // Header + fields + roster, no method bodies.
+        assert!(class_chunk.content.contains("export class Widget"));
+        assert!(class_chunk.content.contains("private count"));
+        assert!(class_chunk.content.contains("readonly label"));
+        assert!(class_chunk
+            .content
+            .contains("Methods (extracted separately): render, reset"));
+        assert!(!class_chunk.content.contains("uniqueRenderBody()"));
+        // Methods still have their own chunks with full bodies.
+        let render = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "render" && n.kind == NodeKind::Function)
+            .expect("method symbol");
+        let render_chunk = result
+            .chunks
+            .iter()
+            .find(|c| c.node_id == Some(render.id))
+            .expect("method chunk");
+        assert!(render_chunk.content.contains("uniqueRenderBody()"));
+    }
+
+    #[test]
+    fn rust_drops_external_uses_keeps_and_dedupes_workspace_uses() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"my-crate\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("a.rs"),
+            "use std::fmt;\nuse serde::Serialize;\nuse crate::models::Thing;\npub fn a() {}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("b.rs"),
+            "use crate::models::Thing;\nuse my_crate::other;\npub fn b() {}\n",
+        )
+        .unwrap();
+
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        // std/third-party uses are dropped.
+        assert!(!result.nodes.iter().any(|n| n.name == "use std::fmt"));
+        assert!(!result.nodes.iter().any(|n| n.name.contains("serde")));
+        // crate-internal and workspace-crate uses are kept; the identical
+        // statement in two files dedupes to ONE shared node with 2 edges.
+        let shared = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "use crate::models::Thing")
+            .expect("internal use kept");
+        assert!(shared.stable_id.starts_with("import:rust:"));
+        assert_eq!(shared.file_id, None);
+        assert_eq!(
+            result
+                .edges
+                .iter()
+                .filter(|e| e.kind == EdgeKind::Imports && e.target_node_id == shared.id)
+                .count(),
+            2
+        );
+        assert!(result.nodes.iter().any(|n| n.name == "use my_crate::other"));
+    }
+
+    #[test]
+    fn python_drops_external_imports_keeps_internal() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("mypkg")).unwrap();
+        fs::write(dir.path().join("mypkg/__init__.py"), "").unwrap();
+        fs::write(
+            dir.path().join("mypkg/mod.py"),
+            "def inner():\n    return 1\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("app.py"),
+            "import os\nimport requests\nimport mypkg.mod\n\ndef main():\n    return mypkg.mod.inner()\n",
+        )
+        .unwrap();
+
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        let deps: Vec<&str> = result
+            .nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Dependency)
+            .map(|n| n.stable_id.as_str())
+            .collect();
+        assert!(!deps
+            .iter()
+            .any(|s| s.ends_with(":os") || s.contains("import:path:os")));
+        assert!(!deps.iter().any(|s| s.contains("requests")));
+        assert!(
+            deps.contains(&"import:path:mypkg/mod"),
+            "internal absolute import kept: {deps:?}"
+        );
+    }
+
+    #[test]
+    fn relative_imports_dedupe_to_one_node_per_target() {
+        // Different specifiers, same target: `src/a.ts` imports `./lib/utils`,
+        // `src/deep/b.ts` imports `../lib/utils` — both normalize to
+        // `src/lib/utils` and share one node.
+        assert_eq!(
+            normalize_relative_import("src/a.ts", "./lib/utils"),
+            "src/lib/utils"
+        );
+        assert_eq!(
+            normalize_relative_import("src/deep/b.ts", "../lib/utils"),
+            "src/lib/utils"
+        );
+        // Python: dots resolve against the package directory.
+        assert_eq!(
+            python_relative_target("pkg/sub/mod.py", ".util"),
+            "pkg/sub/util"
+        );
+        assert_eq!(
+            python_relative_target("pkg/sub/mod.py", "..core.db"),
+            "pkg/core/db"
+        );
+        assert_eq!(python_relative_target("top.py", ".x"), "x");
     }
 
     #[test]
@@ -2515,7 +4074,7 @@ def login(user):
         assert!(result
             .nodes
             .iter()
-            .any(|n| n.kind == NodeKind::Dependency && n.name == "./dep"));
+            .any(|n| n.kind == NodeKind::Dependency && n.stable_id == "import:path:dep"));
     }
 
     #[test]
@@ -2541,6 +4100,42 @@ def login(user):
         assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Calls
             && e.source_node_id == run.id
             && e.target_node_id == a_helper.id));
+    }
+
+    #[test]
+    fn ambiguous_global_callee_emits_no_call_edge() {
+        let dir = tempfile::tempdir().unwrap();
+        // `helper` is defined in two files; `caller.py` defines none locally,
+        // so the global fallback must NOT pick one arbitrarily.
+        fs::write(dir.path().join("a.py"), "def helper():\n    return 1\n").unwrap();
+        fs::write(dir.path().join("b.py"), "def helper():\n    return 2\n").unwrap();
+        fs::write(
+            dir.path().join("caller.py"),
+            "def run():\n    return helper()\ndef use_unique():\n    return unique_fn()\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("c.py"), "def unique_fn():\n    return 3\n").unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        let run = result.nodes.iter().find(|n| n.name == "run").unwrap();
+        assert!(
+            !result
+                .edges
+                .iter()
+                .any(|e| e.kind == EdgeKind::Calls && e.source_node_id == run.id),
+            "ambiguous callee must not resolve globally"
+        );
+        // A repo-unique name still resolves across files.
+        let user = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "use_unique")
+            .unwrap();
+        let unique = result.nodes.iter().find(|n| n.name == "unique_fn").unwrap();
+        assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Calls
+            && e.source_node_id == user.id
+            && e.target_node_id == unique.id));
     }
 
     #[test]
@@ -2620,5 +4215,291 @@ def login(user):
             .chunks
             .iter()
             .all(|chunk| chunk.metadata.get("parent_content_hash").is_some()));
+    }
+
+    #[test]
+    fn split_prefers_blank_line_boundaries() {
+        // Paragraphs of ~70-char lines; the only structural boundaries are the
+        // blank lines between them.
+        let paragraph = format!("{}\n{}\n", "x".repeat(70), "y".repeat(70));
+        let content = vec![paragraph; 40].join("\n");
+        let parts = split_content(&content, 1_000);
+        assert!(parts.len() > 1);
+        for part in &parts[..parts.len() - 1] {
+            // Every break lands after a completed paragraph, so no part ends
+            // mid-paragraph (its last line is a full paragraph line).
+            assert!(!part.content.ends_with('x') || part.content.ends_with(&"x".repeat(70)));
+        }
+        // Boundary-split parts must not be degenerate slivers.
+        assert!(parts
+            .iter()
+            .take(parts.len() - 1)
+            .all(|p| p.content.len() >= 400));
+    }
+
+    #[test]
+    fn split_prefers_dedent_boundaries_for_code() {
+        // Top-level "fn"-like blocks with indented bodies and no blank lines:
+        // the dedent back to column 0 is the only structural boundary.
+        let block = format!("fn item() {{\n    {}\n}}\n", "b".repeat(80));
+        let content = vec![block; 40].join("");
+        let parts = split_content(&content, 1_000);
+        assert!(parts.len() > 1);
+        for part in &parts[..parts.len() - 1] {
+            assert!(
+                part.content.ends_with('}'),
+                "part should end at a block boundary, got: …{:?}",
+                &part.content[part.content.len().saturating_sub(20)..]
+            );
+        }
+    }
+
+    #[test]
+    fn split_parts_carry_correct_line_ranges() {
+        let mut result = ExtractionResult::empty();
+        // Header (2 lines incl. blank) + 300 body lines starting at source line 10.
+        let body: Vec<String> = (0..300)
+            .map(|i| format!("line {i} {}", "z".repeat(40)))
+            .collect();
+        let content = format!("Documentation file: doc.md\n\n{}", body.join("\n"));
+        result.chunks.push(KnowledgeChunk {
+            id: Uuid::new_v4(),
+            repo_id: Uuid::new_v4(),
+            file_id: None,
+            node_id: None,
+            chunk_type: "documentation".into(),
+            content_hash: hash(&content),
+            content,
+            line_start: Some(10),
+            line_end: Some(309),
+            metadata: json!({"file": "doc.md"}),
+        });
+
+        split_large_chunks(&mut result);
+
+        assert!(result.chunks.len() > 1);
+        let first = &result.chunks[0];
+        assert_eq!(first.line_start, Some(10));
+        let mut prev_end = 0i32;
+        for chunk in &result.chunks {
+            let start = chunk.line_start.unwrap();
+            let end = chunk.line_end.unwrap();
+            assert!(
+                start >= 10 && end <= 309,
+                "range {start}-{end} outside parent"
+            );
+            assert!(end >= start);
+            assert!(
+                start > prev_end,
+                "parts must advance: {start} after {prev_end}"
+            );
+            prev_end = end;
+        }
+        assert_eq!(result.chunks.last().unwrap().line_end, Some(309));
+    }
+
+    #[test]
+    fn split_falls_back_to_char_cap_for_one_long_line() {
+        let parts = split_content(&"a".repeat(5_000), 1_000);
+        assert!(parts.len() >= 5);
+        assert!(parts.iter().all(|p| p.content.len() <= 1_000));
+        assert!(parts.iter().all(|p| p.line_offset == 0));
+    }
+
+    #[test]
+    fn rust_user_surface_nodes_are_extracted() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("main.rs"),
+            r#"
+use clap::{Parser, Subcommand};
+
+#[derive(Parser)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Index a repository.
+    Analyze { path: String },
+}
+
+fn main() {
+    let url = std::env::var("DATABASE_URL").unwrap();
+    let url2 = std::env::var("DATABASE_URL").unwrap();
+    let app = axum::Router::new().route("/health", get(health));
+}
+"#,
+        )
+        .unwrap();
+
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        let analyze = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::CliCommand && n.name == "analyze")
+            .expect("clap subcommand node");
+        assert_eq!(analyze.metadata["help"], "Index a repository.");
+        assert_eq!(analyze.metadata["framework"], "clap");
+
+        // Read twice, one node (per-file dedup by stable id).
+        let env_nodes: Vec<_> = result
+            .nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::EnvVar && n.name == "DATABASE_URL")
+            .collect();
+        assert_eq!(env_nodes.len(), 1);
+
+        let route = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::HttpRoute)
+            .expect("axum route node");
+        assert_eq!(route.name, "GET /health");
+
+        // Env reads attach via Configures, entrypoints via Defines.
+        assert!(result
+            .edges
+            .iter()
+            .any(|e| e.kind == EdgeKind::Configures && e.target_node_id == env_nodes[0].id));
+        assert!(result
+            .edges
+            .iter()
+            .any(|e| e.kind == EdgeKind::Defines && e.target_node_id == route.id));
+
+        // Each surface node carries a chunk typed by its kind.
+        assert!(result
+            .chunks
+            .iter()
+            .any(|c| c.chunk_type == "cli_command" && c.node_id == Some(analyze.id)));
+        assert!(result
+            .chunks
+            .iter()
+            .any(|c| c.chunk_type == "env_var" && c.node_id == Some(env_nodes[0].id)));
+    }
+
+    #[test]
+    fn js_user_surface_nodes_are_extracted() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("server.ts"),
+            r#"
+const port = process.env.PORT;
+const secret = process.env["API_SECRET"];
+
+app.get('/users/:id', (req, res) => res.json({}));
+fastify.post('/orders', handler);
+
+program.command('serve [options]').action(run);
+
+// Client-side calls must NOT register as routes.
+axios.get('/not-a-route');
+"#,
+        )
+        .unwrap();
+
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        let route_names: Vec<&str> = result
+            .nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::HttpRoute)
+            .map(|n| n.name.as_str())
+            .collect();
+        assert!(route_names.contains(&"GET /users/:id"));
+        assert!(route_names.contains(&"POST /orders"));
+        assert!(!route_names.iter().any(|n| n.contains("/not-a-route")));
+
+        let env_names: Vec<&str> = result
+            .nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::EnvVar)
+            .map(|n| n.name.as_str())
+            .collect();
+        assert!(env_names.contains(&"PORT"));
+        assert!(env_names.contains(&"API_SECRET"));
+
+        let serve = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::CliCommand)
+            .expect("commander command node");
+        assert_eq!(serve.name, "serve");
+    }
+
+    #[test]
+    fn python_user_surface_nodes_are_extracted() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("service.py"),
+            r#"
+import os
+import click
+
+token = os.environ["TOKEN"]
+port = os.getenv("PORT")
+host = os.environ.get("HOST")
+
+@app.get("/items")
+async def list_items():
+    return []
+
+@app.route("/legacy", methods=["GET", "POST"])
+def legacy():
+    return ""
+
+@cli.command()
+def sync_data():
+    pass
+
+def build_cli(subparsers):
+    subparsers.add_parser("run", help="Run the worker.")
+"#,
+        )
+        .unwrap();
+
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        let env_names: Vec<&str> = result
+            .nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::EnvVar)
+            .map(|n| n.name.as_str())
+            .collect();
+        assert!(env_names.contains(&"TOKEN"));
+        assert!(env_names.contains(&"PORT"));
+        assert!(env_names.contains(&"HOST"));
+
+        let route_names: Vec<&str> = result
+            .nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::HttpRoute)
+            .map(|n| n.name.as_str())
+            .collect();
+        assert!(route_names.contains(&"GET /items"));
+        assert!(route_names.contains(&"GET|POST /legacy"));
+
+        let cli_names: Vec<&str> = result
+            .nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::CliCommand)
+            .map(|n| n.name.as_str())
+            .collect();
+        // click renames underscores to hyphens; argparse keeps the literal name.
+        assert!(cli_names.contains(&"sync-data"));
+        assert!(cli_names.contains(&"run"));
+
+        let run = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::CliCommand && n.name == "run")
+            .unwrap();
+        assert_eq!(run.metadata["help"], "Run the worker.");
     }
 }

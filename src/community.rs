@@ -14,6 +14,12 @@
 //! `stable_id` order and ties break toward the smallest community
 //! representative. Same `(nodes, edges, config)` ⇒ byte-identical partition.
 //!
+//! A post-Louvain **consolidation pass** ([`consolidate_tiny_communities`])
+//! then folds sub-threshold fragments (< [`MIN_COMMUNITY_SIZE`] members) into
+//! real communities — connected fragments into their folder-preferred
+//! best-coupled neighbor, isolated nodes into the folder-dominant community —
+//! so the persisted L1 layer is features, not per-file confetti.
+//!
 //! # Determinism contract
 //!
 //! - No RNG anywhere (the roadmap forbids unseeded RNG; we go further and use a
@@ -39,7 +45,10 @@ use uuid::Uuid;
 
 /// Detection algorithm/version recorded in `communities.detection_params`, so a
 /// future tuning change is visible and re-detect can be forced.
-pub const DETECTION_VERSION: i64 = 1;
+/// v2: post-Louvain consolidation of tiny communities (fragments merge into
+/// their folder-preferred best-connected neighbor; isolates fold into the
+/// folder-dominant community).
+pub const DETECTION_VERSION: i64 = 2;
 
 /// Fixed namespace for deterministic community UUIDv5 derivation. Generated
 /// once and pinned; must never change or community ids would churn.
@@ -55,6 +64,14 @@ const MAX_LEVELS: usize = 32;
 const MAX_PASSES_PER_LEVEL: usize = 64;
 /// Default number of representative members surfaced per community.
 const TOP_MEMBERS: usize = 8;
+/// Communities below this size are merge candidates in the consolidation
+/// pass. One source file typically yields a handful of nodes (file node +
+/// symbols), so a community of fewer than 4 members is "less than one
+/// substantive file" — a fragment, not a feature. Real two-file features
+/// stay untouched.
+const MIN_COMMUNITY_SIZE: usize = 4;
+/// Fixpoint cap for the consolidation pass (converges in 1-2 in practice).
+const MAX_MERGE_PASSES: usize = 8;
 
 /// Tuning for [`detect_communities`].
 #[derive(Debug, Clone)]
@@ -120,6 +137,8 @@ pub struct CommunityDetection {
     /// match). Useful for the spike's sanity reporting.
     pub node_count: usize,
     pub edge_count: usize,
+    /// Tiny communities folded into a neighbor by the consolidation pass.
+    pub merged_fragments: usize,
 }
 
 /// Coupling weight for an L0 edge: stronger structural edges (low `cost`, high
@@ -157,6 +176,10 @@ pub async fn detect_and_persist(
         "version": DETECTION_VERSION,
         "levels": detection.levels,
         "modularity": detection.modularity,
+        "merge": {
+            "min_size": MIN_COMMUNITY_SIZE,
+            "merged": detection.merged_fragments,
+        },
     });
     storage
         .replace_communities(repo_id, &detection, &params)
@@ -168,7 +191,9 @@ pub async fn detect_and_persist(
 /// `Cargo.toml`), as opposed to a real code symbol or a source-level import. These
 /// carry no feature signal on their own, so they're excluded from community
 /// formation (but kept in the graph for search). Source imports use
-/// `import:bare:…` / `…:import:…` stable_ids and are NOT matched here.
+/// `import:bare:…` / `import:path:…` / `import:alias:…` / `import:rust:…`
+/// stable_ids (deduped repo-wide, externals dropped at extraction) and are NOT
+/// matched here — files importing the same internal module ARE coupled.
 fn is_manifest_dependency(node: &KnowledgeNode) -> bool {
     node.kind == crate::models::NodeKind::Dependency
         && (node.stable_id.contains(":npm:dependency:")
@@ -211,6 +236,7 @@ pub fn detect_communities(
             resolution: config.resolution,
             node_count: 0,
             edge_count: 0,
+            merged_fragments: 0,
         };
     }
 
@@ -266,6 +292,14 @@ pub fn detect_communities(
 
     // 4. Compact community labels to 0..k by first appearance (canonical order).
     let compact = compact_labels(&node_to_comm);
+
+    // 4b. Consolidate tiny communities. Louvain can never merge zero-edge
+    //     nodes, so every isolated node (a file whose only edge was `contains`
+    //     from the excluded repository node) becomes its own singleton, and
+    //     weakly-coupled fragments shatter into sub-file-sized "features".
+    //     A deterministic merge pass folds them into real communities.
+    let (compact, merged_fragments) = consolidate_tiny_communities(&indexed, &pair_weight, compact);
+    let compact = compact_labels(&compact);
     let k = distinct_count(&compact);
 
     // 5. Gather members per community.
@@ -304,7 +338,188 @@ pub fn detect_communities(
         resolution: config.resolution,
         node_count: n,
         edge_count: considered_edges,
+        merged_fragments,
     }
+}
+
+/// Fold sub-threshold communities into real ones, deterministically:
+///
+/// - **Connected fragments** merge into a neighboring community chosen
+///   folder-first: among quotient neighbors, prefer those with members in the
+///   fragment's dominant directory, then the highest summed coupling weight,
+///   then the smallest min-member `stable_id`. Fragment-into-fragment is
+///   allowed (fragments coalesce and may cross the threshold).
+/// - **Isolates** (no cross-community weight at all) fold into the community
+///   with the most members under the isolate's directory ancestry, walked
+///   deepest-first; the target must itself be at/above the size threshold.
+/// - Isolates with no folder match anywhere stay singletons — every feature
+///   surface already filters them out via `member_count >= 2`.
+///
+/// Candidates are visited in canonical order (ascending min-member
+/// `stable_id`) and merges apply immediately, so the result is a pure
+/// function of the input partition. Returns the new labels and how many
+/// communities were folded.
+fn consolidate_tiny_communities(
+    indexed: &[&KnowledgeNode],
+    pair_weight: &HashMap<(usize, usize), f64>,
+    mut labels: Vec<usize>,
+) -> (Vec<usize>, usize) {
+    let n = labels.len();
+    // Sorted adjacency so float summation order is deterministic.
+    let mut adj: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
+    for (&(a, b), &w) in pair_weight {
+        adj[a].push((b, w));
+        adj[b].push((a, w));
+    }
+    for list in &mut adj {
+        list.sort_by(|x, y| x.0.cmp(&y.0));
+    }
+
+    // The repo-relative path a member contributes to folder votes.
+    let member_path = |i: usize| -> &str {
+        let sid = indexed[i].stable_id.as_str();
+        sid.strip_prefix("file:")
+            .unwrap_or_else(|| sid.split(':').next().unwrap_or(""))
+    };
+    fn parent_dir(path: &str) -> &str {
+        match path.rfind('/') {
+            Some(pos) => &path[..pos],
+            None => "",
+        }
+    }
+
+    let mut merged_total = 0usize;
+    for _ in 0..MAX_MERGE_PASSES {
+        // Snapshot this pass's candidates in canonical order.
+        let mut min_sid_by_label: BTreeMap<usize, &str> = BTreeMap::new();
+        let mut size_by_label: BTreeMap<usize, usize> = BTreeMap::new();
+        for (i, &l) in labels.iter().enumerate() {
+            *size_by_label.entry(l).or_insert(0) += 1;
+            let sid = indexed[i].stable_id.as_str();
+            min_sid_by_label
+                .entry(l)
+                .and_modify(|m| {
+                    if sid < *m {
+                        *m = sid;
+                    }
+                })
+                .or_insert(sid);
+        }
+        let mut candidates: Vec<usize> = size_by_label
+            .iter()
+            .filter(|(_, &size)| size < MIN_COMMUNITY_SIZE)
+            .map(|(&l, _)| l)
+            .collect();
+        candidates.sort_by_key(|l| min_sid_by_label[l]);
+
+        let mut merged_this_pass = 0usize;
+        for label in candidates {
+            // Re-read current membership: an earlier merge this pass may have
+            // grown this community past the threshold (or emptied it).
+            let members: Vec<usize> = (0..n).filter(|&i| labels[i] == label).collect();
+            if members.is_empty() || members.len() >= MIN_COMMUNITY_SIZE {
+                continue;
+            }
+
+            // Dominant directory of the fragment (most members, ties to the
+            // lexicographically smallest non-empty dir).
+            let mut dir_votes: BTreeMap<&str, usize> = BTreeMap::new();
+            for &i in &members {
+                let dir = parent_dir(member_path(i));
+                if !dir.is_empty() {
+                    *dir_votes.entry(dir).or_insert(0) += 1;
+                }
+            }
+            let dominant_dir: Option<&str> = dir_votes
+                .iter()
+                .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
+                .map(|(dir, _)| *dir);
+
+            // Summed coupling weight to every neighboring community.
+            let mut weight_by_label: BTreeMap<usize, f64> = BTreeMap::new();
+            for &i in &members {
+                for &(j, w) in &adj[i] {
+                    if labels[j] != label {
+                        *weight_by_label.entry(labels[j]).or_insert(0.0) += w;
+                    }
+                }
+            }
+
+            let current_min_sid = |labels: &[usize], l: usize| -> &str {
+                (0..n)
+                    .filter(|&i| labels[i] == l)
+                    .map(|i| indexed[i].stable_id.as_str())
+                    .min()
+                    .unwrap_or("")
+            };
+
+            let target: Option<usize> = if !weight_by_label.is_empty() {
+                // Connected fragment: folder-first, then weight, then min sid.
+                let shares_folder = |l: usize| -> bool {
+                    let Some(dir) = dominant_dir else {
+                        return false;
+                    };
+                    (0..n).any(|i| labels[i] == l && parent_dir(member_path(i)) == dir)
+                };
+                weight_by_label
+                    .iter()
+                    .map(|(&l, &w)| (shares_folder(l), w, l))
+                    .max_by(|a, b| {
+                        a.0.cmp(&b.0)
+                            .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                            .then_with(|| {
+                                // Smaller min stable_id wins, so invert for max_by.
+                                current_min_sid(&labels, b.2).cmp(current_min_sid(&labels, a.2))
+                            })
+                    })
+                    .map(|(_, _, l)| l)
+            } else {
+                // Isolate: deepest folder ancestor with a real community.
+                let mut found = None;
+                let mut ancestor = dominant_dir.unwrap_or("");
+                while !ancestor.is_empty() && found.is_none() {
+                    let prefix = format!("{ancestor}/");
+                    let mut votes: BTreeMap<usize, usize> = BTreeMap::new();
+                    for (i, &l) in labels.iter().enumerate() {
+                        if l == label {
+                            continue;
+                        }
+                        let path = member_path(i);
+                        if path.starts_with(&prefix) || parent_dir(path) == ancestor {
+                            *votes.entry(l).or_insert(0) += 1;
+                        }
+                    }
+                    found = votes
+                        .iter()
+                        .filter(|(&l, _)| {
+                            (0..n).filter(|&i| labels[i] == l).count() >= MIN_COMMUNITY_SIZE
+                        })
+                        .map(|(&l, &count)| (count, l))
+                        .max_by(|a, b| {
+                            a.0.cmp(&b.0).then_with(|| {
+                                current_min_sid(&labels, b.1).cmp(current_min_sid(&labels, a.1))
+                            })
+                        })
+                        .map(|(_, l)| l);
+                    ancestor = parent_dir(ancestor);
+                }
+                found
+            };
+
+            if let Some(target) = target {
+                for &i in &members {
+                    labels[i] = target;
+                }
+                merged_this_pass += 1;
+            }
+        }
+
+        merged_total += merged_this_pass;
+        if merged_this_pass == 0 {
+            break;
+        }
+    }
+    (labels, merged_total)
 }
 
 /// Per-community assembly: deterministic id, label, members, language mix,
@@ -840,16 +1055,17 @@ mod tests {
     /// Quotient edges aggregate typed cross-community edges.
     #[test]
     fn quotient_edges_aggregate_by_pair() {
-        // Two clusters joined by 3 cross edges (2 calls, 1 depends_on).
+        // Two clusters (each ≥ MIN_COMMUNITY_SIZE so the consolidation pass
+        // leaves them alone) joined by 3 cross edges (2 calls, 1 depends_on).
         let mut nodes = Vec::new();
-        for m in 0..3 {
+        for m in 0..4 {
             nodes.push(node(
                 &format!("a/f{m}:function:a{m}"),
                 NodeKind::Function,
                 "rust",
             ));
         }
-        for m in 0..3 {
+        for m in 0..4 {
             nodes.push(node(
                 &format!("b/f{m}:function:b{m}"),
                 NodeKind::Function,
@@ -857,12 +1073,12 @@ mod tests {
             ));
         }
         let mut edges = Vec::new();
-        for a in 0..3 {
-            for b in (a + 1)..3 {
+        for a in 0..4 {
+            for b in (a + 1)..4 {
                 edges.push(edge(nodes[a].id, nodes[b].id, EdgeKind::Calls, 0.1, 1.0));
                 edges.push(edge(
-                    nodes[3 + a].id,
-                    nodes[3 + b].id,
+                    nodes[4 + a].id,
+                    nodes[4 + b].id,
                     EdgeKind::Calls,
                     0.1,
                     1.0,
@@ -870,11 +1086,11 @@ mod tests {
             }
         }
         // cross edges
-        edges.push(edge(nodes[0].id, nodes[3].id, EdgeKind::Calls, 0.35, 0.7));
-        edges.push(edge(nodes[1].id, nodes[4].id, EdgeKind::Calls, 0.35, 0.7));
+        edges.push(edge(nodes[0].id, nodes[4].id, EdgeKind::Calls, 0.35, 0.7));
+        edges.push(edge(nodes[1].id, nodes[5].id, EdgeKind::Calls, 0.35, 0.7));
         edges.push(edge(
             nodes[2].id,
-            nodes[5].id,
+            nodes[6].id,
             EdgeKind::DependsOn,
             0.2,
             1.0,
@@ -886,6 +1102,154 @@ mod tests {
         let qe = &det.quotient_edges[0];
         assert_eq!(qe.edge_count, 3);
         assert_eq!(qe.kind, "calls"); // 2 calls vs 1 depends_on
+    }
+
+    /// A 2-node fragment with a weak cross edge to a 4-node clique: Louvain
+    /// separates them, the consolidation pass folds the fragment in.
+    #[test]
+    fn merges_connected_fragment_into_best_neighbor() {
+        let mut nodes = Vec::new();
+        for m in 0..4 {
+            nodes.push(node(
+                &format!("core/file{m}:function:f{m}"),
+                NodeKind::Function,
+                "rust",
+            ));
+        }
+        nodes.push(node("core/frag0:function:g0", NodeKind::Function, "rust"));
+        nodes.push(node("core/frag1:function:g1", NodeKind::Function, "rust"));
+        let mut edges = Vec::new();
+        for a in 0..4 {
+            for b in (a + 1)..4 {
+                edges.push(edge(nodes[a].id, nodes[b].id, EdgeKind::Calls, 0.1, 1.0));
+            }
+        }
+        edges.push(edge(nodes[4].id, nodes[5].id, EdgeKind::Calls, 0.1, 1.0));
+        // One weak cross edge linking the fragment to the clique.
+        edges.push(edge(nodes[0].id, nodes[4].id, EdgeKind::Calls, 0.35, 0.7));
+
+        let det = detect_communities(Uuid::nil(), &nodes, &edges, &CommunityConfig::default());
+        assert_eq!(det.communities.len(), 1, "fragment absorbed into clique");
+        assert_eq!(det.communities[0].size, 6);
+        assert!(det.merged_fragments >= 1);
+    }
+
+    /// An edge-less node under the same folder as a real community is folded
+    /// into it (Louvain alone can never merge a zero-edge node).
+    #[test]
+    fn isolate_folds_into_folder_dominant_community() {
+        let mut nodes = Vec::new();
+        for m in 0..4 {
+            nodes.push(node(
+                &format!("grp0/file{m}:function:f{m}"),
+                NodeKind::Function,
+                "rust",
+            ));
+        }
+        nodes.push(node(
+            "grp0/lonely:function:alone",
+            NodeKind::Function,
+            "rust",
+        ));
+        let mut edges = Vec::new();
+        for a in 0..4 {
+            for b in (a + 1)..4 {
+                edges.push(edge(nodes[a].id, nodes[b].id, EdgeKind::Calls, 0.1, 1.0));
+            }
+        }
+
+        let det = detect_communities(Uuid::nil(), &nodes, &edges, &CommunityConfig::default());
+        assert_eq!(det.communities.len(), 1, "isolate folded into folder peer");
+        assert_eq!(det.communities[0].size, 5);
+    }
+
+    /// An isolate with no folder relative anywhere stays a singleton (the
+    /// feature surfaces already filter `member_count >= 2`).
+    #[test]
+    fn isolate_without_folder_match_stays_singleton() {
+        let mut nodes = Vec::new();
+        for m in 0..4 {
+            nodes.push(node(
+                &format!("grp0/file{m}:function:f{m}"),
+                NodeKind::Function,
+                "rust",
+            ));
+        }
+        nodes.push(node(
+            "elsewhere/lonely:function:alone",
+            NodeKind::Function,
+            "rust",
+        ));
+        let mut edges = Vec::new();
+        for a in 0..4 {
+            for b in (a + 1)..4 {
+                edges.push(edge(nodes[a].id, nodes[b].id, EdgeKind::Calls, 0.1, 1.0));
+            }
+        }
+
+        let det = detect_communities(Uuid::nil(), &nodes, &edges, &CommunityConfig::default());
+        assert_eq!(det.communities.len(), 2);
+        let sizes: Vec<usize> = det.communities.iter().map(|c| c.size).collect();
+        assert!(sizes.contains(&4) && sizes.contains(&1));
+    }
+
+    /// Consolidation keeps the byte-identical determinism contract on a
+    /// fragment-heavy graph (singletons + fragments + real communities).
+    #[test]
+    fn consolidation_is_deterministic() {
+        let mut nodes = Vec::new();
+        for c in 0..3 {
+            for m in 0..4 {
+                nodes.push(node(
+                    &format!("grp{c}/file{m}:function:f{c}_{m}"),
+                    NodeKind::Function,
+                    "rust",
+                ));
+            }
+        }
+        // Fragments and isolates scattered across the same folders.
+        for c in 0..3 {
+            nodes.push(node(
+                &format!("grp{c}/iso:function:iso{c}"),
+                NodeKind::Function,
+                "rust",
+            ));
+        }
+        nodes.push(node("frag/x0:function:x0", NodeKind::Function, "rust"));
+        nodes.push(node("frag/x1:function:x1", NodeKind::Function, "rust"));
+        let mut edges = Vec::new();
+        for c in 0..3usize {
+            for a in 0..4 {
+                for b in (a + 1)..4 {
+                    edges.push(edge(
+                        nodes[c * 4 + a].id,
+                        nodes[c * 4 + b].id,
+                        EdgeKind::Calls,
+                        0.1,
+                        1.0,
+                    ));
+                }
+            }
+        }
+        let x0 = nodes.len() - 2;
+        edges.push(edge(
+            nodes[x0].id,
+            nodes[x0 + 1].id,
+            EdgeKind::Calls,
+            0.1,
+            1.0,
+        ));
+        edges.push(edge(nodes[0].id, nodes[x0].id, EdgeKind::Calls, 0.35, 0.7));
+
+        let cfg = CommunityConfig::default();
+        let a = detect_communities(Uuid::nil(), &nodes, &edges, &cfg);
+        let b = detect_communities(Uuid::nil(), &nodes, &edges, &cfg);
+        assert_eq!(
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&b).unwrap(),
+            "consolidated detection must be byte-identical across runs"
+        );
+        assert!(a.merged_fragments >= 1);
     }
 
     /// A single *file* whose symbols couple to different clusters lands in

@@ -14,8 +14,20 @@ You install everything else below; you only need these two first:
 
 - **Docker** — runs the bundled Postgres + pgvector. Install Docker Desktop (macOS/Windows)
   or Docker Engine (Linux), and confirm `docker compose version` works.
+
+  ```bash
+  # macOS:
+  brew install --cask docker        # or download Docker Desktop from docker.com
+  # Linux: Docker Engine + the compose plugin —
+  #   https://docs.docker.com/engine/install/
+  docker compose version            # verify
+  ```
+
 - **Claude Code CLI** — the `claude` command. See the Claude Code install docs; confirm
   `claude --version` works.
+
+> Using **Codex** instead of Claude Code? Steps 0–3 are identical (you need the `codex` CLI
+> instead of `claude`); step 4 has a Codex variant inline below.
 
 ## 1. Install Rust
 
@@ -63,7 +75,7 @@ reachable — analysis is **fail-closed** and will not fabricate vectors.
 
 ## 4. Install the plugin in Claude Code
 
-The plugin bundles the skill, the eighteen MCP tools, and the tool-use hooks together.
+The plugin bundles the skill, the nineteen MCP tools, and the tool-use hooks together.
 
 For local testing, launch Claude Code pointed at this checkout:
 
@@ -78,7 +90,7 @@ install `chaos-substrate` from the `/plugin` UI. Full marketplace and Cowork-zip
 Inside Claude Code, verify the plugin loaded:
 
 - The skill is available as `/chaos-substrate:chaos-substrate`.
-- The eighteen MCP tools are listed: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_query`,
+- The nineteen MCP tools are listed: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_pages`, `chaos_query`,
   `chaos_feature_context`, `chaos_impact`, `chaos_write_feature_website`, `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_project`, `chaos_help`, `chaos_clean`, `chaos_graph`.
 - The hooks inject code-memory context on `Grep` / `Glob` / `Bash` (safe no-op if the DB or
   index is unavailable).
@@ -86,6 +98,27 @@ Inside Claude Code, verify the plugin loaded:
 > **MCP server only?** If you want the tools without the plugin, skip this step and run
 > `bin/chaos claude-code-add local` (or `claude-code-add project /abs/path/to/repo`
 > for a shareable `.mcp.json`). Per-editor details: [EDITOR_SETUP.md](EDITOR_SETUP.md).
+
+### Codex variant
+
+Codex loads the same repository as a plugin from its bundled marketplace
+(`.agents/plugins/marketplace.json`):
+
+```bash
+codex plugin marketplace add /absolute/path/to/chaos-substrate
+codex plugin marketplace list
+```
+
+Then restart Codex and enable `chaos-substrate` from the plugin UI. For the MCP server only
+(no plugin):
+
+```bash
+codex mcp add chaos-substrate -- /absolute/path/to/chaos-substrate/target/release/chaos \
+  --config /absolute/path/to/chaos-substrate/chaos-substrate.toml mcp
+```
+
+The rest of this guide (indexing, feature pages) works the same — ask Codex instead of Claude
+Code. Full plugin flow: [PLUGIN_INSTALL.md](PLUGIN_INSTALL.md).
 
 ## 5. Index your repository
 
@@ -185,4 +218,4 @@ Deeper references:
 - [EDITOR_SETUP.md](EDITOR_SETUP.md) — canonical per-editor MCP registration.
 - [CLAUDE_MCP_INSTALL.md](CLAUDE_MCP_INSTALL.md) — Claude Desktop config and a longer MCP walkthrough.
 - [PLUGIN_INSTALL.md](PLUGIN_INSTALL.md) — plugin package, marketplace, and Cowork zip.
-- README → [MCP Tools](../README.md#mcp-tools) — the eighteen-tool reference.
+- README → [MCP Tools](../README.md#mcp-tools) — the nineteen-tool reference.
