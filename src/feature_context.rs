@@ -556,13 +556,21 @@ pub fn correlate_feature_manifests(
 
 /// Build the artifact-level breadcrumbs for a feature-context / impact response:
 /// how the evidence was retrieved (the hybrid Postgres pipeline, with a
-/// per-method hit breakdown) and how many prior manifests were scanned/matched.
+/// per-channel breakdown) and how many prior manifests were scanned/matched.
+///
+/// The channel counts are **per-channel contributions, not a partition of the
+/// hits**: fusion unions every channel that found a chunk onto one hit
+/// (`union_retrieved_into`), so a hit matched by two channels is counted in
+/// both, and the `subject`-recall channel (files named after the query) is a
+/// real channel too. The counts therefore overlap and need not sum to the hit
+/// total — the label says so, and every channel that produced a hit is shown so
+/// none (notably `subject`) is silently dropped from the provenance story.
 pub fn feature_context_provenance(
     postgres: &QueryResponse,
     features_dir: &Path,
     feature_matches: &[FeatureMatch],
 ) -> Vec<Breadcrumb> {
-    let (mut semantic, mut keyword, mut literal) = (0usize, 0usize, 0usize);
+    let (mut semantic, mut keyword, mut literal, mut subject) = (0usize, 0usize, 0usize, 0usize);
     for hit in &postgres.hits {
         if let Some(methods) = hit.metadata.get("retrieved_by").and_then(|v| v.as_array()) {
             for method in methods {
@@ -570,6 +578,7 @@ pub fn feature_context_provenance(
                     Some("semantic") => semantic += 1,
                     Some("keyword") => keyword += 1,
                     Some("literal") => literal += 1,
+                    Some("subject") => subject += 1,
                     _ => {}
                 }
             }
@@ -580,7 +589,7 @@ pub fn feature_context_provenance(
             source::POSTGRES,
             "query_feature_context_repo",
             format!(
-                "hybrid retrieval over pgvector chunks → {} hit(s) (semantic {semantic}, keyword {keyword}, literal {literal})",
+                "hybrid retrieval over pgvector chunks → {} hit(s) (by channel, overlapping: semantic {semantic}, keyword {keyword}, literal {literal}, subject {subject})",
                 postgres.hits.len()
             ),
         ),
@@ -824,5 +833,48 @@ mod tests {
         let matches = load_feature_matches("OCL", dir.path(), 3, 8).unwrap();
 
         assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn retrieval_breadcrumb_counts_every_channel_and_is_honest_about_overlap() {
+        use crate::models::SearchHit;
+        use crate::query::QueryResponse;
+        use uuid::Uuid;
+
+        fn hit(methods: &[&str]) -> SearchHit {
+            SearchHit {
+                chunk_id: Uuid::nil(),
+                node_id: None,
+                file_path: Some("src/lab.rs".to_string()),
+                line_start: None,
+                line_end: None,
+                score: 0.5,
+                content: String::new(),
+                metadata: json!({ "retrieved_by": methods }),
+            }
+        }
+
+        // Mirrors the real molecule_core report that exposed the bug: 4 hits
+        // matched by both semantic+keyword, 1 by semantic only, 5 by subject only.
+        let mut hits = vec![hit(&["semantic", "keyword"]); 4];
+        hits.push(hit(&["semantic"]));
+        hits.extend(std::iter::repeat_with(|| hit(&["subject"])).take(5));
+        let postgres = QueryResponse {
+            hits,
+            context_paths: Vec::new(),
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let crumbs = super::feature_context_provenance(&postgres, dir.path(), &[]);
+        let detail = &crumbs[0].detail;
+
+        // Per-channel contributions, including the subject channel that used to
+        // be silently dropped; they overlap and need not sum to the hit total.
+        assert!(detail.contains("10 hit(s)"), "{detail}");
+        assert!(detail.contains("semantic 5"), "{detail}");
+        assert!(detail.contains("keyword 4"), "{detail}");
+        assert!(detail.contains("literal 0"), "{detail}");
+        assert!(detail.contains("subject 5"), "{detail}");
+        assert!(detail.contains("overlapping"), "{detail}");
     }
 }
