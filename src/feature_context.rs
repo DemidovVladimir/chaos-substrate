@@ -671,6 +671,10 @@ main{padding:48px 0 0;display:block}
 .tag{display:inline-flex;border:var(--border-hairline);border-radius:var(--radius-pill);padding:3px 9px;margin-right:8px;font:var(--type-overline-sm);font-family:var(--font-mono);font-weight:500;color:var(--color-ink-500);background:var(--color-surface-2);text-transform:uppercase;letter-spacing:.06em}
 .tag.doc{color:var(--color-blue-700);background:var(--color-blue-100);border-color:var(--color-blue-300)}
 pre{margin:12px 0 0;padding:14px;border-radius:var(--radius-md);background:var(--color-ink-900);color:var(--color-blue-100);overflow:auto;font:var(--type-body-xs);font-family:var(--font-mono);line-height:1.55;border:var(--border-hairline);max-height:360px}
+.rel{display:inline-flex;align-items:center;gap:6px;vertical-align:middle;cursor:help}
+.rel .relbar{display:inline-block;width:64px;height:6px;border-radius:var(--radius-pill);background:var(--color-surface-3);overflow:hidden;border:var(--border-hairline)}
+.rel .relbar>i{display:block;height:100%;background:var(--color-blue-500);border-radius:var(--radius-pill)}
+.rel .relnum{font-family:var(--font-mono);font-weight:500;color:var(--fg-secondary)}
 @media(max-width:1000px){.grid{grid-template-columns:1fr}}
 </style>
 </head>
@@ -704,12 +708,18 @@ function esc(v){return String(v??"").replaceAll("&","&amp;").replaceAll("<","&lt
 function isDoc(h){return h?.metadata?.source_priority==="supplemental"||h?.metadata?.kind==="documentation"}
 function sourceTag(h){return isDoc(h)?'<span class="tag doc">docs</span>':'<span class="tag">code</span>'}
 function retrievedTags(h){return ((h?.metadata?.retrieved_by)||[]).map(m=>`<span class="tag">${esc(m)}</span>`).join("")}
+const TOP_SCORE=Math.max(1e-9,...((data.postgres?.hits)||[]).map(h=>+h.score||0));
+/* The raw number is a hybrid-retrieval FUSION score (a weighted sum of
+   normalized semantic+keyword+literal channel scores) — unbounded and not a
+   percentage. Show it instead as relevance RELATIVE to this query's strongest
+   hit, so hits are comparable to each other; keep the raw value in the tooltip. */
+function relevance(h){const s=+h.score||0;const pct=Math.max(0,Math.min(100,Math.round(s/TOP_SCORE*100)));return `<span class="rel" title="Relative to this query's strongest hit (=100%). Raw hybrid-retrieval fusion score: ${s.toFixed(2)} — a weighted sum of the semantic, keyword and literal channels (unbounded; higher = a stronger match).">relevance <span class="relbar"><i style="width:${pct}%"></i></span><span class="relnum">${pct}%</span></span>`}
 function crumbList(list){if(!list||!list.length)return '<div class="meta">No breadcrumbs recorded.</div>';return list.map(c=>`<div class="item"><strong>${esc(c.source)}</strong> <span class="tag">${esc(c.method)}</span><div class="meta">${esc(c.detail)}${c.locator?' &middot; <code>'+esc(c.locator)+'</code>':''}</div></div>`).join("")}
 document.getElementById("task").textContent=data.task;
 document.getElementById("provenance").innerHTML=crumbList(data.provenance);
 const features=document.getElementById("features");
 if(!data.feature_matches.length){features.innerHTML='<div class="meta">No generated feature manifests matched. Use Postgres hits below as starting context.</div>'}
-data.feature_matches.forEach(f=>{const el=document.createElement("div");el.className="item";el.innerHTML=`<strong>${esc(f.feature?.title||f.title)}</strong><div class="meta">${esc(f.feature?.domain)} | score ${f.score} | ${esc(f.page)}</div><div class="meta">${(f.provenance||[]).map(c=>`<span class="tag">${esc(c.source)}</span>`).join("")}</div><div>${(f.modes||[]).map(m=>`<span class="pill">${esc(m.title)}</span>`).join("")}</div><h2 style="margin-top:14px">Claims</h2>${(f.claims||[]).map(c=>`<div class="item claim"><strong>${esc(c.title)}</strong><div>${esc(c.body)}</div><div class="meta">confidence ${Math.round((c.confidence||0)*100)}%</div></div>`).join("")}`;features.appendChild(el)});
+data.feature_matches.forEach(f=>{const el=document.createElement("div");el.className="item";el.innerHTML=`<strong>${esc(f.feature?.title||f.title)}</strong><div class="meta">${esc(f.feature?.domain)} | matched by ${f.score} shared term${f.score==1?"":"s"} | ${esc(f.page)}</div><div class="meta">${(f.provenance||[]).map(c=>`<span class="tag">${esc(c.source)}</span>`).join("")}</div><div>${(f.modes||[]).map(m=>`<span class="pill">${esc(m.title)}</span>`).join("")}</div><h2 style="margin-top:14px">Claims</h2>${(f.claims||[]).map(c=>`<div class="item claim"><strong>${esc(c.title)}</strong><div>${esc(c.body)}</div><div class="meta">confidence ${Math.round((c.confidence||0)*100)}%</div></div>`).join("")}`;features.appendChild(el)});
 const nodes=document.getElementById("nodes");
 data.feature_matches.flatMap(f=>f.matched_nodes||[]).forEach(n=>{const el=document.createElement("div");el.className="item";el.innerHTML=`<strong>${esc(n.label)}</strong><div>${esc(n.role)}</div><div class="meta">${esc(n.file)} | lines ${esc(n.lines)} | confidence ${Math.round((n.confidence||0)*100)}%</div><pre><code>${esc(n.code)}</code></pre>`;nodes.appendChild(el)});
 if(!nodes.children.length){nodes.innerHTML='<div class="meta">No feature-manifest nodes matched.</div>'}
@@ -717,10 +727,10 @@ const warnings=document.getElementById("warnings");
 (data.warnings||[]).forEach(w=>{const el=document.createElement("div");el.className="item doc";el.innerHTML=`<strong>Context warning</strong><div>${esc(w)}</div>`;warnings.appendChild(el)});
 if(!warnings.children.length){warnings.innerHTML='<div class="meta">No stale-index or missing-doc warnings detected.</div>'}
 const docs=document.getElementById("docs");
-(data.postgres?.hits||[]).filter(isDoc).forEach(h=>{const el=document.createElement("div");el.className="item doc";el.innerHTML=`<strong>${esc(h.file_path||"documentation")}</strong><div class="meta">${sourceTag(h)}${retrievedTags(h)} lines ${esc(h.line_start)}-${esc(h.line_end)} | score ${(h.score||0).toFixed(3)}</div><pre><code>${esc(h.content)}</code></pre>`;docs.appendChild(el)});
+(data.postgres?.hits||[]).filter(isDoc).forEach(h=>{const el=document.createElement("div");el.className="item doc";el.innerHTML=`<strong>${esc(h.file_path||"documentation")}</strong><div class="meta">${sourceTag(h)}${retrievedTags(h)} lines ${esc(h.line_start)}-${esc(h.line_end)} | ${relevance(h)}</div><pre><code>${esc(h.content)}</code></pre>`;docs.appendChild(el)});
 if(!docs.children.length){docs.innerHTML='<div class="meta">No matching docs were returned for this query. Re-index after adding Markdown/MDX docs, or raise --limit if the task is very code-specific.</div>'}
 const hits=document.getElementById("hits");
-(data.postgres?.hits||[]).forEach(h=>{const el=document.createElement("div");el.className=`item ${isDoc(h)?"doc":""}`;el.innerHTML=`<strong>${esc(h.file_path||"unknown file")}</strong><div class="meta">${sourceTag(h)}${retrievedTags(h)} lines ${esc(h.line_start)}-${esc(h.line_end)} | score ${(h.score||0).toFixed(3)}</div><pre><code>${esc(h.content)}</code></pre>`;hits.appendChild(el)});
+(data.postgres?.hits||[]).forEach(h=>{const el=document.createElement("div");el.className=`item ${isDoc(h)?"doc":""}`;el.innerHTML=`<strong>${esc(h.file_path||"unknown file")}</strong><div class="meta">${sourceTag(h)}${retrievedTags(h)} lines ${esc(h.line_start)}-${esc(h.line_end)} | ${relevance(h)}</div><pre><code>${esc(h.content)}</code></pre>`;hits.appendChild(el)});
 </script>
 </body>
 </html>"##;

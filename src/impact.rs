@@ -358,6 +358,10 @@ pre{margin:12px 0 0;padding:16px;border-radius:var(--radius-md);background:var(-
 pre code{background:none;padding:0;border-radius:0}
 .pill{display:inline-block;border:var(--border-hairline);border-radius:var(--radius-pill);padding:4px 10px;margin:5px 6px 0 0;color:var(--color-blue-700);background:var(--color-blue-50);font:var(--type-body-xs)}
 .muted{color:var(--fg-tertiary);line-height:1.5}
+.rel{display:inline-flex;align-items:center;gap:6px;vertical-align:middle;cursor:help}
+.rel .relbar{display:inline-block;width:64px;height:6px;border-radius:var(--radius-pill);background:var(--color-surface-3);overflow:hidden;border:var(--border-soft)}
+.rel .relbar>i{display:block;height:100%;background:var(--color-blue-500);border-radius:var(--radius-pill)}
+.rel .relnum{font-family:var(--font-mono);font-weight:500;color:var(--fg-secondary)}
 </style>
 </head>
 <body data-chaos-impact>
@@ -387,6 +391,13 @@ var I=D.impact||{};
 function esc(v){return String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;");}
 function isDoc(h){var m=h&&h.metadata||{};return m.source_priority==="supplemental"||m.kind==="documentation";}
 function retrievedTags(h){var m=(h&&h.metadata&&h.metadata.retrieved_by)||[];return m.map(function(x){return '<span class="tag">'+esc(x)+'</span>';}).join("");}
+/* Raw retrieval scores are unbounded fusion sums, not percentages. Render them
+   RELATIVE to the strongest entry in their own list (=100%) so the rows are
+   comparable; keep the raw number in the tooltip. */
+function relbar(v,top){var s=+v||0;var t=Math.max(1e-9,+top||0);var p=Math.max(0,Math.min(100,Math.round(s/t*100)));return '<span class="rel" title="Relevance relative to the strongest match in this list (=100%). Raw retrieval fusion score: '+s.toFixed(2)+' — unbounded; higher = a stronger match.">relevance <span class="relbar"><i style="width:'+p+'%"></i></span><span class="relnum">'+p+'%</span></span>';}
+var topFile=Math.max.apply(null,[1e-9].concat((I.affected_files||[]).map(function(f){return +f.top_score||0;})));
+var topSym=Math.max.apply(null,[1e-9].concat((I.affected_symbols||[]).map(function(s){return +s.score||0;})));
+var topHit=Math.max.apply(null,[1e-9].concat((D.hits||[]).map(function(h){return +h.score||0;})));
 document.getElementById("task").textContent=D.task||"";
 var prov=document.getElementById("provenance");
 (D.provenance||[]).forEach(function(c){var el=document.createElement("div");el.className="item";el.innerHTML='<strong>'+esc(c.source)+'</strong> <span class="tag">'+esc(c.method)+'</span><div class="muted">'+esc(c.detail)+(c.locator?' &middot; <code>'+esc(c.locator)+'</code>':'')+'</div>';prov.appendChild(el);});
@@ -394,19 +405,19 @@ if(!prov.children.length)prov.innerHTML='<div class="muted">No breadcrumbs recor
 var stat=[["affected_file_count","files affected"],["affected_symbol_count","symbols affected"],["code_hits","code hits"],["doc_hits","doc hits"],["warnings","warnings"]];
 document.getElementById("stats").innerHTML=stat.map(function(s){return '<div class="stat"><b>'+(I[s[0]]||0)+'</b><span>'+s[1]+'</span></div>';}).join("");
 var files=document.getElementById("files");
-(I.affected_files||[]).forEach(function(f){var el=document.createElement("div");el.className="row";el.innerHTML='<span><span class="tag '+esc(f.kind)+'">'+esc(f.kind)+'</span> '+esc(f.path)+'</span><span class="meta">'+f.hits+' hit'+(f.hits===1?"":"s")+' &middot; '+(f.top_score||0).toFixed(2)+'</span>';files.appendChild(el);});
+(I.affected_files||[]).forEach(function(f){var el=document.createElement("div");el.className="row";el.innerHTML='<span><span class="tag '+esc(f.kind)+'">'+esc(f.kind)+'</span> '+esc(f.path)+'</span><span class="meta">'+f.hits+' hit'+(f.hits===1?"":"s")+' &middot; '+relbar(f.top_score,topFile)+'</span>';files.appendChild(el);});
 if(!files.children.length)files.innerHTML='<div class="muted">No existing files matched. The index may be missing the relevant code, or the feature text needs stronger terms.</div>';
 var symbols=document.getElementById("symbols");
-(I.affected_symbols||[]).forEach(function(s){var el=document.createElement("div");el.className="row";el.innerHTML='<span><strong>'+esc(s.name)+'</strong> <span class="meta">'+esc(s.symbol_kind)+'</span><br><span class="meta">'+esc(s.file)+' : '+esc(s.lines)+'</span></span><span class="meta">'+(s.score||0).toFixed(2)+'</span>';symbols.appendChild(el);});
+(I.affected_symbols||[]).forEach(function(s){var el=document.createElement("div");el.className="row";el.innerHTML='<span><strong>'+esc(s.name)+'</strong> <span class="meta">'+esc(s.symbol_kind)+'</span><br><span class="meta">'+esc(s.file)+' : '+esc(s.lines)+'</span></span><span class="meta">'+relbar(s.score,topSym)+'</span>';symbols.appendChild(el);});
 if(!symbols.children.length)symbols.innerHTML='<div class="muted">No code symbols surfaced (the retrieval may have matched docs only).</div>';
 var warnings=document.getElementById("warnings");
 (D.warnings||[]).forEach(function(w){var el=document.createElement("div");el.className="item warn";el.innerHTML='<strong>Context warning</strong><div>'+esc(w)+'</div>';warnings.appendChild(el);});
 if(!warnings.children.length)warnings.innerHTML='<div class="muted">No stale-index or missing-doc warnings.</div>';
 var features=document.getElementById("features");
-(D.feature_matches||[]).forEach(function(f){var el=document.createElement("div");el.className="item";el.innerHTML='<strong>'+esc((f.feature&&f.feature.title)||f.title)+'</strong><div class="muted">'+esc(f.feature&&f.feature.domain)+' &middot; score '+f.score+' &middot; '+esc(f.page)+'</div>'+(f.modes||[]).map(function(m){return '<span class="pill">'+esc(m.title)+'</span>';}).join("")+(f.matched_nodes||[]).map(function(n){return '<div class="row"><span><strong>'+esc(n.label)+'</strong><br><span class="meta">'+esc(n.file)+' : '+esc(n.lines)+'</span></span><span class="meta">'+esc(n.group)+'</span></div>';}).join("");features.appendChild(el);});
+(D.feature_matches||[]).forEach(function(f){var el=document.createElement("div");el.className="item";el.innerHTML='<strong>'+esc((f.feature&&f.feature.title)||f.title)+'</strong><div class="muted">'+esc(f.feature&&f.feature.domain)+' &middot; matched by '+f.score+' shared term'+(f.score===1?"":"s")+' &middot; '+esc(f.page)+'</div>'+(f.modes||[]).map(function(m){return '<span class="pill">'+esc(m.title)+'</span>';}).join("")+(f.matched_nodes||[]).map(function(n){return '<div class="row"><span><strong>'+esc(n.label)+'</strong><br><span class="meta">'+esc(n.file)+' : '+esc(n.lines)+'</span></span><span class="meta">'+esc(n.group)+'</span></div>';}).join("");features.appendChild(el);});
 if(!features.children.length)features.innerHTML='<div class="muted">No generated feature manifests matched. Impact is derived from retrieval evidence below.</div>';
 var hits=document.getElementById("hits");
-(D.hits||[]).forEach(function(h){var el=document.createElement("div");el.className="item"+(isDoc(h)?" doc":"");el.innerHTML='<strong>'+esc(h.file_path||"unknown file")+'</strong><div class="muted">'+(isDoc(h)?"docs":"code")+' '+retrievedTags(h)+' &middot; lines '+esc(h.line_start)+'-'+esc(h.line_end)+' &middot; score '+(h.score||0).toFixed(3)+'</div><pre><code>'+esc(h.content)+'</code></pre>';hits.appendChild(el);});
+(D.hits||[]).forEach(function(h){var el=document.createElement("div");el.className="item"+(isDoc(h)?" doc":"");el.innerHTML='<strong>'+esc(h.file_path||"unknown file")+'</strong><div class="muted">'+(isDoc(h)?"docs":"code")+' '+retrievedTags(h)+' &middot; lines '+esc(h.line_start)+'-'+esc(h.line_end)+' &middot; '+relbar(h.score,topHit)+'</div><pre><code>'+esc(h.content)+'</code></pre>';hits.appendChild(el);});
 if(!hits.children.length)hits.innerHTML='<div class="muted">No retrieval hits.</div>';
 })();
 </script>

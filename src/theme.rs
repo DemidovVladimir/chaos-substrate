@@ -292,6 +292,10 @@ a:hover{color:var(--color-blue-700)}
 .mono{font-family:var(--font-mono)}
 .overline{font:var(--type-overline);text-transform:uppercase;letter-spacing:.03em;color:var(--color-blue-500)}
 code,kbd,samp{font:var(--type-body-sm);font-family:var(--font-mono);background:var(--bg-chip);padding:2px 6px;border-radius:var(--radius-xs)}
+/* inside a <pre> block, code/kbd/samp are the block body, not inline chips:
+   drop the chip background/padding so they inherit the <pre>'s own colours
+   (otherwise the light chip bg paints behind light-on-dark code = unreadable). */
+pre code,pre kbd,pre samp{background:none;padding:0;border-radius:0;font:inherit;color:inherit}
 
 /* ---------- shared chrome ---------- */
 .wrap{max-width:1040px;margin:0 auto;padding:0 32px}
