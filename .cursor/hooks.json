@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${workspaceFolder}/target/release/chaos --config ${workspaceFolder}/chaos-substrate.toml hook --event PreToolUse --format cursor",
+            "command": "sh -c 'b=\"${CHAOS_BIN:-$(command -v chaos 2>/dev/null)}\"; [ -x \"$b\" ] && exec \"$b\" hook --event PreToolUse --format cursor || exit 0'",
             "timeout": 15
           }
         ]
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${workspaceFolder}/target/release/chaos --config ${workspaceFolder}/chaos-substrate.toml hook --event PostToolUse --format cursor",
+            "command": "sh -c 'b=\"${CHAOS_BIN:-$(command -v chaos 2>/dev/null)}\"; [ -x \"$b\" ] && exec \"$b\" hook --event PostToolUse --format cursor || exit 0'",
             "timeout": 15
           }
         ]

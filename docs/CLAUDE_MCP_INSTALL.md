@@ -2,6 +2,33 @@
 
 This guide installs Chaos Substrate as a local MCP server for Claude and uses it to maintain a persistent knowledge base for a Rust, Solidity, TypeScript, JavaScript, or Python repository, with Markdown/MDX and PDF context.
 
+## Install once, use from any folder — and how projects stay isolated
+
+**One install serves every project.** Chaos Substrate is a single MCP server plus one shared Postgres
+database; you do not install or configure it per project. Register the server once at user scope and
+its tools are available in every repository you open:
+
+```sh
+bin/chaos claude-code-add user
+```
+
+This runs `claude mcp add chaos-substrate --scope user -- <abs binary> --config <abs config> mcp`, so
+the server is registered with absolute paths and works no matter which folder Claude Code is launched
+in. (`project` scope writes a shared `.mcp.json` into one repo; `local` scope is machine-local — use
+`user` when you want it everywhere.) Then, from any project, just ask the agent to `chaos_analyze`
+that folder. A new project does **not** need its own database, container, config, or `.mcp.json`.
+
+**Projects cannot overlap — there is a hard isolation gate.** Every indexed repository is a row in
+the `repositories` table keyed by its canonical absolute path (`root_path` is `UNIQUE`). Every file,
+node, edge, chunk, community, and embedding carries that repository's `repo_id` as a foreign key
+(`on delete cascade`). All retrieval — `query`, `feature-context`, `impact`, `stats`, `graph` — is
+scoped `WHERE repo_id = …`. So two folders analyzed into the same database get two separate `repo_id`
+partitions and **never** share or blend vectors, even though they live in the same Postgres + pgvector
+tables. The only way repositories interact is when you explicitly group them with `chaos project`
+(cross-repo links attach at the feature level as typed edges — they never merge embeddings). To drop
+one project's data without touching the others: `chaos clean /absolute/path` (the positional repo
+argument cascades to only that `repo_id`; omitting it wipes everything).
+
 ## 1. Bootstrap Storage And Embeddings
 
 Start the persistent Postgres container, copy an embeddings config, run migrations, and verify with

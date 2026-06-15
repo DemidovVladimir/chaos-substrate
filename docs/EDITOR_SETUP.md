@@ -190,13 +190,22 @@ The plugin ships hook configs that wire the `chaos hook` subcommand to inject co
 into the agent on `Grep`, `Glob`, and `Bash` tool calls:
 
 - Claude Code: `.claude-plugin/hooks/hooks.json` (`PreToolUse` on `Bash|Grep|Glob`, `PostToolUse`
-  on `Bash`).
+  on `Bash`). Both events run the launcher `.claude-plugin/hooks/chaos-hook.sh`.
 - Cursor: `.cursor/hooks.json` (same matchers, run with `--format cursor`).
 
 `chaos hook` reads the editor's event JSON on stdin and emits memory context. It always exits 0 and
 is a safe no-op when the database or index is unavailable, and it has no embedder dependency, so it
-will not block tool calls or require OpenAI/Ollama to be running. The hooks launch the same release
-binary as the MCP server.
+will not block tool calls or require OpenAI/Ollama to be running.
+
+The hooks do **not** hard-code a binary path. `chaos-hook.sh` self-locates from its own directory and
+resolves the chaos binary in order — `$CHAOS_BIN`, then the checkout's `target/release/chaos`, then a
+`chaos` on `PATH` — and **degrades to a silent no-op (exit 0, nothing on stderr) when no binary, config,
+or database is found.** This is deliberate: a marketplace or zip install that has not built the binary,
+or a machine where the database is down, must not spam `No such file or directory` on every tool call.
+The Cursor command resolves the same way via `$CHAOS_BIN`/`PATH` (Cursor's `${workspaceFolder}` points
+at the *user's* project, not the Chaos checkout, so it is intentionally not used). If you want the
+hooks active, put `chaos` on `PATH` (`bin/chaos install-agent`) or export `CHAOS_BIN`; otherwise they
+stay dormant and harmless.
 
 ## Verify
 
