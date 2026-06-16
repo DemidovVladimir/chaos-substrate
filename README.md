@@ -346,3 +346,10 @@ L3 hash-gated community summaries, change-plan tool, and god-node/feature-map ex
 `src/obsidian_export.rs`, `src/setup.rs`, `src/hook.rs`, `src/export_util.rs`, and
 `migrations/001_init.sql` (plus `002_communities.sql`, `003_subtree_hash.sql`,
 `004_community_summary.sql`, `005_projects.sql`, `006_summary_cache.sql`).
+
+## License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Unless you state otherwise, any contribution you intentionally submit for inclusion in this work
+shall be licensed under Apache-2.0, without any additional terms or conditions.
