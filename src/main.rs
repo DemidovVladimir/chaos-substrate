@@ -63,6 +63,7 @@ use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(name = "chaos")]
+#[command(version)]
 #[command(about = "Persistent code knowledge memory for agents")]
 // `chaos help` is our agent-oriented guide (see [`print_agent_help`]), not
 // clap's built-in alias for `--help` — the flag form still works everywhere.
