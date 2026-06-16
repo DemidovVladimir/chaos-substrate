@@ -70,4 +70,4 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 For real repository indexing, configure either OpenAI or Ollama embeddings. If the embedder is unavailable, analysis must fail rather than producing fake vectors.
 
-See `docs/CLAUDE_MCP_INSTALL.md` and `docs/CLAUDE_VALIDATION_BRIEF.md`.
+See `docs/EDITOR_SETUP.md` for install/registration and `RUNBOOK.md` for the ops and validation reference.

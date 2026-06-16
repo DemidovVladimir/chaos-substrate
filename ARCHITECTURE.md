@@ -78,6 +78,15 @@ dependency nodes, and AWS-CDK constructs become deployment-resource nodes — al
 Honest residual limits: no `tsc`/type inference, no path-alias resolution, and cross-file call
 resolution is name-based.
 
+Concrete capture specifics: the TS/JS extractor (`oxc`) reads `.ts/.tsx/.mts/.cts/.d.ts` and
+`.js/.jsx/.mjs/.cjs`, harvests all four npm dependency scopes (`dependencies`, `devDependencies`,
+`peerDependencies`, `optionalDependencies`) plus npm scripts from `package.json`, and tags test
+symbols by path (`*.test.*`, `*.spec.*`, `__tests__/`, `__test__/`). From `cdk.json` it extracts the
+CDK app command, `Stack` classes, and L2 construct/resource types (Lambda, DynamoDB, queues,
+buckets, API resources) as deployment-resource nodes. Rust extraction (`syn`) emits no byte offsets
+(nodes carry `line_start`/`line_end` only); `EdgeKind::UsesType` is defined but never emitted, and a
+method-on-type is represented with a `Contains` edge rather than a dedicated `method_of` edge.
+
 ### Persistence and runs
 
 Each analysis is bracketed by an `analysis_runs` row (`begin_analysis` → `finish_analysis` with
@@ -87,6 +96,29 @@ embedder calls; the output reports `reused_embeddings`). Chunks still missing em
 active provider/model/dimensions are then embedded in **batched requests** (16 texts per call,
 `embedding::embed_missing_chunks`) and written to the `embeddings` table. Migrations run via
 `sqlx::migrate!` and are tracked in `_sqlx_migrations`.
+
+### Known limitations
+
+- **No ANN vector index.** `embeddings.embedding` has no HNSW/IVFFlat index — only a B-tree on
+  `(provider, model_id, dimensions)` — so every vector search is an exact scan over the candidate
+  set. Adequate at current corpus sizes; revisit if a single repo's chunk count grows large.
+- **Shallow health check.** `Storage::health()` verifies Postgres connectivity (`select version()`)
+  and that the `vector` extension is present; it does **not** validate `pgcrypto`, the migration
+  version, embedding dimensions, or index existence. `chaos doctor` layers the real embedder probe
+  on top.
+
+### Feature page manifest
+
+Every generated feature website embeds a stable machine contract as
+`<script type="application/json" id="chaos-feature-manifest">`, and agents read **that JSON**, never
+the rendered DOM (markup/CSS can change; the manifest is the contract). Fields: `schema_version`;
+`feature` (`id`, `title`, `domain`, `summary`); `purpose` (plain-language "what this is for",
+required by `chaos_write_feature_website`); `claims[]` (`id`, `title`, `body`, `confidence`,
+`node_ids`); `modes`; `nodes`; `edges`; `story[]` (`id`, `title`, `body`, `node_ids`, `edge_ids`);
+`examples[]`; `provenance` (breadcrumbs); and `related_features`. A story step highlights exactly its
+own `node_ids`/`edge_ids` — renderers must **not** auto-expand the graph from the first node; broader
+views belong in `modes`. `chaos_feature_context` / `chaos_refresh` scan `docs/features_memory/*.html`
+for this block and ignore pages without it.
 
 ## Where to Change What
 
@@ -145,6 +177,26 @@ no embedder**.
   (`project_repos.linked_repo_hash`), so a no-change re-index relinks nothing. The project-wide
   `chaos_features` inventory (every member's features, repo-tagged and cross-link-annotated) is
   written to the project workspace (`~/.chaos/projects/<slug>/` or `$CHAOS_PROJECT_DIR`).
+
+### Design decisions (rationale)
+
+The layered memory is **two trees, not one**: a *summary tree* (community L3 summaries + embeddings,
+RAPTOR-style) and a *hash tree* (the L2 Merkle rollup of `content_hash`es). The hash tree gates the
+summary tree — a community's summary is recomputed only when its `subtree_hash` changes, so a
+no-change re-index does zero summary work. Recorded design verdicts:
+
+- **D1 — deterministic Louvain at γ=1.0**, edge weight = `confidence / cost` (not `1 − cost/max_cost`,
+  which would zero out `imports`/`calls`). The repository node is **excluded** from community
+  detection (its `contains` star would otherwise collapse everything into one community).
+- **D2** communities live in their own tables, not as overloaded `NodeKind`s; **D3** the quotient
+  graph uses typed edges with per-kind counts; **D4** summaries get a dedicated `community_embeddings`
+  table; **D5** a single summary level for v1; **D6** the change-decomposition tool is named
+  `chaos_change_plan`.
+- **Louvain, not Leiden.** Measured internal connectivity was already fully connected (e.g. 256/256
+  communities on a large repo, 28/28 here, zero disconnected), so Leiden's randomized refinement
+  would break the determinism invariant for no benefit; the fallback for any disconnected community
+  is a connected-components post-split. A post-Louvain consolidation folds sub-threshold fragments
+  (`MIN_COMMUNITY_SIZE = 4`, `src/community.rs`) into their folder-preferred best-coupled neighbour.
 
 ## MCP Tools
 

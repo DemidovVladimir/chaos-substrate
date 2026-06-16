@@ -1,4 +1,4 @@
-/// Claude Code / Cursor plugin hook subcommand.
+/// Claude Code plugin hook subcommand.
 ///
 /// Reads a Claude Code hook event JSON from stdin and — when the current repo
 /// is indexed — writes a PreToolUse augmentation JSON to stdout that injects
@@ -24,8 +24,8 @@ use tracing::{debug, warn};
 ///
 /// Reads stdin, optionally produces one JSON line on stdout, then returns.
 /// Never propagates errors to the caller – all failures are silent no-ops.
-pub async fn run(event: &str, format: Option<&str>) {
-    match try_run(event, format).await {
+pub async fn run(event: &str) {
+    match try_run(event).await {
         Ok(Some(line)) => println!("{line}"),
         Ok(None) => {} // no-op
         Err(err) => {
@@ -37,7 +37,7 @@ pub async fn run(event: &str, format: Option<&str>) {
 
 // ── internal implementation ───────────────────────────────────────────────────
 
-async fn try_run(event: &str, format: Option<&str>) -> Result<Option<String>> {
+async fn try_run(event: &str) -> Result<Option<String>> {
     // 1. Read all of stdin.
     let mut input = String::new();
     std::io::stdin()
@@ -69,7 +69,7 @@ async fn try_run(event: &str, format: Option<&str>) -> Result<Option<String>> {
 
     // 3. Handle PostToolUse separately.
     if event == "PostToolUse" {
-        return handle_post_tool_use(&tool_name, &payload, format);
+        return handle_post_tool_use(&tool_name, &payload);
     }
 
     // 4. PreToolUse: derive a search term.
@@ -129,17 +129,13 @@ async fn try_run(event: &str, format: Option<&str>) -> Result<Option<String>> {
 
     // 8. Format context.
     let context = format_context(&search_term, &hits);
-    let output = build_pre_tool_use_output(&context, "PreToolUse", format);
+    let output = build_pre_tool_use_output(&context, "PreToolUse");
     Ok(Some(output))
 }
 
 // ── PostToolUse ───────────────────────────────────────────────────────────────
 
-fn handle_post_tool_use(
-    tool_name: &str,
-    payload: &Value,
-    format: Option<&str>,
-) -> Result<Option<String>> {
+fn handle_post_tool_use(tool_name: &str, payload: &Value) -> Result<Option<String>> {
     if tool_name != "Bash" {
         return Ok(None);
     }
@@ -153,7 +149,7 @@ fn handle_post_tool_use(
         or use the `chaos_analyze` MCP tool to refresh the code-memory index."
         .to_string();
 
-    let output = build_pre_tool_use_output(&context, "PostToolUse", format);
+    let output = build_pre_tool_use_output(&context, "PostToolUse");
     Ok(Some(output))
 }
 
@@ -240,32 +236,16 @@ pub fn extract_bash_identifier(command: &str) -> Option<String> {
 }
 
 /// Build the Claude Code PreToolUse (or PostToolUse) augmentation JSON string.
-pub fn build_pre_tool_use_output(
-    additional_context: &str,
-    hook_event_name: &str,
-    format: Option<&str>,
-) -> String {
-    match format.unwrap_or("claude") {
-        "cursor" => {
-            let v = json!({
-                "permission": "allow",
-                "agent_message": additional_context
-            });
-            serde_json::to_string(&v).unwrap_or_default()
+pub fn build_pre_tool_use_output(additional_context: &str, hook_event_name: &str) -> String {
+    let v = json!({
+        "continue": true,
+        "hookSpecificOutput": {
+            "hookEventName": hook_event_name,
+            "permissionDecision": "allow",
+            "additionalContext": additional_context
         }
-        _ => {
-            // Default: Claude Code format.
-            let v = json!({
-                "continue": true,
-                "hookSpecificOutput": {
-                    "hookEventName": hook_event_name,
-                    "permissionDecision": "allow",
-                    "additionalContext": additional_context
-                }
-            });
-            serde_json::to_string(&v).unwrap_or_default()
-        }
-    }
+    });
+    serde_json::to_string(&v).unwrap_or_default()
 }
 
 /// Format the top symbol hits into a short one-line context string.
@@ -354,7 +334,7 @@ mod tests {
 
     #[test]
     fn pre_tool_use_output_has_correct_shape() {
-        let out = build_pre_tool_use_output("some context", "PreToolUse", None);
+        let out = build_pre_tool_use_output("some context", "PreToolUse");
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["continue"], json!(true));
         assert_eq!(
@@ -373,7 +353,7 @@ mod tests {
 
     #[test]
     fn post_tool_use_output_has_correct_hook_event_name() {
-        let out = build_pre_tool_use_output("stale index", "PostToolUse", None);
+        let out = build_pre_tool_use_output("stale index", "PostToolUse");
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(
             v["hookSpecificOutput"]["hookEventName"],
@@ -383,16 +363,6 @@ mod tests {
             v["hookSpecificOutput"]["permissionDecision"],
             json!("allow")
         );
-    }
-
-    #[test]
-    fn cursor_format_emits_flat_shape() {
-        let out = build_pre_tool_use_output("ctx", "PreToolUse", Some("cursor"));
-        let v: Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v["permission"], json!("allow"));
-        assert_eq!(v["agent_message"], json!("ctx"));
-        // Must NOT have the Claude Code nested shape.
-        assert!(v.get("hookSpecificOutput").is_none());
     }
 
     // ── is_repo_mutating_git_command ──────────────────────────────────────────

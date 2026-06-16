@@ -15,7 +15,7 @@
 //! community whose `subtree_hash` actually moved needs re-summarizing.
 //!
 //! The hash tree and the L1 summary tree are the same shape with different
-//! payloads — see `docs/HIERARCHICAL_MEMORY_ROADMAP.md` §1.
+//! payloads — see the "Design decisions" subsection of `ARCHITECTURE.md`.
 
 use crate::extractor::hash;
 use crate::storage::Storage;

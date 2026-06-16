@@ -55,7 +55,7 @@ Variants: OpenAI embeddings instead of Ollama (uncomment `open_ai` in the config
 plus your own `DATABASE_URL`).
 
 Then register the agent integration — see [Editor Install](#editor-install) below for Claude Code
-and Codex (and Cursor / Windsurf / OpenCode).
+and Codex (and Windsurf / OpenCode).
 
 The manual step-by-step equivalent of `bin/chaos bootstrap` follows.
 
@@ -412,6 +412,18 @@ chaos obsidian /path/to/repo -o vault
 `obsidian` also emits god-node community notes (`vault/Communities/*.md` + `Feature Map.md`) and
 `docs/features_memory/feature-map.html` from the persisted layers — no re-index, no embedder.
 
+The vault layout is `README.md` (counts + links), `Topics/` notes, `Nodes/` notes (one per graph
+node: source file + line range, node kind + stable id, chunk count, outgoing/incoming relationships,
+raw metadata JSON), `Edges.md` (the relationship manifest), and `.obsidian/` defaults. For a large
+repo, start from `Topics/` rather than the global graph view. The standalone `graph.html` export is
+the lighter alternative: pan/zoom, filter by node kind, search by name/path/stable-id, click a node
+for its source metadata; it runs no web server and calls no embedder (the `--serve` panel does call
+the real retrieval pipeline). Quick sanity check on what was extracted:
+
+```sql
+select kind, count(*) from edges group by kind order by kind;   -- contains / imports / depends_on / calls / defines / configures / deploys
+```
+
 ## MCP Server
 
 Run the MCP server over stdio (newline-delimited JSON-RPC, **no** Content-Length framing).
@@ -437,7 +449,7 @@ A correctly configured server prints one JSON-RPC response line to stdout.
 
 ## Editor Install
 
-Auto-detect installed editors (Claude Code / Codex / Cursor / Windsurf / OpenCode) and register
+Auto-detect installed editors (Claude Code / Codex / Windsurf / OpenCode) and register
 chaos-substrate as an MCP server in each (merge-not-clobber):
 
 ```sh
@@ -467,24 +479,23 @@ codex mcp add chaos-substrate -- /abs/path/to/chaos-substrate/target/release/cha
   --config /abs/path/to/chaos-substrate/chaos-substrate.toml mcp
 ```
 
-Per-editor manual setup details (incl. Cursor / Windsurf / OpenCode): see `docs/EDITOR_SETUP.md`;
-plugin packaging and marketplace flow: `docs/PLUGIN_INSTALL.md`.
+Per-editor manual setup details (incl. Windsurf / OpenCode), the plugin packaging/marketplace flow,
+and Claude Desktop / Cowork: see `docs/EDITOR_SETUP.md`.
 
 ## Plugin Hook
 
-`chaos hook` is the Claude Code / Cursor plugin hook. It reads event JSON on stdin and injects
+`chaos hook` is the Claude Code plugin hook. It reads event JSON on stdin and injects
 code-memory context for Grep/Glob/Bash tool calls. It always exits 0 and is a safe no-op when the
 DB/index is unavailable (no embedder dependency).
 
 ```sh
 chaos hook --event PreToolUse
 chaos hook --event PostToolUse
-chaos hook --event PreToolUse --format claude     # format: claude | cursor
-chaos hook --event PreToolUse --format cursor
 ```
 
-Normally invoked by the editor, not by hand (the plugin ships `.claude-plugin/hooks/hooks.json`
-and `.cursor/hooks.json`).
+Normally invoked by the editor, not by hand (the plugin ships `.claude-plugin/hooks/hooks.json`,
+whose launcher `.claude-plugin/hooks/chaos-hook.sh` self-locates the binary and no-ops silently when
+it is unavailable).
 
 ## Troubleshooting
 
@@ -524,3 +535,30 @@ cargo fmt --check
 cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 ```
+
+**Functional smoke test.** Index a repo containing Rust/Solidity/TS/JS/Python, run a query, export
+`graph.html` and confirm it shows the persisted nodes/edges, exercise the MCP server over stdio, and
+verify vectors survive a process restart. The MCP server speaks **newline-delimited JSON-RPC**, not
+Content-Length-framed LSP messages.
+
+**Token-efficiency invariant.** A second `analyze` of unchanged code must make zero embedder calls:
+the output reports `embedded_chunks: 0`, `reused_embeddings: <all>`, and `summaries.embed_calls: 0`;
+a second `project relink` reports `up_to_date`.
+
+**Persistence checks (Postgres).**
+
+```sql
+select count(*) from repositories; select count(*) from files; select count(*) from nodes;
+select count(*) from edges; select count(*) from chunks;
+select provider, model_id, dimensions, count(*) from embeddings group by provider, model_id, dimensions;
+```
+
+The schema enforces `embeddings.dimensions = vector_dims(embedding)`, so an embedder whose output
+dimension disagrees with the configured value is rejected rather than stored. The Ollama path uses
+`/api/embed` with `{model, input}` and reads the first vector from the `embeddings` field (not the
+legacy `/api/embeddings` endpoint).
+
+**Code-review focus.** Watch for schema drift between `src/models.rs`, `src/storage.rs`, and
+`migrations/001_init.sql`; AST span-to-line (`LineIndex`) offset errors; parser failures
+(`oxc`/`rustpython`/`solang`) degrading gracefully (skip the file, never abort the run); and the
+query path validating provider/model/dimensions before searching.

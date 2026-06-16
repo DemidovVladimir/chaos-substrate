@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # Chaos Substrate plugin hook launcher.
 #
-# Claude Code / Cursor invoke this on Bash|Grep|Glob tool calls so the `chaos
+# Claude Code invokes this on Bash|Grep|Glob tool calls so the `chaos
 # hook` subcommand can inject code-memory context. The launcher MUST never break
 # the host tool call: it self-locates the chaos binary wherever it actually
 # lives and degrades to a SILENT no-op (exit 0, nothing on stdout/stderr) when

@@ -26,7 +26,7 @@ Rust-side, never run as a separate Node or Python service. It can also export a 
 
 | Mode | What | For | How to start |
 | --- | --- | --- | --- |
-| **Agent via MCP** | A stdio MCP server with 22 tools (`chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_pages`, `chaos_gaps`, `chaos_query`, `chaos_feature_context`, `chaos_impact`, `chaos_sui_migration_impact`, `chaos_write_feature_website`, `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_compose`, `chaos_project`, `chaos_help`, `chaos_clean`, `chaos_graph`). | Coding agents (Claude Code, Codex, Cursor, Windsurf, OpenCode) that should query durable code memory instead of re-reading files. | `chaos setup` to register the server, then ask the agent to analyze and query. See [docs/EDITOR_SETUP.md](docs/EDITOR_SETUP.md). |
+| **Agent via MCP** | A stdio MCP server with 22 tools (`chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_pages`, `chaos_gaps`, `chaos_query`, `chaos_feature_context`, `chaos_impact`, `chaos_sui_migration_impact`, `chaos_write_feature_website`, `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_compose`, `chaos_project`, `chaos_help`, `chaos_clean`, `chaos_graph`). | Coding agents (Claude Code, Codex, Windsurf, OpenCode) that should query durable code memory instead of re-reading files. | `chaos setup` to register the server, then ask the agent to analyze and query. See [docs/EDITOR_SETUP.md](docs/EDITOR_SETUP.md). |
 | **Raw CLI** | The `chaos` binary: `analyze`, `add`, `stats`, `query`, `feature-context`, `impact`, `change-plan`, `storyboard`, `graph`, `obsidian`, `refresh`, `clean`. | Humans and scripts doing setup, debugging, one-off indexing, or agentless operation. | `chaos analyze <repo>` then `chaos query <repo> "<question>"`. See [Quick Start](#quick-start). |
 | **Generated static feature-website** | A self-contained HTML feature page (light editorial theme) with interactive graph/story/code navigation plus a machine-readable manifest. | Sharing or reviewing how a feature works, and seeding future agent context from the embedded manifest. | `chaos feature-context <repo> "<task>" --output-html page.html`, or the `chaos_write_feature_website` MCP tool. |
 | **Client/user storyboard** | A self-contained HTML page (light editorial theme) that explains a feature from the UI/UX user-story perspective with **no code**: personas, "As a … I want … so that …" stories, clickable frames, confidence rings, an embedded manifest, and optional **real-UI previews** per frame (a captured screenshot/clip or a live `iframe` of the running app). | Handing a stakeholder or end user an interactive presentation of a feature without showing code. | The `chaos_write_storyboard` MCP tool, or `chaos storyboard <repo> --manifest story.json`. |
@@ -51,9 +51,9 @@ chaos add /path/to/repo -m "added the export pipeline"  # detects changed files 
 The default `DATABASE_URL` for the bundled container is
 `postgres://chaos:chaos@localhost:54329/chaos_substrate`.
 
-> **New to the project and using Claude Code?** Follow
-> [docs/QUICKSTART_CLAUDE.md](docs/QUICKSTART_CLAUDE.md) for the full path from installing Rust
-> to generating a feature page, as a single linear guide.
+> **New to the project and using Claude Code?** The
+> [Setup from scratch](#setup-from-scratch-claude-code--codex) section below walks the full path
+> from installing Docker and Rust to registering the agent, in order.
 
 The example config defaults to local Ollama (`embeddinggemma`, 768 dims,
 `http://localhost:11434`). Ollama must be running and the model pulled before `chaos doctor` will
@@ -135,27 +135,26 @@ chaos analyze /path/to/your/repo      # build the persistent memory
 chaos query /path/to/your/repo "where is auth handled?"
 ```
 
-Step-by-step walkthrough with troubleshooting: [docs/QUICKSTART_CLAUDE.md](docs/QUICKSTART_CLAUDE.md)
-(Claude Code) and [docs/PLUGIN_INSTALL.md](docs/PLUGIN_INSTALL.md) (Codex plugin flow). Other
-editors (Cursor, Windsurf, OpenCode): [docs/EDITOR_SETUP.md](docs/EDITOR_SETUP.md).
+Per-editor install (Claude Code, Codex, Windsurf, OpenCode), the plugin packages (marketplace /
+Cowork zip), Claude Desktop, and hooks: [docs/EDITOR_SETUP.md](docs/EDITOR_SETUP.md).
 
 ## Install for your editor
 
 Register Chaos Substrate as an MCP server with one command:
 
 ```bash
-chaos setup                 # auto-detect Claude Code / Codex / Cursor / Windsurf / OpenCode
+chaos setup                 # auto-detect Claude Code / Codex / Windsurf / OpenCode
 chaos setup --dry-run       # show planned changes without writing
 chaos setup --scope project # write a shareable project-scoped config
 ```
 
 `chaos setup` merges (does not clobber) existing MCP configuration in each detected editor and points
-it at the release binary over stdio. There is also `chaos hook`, a Claude Code / Cursor plugin hook
+it at the release binary over stdio. There is also `chaos hook`, a Claude Code plugin hook
 that reads a `PreToolUse`/`PostToolUse` event on stdin and injects code-memory context for
 `Grep`/`Glob`/`Bash`; it always exits 0 and is a safe no-op when the DB or index is unavailable (no
-embedder dependency). The plugin ships `.claude-plugin/hooks/hooks.json` and `.cursor/hooks.json`.
+embedder dependency). The plugin ships `.claude-plugin/hooks/hooks.json`.
 
-Per-editor instructions (Claude Code, Codex, Cursor, Windsurf, OpenCode) live in
+Per-editor instructions (Claude Code, Codex, Windsurf, OpenCode) live in
 **[docs/EDITOR_SETUP.md](docs/EDITOR_SETUP.md)**.
 
 MCP/plugin config must launch the release binary directly over stdio:
@@ -248,6 +247,12 @@ god-nodes), `subtree_hash` columns (L2 Merkle rollup), `community_embeddings` (L
 (`migrations/001…006`) and are tracked in `_sqlx_migrations`. The `embeddings` table stores
 provider, model, dimensions, content hash, and pgvector data.
 
+**Per-repo isolation.** `repositories.root_path` is `UNIQUE`, and every file/node/edge/chunk/
+community/embedding carries a `repo_id` foreign key (`on delete cascade`); all retrieval is scoped
+`where repo_id = …`. So one Postgres database can hold many repositories without cross-talk, and
+`chaos clean /absolute/path` cascades to exactly that repo's rows while `chaos clean` (no path)
+wipes everything. The schema always survives — no `migrate` is needed before re-indexing.
+
 ## CLI
 
 ```bash
@@ -270,7 +275,7 @@ chaos graph <repo> [-o graph.html]                     # export interactive grap
 chaos obsidian <repo> [-o vault]                       # export Obsidian vault
 chaos refresh <repo> [--all-features]                  # regenerate project-local artifacts
 chaos setup [--dry-run] [--scope user|local|project]   # register MCP server in editors
-chaos hook --event <PreToolUse|PostToolUse> [--format claude|cursor]
+chaos hook --event <PreToolUse|PostToolUse>
 chaos mcp                                              # run the stdio MCP server
 ```
 
@@ -307,28 +312,11 @@ without this manifest.
 
 | Doc | Purpose |
 | --- | --- |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | System design: extraction, storage, retrieval, and the MCP surface. |
-| [RUNBOOK.md](RUNBOOK.md) | Canonical ops command reference for running, indexing, and maintaining. |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | System design: extraction, storage, retrieval, the layered-memory rationale, the feature-page manifest, and known limitations. |
+| [RUNBOOK.md](RUNBOOK.md) | Canonical ops command reference for running, indexing, maintaining, and validating. |
 | [CHANGELOG.md](CHANGELOG.md) | Release notes — what changed in each version and what to know when upgrading. |
-| [llms.txt](llms.txt) | Machine-readable project summary for LLMs. |
-| [docs/QUICKSTART_CLAUDE.md](docs/QUICKSTART_CLAUDE.md) | End-to-end onboarding for Claude Code: Rust install → bootstrap → plugin → index → feature page. |
-| [docs/EDITOR_SETUP.md](docs/EDITOR_SETUP.md) | Canonical per-editor install (Claude Code / Codex / Cursor / Windsurf / OpenCode). |
-| [docs/MCP_SETUP.md](docs/MCP_SETUP.md) | Generic stdio MCP server setup and JSON-RPC details. |
-| [docs/CLAUDE_MCP_INSTALL.md](docs/CLAUDE_MCP_INSTALL.md) | Registering the server with Claude Code / Claude Desktop. |
-| [docs/CLAUDE_CODE_COWORK.md](docs/CLAUDE_CODE_COWORK.md) | Claude Code and Cowork plugin setup. |
-| [docs/PLUGIN_INSTALL.md](docs/PLUGIN_INSTALL.md) | Codex and Claude plugin installation. |
-| [docs/plugin-install.html](docs/plugin-install.html) | Dark visual plugin-install tutorial. |
-| [docs/PLUGIN_WORKFLOW.md](docs/PLUGIN_WORKFLOW.md) | Plugin wrapper workflow and natural-language intents. |
-| [docs/FEATURE_CONTEXT.md](docs/FEATURE_CONTEXT.md) | Feature-context agent workflow and manifest contract. |
-| [docs/GRAPH_WEBPAGE.md](docs/GRAPH_WEBPAGE.md) | `graph.html` export setup and validation tutorial. |
-| [docs/OBSIDIAN_EXPORT.md](docs/OBSIDIAN_EXPORT.md) | Obsidian vault export workflow. |
-| [docs/REFRESH_EXPORTS.md](docs/REFRESH_EXPORTS.md) | `refresh` command reference for generated artifacts. |
+| [docs/EDITOR_SETUP.md](docs/EDITOR_SETUP.md) | Canonical per-editor install (Claude Code / Codex / Windsurf / OpenCode), Claude Desktop, the plugin packages (marketplace / Cowork zip), and hooks. |
 | [docs/OLLAMA_SETUP.md](docs/OLLAMA_SETUP.md) | Ollama install, model pull, and embedding troubleshooting. |
-| [docs/TYPESCRIPT_JAVASCRIPT_SUPPORT.md](docs/TYPESCRIPT_JAVASCRIPT_SUPPORT.md) | TypeScript/JavaScript extraction details and limits. |
-| [docs/RUST_EXTRACTOR_NOTES.md](docs/RUST_EXTRACTOR_NOTES.md) | Rust (`syn`) extractor implementation notes. |
-| [docs/STORAGE_SCHEMA_REVIEW.md](docs/STORAGE_SCHEMA_REVIEW.md) | Postgres schema review and rationale. |
-| [docs/AGENT_VALIDATION.md](docs/AGENT_VALIDATION.md) | Agent-facing validation checklist. |
-| [docs/CLAUDE_VALIDATION_BRIEF.md](docs/CLAUDE_VALIDATION_BRIEF.md) | Claude validation brief. |
 
 ### Validation
 

@@ -1,7 +1,7 @@
 //! L1 community / "god-node" detection over the L0 knowledge multigraph.
 //!
-//! This is the substrate for the hierarchical-memory layer (see
-//! `docs/HIERARCHICAL_MEMORY_ROADMAP.md`). It groups L0 nodes into communities
+//! This is the substrate for the hierarchical-memory layer (see the
+//! Hierarchical (Layered) Memory section of `ARCHITECTURE.md`). It groups L0 nodes into communities
 //! (features / subsystems) with a *quotient graph* of typed, aggregated edges
 //! between them. The same module powers the read-only P0 spike
 //! (`chaos communities`), the persisted P1 layer, and the P4 change-plan tool.

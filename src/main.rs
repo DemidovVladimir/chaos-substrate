@@ -472,15 +472,12 @@ enum Commands {
         #[arg(long)]
         scope: Option<String>,
     },
-    /// Claude Code / Cursor plugin hook: reads an event JSON from stdin and
+    /// Claude Code plugin hook: reads an event JSON from stdin and
     /// injects code-memory context into the response (or exits 0 silently).
     Hook {
         /// The hook event to handle: PreToolUse or PostToolUse.
         #[arg(long)]
         event: String,
-        /// Output format: "claude" (default) or "cursor".
-        #[arg(long)]
-        format: Option<String>,
     },
 }
 
@@ -532,11 +529,7 @@ async fn main() -> Result<()> {
     // if config loading fails and the subcommand is Hook, skip the config
     // (hook.rs reads DATABASE_URL directly from env) and proceed to the hook
     // branch rather than propagating an Err that would exit non-zero.
-    if let Commands::Hook {
-        ref event,
-        ref format,
-    } = cli.command
-    {
+    if let Commands::Hook { ref event } = cli.command {
         match Config::load(cli.config.as_deref()) {
             Ok(cfg) => {
                 if std::env::var("DATABASE_URL").is_err() {
@@ -549,7 +542,7 @@ async fn main() -> Result<()> {
                 warn!("chaos hook: config load failed ({e:#}), proceeding with env defaults");
             }
         }
-        hook::run(event, format.as_deref()).await;
+        hook::run(event).await;
         // Always exit 0 — the hook must never break the host tool call.
         std::process::exit(0);
     }

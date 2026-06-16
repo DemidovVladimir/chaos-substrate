@@ -353,42 +353,6 @@ fn merge_codex_toml(args: &SetupArgs<'_>, config_path: &Path) -> EditorResult {
     EditorResult::Configured
 }
 
-// Cursor: ~/.cursor/mcp.json
-fn setup_cursor(args: &SetupArgs<'_>) -> EditorResult {
-    let home = match home_dir() {
-        Some(h) => h,
-        None => return EditorResult::Skipped("HOME not set".into()),
-    };
-    let cursor_dir = home.join(".cursor");
-    if !cursor_dir.exists() {
-        return EditorResult::Skipped("~/.cursor/ not found".into());
-    }
-
-    let config_path = cursor_dir.join("mcp.json");
-    let entry = mcp_server_entry(args.bin, args.config, args.database_url, args.openai_key);
-
-    if args.dry_run {
-        let preview = serde_json::json!({ "mcpServers": { SERVER_NAME: entry } });
-        return EditorResult::DryRun(format!(
-            "merge {} → mcpServers.{}: {}",
-            config_path.display(),
-            SERVER_NAME,
-            serde_json::to_string_pretty(&preview).unwrap_or_default()
-        ));
-    }
-
-    match read_json_or_empty(&config_path) {
-        Ok(existing) => {
-            let merged = merge_mcp_servers_json(existing, SERVER_NAME, entry);
-            match write_json(&config_path, &merged) {
-                Ok(()) => EditorResult::Configured,
-                Err(e) => EditorResult::Failed(e.to_string()),
-            }
-        }
-        Err(e) => EditorResult::Failed(format!("malformed JSON at {}: {e}", config_path.display())),
-    }
-}
-
 // Windsurf: ~/.codeium/windsurf/mcp_config.json
 fn setup_windsurf(args: &SetupArgs<'_>) -> EditorResult {
     let home = match home_dir() {
@@ -552,7 +516,6 @@ pub fn run(
     let results: Vec<(&str, EditorResult)> = vec![
         ("Claude Code", setup_claude_code(&sa)),
         ("Codex", setup_codex(&sa)),
-        ("Cursor", setup_cursor(&sa)),
         ("Windsurf", setup_windsurf(&sa)),
         ("OpenCode", setup_opencode(&sa)),
     ];
@@ -590,7 +553,7 @@ pub fn run(
         println!("  2. Run `chaos doctor` to verify the database and embedder.");
     } else {
         println!();
-        println!("No editors were detected. Install Claude Code, Cursor, Windsurf,");
+        println!("No editors were detected. Install Claude Code, Windsurf,");
         println!("OpenCode, or Codex and re-run `chaos setup`.");
     }
 

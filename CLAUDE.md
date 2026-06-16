@@ -87,8 +87,8 @@ when the session ends; `chaos_feature_context`'s return carries a `next` reminde
 
 ## Hierarchical memory (L0 / L1 / L2 / L3)
 
-On top of the flat multigraph (**L0**), `analyze`/`add` derive a layered memory (see
-`docs/HIERARCHICAL_MEMORY_ROADMAP.md`):
+On top of the flat multigraph (**L0**), `analyze`/`add` derive a layered memory (see the
+Hierarchical (Layered) Memory section of `ARCHITECTURE.md`):
 
 - **L1 — communities / "god-nodes" / features.** Deterministic Louvain (`src/community.rs`) groups
   L0 nodes into features with a quotient graph of typed edges between them (`communities`,
@@ -160,4 +160,4 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 For real repository indexing, configure either OpenAI or Ollama embeddings. If the embedder is unavailable, analysis must fail rather than producing fake vectors.
 
-See `docs/CLAUDE_MCP_INSTALL.md` and `docs/CLAUDE_VALIDATION_BRIEF.md`.
+See `docs/EDITOR_SETUP.md` for install/registration and `RUNBOOK.md` for the ops and validation reference.

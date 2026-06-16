@@ -36,13 +36,9 @@ zip -qr "$OUT" \
   docker-compose.yml \
   chaos-substrate.example.toml \
   chaos-substrate.local.toml \
-  docs/PLUGIN_INSTALL.md \
-  docs/PLUGIN_WORKFLOW.md \
-  docs/CLAUDE_CODE_COWORK.md \
-  docs/MCP_SETUP.md \
+  docs/EDITOR_SETUP.md \
   docs/OLLAMA_SETUP.md \
-  docs/FEATURE_CONTEXT.md \
-  docs/GRAPH_WEBPAGE.md
+  docs/claude_code_mcp.example.json
 
 cp -f "$OUT" "$DIST/chaos-substrate-cowork-plugin.zip"
 
