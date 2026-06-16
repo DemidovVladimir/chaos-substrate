@@ -1,13 +1,9 @@
 use crate::{
     embedding::{build_embedder, Embedder},
     extractor::{current_commit, RustRepositoryExtractor},
-    feature_context::{
-        build_feature_context_warnings, feature_context_provenance, load_feature_matches,
-        write_feature_context_html, FeatureContextResponse,
-    },
     feature_export::refresh_project_exports,
     obsidian_export::write_obsidian_vault,
-    query::{query_feature_context_repo, query_repo},
+    query::query_repo,
     storage::Storage,
     Config,
 };
@@ -138,7 +134,7 @@ pub async fn run(config: Config) -> Result<()> {
                         },
                         {
                             "name": "chaos_feature_context",
-                            "description": "Build focused implementation context for a feature or task. Reads Postgres retrieval plus generated feature-memory manifests and returns warnings when expected paths/docs are missing. Use this before composing any feature website; treat warnings as blockers before writing. Each retrieval hit is tagged with its retrieval method (semantic/keyword/literal), each feature match carries the prior page's own provenance, and the response includes top-level provenance breadcrumbs (how the evidence was gathered). This tool gathers evidence but writes NO page — finish the drill-down by persisting your composed explanation with chaos_write_feature_website (manifest only), so the deep-dive survives the conversation.",
+                            "description": "Build focused implementation context for a feature or task. Reads Postgres retrieval plus generated feature-memory manifests and returns warnings when expected paths/docs are missing; treat warnings as blockers before writing. Mirroring chaos_impact, it ALWAYS writes an interactive HTML to docs/features_memory/<slug>-context.html (override with output_html) and returns a COMPACT pointer-only payload: counts (hits + per-channel + distinct-after-dedup), one-line deduped evidence pointers (symbol, file, lines, kind, relevance_pct, retrieved_by — NO chunk content or code), relevance-floored related_pages (title/domain/score/shared symbols, not their full claims/code), warnings, and provenance breadcrumbs. The FULL verbatim evidence (every hit's content + correlated node code) lives ONLY in the written HTML, embedded as an agent-extractable JSON block under id=\"chaos-feature-context-data\" — extract code from there if you need it; do NOT re-read the repo or re-run retrieval. Each hit is tagged with its retrieval method (semantic/keyword/literal). Finish the drill-down by persisting your composed explanation with chaos_write_feature_website (manifest only), so the deep-dive survives the conversation.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
@@ -365,6 +361,20 @@ pub async fn run(config: Config) -> Result<()> {
                                 },
                                 "required": ["repo"]
                             }
+                        },
+                        {
+                            "name": "chaos_usage",
+                            "description": "Find WHO CONSUMES a symbol or surface string across the repo, grouped by subfolder — the cross-folder 'who uses this?' answer served entirely from the persisted index, so you NEVER fall back to rg/grep over the target repo. Given a `target` (a function/method/struct name, an env-var name, an HTTP header or route string, …) it gathers every use site from three EMBEDDER-FREE sources: (1) user-surface nodes (env_var / http_route / cli_command) named exactly the target — AST-extracted real reads/registrations, no false hits from comments, and every consumer across folders shares the same name; (2) REVERSE GRAPH EDGES — the target resolves to its definition node(s) and the persisted graph yields who calls/imports/uses_type/implements/tests/depends_on it, cross-file (index-backed); (3) a LITERAL chunk sweep for the exact string, the cross-language catch-all for references that aren't first-class nodes (e.g. an x-service-token header), sampled ≤2 hits/file. Sites are deduped by (file, line) — structured graph sites win over a literal hit at the same spot — and grouped by top-level subfolder (most-used first), each tagged with the MECHANISM (reads env var / calls / imports / registers route / references (literal)) and language. ALWAYS writes an interactive HTML report to docs/features_memory/<slug>-usage.html (manifest embedded under id=\"chaos-usage-manifest\") and returns a COMPACT JSON summary (target, definition sites, per-folder site counts + capped one-line sites with sites_omitted, PROVENANCE breadcrumbs, the HTML path) so it won't flood your context. Read-only and embedder-free — runs even when no embedder is configured. HONEST LIMITATION (surfaced as a warning): call/import edges resolve cross-file only when the symbol name is repo-unique, so ambiguously-named consumers may be undercounted; the literal sweep backstops but samples per file. Use it to answer 'who uses X / where is this consumed across the monorepo's subfolders' without grepping.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo": {"type": "string"},
+                                    "target": {"type": "string", "description": "The symbol / env-var name / HTTP header / route string whose consumers to find (matched exactly for nodes; substring for the literal sweep)."},
+                                    "output_html": {"type": "string", "description": "Override the default docs/features_memory/<slug>-usage.html path."},
+                                    "limit": {"type": "integer", "default": 6, "description": "Use sites listed per subfolder in the compact return (the HTML holds them all)."}
+                                },
+                                "required": ["repo", "target"]
+                            }
                         }
                     ]
                 }
@@ -537,52 +547,29 @@ async fn handle_tool_call(
                 .get("task")
                 .and_then(Value::as_str)
                 .context("task is required")?;
-            let limit = args.get("limit").and_then(Value::as_i64).unwrap_or(10);
-            let feature_limit = args
-                .get("feature_limit")
-                .and_then(Value::as_u64)
-                .unwrap_or(3) as usize;
-            let nodes_per_feature = args
-                .get("nodes_per_feature")
-                .and_then(Value::as_u64)
-                .unwrap_or(8) as usize;
-            let repo = storage
-                .find_repository(repo)
-                .await?
-                .context("repository is not indexed")?;
-            let repo_root = PathBuf::from(&repo.root_path);
-            let features_dir = args
-                .get("features_dir")
-                .and_then(Value::as_str)
-                .map(PathBuf::from)
-                .unwrap_or_else(|| repo_root.join("docs/features_memory"));
-            let postgres =
-                query_feature_context_repo(storage, repo.id, embedder, task, limit).await?;
-            let warnings = build_feature_context_warnings(task, &repo_root, &postgres);
-            let feature_matches =
-                load_feature_matches(task, &features_dir, feature_limit, nodes_per_feature)?;
-            let provenance = feature_context_provenance(&postgres, &features_dir, &feature_matches);
-            let mut response = FeatureContextResponse {
-                task: task.to_string(),
-                postgres,
-                features_dir,
-                warnings,
-                feature_matches,
-                provenance,
+            let opts = crate::feature_context::FeatureContextOptions {
+                features_dir: args
+                    .get("features_dir")
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from),
+                output_html: args
+                    .get("output_html")
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from),
+                limit: args.get("limit").and_then(Value::as_i64).unwrap_or(0),
+                feature_limit: args
+                    .get("feature_limit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize,
+                nodes_per_feature: args
+                    .get("nodes_per_feature")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize,
             };
-            let output_html = args.get("output_html").and_then(Value::as_str);
-            if let Some(output_html) = output_html {
-                // The HTML keeps the FULL evidence; the return gets excerpts.
-                write_feature_context_html(Path::new(output_html), &response)?;
-            }
-            crate::feature_context::cap_response_for_return(&mut response);
-            Ok(tool_text(serde_json::to_string_pretty(&json!({
-                "wrote_html": output_html,
-                "context": response,
-                // Anti-drift: a drill-down that ends as chat-only loses the
-                // synthesis when the conversation does.
-                "next": "This evidence is for a feature deep-dive — once you have composed your explanation, PERSIST it as the interactive page: chaos_write_feature_website {repo, slug, title, manifest} (manifest only, omit html) -> docs/features_memory/<slug>.html. Don't leave the drill-down chat-only."
-            }))?))
+            // ALWAYS writes the HTML (full evidence + extractable JSON); returns a
+            // compact pointer-only summary so the agent's context is not flooded.
+            let summary = crate::feature_context::run(storage, embedder, repo, task, &opts).await?;
+            Ok(tool_text(serde_json::to_string_pretty(&summary)?))
         }
         "chaos_impact" => {
             let repo = args
@@ -827,6 +814,26 @@ async fn handle_tool_call(
             let summary = crate::components::run(storage, embedder, repo, area, &opts).await?;
             Ok(tool_text(serde_json::to_string_pretty(&summary)?))
         }
+        "chaos_usage" => {
+            let repo = args
+                .get("repo")
+                .and_then(Value::as_str)
+                .context("repo is required")?;
+            let target = args
+                .get("target")
+                .and_then(Value::as_str)
+                .context("target is required")?;
+            let opts = crate::usage::UsageOptions {
+                output_html: args
+                    .get("output_html")
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from),
+                limit: args.get("limit").and_then(Value::as_u64).unwrap_or(0) as usize,
+            };
+            // Embedder-free: literal sweep + reverse graph edges + surface nodes.
+            let summary = crate::usage::run(storage, repo, target, &opts).await?;
+            Ok(tool_text(serde_json::to_string_pretty(&summary)?))
+        }
         "chaos_compose" => {
             let repo = args
                 .get("repo")
@@ -1031,8 +1038,10 @@ WORKFLOWS
   grasp a big area   chaos_components {repo, area?}  — curated component overview with a read order (run BEFORE feature work)
   list features      chaos_features {repo | project, filter?}  — exhaustive inventory; filter auto-detects folder | layer (exact word OR by meaning: 'backend', 'client app') | topic; after composing your answer, call again with curation {groups: [{title, icon?, blurb?, features: [{label, note?}]}]} so the HTML carries your human domains + notes
   scope a change     chaos_change_plan {repo, change_description, since?}  — which features a change spans, in check order
-  gather evidence    chaos_feature_context {repo, task}  — implementation context; treat its warnings as blockers; FINISH the drill-down with chaos_write_feature_website so the explanation persists as a page
+  who uses X         chaos_usage {repo, target}  — cross-folder consumers of a symbol/env-var/header/route from the index (surface nodes + reverse edges + literal sweep), grouped by subfolder — use INSTEAD of rg/grep over the repo (embedder-free)
+  gather evidence    chaos_feature_context {repo, task}  — implementation context (COMPACT pointer return; full evidence + verbatim code in the written output_html under id=chaos-feature-context-data); treat its warnings as blockers; FINISH the drill-down with chaos_write_feature_website so the explanation persists as a page
   impact (before)    chaos_impact {repo, feature}  — how a proposed feature maps onto today's code, compact return + HTML
+  sui migration      chaos_sui_migration_impact {repo, source?}  — map each feature onto Sui primitives (objects/PTBs/events) + Walrus/Seal, embedder-free, compact return + HTML
   document (eng)     chaos_write_feature_website {repo, slug, title, manifest}  — OMIT html: Chaos renders the page from the manifest; manifest.purpose (REQUIRED) opens the page with what the feature was made for, manifest.examples[] add a clickable 'How you'd use it' section
   document (users)   chaos_write_storyboard {repo, slug, title, manifest}  — code-free feature guide for stakeholders
   compose a page     chaos_compose {repo, sections: [features|correlations|stack], persona?|level?, style?, filter?, feature_pages?}  — THE surface for any user-facing webpage/website request: ONE page (or a SITE: feature_pages=true adds one hash-gated, cross-linked page per feature with code/files, stack relations [smart contracts tagged], persona-fitted walkthrough); persona routes by meaning; style: editorial | blade-runner; brand_preset: molecule; everything content-hashed (cached: true = you already hold it, do NOT re-ingest); if it fails, REPORT the failure — never fake the page with shell tools
@@ -1385,6 +1394,7 @@ mod tests {
             "chaos_query",
             "chaos_feature_context",
             "chaos_impact",
+            "chaos_sui_migration_impact",
             "chaos_write_feature_website",
             "chaos_obsidian",
             "chaos_refresh",
@@ -1398,6 +1408,7 @@ mod tests {
             "chaos_graph",
             "chaos_pages",
             "chaos_gaps",
+            "chaos_usage",
         ] {
             assert!(AGENT_GUIDE.contains(tool), "guide missing {tool}");
         }

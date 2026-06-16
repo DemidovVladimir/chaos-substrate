@@ -1,12 +1,16 @@
+use crate::embedding::Embedder;
 use crate::provenance::{source, Breadcrumb};
-use crate::query::QueryResponse;
+use crate::query::{query_feature_context_repo, QueryResponse};
+use crate::storage::Storage;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{
     collections::{BTreeSet, HashSet},
     fs,
     path::{Path, PathBuf},
 };
+use uuid::Uuid;
 
 const MANIFEST_START: &str = r#"<script type="application/json" id="chaos-feature-manifest">"#;
 const MANIFEST_END: &str = "</script>";
@@ -196,19 +200,320 @@ fn default_schema_version() -> String {
     "legacy".to_string()
 }
 
-/// Cap on a matched node's code excerpt in TOOL RETURNS (full code stays in the
-/// generated HTML pages and, of course, in the repo itself).
-const MAX_RETURN_NODE_CODE_CHARS: usize = 600;
+/// Max one-line evidence pointers in a compact feature-context return. The full
+/// evidence — every hit, verbatim — stays in the written HTML.
+const MAX_EVIDENCE_LINES: usize = 24;
+/// Max shared symbols listed per correlated prior page in the compact return.
+const MAX_RELATED_SYMBOLS: usize = 8;
+/// Weak-overlap floor for a correlated prior page to appear in the compact
+/// return. `score_manifest` scores a page as `feature_text_matches * 3 +
+/// sum(node_text_matches)`, so a single stray node-token match scores 1–2 while
+/// any feature-text match (or the token recurring across ≥3 nodes) clears 3. The
+/// floor drops the weak-overlap tail from the agent's context; the full
+/// correlated set is still written to the HTML.
+const MIN_RELATED_PAGE_SCORE: usize = 3;
 
-/// Trim chunk contents and node code for a TOOL RETURN. Call AFTER any HTML
-/// write — generated pages keep the full evidence; the agent's context gets
-/// excerpts plus pointers.
-pub fn cap_response_for_return(response: &mut FeatureContextResponse) {
-    crate::query::cap_hits_for_return(&mut response.postgres.hits);
-    for feature in &mut response.feature_matches {
-        for node in &mut feature.matched_nodes {
-            node.code = crate::query::truncate_for_return(&node.code, MAX_RETURN_NODE_CODE_CHARS);
+const COMPACT_NEXT: &str = "This evidence is for a feature deep-dive — once you have composed your explanation, PERSIST it as the interactive page: chaos_write_feature_website {repo, slug, title, manifest} (manifest only, omit html). Verbatim code for every hit is embedded in the written output_html under <script id=\"chaos-feature-context-data\"> — extract it from there if you need code; do NOT re-read the repo or re-run retrieval.";
+
+/// Options for [`run`], shared by the CLI and MCP surfaces. Zero/None fall back to
+/// the same defaults the tool has always used (limit 10, feature_limit 3,
+/// nodes_per_feature 8; HTML to `docs/features_memory/<slug>-context.html`).
+#[derive(Debug, Default, Clone)]
+pub struct FeatureContextOptions {
+    pub features_dir: Option<PathBuf>,
+    pub output_html: Option<PathBuf>,
+    pub limit: i64,
+    pub feature_limit: usize,
+    pub nodes_per_feature: usize,
+}
+
+/// Compact, pointer-only feature-context return. Mirrors `chaos_impact`'s
+/// `ImpactSummary`: the heavy evidence (every hit's content, every correlated
+/// node's verbatim code) lives ONLY in the written HTML — this payload carries
+/// pointers so an MCP caller's context is never flooded. The agent pulls verbatim
+/// code from the embedded `chaos-feature-context-data` block when it needs it.
+#[derive(Debug, Serialize)]
+pub struct CompactFeatureContext {
+    pub status: &'static str,
+    pub repo_id: Uuid,
+    pub task: String,
+    /// Always written now — holds the full evidence + the extractable JSON block.
+    pub output_html: PathBuf,
+    pub counts: FeatureContextCounts,
+    /// One pointer line per deduped, ranked retrieval hit — no content/code.
+    pub evidence: Vec<EvidenceLine>,
+    /// Compact summaries of correlated prior feature pages (relevance-floored).
+    pub related_pages: Vec<RelatedPage>,
+    pub warnings: Vec<String>,
+    pub provenance: Vec<Breadcrumb>,
+    pub next: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FeatureContextCounts {
+    /// Total retrieval hits (before dedup/cap).
+    pub hits: usize,
+    /// Distinct evidence pointers after dedup (what `evidence` holds uncapped).
+    pub distinct: usize,
+    /// Per-channel contributions (OVERLAP — a hit can be in several channels).
+    pub semantic: usize,
+    pub keyword: usize,
+    pub literal: usize,
+    pub subject: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EvidenceLine {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+    pub file: String,
+    pub lines: String,
+    pub kind: String,
+    /// Relevance relative to this query's strongest hit (=100); the raw fusion
+    /// score is unbounded so a percentage is the comparable form.
+    pub relevance_pct: u32,
+    pub retrieved_by: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RelatedPage {
+    pub title: String,
+    pub domain: String,
+    pub page: String,
+    pub score: usize,
+    pub shared_symbols: Vec<String>,
+}
+
+impl CompactFeatureContext {
+    pub fn from_response(
+        repo_id: Uuid,
+        response: &FeatureContextResponse,
+        output_html: PathBuf,
+    ) -> Self {
+        let (semantic, keyword, literal, subject) = channel_counts(&response.postgres);
+        // Hits arrive score-desc; guard against an all-zero set.
+        let top_score = response
+            .postgres
+            .hits
+            .iter()
+            .map(|h| h.score)
+            .fold(0.0_f64, f64::max)
+            .max(1e-9);
+
+        // Evidence: one pointer per hit, deduped by symbol (else file+lines),
+        // keeping the first (strongest) occurrence.
+        let mut evidence: Vec<EvidenceLine> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        for hit in &response.postgres.hits {
+            let file = hit.file_path.clone().unwrap_or_default();
+            let lines = line_range(hit.line_start, hit.line_end);
+            let symbol = hit
+                .metadata
+                .get("symbol")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            // File-qualified key: a bare symbol name (e.g. `new`, `mint`) recurs
+            // across files, so keying on the name alone would merge distinct
+            // same-named symbols. Mirrors impact.rs's (name, file) dedup.
+            let key = match &symbol {
+                Some(s) => format!("sym:{file}|{s}"),
+                None => format!("loc:{file}|{lines}"),
+            };
+            if !seen.insert(key) {
+                continue;
+            }
+            let kind = hit
+                .metadata
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    if is_documentation_hit(hit) {
+                        "documentation".to_string()
+                    } else {
+                        "chunk".to_string()
+                    }
+                });
+            let retrieved_by = hit
+                .metadata
+                .get("retrieved_by")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            evidence.push(EvidenceLine {
+                symbol,
+                file,
+                lines,
+                kind,
+                relevance_pct: ((hit.score / top_score) * 100.0).round().clamp(0.0, 100.0) as u32,
+                retrieved_by,
+            });
         }
+        let distinct = evidence.len();
+        evidence.truncate(MAX_EVIDENCE_LINES);
+
+        // Related prior pages: compact summaries only, relevance-floored.
+        let related_pages: Vec<RelatedPage> = response
+            .feature_matches
+            .iter()
+            .filter(|m| m.score >= MIN_RELATED_PAGE_SCORE)
+            .map(|m| {
+                let title = if m.feature.title.is_empty() {
+                    m.title.clone()
+                } else {
+                    m.feature.title.clone()
+                };
+                let mut shared_symbols: Vec<String> = m
+                    .matched_nodes
+                    .iter()
+                    .filter(|n| !n.label.is_empty())
+                    .map(|n| n.label.clone())
+                    .collect();
+                shared_symbols.truncate(MAX_RELATED_SYMBOLS);
+                RelatedPage {
+                    title,
+                    domain: m.feature.domain.clone(),
+                    page: m
+                        .page
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    score: m.score,
+                    shared_symbols,
+                }
+            })
+            .collect();
+
+        let dropped = response.feature_matches.len() - related_pages.len();
+        let mut provenance = response.provenance.clone();
+        provenance.push(Breadcrumb::new(
+            source::GRAPH,
+            "compact_feature_context",
+            format!(
+                "compacted {} hit(s) → {distinct} deduped pointer(s) (showing {}); kept {} correlated page(s), dropped {dropped} below the relevance floor (score < {MIN_RELATED_PAGE_SCORE}). Full evidence stays in the HTML.",
+                response.postgres.hits.len(),
+                evidence.len(),
+                related_pages.len(),
+            ),
+        ));
+
+        CompactFeatureContext {
+            status: "ok",
+            repo_id,
+            task: response.task.clone(),
+            output_html,
+            counts: FeatureContextCounts {
+                hits: response.postgres.hits.len(),
+                distinct,
+                semantic,
+                keyword,
+                literal,
+                subject,
+            },
+            evidence,
+            related_pages,
+            warnings: response.warnings.clone(),
+            provenance,
+            next: COMPACT_NEXT,
+        }
+    }
+}
+
+fn line_range(start: Option<i32>, end: Option<i32>) -> String {
+    match (start, end) {
+        (Some(s), Some(e)) if s != e => format!("{s}-{e}"),
+        (Some(s), _) => s.to_string(),
+        _ => "n/a".into(),
+    }
+}
+
+/// Run `chaos feature-context`: focused retrieval → ALWAYS-written HTML (full
+/// evidence + the agent-extractable `chaos-feature-context-data` block) → a
+/// COMPACT pointer-only return. The single entry point for both the CLI and MCP
+/// surfaces, mirroring [`crate::impact::run`].
+pub async fn run(
+    storage: &Storage,
+    embedder: &dyn Embedder,
+    repo: &str,
+    task: &str,
+    opts: &FeatureContextOptions,
+) -> Result<Value> {
+    let repo = storage
+        .find_repository(repo)
+        .await?
+        .with_context(|| format!("repository is not indexed: {repo}"))?;
+    let repo_root = PathBuf::from(&repo.root_path);
+    let features_dir = opts
+        .features_dir
+        .clone()
+        .unwrap_or_else(|| repo_root.join("docs/features_memory"));
+    let limit = if opts.limit > 0 { opts.limit } else { 10 };
+    let feature_limit = if opts.feature_limit > 0 {
+        opts.feature_limit
+    } else {
+        3
+    };
+    let nodes_per_feature = if opts.nodes_per_feature > 0 {
+        opts.nodes_per_feature
+    } else {
+        8
+    };
+
+    let postgres = query_feature_context_repo(storage, repo.id, embedder, task, limit).await?;
+    let warnings = build_feature_context_warnings(task, &repo_root, &postgres);
+    let feature_matches =
+        load_feature_matches(task, &features_dir, feature_limit, nodes_per_feature)?;
+    let provenance = feature_context_provenance(&postgres, &features_dir, &feature_matches);
+    let response = FeatureContextResponse {
+        task: task.to_string(),
+        postgres,
+        features_dir,
+        warnings,
+        feature_matches,
+        provenance,
+    };
+
+    // ALWAYS write the HTML — it carries the full evidence and the
+    // agent-extractable JSON; the returned payload stays compact.
+    let output = opts.output_html.clone().unwrap_or_else(|| {
+        repo_root
+            .join("docs/features_memory")
+            .join(format!("{}-context.html", safe_slug(task)))
+    });
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    write_feature_context_html(&output, &response)?;
+
+    let compact = CompactFeatureContext::from_response(repo.id, &response, output);
+    Ok(serde_json::to_value(compact)?)
+}
+
+fn safe_slug(input: &str) -> String {
+    let slug = input
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if slug.is_empty() {
+        "feature".to_string()
+    } else {
+        slug.chars().take(80).collect::<String>()
     }
 }
 
@@ -554,6 +859,29 @@ pub fn correlate_feature_manifests(
     Ok(out)
 }
 
+/// Per-channel hit contributions `(semantic, keyword, literal, subject)`. These
+/// OVERLAP: fusion unions every channel that found a chunk onto one hit, so a hit
+/// matched by two channels is counted in both and the totals need not sum to the
+/// hit count. Shared by [`feature_context_provenance`] and
+/// [`CompactFeatureContext`] so the breadcrumb and the counts block never drift.
+pub fn channel_counts(postgres: &QueryResponse) -> (usize, usize, usize, usize) {
+    let (mut semantic, mut keyword, mut literal, mut subject) = (0usize, 0usize, 0usize, 0usize);
+    for hit in &postgres.hits {
+        if let Some(methods) = hit.metadata.get("retrieved_by").and_then(|v| v.as_array()) {
+            for method in methods {
+                match method.as_str() {
+                    Some("semantic") => semantic += 1,
+                    Some("keyword") => keyword += 1,
+                    Some("literal") => literal += 1,
+                    Some("subject") => subject += 1,
+                    _ => {}
+                }
+            }
+        }
+    }
+    (semantic, keyword, literal, subject)
+}
+
 /// Build the artifact-level breadcrumbs for a feature-context / impact response:
 /// how the evidence was retrieved (the hybrid Postgres pipeline, with a
 /// per-channel breakdown) and how many prior manifests were scanned/matched.
@@ -570,20 +898,7 @@ pub fn feature_context_provenance(
     features_dir: &Path,
     feature_matches: &[FeatureMatch],
 ) -> Vec<Breadcrumb> {
-    let (mut semantic, mut keyword, mut literal, mut subject) = (0usize, 0usize, 0usize, 0usize);
-    for hit in &postgres.hits {
-        if let Some(methods) = hit.metadata.get("retrieved_by").and_then(|v| v.as_array()) {
-            for method in methods {
-                match method.as_str() {
-                    Some("semantic") => semantic += 1,
-                    Some("keyword") => keyword += 1,
-                    Some("literal") => literal += 1,
-                    Some("subject") => subject += 1,
-                    _ => {}
-                }
-            }
-        }
-    }
+    let (semantic, keyword, literal, subject) = channel_counts(postgres);
     vec![
         Breadcrumb::new(
             source::POSTGRES,
@@ -702,8 +1017,9 @@ pre{margin:12px 0 0;padding:14px;border-radius:var(--radius-md);background:var(-
 </div>
 </main>
 <footer><div class="wrap">__BRAND_FOOTER__<span class="sp"></span><span class="meta">generated by Chaos Substrate</span></div></footer>
+<script type="application/json" id="chaos-feature-context-data">__CONTEXT__</script>
 <script>
-const data=__CONTEXT__;
+const data=JSON.parse(document.getElementById("chaos-feature-context-data").textContent);
 function esc(v){return String(v??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;")}
 function isDoc(h){return h?.metadata?.source_priority==="supplemental"||h?.metadata?.kind==="documentation"}
 function sourceTag(h){return isDoc(h)?'<span class="tag doc">docs</span>':'<span class="tag">code</span>'}
@@ -886,5 +1202,158 @@ mod tests {
         assert!(detail.contains("literal 0"), "{detail}");
         assert!(detail.contains("subject 5"), "{detail}");
         assert!(detail.contains("overlapping"), "{detail}");
+    }
+
+    #[test]
+    fn compact_feature_context_dedups_evidence_and_floors_related() {
+        use crate::models::SearchHit;
+        use crate::query::QueryResponse;
+        use std::path::PathBuf;
+        use uuid::Uuid;
+
+        fn hit(file: &str, line: i32, score: f64, symbol: Option<&str>) -> SearchHit {
+            let mut meta = json!({ "retrieved_by": ["semantic"], "kind": "function" });
+            if let Some(s) = symbol {
+                meta["symbol"] = json!(s);
+            }
+            SearchHit {
+                chunk_id: Uuid::new_v4(),
+                node_id: None,
+                file_path: Some(file.to_string()),
+                line_start: Some(line),
+                line_end: Some(line + 10),
+                score,
+                content: "x".repeat(5000), // proves content is NOT in the compact return
+                metadata: meta,
+            }
+        }
+
+        fn fmatch(title: &str, score: usize) -> super::FeatureMatch {
+            super::FeatureMatch {
+                page: PathBuf::from(format!("/x/{title}.html")),
+                feature: super::FeatureDefinition {
+                    id: title.to_string(),
+                    title: title.to_string(),
+                    domain: "auth".to_string(),
+                    summary: String::new(),
+                },
+                title: title.to_string(),
+                subtitle: String::new(),
+                score,
+                claims: Vec::new(),
+                modes: Vec::new(),
+                story: Vec::new(),
+                matched_nodes: Vec::new(),
+                related_edges: Vec::new(),
+                provenance: Vec::new(),
+            }
+        }
+
+        let response = super::FeatureContextResponse {
+            task: "service token".to_string(),
+            postgres: QueryResponse {
+                hits: vec![
+                    hit("a.ts", 10, 0.9, Some("mint")), // strongest
+                    hit("a.ts", 99, 0.5, Some("mint")), // dup SYMBOL -> dropped
+                    hit("b.ts", 20, 0.45, None),        // distinct by (file,lines)
+                ],
+                context_paths: Vec::new(),
+            },
+            features_dir: PathBuf::from("/x"),
+            warnings: Vec::new(),
+            feature_matches: vec![fmatch("real", 9), fmatch("noise", 2)],
+            provenance: Vec::new(),
+        };
+
+        let compact = super::CompactFeatureContext::from_response(
+            Uuid::nil(),
+            &response,
+            PathBuf::from("/x/out.html"),
+        );
+
+        // counts.hits is the RAW total; evidence is deduped 3 -> 2.
+        assert_eq!(compact.counts.hits, 3);
+        assert_eq!(compact.counts.distinct, 2);
+        assert_eq!(compact.evidence.len(), 2);
+        assert_eq!(compact.counts.semantic, 3);
+        // Strongest hit normalizes to 100%; the deduped survivor is the high score.
+        assert_eq!(compact.evidence[0].symbol.as_deref(), Some("mint"));
+        assert_eq!(compact.evidence[0].relevance_pct, 100);
+        // The relevance floor drops the score-2 page, keeps the score-9 page.
+        assert_eq!(compact.related_pages.len(), 1);
+        assert_eq!(compact.related_pages[0].title, "real");
+
+        // The compact return must not carry the 5000-char chunk content anywhere.
+        let serialized = serde_json::to_string(&compact).unwrap();
+        assert!(!serialized.contains(&"x".repeat(100)));
+    }
+
+    #[test]
+    fn compact_feature_context_keeps_same_named_symbols_in_different_files() {
+        use crate::models::SearchHit;
+        use crate::query::QueryResponse;
+        use std::path::PathBuf;
+        use uuid::Uuid;
+
+        fn hit(file: &str, score: f64, symbol: &str) -> SearchHit {
+            SearchHit {
+                chunk_id: Uuid::new_v4(),
+                node_id: None,
+                file_path: Some(file.to_string()),
+                line_start: Some(1),
+                line_end: Some(9),
+                score,
+                content: String::new(),
+                metadata: json!({ "retrieved_by": ["semantic"], "kind": "function", "symbol": symbol }),
+            }
+        }
+
+        // Two genuinely distinct `mint` symbols in different files must NOT merge.
+        let response = super::FeatureContextResponse {
+            task: "mint".to_string(),
+            postgres: QueryResponse {
+                hits: vec![hit("a.ts", 0.9, "mint"), hit("b.ts", 0.8, "mint")],
+                context_paths: Vec::new(),
+            },
+            features_dir: PathBuf::from("/x"),
+            warnings: Vec::new(),
+            feature_matches: Vec::new(),
+            provenance: Vec::new(),
+        };
+        let compact = super::CompactFeatureContext::from_response(
+            Uuid::nil(),
+            &response,
+            PathBuf::from("/x/out.html"),
+        );
+        assert_eq!(
+            compact.counts.distinct, 2,
+            "same-named symbols in different files must stay distinct"
+        );
+        assert_eq!(compact.evidence.len(), 2);
+    }
+
+    #[test]
+    fn feature_context_html_embeds_idtagged_json() {
+        use crate::query::QueryResponse;
+        use std::path::PathBuf;
+
+        let response = super::FeatureContextResponse {
+            task: "svc".to_string(),
+            postgres: QueryResponse {
+                hits: Vec::new(),
+                context_paths: Vec::new(),
+            },
+            features_dir: PathBuf::from("/x"),
+            warnings: Vec::new(),
+            feature_matches: Vec::new(),
+            provenance: Vec::new(),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("svc-context.html");
+        super::write_feature_context_html(&out, &response).unwrap();
+        let html = fs::read_to_string(&out).unwrap();
+        assert!(html.contains(r#"id="chaos-feature-context-data""#));
+        assert!(html.contains("JSON.parse"));
+        assert!(html.contains("Feature evidence"));
     }
 }

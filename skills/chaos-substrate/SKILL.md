@@ -74,15 +74,17 @@ If MCP tools are available, prefer them over shelling out:
 5. Use `chaos_feature_context` when the user asks to explain a feature, prepare implementation
    context, or generate a feature explanation. Hits carry `metadata.retrieved_by`
    (semantic/keyword/literal), and the response includes top-level **provenance breadcrumbs**.
-   It gathers evidence but writes NO page — a drill-down is not done until you persist the
-   composed explanation with `chaos_write_feature_website` (its return carries a `next` reminder).
-   Chat-only explanations are lost when the session ends.
+   It returns a COMPACT pointer-only payload and ALWAYS writes a compact evidence HTML (full
+   verbatim code embedded under `id="chaos-feature-context-data"`), but the deliverable feature page
+   still comes from `chaos_write_feature_website` — a drill-down is not done until you persist the
+   composed explanation there (its return carries a `next` reminder). Chat-only explanations are
+   lost when the session ends.
 6. Use `chaos_impact` to build a feature-vs-existing-code impact report for an indexed repo. It
    ALWAYS writes an interactive HTML (impact summary plus evidence dashboard) to
    `docs/features_memory/<slug>-impact.html` and returns a COMPACT JSON summary — counts plus the
    existing files/symbols the feature touches, warnings, **provenance breadcrumbs**, and the HTML
-   path. The full evidence lives only in the HTML, so it will not flood an agent context like a raw
-   `chaos_feature_context` dump. Use it to see how a proposed feature maps onto the codebase as it
+   path. The full evidence lives only in the HTML, so it will not flood an agent context. Use it
+   to see how a proposed feature maps onto the codebase as it
    exists today (the before). It mirrors the `chaos impact <repo> <feature>` CLI command.
 7. Use `chaos_sui_migration_impact` to produce a **Sui migration impact report** for an indexed
    Ethereum, Solana, or mixed Web3 repo. It auto-detects the source stack (or you specify
@@ -318,6 +320,20 @@ If MCP tools are available, prefer them over shelling out:
     already hold instead of re-ingesting the manifest as new memory. It mirrors
     `chaos compose <repo> --sections features,correlations,stack [--persona "…"] [--level …]
     [--style …] [--filter …]`.
+22. Use `chaos_usage` to answer "WHO CONSUMES this across the codebase?" for a symbol or surface
+    string — an env var, an HTTP header, a route, a function — grouped by top-level subfolder. It is
+    the chaos-native replacement for `rg`/`grep` on the target repo: it resolves consumers from the
+    persisted index ONLY — user-surface `env_var`/`http_route`/`cli_command` nodes, reverse graph
+    edges (`calls`/`imports`/`uses_type`/`implements`/`tests`/`depends_on`), and a literal chunk
+    sweep — never by re-reading source files. Pass `repo` and the `target` string. It ALWAYS writes
+    an interactive HTML report to `docs/features_memory/<slug>-usage.html` (embedding a
+    `chaos-usage-manifest` an agent can extract) and returns a COMPACT per-folder JSON summary —
+    consumer sites grouped by subfolder, capped with `sites_omitted` counts, plus provenance and the
+    HTML path. Read-only and embedder-free. Honest limitation, surfaced as a warning: call/import
+    edges resolve cross-file only for repo-unique names (an ambiguous name like `run`/`handle` is not
+    bound across files). Use it instead of grepping the target repo when the user asks where a
+    symbol/env var/route is used or who depends on it. It mirrors the `chaos usage <repo> <target>`
+    CLI command.
 
 NEVER answer feature-extraction questions about an indexed repo by falling back to `rg`/`grep`,
 `ls`, or generated scripts against the target repo: retrieval goes through `chaos_query` /
@@ -495,8 +511,8 @@ Use a real Postgres database with pgvector for persistence tests. Use real OpenA
 - MCP transport is stdio.
 - The process should be launched directly by the agent client.
 - Keep stdout protocol-clean; diagnostics should go to stderr or structured logging that does not corrupt MCP messages.
-- The MCP server exposes TWENTY-TWO tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_pages`, `chaos_gaps`, `chaos_query`,
-  `chaos_feature_context`, `chaos_impact`, `chaos_sui_migration_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
+- The MCP server exposes TWENTY-THREE tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_pages`, `chaos_gaps`, `chaos_query`,
+  `chaos_feature_context`, `chaos_impact`, `chaos_usage`, `chaos_sui_migration_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
   `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_compose`, `chaos_project`, `chaos_help`, `chaos_clean`, and `chaos_graph`.
 - `chaos_add` incrementally indexes only git-changed files (or explicit `paths`), refreshes the
   Obsidian vault, and writes a feature/bug page in one call; use it instead of a full
@@ -517,8 +533,17 @@ Use a real Postgres database with pgvector for persistence tests. Use real OpenA
   writes an interactive HTML (impact summary plus evidence dashboard) to
   `docs/features_memory/<slug>-impact.html` and returns a COMPACT summary — counts plus the existing
   files/symbols the feature touches, warnings, provenance breadcrumbs, and the HTML path — keeping the
-  full evidence in the HTML only so it will not flood an agent context like a raw
-  `chaos_feature_context` dump. It mirrors the `chaos impact <repo> <feature>` CLI command.
+  full evidence in the HTML only so it will not flood an agent context. It mirrors the `chaos impact <repo> <feature>` CLI command.
+- `chaos_usage` reports WHO CONSUMES a symbol or surface string (env var, HTTP header, route,
+  function) across the repo, grouped by top-level subfolder — the cross-folder "who uses this?"
+  answer resolved from the persisted index ONLY (user-surface `env_var`/`http_route`/`cli_command`
+  nodes + reverse graph edges `calls`/`imports`/`uses_type`/`implements`/`tests`/`depends_on` + a
+  literal chunk sweep), so it replaces `rg`/`grep` on the target repo. Read-only and embedder-free.
+  It ALWAYS writes an interactive HTML report to `docs/features_memory/<slug>-usage.html` (embedding
+  a `chaos-usage-manifest`) and returns a COMPACT per-folder JSON summary — consumer sites grouped by
+  subfolder, capped with `sites_omitted` counts, plus provenance and the HTML path. Honest limitation
+  surfaced as a warning: call/import edges resolve cross-file only for repo-unique names. It mirrors
+  the `chaos usage <repo> <target>` CLI command.
 - `chaos_write_feature_website` is the MCP-safe write path for LLM-composed feature explanation
   pages with embedded `chaos-feature-manifest` JSON.
 - `chaos_obsidian` exports an already-indexed repository as an Obsidian vault read from the

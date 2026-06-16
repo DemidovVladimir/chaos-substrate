@@ -49,7 +49,7 @@ hybrid retrieval  ──  src/query.rs
   ▼
 outputs
   ├─ CLI results (JSON on stdout)              ──  src/main.rs
-  ├─ MCP tools (22)                            ──  src/mcp.rs
+  ├─ MCP tools (23)                            ──  src/mcp.rs
   ├─ interactive graph.html                    ──  src/graph_export.rs
   ├─ Obsidian vault                            ──  src/obsidian_export.rs
   └─ feature context + feature websites        ──  src/feature_context.rs, src/feature_export.rs
@@ -200,8 +200,8 @@ no-change re-index does zero summary work. Recorded design verdicts:
 
 ## MCP Tools
 
-The stdio MCP server exposes exactly twenty-two tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`,
-`chaos_pages`, `chaos_gaps`, `chaos_query`, `chaos_feature_context`, `chaos_impact`,
+The stdio MCP server exposes exactly twenty-three tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`,
+`chaos_pages`, `chaos_gaps`, `chaos_query`, `chaos_feature_context`, `chaos_impact`, `chaos_usage`,
 `chaos_sui_migration_impact`, `chaos_write_feature_website`,
 `chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_compose`, `chaos_project`, `chaos_help`, `chaos_clean`, and `chaos_graph`. See the **MCP Tools** section of `README.md` for the
 canonical reference of names, arguments, and intended usage.

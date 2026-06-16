@@ -4,6 +4,46 @@ All notable changes to Chaos Substrate are documented here. Versions before
 0.12.0 predate this file; see the git history (`P0`–`P5` commits) for the
 hierarchical-memory build-out.
 
+## 0.21.0 — 2026-06-16
+
+The cross-folder consumer-lookup + compact-context release: a 23rd tool answers
+"who uses this across the repo?" from the index alone (no `rg` on the target
+repo), and `chaos_feature_context` stops dumping its full evidence into the
+agent's context — it now writes the page and returns a pointer, exactly like
+`chaos_impact`. No migration: both changes are read/return-shape only.
+
+### Added — `chaos_usage` MCP tool + `chaos usage` CLI (23 tools)
+
+- A read-only, embedder-free surface that answers WHO CONSUMES a symbol or
+  surface string (env var, HTTP header, route, function) across the repo,
+  grouped by top-level subfolder — the cross-folder "who uses this?" question an
+  agent previously could only answer by falling back to `rg`/`grep` on the
+  target repo. It resolves consumers from the persisted index ONLY: the
+  user-surface nodes (`env_var` / `http_route` / `cli_command`), the reverse
+  graph edges (`calls` / `imports` / `uses_type` / `implements` / `tests` /
+  `depends_on`), and a literal chunk sweep — never by re-reading source files.
+  Takes `repo` + `target`. ALWAYS writes an interactive HTML report to
+  `docs/features_memory/<slug>-usage.html` (embedded `chaos-usage-manifest`,
+  recognised by `chaos_pages`) and returns a COMPACT per-folder JSON summary
+  (consumer sites grouped by subfolder, capped lists with `sites_omitted`
+  counts, provenance breadcrumbs, and the HTML path). Honest limitation,
+  surfaced as a warning: call/import edges resolve cross-file only for
+  repo-unique names — an ambiguous name (`run`, `handle`) is not bound across
+  files.
+
+### Changed — `chaos_feature_context` now returns a compact pointer-only payload and always writes its HTML
+
+- `chaos_feature_context` mirrors `chaos_impact`: it ALWAYS writes its
+  interactive HTML and returns only a COMPACT pointer payload — counts,
+  one-line deduped evidence with NO chunk content/code, relevance-floored
+  `related_pages`, warnings, provenance, the `output_html` path, and a `next`
+  reminder. The FULL verbatim evidence (with code) now lives ONLY in the
+  written page, under an extractable `id="chaos-feature-context-data"` block.
+  Previously the tool returned the entire evidence dump under
+  `wrote_html`/`context`/`next`, which could be a multi-thousand-line return
+  that forced agents to spill it to a file; the pointer-only shape keeps the
+  return inline while preserving every byte of evidence in the HTML.
+
 ## 0.20.0 — 2026-06-14
 
 The retrieval-quality + Sui-impact release, and the point where the accumulated

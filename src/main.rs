@@ -37,6 +37,7 @@ mod struct_features;
 mod sui_docs;
 mod sui_migration;
 mod theme;
+mod usage;
 mod user_story;
 mod user_surface;
 mod weights;
@@ -47,14 +48,10 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use embedding::build_embedder;
 use extractor::{current_commit, RustRepositoryExtractor};
-use feature_context::{
-    build_feature_context_warnings, feature_context_provenance, load_feature_matches,
-    write_feature_context_html, FeatureContextResponse,
-};
 use feature_export::refresh_project_exports;
 use graph_export::write_graph_html;
 use obsidian_export::write_obsidian_vault;
-use query::{query_feature_context_repo, query_repo};
+use query::query_repo;
 use serde_json::json;
 use std::path::PathBuf;
 use storage::Storage;
@@ -270,6 +267,23 @@ enum Commands {
         /// Representative members (symbols/files) loaded per component.
         #[arg(long, default_value_t = 12)]
         top_members: usize,
+    },
+    /// Find who CONSUMES a symbol or surface string across the repo, grouped by
+    /// subfolder — the cross-folder "who uses this?" answer from the index, so
+    /// you never grep the target repo. Combines user-surface nodes (env vars,
+    /// routes), reverse code edges (calls/imports), and a literal sweep. Writes
+    /// an interactive HTML report into docs/features_memory and prints a compact
+    /// JSON summary. Read-only and embedder-free.
+    Usage {
+        repo: String,
+        /// The symbol / env-var / header / route string whose consumers to find.
+        target: String,
+        /// Override the default docs/features_memory/<slug>-usage.html path.
+        #[arg(long)]
+        output_html: Option<PathBuf>,
+        /// Use sites listed per subfolder in the compact return.
+        #[arg(long, default_value_t = 6)]
+        limit: usize,
     },
     /// List ALL god-node features (L1 communities), grouped by journey layer.
     /// The optional filter is auto-detected: a path / real directory → folder
@@ -761,34 +775,18 @@ async fn main() -> Result<()> {
         } => {
             let storage = Storage::connect(&config.storage.database_url).await?;
             let embedder = build_embedder(&config.embedding)?;
-            let repo = storage
-                .find_repository(&repo)
-                .await?
-                .with_context(|| format!("repository is not indexed: {repo}"))?;
-            let repo_root = PathBuf::from(&repo.root_path);
-            let features_dir =
-                features_dir.unwrap_or_else(|| repo_root.join("docs/features_memory"));
-            let postgres =
-                query_feature_context_repo(&storage, repo.id, embedder.as_ref(), &task, limit)
-                    .await?;
-            let warnings = build_feature_context_warnings(&task, &repo_root, &postgres);
-            let feature_matches =
-                load_feature_matches(&task, &features_dir, feature_limit, nodes_per_feature)?;
-            let provenance = feature_context_provenance(&postgres, &features_dir, &feature_matches);
-            let mut response = FeatureContextResponse {
-                task,
-                postgres,
+            let opts = feature_context::FeatureContextOptions {
                 features_dir,
-                warnings,
-                feature_matches,
-                provenance,
+                output_html,
+                limit,
+                feature_limit,
+                nodes_per_feature,
             };
-            if let Some(output_html) = output_html {
-                // The HTML keeps the FULL evidence; the printed JSON gets excerpts.
-                write_feature_context_html(&output_html, &response)?;
-            }
-            feature_context::cap_response_for_return(&mut response);
-            println!("{}", serde_json::to_string_pretty(&response)?);
+            // ALWAYS writes the HTML (full evidence + extractable JSON); prints a
+            // compact pointer-only summary instead of the raw evidence dump.
+            let summary =
+                feature_context::run(&storage, embedder.as_ref(), &repo, &task, &opts).await?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
         }
         Commands::Impact {
             repo,
@@ -862,6 +860,18 @@ async fn main() -> Result<()> {
             };
             let summary =
                 components::run(&storage, embedder.as_ref(), &repo, area.as_deref(), &opts).await?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
+        Commands::Usage {
+            repo,
+            target,
+            output_html,
+            limit,
+        } => {
+            let storage = Storage::connect(&config.storage.database_url).await?;
+            // Embedder-free: literal sweep + reverse graph edges + surface nodes.
+            let opts = usage::UsageOptions { output_html, limit };
+            let summary = usage::run(&storage, &repo, &target, &opts).await?;
             println!("{}", serde_json::to_string_pretty(&summary)?);
         }
         Commands::Compose {

@@ -433,8 +433,8 @@ Use the release binary directly:
 target/release/chaos --config chaos-substrate.toml mcp
 ```
 
-Exposes exactly 22 tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_pages`, `chaos_gaps`, `chaos_query`,
-`chaos_feature_context`, `chaos_impact`, `chaos_sui_migration_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
+Exposes exactly 23 tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_pages`, `chaos_gaps`, `chaos_query`,
+`chaos_feature_context`, `chaos_impact`, `chaos_usage`, `chaos_sui_migration_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
 `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_compose`, `chaos_project`, `chaos_help`, `chaos_clean`, `chaos_graph` (see README.md "MCP Tools" for the
 full reference).
 
@@ -459,7 +459,7 @@ chaos setup --scope user              # scope: user | local | project
 chaos setup --scope project
 ```
 
-Claude Code — full plugin (skill + 22 MCP tools + hooks) or MCP server only:
+Claude Code — full plugin (skill + 23 MCP tools + hooks) or MCP server only:
 
 ```sh
 claude --plugin-dir /abs/path/to/chaos-substrate     # plugin, local testing
