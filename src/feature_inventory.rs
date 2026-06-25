@@ -1533,7 +1533,7 @@ fn lexical_tokens(text: &str) -> Vec<String> {
     tokens
 }
 
-fn distinct_files(members: &[(String, String, String)]) -> Vec<String> {
+pub(crate) fn distinct_files(members: &[(String, String, String)]) -> Vec<String> {
     let mut seen: HashSet<&str> = HashSet::new();
     let mut out: Vec<String> = Vec::new();
     for (_, _, path) in members {
@@ -1547,7 +1547,7 @@ fn distinct_files(members: &[(String, String, String)]) -> Vec<String> {
 /// Distinct top-level folders the files live in (first two path segments, or the
 /// first if that is all there is), most-frequent first. The "where does this
 /// feature live" summary line.
-fn top_folders(files: &[String]) -> Vec<String> {
+pub(crate) fn top_folders(files: &[String]) -> Vec<String> {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for f in files {
         let segs: Vec<&str> = f.split('/').filter(|s| !s.is_empty()).collect();

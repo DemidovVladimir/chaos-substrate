@@ -1648,6 +1648,72 @@ impl Storage {
         Ok(rows.into_iter().map(row_to_search_hit).collect())
     }
 
+    /// Like [`semantic_search`] but restricted to DOCUMENTATION chunks
+    /// (`documentation` / `pdf_documentation`). Used by the feature-story
+    /// supersession pass so prose evidence ("X replaces Y") is not drowned out
+    /// by code chunks.
+    pub async fn semantic_search_docs(
+        &self,
+        repo_id: Uuid,
+        provider: &str,
+        model_id: &str,
+        dimensions: usize,
+        query_embedding: &[f32],
+        limit: i64,
+    ) -> Result<Vec<SearchHit>> {
+        let literal = vector_literal(query_embedding);
+        let rows = sqlx::query(
+            r#"
+            select c.id as chunk_id, c.node_id, f.path as file_path, c.line_start, c.line_end,
+                   1.0 - (e.embedding <=> $5::vector) as score, c.content, c.metadata
+            from embeddings e
+            join chunks c on c.id = e.chunk_id
+            left join files f on f.id = c.file_id
+            where c.repo_id = $1 and e.provider = $2 and e.model_id = $3 and e.dimensions = $4
+              and c.chunk_type in ('documentation', 'pdf_documentation')
+            order by e.embedding <=> $5::vector
+            limit $6
+            "#,
+        )
+        .bind(repo_id)
+        .bind(provider)
+        .bind(model_id)
+        .bind(dimensions as i32)
+        .bind(literal)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(row_to_search_hit).collect())
+    }
+
+    /// Like [`keyword_search`] but restricted to DOCUMENTATION chunks.
+    pub async fn keyword_search_docs(
+        &self,
+        repo_id: Uuid,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<SearchHit>> {
+        let rows = sqlx::query(
+            r#"
+            select c.id as chunk_id, c.node_id, f.path as file_path, c.line_start, c.line_end,
+                   ts_rank_cd(c.search_vector, websearch_to_tsquery('english', $2))::float8 as score,
+                   c.content, c.metadata
+            from chunks c
+            left join files f on f.id = c.file_id
+            where c.repo_id = $1 and c.search_vector @@ websearch_to_tsquery('english', $2)
+              and c.chunk_type in ('documentation', 'pdf_documentation')
+            order by score desc
+            limit $3
+            "#,
+        )
+        .bind(repo_id)
+        .bind(query)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(row_to_search_hit).collect())
+    }
+
     pub async fn keyword_search(
         &self,
         repo_id: Uuid,
@@ -2171,16 +2237,32 @@ impl Storage {
         repo_id: Uuid,
         alias: &str,
     ) -> Result<()> {
+        self.add_member_to_project(project_id, repo_id, alias, false)
+            .await
+    }
+
+    /// Attach a member to a project, flagging whether it is a project-level DOCS
+    /// source (vs a code repo). `add_repo_to_project` is the code-repo shorthand.
+    pub async fn add_member_to_project(
+        &self,
+        project_id: Uuid,
+        repo_id: Uuid,
+        alias: &str,
+        is_project_docs: bool,
+    ) -> Result<()> {
         sqlx::query(
             r#"
-            insert into project_repos (project_id, repo_id, alias, added_at)
-            values ($1, $2, $3, now())
-            on conflict (project_id, repo_id) do update set alias = excluded.alias
+            insert into project_repos (project_id, repo_id, alias, is_project_docs, added_at)
+            values ($1, $2, $3, $4, now())
+            on conflict (project_id, repo_id)
+              do update set alias = excluded.alias,
+                            is_project_docs = excluded.is_project_docs
             "#,
         )
         .bind(project_id)
         .bind(repo_id)
         .bind(alias.trim())
+        .bind(is_project_docs)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -2192,7 +2274,8 @@ impl Storage {
         let rows = sqlx::query(
             r#"
             select r.id, r.name, r.root_path, r.remote_url, r.current_commit_sha,
-                   r.created_at, r.updated_at, pr.alias, pr.linked_repo_hash
+                   r.created_at, r.updated_at, pr.alias, pr.linked_repo_hash,
+                   pr.is_project_docs
             from project_repos pr
             join repositories r on r.id = pr.repo_id
             where pr.project_id = $1
@@ -2216,6 +2299,7 @@ impl Storage {
                 },
                 alias: row.get("alias"),
                 linked_repo_hash: row.get("linked_repo_hash"),
+                is_project_docs: row.get("is_project_docs"),
             })
             .collect())
     }

@@ -334,6 +334,22 @@ If MCP tools are available, prefer them over shelling out:
     bound across files). Use it instead of grepping the target repo when the user asks where a
     symbol/env var/route is used or who depends on it. It mirrors the `chaos usage <repo> <target>`
     CLI command.
+23. Use `chaos_feature_story` to tell the CROSS-REPO STORY of one feature across a PROJECT — the
+    focused, single-feature counterpart to `chaos_features --project` (which inventories ALL
+    features). Pass `project` and a free-text `feature`. It matches the feature in EVERY member repo
+    (L1 community semantic search + a lexical label fallback), loads the persisted cross-repo links
+    and TRAVERSES them — pulling in a link's other endpoint (e.g. a Solidity contract a client calls)
+    even when the query didn't match it directly — then orders the involved features into a
+    journey-layer spine (entry → interface → core → foundation = client → backend → contracts). It
+    writes a CLICKABLE MULTI-PAGE SITE to the project workspace (an index page = the spine + the
+    cross-repo link chain + repos not involved; one hash-gated drill-down page per involved feature
+    with its code/files, cross-repo links cross-linked + smart-contract tagged, prior overlapping
+    pages, and a deterministic walkthrough) and returns a COMPACT JSON summary (involved repos, the
+    ordered link chain, links_by_kind, not-involved repos, the site summary, provenance,
+    `content_hash`) — narrate the returned spine for the user; the full detail lives in the HTML.
+    Deterministic and embedder-light (ONE embed for the whole query, reused across repos). It mirrors
+    the `chaos feature-story <project> "<feature>"` CLI command, and is distinct from `chaos_compose`
+    (one repo's composed page).
 
 NEVER answer feature-extraction questions about an indexed repo by falling back to `rg`/`grep`,
 `ls`, or generated scripts against the target repo: retrieval goes through `chaos_query` /
@@ -511,9 +527,9 @@ Use a real Postgres database with pgvector for persistence tests. Use real OpenA
 - MCP transport is stdio.
 - The process should be launched directly by the agent client.
 - Keep stdout protocol-clean; diagnostics should go to stderr or structured logging that does not corrupt MCP messages.
-- The MCP server exposes TWENTY-THREE tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_pages`, `chaos_gaps`, `chaos_query`,
+- The MCP server exposes TWENTY-FOUR tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_pages`, `chaos_gaps`, `chaos_query`,
   `chaos_feature_context`, `chaos_impact`, `chaos_usage`, `chaos_sui_migration_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
-  `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_compose`, `chaos_project`, `chaos_help`, `chaos_clean`, and `chaos_graph`.
+  `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_compose`, `chaos_project`, `chaos_feature_story`, `chaos_help`, `chaos_clean`, and `chaos_graph`.
 - `chaos_add` incrementally indexes only git-changed files (or explicit `paths`), refreshes the
   Obsidian vault, and writes a feature/bug page in one call; use it instead of a full
   `chaos_analyze` after small edits. The page carries provenance breadcrumbs and correlates the

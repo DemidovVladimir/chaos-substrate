@@ -21,6 +21,12 @@ use uuid::Uuid;
 
 pub struct RustRepositoryExtractor {
     indexing: IndexingConfig,
+    /// Absolute directory paths to prune from the source walk, on TOP of the
+    /// basename-based `indexing.skip_dirs`. Used when indexing a project-level
+    /// DOCS directory (see `project add-docs`): the docs root may physically
+    /// contain the project's member repos as subdirectories, and those must not
+    /// be re-indexed here. Empty for ordinary repo analysis.
+    prune_paths: Vec<PathBuf>,
 }
 
 /// Calibrated against the embedder context window (EmbeddingGemma: 2,048
@@ -30,7 +36,18 @@ const MAX_CHUNK_CHARS: usize = 6_000;
 
 impl RustRepositoryExtractor {
     pub fn new(indexing: IndexingConfig) -> Self {
-        Self { indexing }
+        Self {
+            indexing,
+            prune_paths: Vec::new(),
+        }
+    }
+
+    /// Prune these absolute directory subtrees from the walk in addition to the
+    /// configured `skip_dirs`. Used by `project add-docs` to keep nested member
+    /// repos out of a project-docs index.
+    pub fn with_prune_paths(mut self, prune_paths: Vec<PathBuf>) -> Self {
+        self.prune_paths = prune_paths;
+        self
     }
 
     /// Extract the entire repository: walk `root` for every indexable file and
@@ -211,10 +228,14 @@ impl RustRepositoryExtractor {
 
     fn source_paths(&self, root: &Path) -> Vec<PathBuf> {
         let skip_dirs = self.indexing.skip_dirs.clone();
+        let prune_paths = self.prune_paths.clone();
         let mut builder = WalkBuilder::new(root);
         builder.hidden(false).filter_entry(move |entry| {
             let name = entry.file_name().to_string_lossy();
-            !skip_dirs.iter().any(|skip| skip == &name)
+            if skip_dirs.iter().any(|skip| skip == &name) {
+                return false;
+            }
+            !prune_paths.iter().any(|p| entry.path().starts_with(p))
         });
 
         builder
@@ -234,10 +255,14 @@ impl RustRepositoryExtractor {
     /// stable regardless of which files changed.
     fn workspace_package_names(&self, root: &Path) -> HashSet<String> {
         let skip_dirs = self.indexing.skip_dirs.clone();
+        let prune_paths = self.prune_paths.clone();
         let mut builder = WalkBuilder::new(root);
         builder.hidden(false).filter_entry(move |entry| {
             let name = entry.file_name().to_string_lossy();
-            !skip_dirs.iter().any(|skip| skip == &name)
+            if skip_dirs.iter().any(|skip| skip == &name) {
+                return false;
+            }
+            !prune_paths.iter().any(|p| entry.path().starts_with(p))
         });
         let mut names = HashSet::new();
         for entry in builder.build().filter_map(Result::ok) {

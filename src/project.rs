@@ -109,6 +109,137 @@ pub async fn add_repo(
     }))
 }
 
+/// Index a directory of project-level documentation as a DOCS-only member of
+/// the project. The directory may physically contain the project's member repos
+/// (e.g. it is the project root) — those nested repos are pruned from the walk
+/// so only the loose docs are indexed. The markdown/PDF become `documentation`
+/// chunks that join project queries and feature stories (e.g. an ADR that says
+/// "X replaces Y"), without counting as a code repo.
+pub async fn add_docs(
+    storage: &Storage,
+    embedder: &dyn crate::embedding::Embedder,
+    indexing: &crate::config::IndexingConfig,
+    project_name: &str,
+    dir: &std::path::Path,
+    alias: Option<&str>,
+) -> Result<Value> {
+    let project = storage
+        .find_project(project_name)
+        .await?
+        .with_context(|| format!("project does not exist: {project_name} (create it with `chaos project create {project_name}`)"))?;
+    anyhow::ensure!(
+        dir.is_dir(),
+        "docs path is not a directory: {}",
+        dir.display()
+    );
+    let alias = alias
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| "docs".to_string());
+    let canonical_dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+
+    let members = storage.project_member_repos(project.id).await?;
+    // Alias collision (mirror add_repo), ignoring the docs member at THIS dir
+    // (re-running add-docs on the same directory is an idempotent refresh).
+    if let Some(taken) = members.iter().find(|m| {
+        m.alias == alias
+            && std::fs::canonicalize(&m.repo.root_path)
+                .map(|p| p != canonical_dir)
+                .unwrap_or(true)
+    }) {
+        anyhow::bail!(
+            "alias `{alias}` is already used by repository {} in project {} — pass --alias to pick a different one",
+            taken.repo.name,
+            project.name
+        );
+    }
+    // Guard: don't flip an existing CODE member's directory into a docs member.
+    if let Some(code) = members.iter().find(|m| {
+        !m.is_project_docs
+            && std::fs::canonicalize(&m.repo.root_path)
+                .map(|p| p == canonical_dir)
+                .unwrap_or(false)
+    }) {
+        anyhow::bail!(
+            "{} is already a code member ({}) of project {} — choose a docs directory that is not an indexed repo",
+            canonical_dir.display(),
+            code.alias,
+            project.name
+        );
+    }
+    // Prune nested member repos so the docs walk doesn't re-index them.
+    let prune_paths: Vec<PathBuf> = members
+        .iter()
+        .filter_map(|m| std::fs::canonicalize(&m.repo.root_path).ok())
+        .filter(|p| p.starts_with(&canonical_dir) && p.as_path() != canonical_dir.as_path())
+        .collect();
+
+    // Index the docs directory through the normal pipeline (markdown/PDF →
+    // documentation chunks → communities → summaries), pruning member repos.
+    let repo = storage.upsert_repository(dir, None).await?;
+    let run_id = storage.begin_analysis(repo.id, None).await?;
+    let indexed = async {
+        let extractor = crate::extractor::RustRepositoryExtractor::new(indexing.clone())
+            .with_prune_paths(prune_paths.clone());
+        let result = extractor.extract(dir, repo.id, None)?;
+        let files = result.files.len();
+        let chunks = result.chunks.len();
+        storage.replace_repo_index(repo.id, &result).await?;
+        let missing = storage
+            .chunks_missing_embeddings(
+                repo.id,
+                embedder.provider(),
+                embedder.model_id(),
+                embedder.dimensions(),
+            )
+            .await?;
+        crate::embedding::embed_missing_chunks(storage, embedder, &missing).await?;
+        crate::community::detect_and_persist(
+            storage,
+            repo.id,
+            &crate::community::CommunityConfig::default(),
+        )
+        .await?;
+        crate::merkle::compute_and_persist(storage, repo.id).await?;
+        crate::community_summary::summarize_repo(storage, embedder, repo.id).await?;
+        Result::<_, anyhow::Error>::Ok((files, chunks))
+    }
+    .await;
+
+    let (files, chunks) = match indexed {
+        Ok(v) => {
+            storage.finish_analysis(run_id, "completed", None).await?;
+            v
+        }
+        Err(err) => {
+            storage
+                .finish_analysis(run_id, "failed", Some(&err.to_string()))
+                .await?;
+            return Err(err);
+        }
+    };
+
+    storage
+        .add_member_to_project(project.id, repo.id, &alias, true)
+        .await?;
+    let relink = relink_project(storage, &project, false).await?;
+
+    Ok(json!({
+        "status": "ok",
+        "project": project.name,
+        "docs_alias": alias,
+        "docs_dir": canonical_dir.to_string_lossy(),
+        "files_indexed": files,
+        "chunks": chunks,
+        "pruned_member_repos": prune_paths
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect::<Vec<_>>(),
+        "relink": relink,
+    }))
+}
+
 pub async fn list(storage: &Storage) -> Result<Value> {
     let projects = storage.list_projects().await?;
     let mut out: Vec<Value> = Vec::new();

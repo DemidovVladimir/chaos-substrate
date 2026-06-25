@@ -1,3 +1,7 @@
+// The MCP `tools/list` response is one large `serde_json::json!` literal; with
+// 24 tool schemas it expands past the default macro recursion limit (128).
+#![recursion_limit = "256"]
+
 mod add;
 mod change_plan;
 mod community;
@@ -11,6 +15,7 @@ mod extractor;
 mod feature_context;
 mod feature_export;
 mod feature_inventory;
+mod feature_story;
 mod gaps;
 mod graph;
 mod graph_export;
@@ -371,6 +376,29 @@ enum Commands {
         #[arg(long)]
         feature_pages: bool,
     },
+    /// Tell the cross-repo STORY of a feature: match it in every member repo of
+    /// a project, follow the persisted cross-repo links between the matched
+    /// features, order them client → backend → contracts, and write a clickable
+    /// multi-page site (index + one hash-gated page per involved feature) to the
+    /// project workspace. Uses the chaos knowledge base only.
+    FeatureStory {
+        /// Project name (a set of indexed repos; see `chaos project`).
+        project: String,
+        /// The feature to trace, e.g. "lab tokenization and access control".
+        feature: String,
+        /// Style preset: editorial (default light) | blade-runner (dark neon).
+        #[arg(long)]
+        style: Option<String>,
+        /// Brand preset shipped inside Chaos (e.g. molecule).
+        #[arg(long)]
+        brand_preset: Option<String>,
+        /// Override the default <workspace>/<slug>-story.html index path.
+        #[arg(long)]
+        output_html: Option<PathBuf>,
+        /// Cap on matched features per repo; 0 = the default.
+        #[arg(long, default_value_t = 0)]
+        limit: usize,
+    },
     /// Manage cross-repository projects: group indexed repos (client, backend,
     /// contracts, infra, …) under one name and maintain feature→feature
     /// cross-repo links between them. Links refresh automatically after
@@ -507,6 +535,18 @@ enum ProjectAction {
         repo: String,
         /// Project-scoped alias (client/backend/contracts/infra/…). Defaults
         /// to the repository name.
+        #[arg(long)]
+        alias: Option<String>,
+    },
+    /// Index a directory of project-level DOCS (cross-repo design notes, ADRs,
+    /// migration spikes) as a docs-only member. The directory may sit ABOVE the
+    /// member repos at the project root — nested member repos are pruned from
+    /// the walk so they are not re-indexed.
+    AddDocs {
+        project: String,
+        /// Directory of documentation to index (markdown / PDF).
+        dir: String,
+        /// Project-scoped alias for the docs member. Defaults to "docs".
         #[arg(long)]
         alias: Option<String>,
     },
@@ -965,6 +1005,27 @@ async fn main() -> Result<()> {
             };
             println!("{}", serde_json::to_string_pretty(&summary)?);
         }
+        Commands::FeatureStory {
+            project,
+            feature,
+            style,
+            brand_preset,
+            output_html,
+            limit,
+        } => {
+            let storage = Storage::connect(&config.storage.database_url).await?;
+            // Cross-repo semantic matching needs the embedder (one embed, reused).
+            let embedder = build_embedder(&config.embedding)?;
+            let opts = feature_story::FeatureStoryOptions {
+                style,
+                brand_preset,
+                output_html,
+                limit,
+            };
+            let summary =
+                feature_story::run(&storage, embedder.as_ref(), &project, &feature, &opts).await?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
         Commands::Project { action } => {
             let storage = Storage::connect(&config.storage.database_url).await?;
             let summary = match action {
@@ -974,6 +1035,22 @@ async fn main() -> Result<()> {
                     repo,
                     alias,
                 } => project::add_repo(&storage, &project, &repo, alias.as_deref()).await?,
+                ProjectAction::AddDocs {
+                    project,
+                    dir,
+                    alias,
+                } => {
+                    let embedder = build_embedder(&config.embedding)?;
+                    project::add_docs(
+                        &storage,
+                        embedder.as_ref(),
+                        &config.indexing,
+                        &project,
+                        std::path::Path::new(&dir),
+                        alias.as_deref(),
+                    )
+                    .await?
+                }
                 ProjectAction::List => project::list(&storage).await?,
                 ProjectAction::Status { project } => project::status(&storage, &project).await?,
                 ProjectAction::Relink { project, force } => {

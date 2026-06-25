@@ -4,6 +4,66 @@ All notable changes to Chaos Substrate are documented here. Versions before
 0.12.0 predate this file; see the git history (`P0`–`P5` commits) for the
 hierarchical-memory build-out.
 
+## 0.23.0 — 2026-06-25
+
+The project-level docs + lifecycle-aware feature-story release: a project can now
+index the cross-repo design docs that explain how its repos relate, and the
+feature story uses them to tell a replaced stack apart from its replacement.
+
+### Added — `chaos project add-docs` (project-level documentation)
+
+- `chaos project add-docs <project> <dir> [--alias docs]` indexes a directory of
+  cross-repo docs (ADRs, migration spikes, "X replaces Y" notes) as a docs-only
+  project member through the normal pipeline (markdown/PDF → `documentation`
+  chunks → communities → summaries). The directory may sit ABOVE the member
+  repos (e.g. the project root) — nested member repos are pruned from the walk
+  via `RustRepositoryExtractor::with_prune_paths`, so they're not re-indexed.
+- Schema migration `009_project_docs.sql` adds `project_repos.is_project_docs`.
+  Docs members contribute searchable chunks but are excluded from "code repos
+  involved" counts. Closes the gap where a design doc living above the member
+  repos (the only place a supersession is stated) was never embedded.
+
+### Added — lifecycle-aware feature stories (`feature-story-2`)
+
+- `chaos_feature_story` now detects supersession between involved features and
+  renders replaced features in a separate **"Legacy / superseded"** band instead
+  of interleaving them with their replacements. New `StoryNode` fields
+  (`status` / `superseded_by*` / `variant_of` / `lifecycle_evidence`); manifest
+  `schema_version` bumped to `feature-story-2` (no DB migration — manifest is
+  JSON-in-HTML).
+- Conservative two-gate rule (a false *grouping* is acceptable, a false *legacy*
+  is not): a feature is demoted only when it is a cross-repo **symbol-port**
+  (≥2 shared symbol names) AND the indexed docs mark its identity legacy with
+  **dominant** evidence (≥2 doc hits and ≥2× the twin's). New storage helpers
+  `semantic_search_docs` / `keyword_search_docs` scope evidence to documentation
+  chunks. The compact return tags each legacy row so a narrating agent can't
+  present a replaced stack as current.
+
+## 0.22.0 — 2026-06-24
+
+The cross-repo feature-story release: a 24th tool answers "how does **one
+feature** work across **every** repo of a project?" — the focused, single-feature
+counterpart to `chaos_features --project` (which inventories *all* features).
+
+### Added — `chaos_feature_story` MCP tool + `chaos feature-story` CLI (24 tools)
+
+- Given a `project` and a free-text `feature`, it matches that feature in every
+  member repo (L1 community semantic search + a lexical label fallback), loads the
+  persisted cross-repo links and **traverses** them — pulling in a link's other
+  endpoint (e.g. the Solidity contract a client calls) even when the query didn't
+  match it directly — then orders the involved features into a journey-layer
+  **spine** (entry → interface → core → foundation = client → backend → contracts).
+- Writes a clickable **multi-page site** to the project workspace: an index page
+  (the spine + the cross-repo link chain + repos not involved) and one
+  hash-gated drill-down page per involved feature (its code/files, its cross-repo
+  links cross-linked + smart-contract tagged, prior overlapping pages, a
+  deterministic walkthrough). Each page is content-hashed — a re-run over
+  unchanged knowledge rewrites nothing and the return reports written-vs-cached.
+- Deterministic and embedder-light (one embed for the whole query, reused across
+  repos). Returns a compact summary (involved repos, the ordered link chain,
+  links-by-kind, not-involved repos, the site summary, provenance, `content_hash`);
+  the full detail lives in the HTML. No migration: additive, read/return-shape only.
+
 ## 0.21.0 — 2026-06-16
 
 The cross-folder consumer-lookup + compact-context release: a 23rd tool answers

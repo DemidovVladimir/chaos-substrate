@@ -147,6 +147,11 @@ pub struct ProjectRepo {
     pub repo: Repository,
     pub alias: String,
     pub linked_repo_hash: Option<String>,
+    /// True when this member is a project-level DOCS source (registered via
+    /// `project add-docs`) rather than a code repo. It still contributes
+    /// searchable documentation chunks and communities, but is excluded from
+    /// "code repos involved" counts.
+    pub is_project_docs: bool,
 }
 
 /// A detected cross-repository link between two L1 communities (features) of

@@ -326,6 +326,22 @@ pub async fn run(config: Config) -> Result<()> {
                             }
                         },
                         {
+                            "name": "chaos_feature_story",
+                            "description": "Tell the cross-repo STORY of one feature across a PROJECT (a named set of indexed repos). Given a `project` and a free-text `feature`, it matches that feature in EVERY member repo (L1 community semantic search + a lexical label fallback), loads the persisted cross-repo links and TRAVERSES them — pulling in a link's other endpoint (e.g. the Solidity contract a client calls) even when the query didn't match it directly — then orders the involved features into a journey-layer SPINE (entry → interface → core → foundation = client → backend → contracts). Writes a CLICKABLE MULTI-PAGE SITE to the project workspace: an index page (the spine + the cross-repo link chain + repos not involved) and one drill-down page per involved feature (its code/files, its cross-repo links cross-linked + smart-contract tagged, prior overlapping pages, a deterministic walkthrough). Every page embeds a `chaos-feature-story-manifest` with its own content_hash and is individually hash-gated — an unchanged page is never rewritten and the return reports written vs cached counts. Deterministic and embedder-LIGHT (one embed for the whole query, reused across repos); needs the embedder for cross-repo matching. Returns a COMPACT JSON summary (involved repos one-liners, the ordered link chain, links_by_kind, not-involved repos, the site summary, the index output_html, provenance, content_hash) — narrate the spine for the user; full detail lives in the HTML. Use it to answer 'how does feature X work across every repo?'. Distinct from chaos_features --project (an inventory of ALL features) and chaos_compose (one repo's composed page).",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "project": {"type": "string", "description": "Project name — a set of indexed repos (see chaos_project). The story spans every member."},
+                                    "feature": {"type": "string", "description": "The feature to trace across repos, e.g. 'lab tokenization and access control'."},
+                                    "style": {"type": "string", "description": "Style preset: editorial (default light) | blade-runner (dark neon). Unknown = error."},
+                                    "brand_preset": {"type": "string", "description": "Brand preset shipped inside Chaos (e.g. 'molecule')."},
+                                    "output_html": {"type": "string", "description": "Override the default <workspace>/<slug>-story.html index path."},
+                                    "limit": {"type": "integer", "default": 0, "description": "Cap on matched features per repo; 0 = the default."}
+                                },
+                                "required": ["project", "feature"]
+                            }
+                        },
+                        {
                             "name": "chaos_clean",
                             "description": "DESTRUCTIVE: wipe the persisted index — one repository (pass `repo`) or EVERYTHING (omit it). Pass `artifacts: true` to also delete the generated files on disk (the repo's chaos-obsidian-vault/ and docs/features_memory/, plus all project workspaces when wiping everything) for a truly clean slate before re-validation. Requires `confirm: true` — refuse to guess; only call this when the user explicitly asked to clean/reset. Reports exactly what was removed. The schema survives (no re-migrate needed). Cleaning does NOT imply re-indexing: stop after the wipe unless the user also asked to rebuild — the index simply stays empty until a chaos_analyze is requested.",
                             "inputSchema": {
@@ -948,6 +964,31 @@ async fn handle_tool_call(
             };
             Ok(tool_text(serde_json::to_string_pretty(&summary)?))
         }
+        "chaos_feature_story" => {
+            let project = args
+                .get("project")
+                .and_then(Value::as_str)
+                .context("project is required")?;
+            let feature = args
+                .get("feature")
+                .and_then(Value::as_str)
+                .context("feature is required")?;
+            let opts = crate::feature_story::FeatureStoryOptions {
+                style: args.get("style").and_then(Value::as_str).map(String::from),
+                brand_preset: args
+                    .get("brand_preset")
+                    .and_then(Value::as_str)
+                    .map(String::from),
+                output_html: args
+                    .get("output_html")
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from),
+                limit: args.get("limit").and_then(Value::as_u64).unwrap_or(0) as usize,
+            };
+            let summary =
+                crate::feature_story::run(storage, embedder, project, feature, &opts).await?;
+            Ok(tool_text(serde_json::to_string_pretty(&summary)?))
+        }
         "chaos_help" => Ok(tool_text(AGENT_GUIDE.to_string())),
         "chaos_clean" => {
             if !args
@@ -1046,6 +1087,7 @@ WORKFLOWS
   document (users)   chaos_write_storyboard {repo, slug, title, manifest}  — code-free feature guide for stakeholders
   compose a page     chaos_compose {repo, sections: [features|correlations|stack], persona?|level?, style?, filter?, feature_pages?}  — THE surface for any user-facing webpage/website request: ONE page (or a SITE: feature_pages=true adds one hash-gated, cross-linked page per feature with code/files, stack relations [smart contracts tagged], persona-fitted walkthrough); persona routes by meaning; style: editorial | blade-runner; brand_preset: molecule; everything content-hashed (cached: true = you already hold it, do NOT re-ingest); if it fails, REPORT the failure — never fake the page with shell tools
   cross-repo         chaos_project {action: create | add_repo | list | status | relink}  — link client/backend/contracts/infra repos; then chaos_features {project}
+  cross-repo story   chaos_feature_story {project, feature}  — how ONE feature works across EVERY repo: matches it per repo, follows the cross-repo links, orders client → backend → contracts, writes a clickable multi-page site (hash-gated); narrate the returned spine
   exports            chaos_obsidian / chaos_refresh  — regenerate vault + pages from the index, no embedder
   graph view         chaos_graph {repo, output?}  — standalone interactive L0 node/edge HTML (feature map comes from obsidian/refresh)
   fresh start        chaos_clean {repo?, artifacts?, confirm: true}  — DESTRUCTIVE index wipe (one repo or all); artifacts also deletes generated files
@@ -1404,6 +1446,7 @@ mod tests {
             "chaos_features",
             "chaos_compose",
             "chaos_project",
+            "chaos_feature_story",
             "chaos_clean",
             "chaos_graph",
             "chaos_pages",
