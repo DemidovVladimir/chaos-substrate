@@ -47,7 +47,14 @@ const SAMPLE_WORDS: usize = 6;
 
 /// Languages whose files are expected to carry identifier/docstring
 /// vocabulary. Prose (markdown/pdf) and config (json) are never flagged.
-const CODE_LANGUAGES: &[&str] = &["typescript", "javascript", "rust", "python", "solidity"];
+const CODE_LANGUAGES: &[&str] = &[
+    "typescript",
+    "javascript",
+    "rust",
+    "python",
+    "solidity",
+    "graphql",
+];
 
 #[derive(Debug, Serialize)]
 pub struct GapsReport {

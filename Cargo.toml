@@ -1,6 +1,6 @@
 [package]
 name = "chaos-substrate"
-version = "0.23.0"
+version = "0.24.0"
 edition = "2021"
 license = "Apache-2.0"
 
@@ -10,6 +10,9 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+# Error-tolerant lossless GraphQL CST parser (never fails; partial trees on
+# syntax errors). Deps: memchr/rowan/thiserror.
+apollo-parser = "0.8"
 async-trait = "0.1"
 backon = "1"
 chrono = { version = "0.4", features = ["serde"] }

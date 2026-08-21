@@ -1,4 +1,5 @@
 use crate::embedding::Embedder;
+use crate::export_util::{features_memory_dir, line_range, resolve_indexed_repo, safe_slug};
 use crate::provenance::{source, Breadcrumb};
 use crate::query::{query_feature_context_repo, QueryResponse};
 use crate::storage::Storage;
@@ -203,6 +204,20 @@ fn default_schema_version() -> String {
 /// Max one-line evidence pointers in a compact feature-context return. The full
 /// evidence — every hit, verbatim — stays in the written HTML.
 const MAX_EVIDENCE_LINES: usize = 24;
+/// How many of the top-ranked (strongest) evidence hits get their verbatim body
+/// inlined in the compact return. Reading the decisive code is what stops an
+/// agent from authoring a behavioral claim off a symbol name alone. Set to 5 (not
+/// 1-2) deliberately: the single line that settles a behavioral question often
+/// sits in the 3rd-5th hit, not the top one, and re-ranking shifts with query
+/// phrasing — a slightly wider window is cheap insurance against missing it.
+/// Every hit's full body still lives in the HTML regardless.
+const INLINE_BODY_HITS: usize = 5;
+/// Char cap per inlined body — enough to reach the decisive lines (for a UI
+/// component the settling copy is often deep in the JSX `return`, so too tight a
+/// cap truncates exactly the line that matters) without flooding context. Longer
+/// bodies are cut on a char boundary and flagged; the untruncated body is in the
+/// `chaos-feature-context-data` block.
+const MAX_INLINE_BODY_CHARS: usize = 2400;
 /// Max shared symbols listed per correlated prior page in the compact return.
 const MAX_RELATED_SYMBOLS: usize = 8;
 /// Weak-overlap floor for a correlated prior page to appear in the compact
@@ -213,7 +228,7 @@ const MAX_RELATED_SYMBOLS: usize = 8;
 /// correlated set is still written to the HTML.
 const MIN_RELATED_PAGE_SCORE: usize = 3;
 
-const COMPACT_NEXT: &str = "This evidence is for a feature deep-dive — once you have composed your explanation, PERSIST it as the interactive page: chaos_write_feature_website {repo, slug, title, manifest} (manifest only, omit html). Verbatim code for every hit is embedded in the written output_html under <script id=\"chaos-feature-context-data\"> — extract it from there if you need code; do NOT re-read the repo or re-run retrieval.";
+const COMPACT_NEXT: &str = "This evidence is for a feature deep-dive. The strongest hits' bodies are inlined above as `code_excerpt`; the FULL verbatim code for every hit is in the written output_html under <script id=\"chaos-feature-context-data\">. Before writing ANY behavioral or factual claim, READ the actual body — the inlined code_excerpt, the HTML data block, or the source file — never infer behavior from a symbol name, file path, or line range alone. Re-running retrieval is unnecessary, but reading source to confirm a claim is encouraged, not discouraged. Then PERSIST your explanation as the interactive page: chaos_write_feature_website {repo, slug, title, manifest} (manifest only, omit html).";
 
 /// Options for [`run`], shared by the CLI and MCP surfaces. Zero/None fall back to
 /// the same defaults the tool has always used (limit 10, feature_limit 3,
@@ -227,11 +242,12 @@ pub struct FeatureContextOptions {
     pub nodes_per_feature: usize,
 }
 
-/// Compact, pointer-only feature-context return. Mirrors `chaos_impact`'s
-/// `ImpactSummary`: the heavy evidence (every hit's content, every correlated
-/// node's verbatim code) lives ONLY in the written HTML — this payload carries
-/// pointers so an MCP caller's context is never flooded. The agent pulls verbatim
-/// code from the embedded `chaos-feature-context-data` block when it needs it.
+/// Compact feature-context return. Mirrors `chaos_impact`'s `ImpactSummary`: the
+/// heavy evidence (every hit's full content, every correlated node's verbatim
+/// code) lives in the written HTML, while this payload carries ranked pointers —
+/// PLUS the top hits' bodies inlined as `code_excerpt` — so the decisive code is
+/// in the agent's context without flooding it. The agent pulls any remaining
+/// verbatim code from the embedded `chaos-feature-context-data` block.
 #[derive(Debug, Serialize)]
 pub struct CompactFeatureContext {
     pub status: &'static str,
@@ -240,7 +256,8 @@ pub struct CompactFeatureContext {
     /// Always written now — holds the full evidence + the extractable JSON block.
     pub output_html: PathBuf,
     pub counts: FeatureContextCounts,
-    /// One pointer line per deduped, ranked retrieval hit — no content/code.
+    /// One line per deduped, ranked retrieval hit. The top hits carry an inlined
+    /// `code_excerpt` (bounded); the rest are pointers. Full code is in the HTML.
     pub evidence: Vec<EvidenceLine>,
     /// Compact summaries of correlated prior feature pages (relevance-floored).
     pub related_pages: Vec<RelatedPage>,
@@ -273,6 +290,12 @@ pub struct EvidenceLine {
     /// score is unbounded so a percentage is the comparable form.
     pub relevance_pct: u32,
     pub retrieved_by: Vec<String>,
+    /// Inlined verbatim body for the TOP-ranked hits only (bounded length), so an
+    /// agent reads the decisive code without first opening the HTML data block —
+    /// the top hit usually contains the answer to a behavioral question. `None`
+    /// for lower-ranked hits; their full body still lives in the written HTML.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code_excerpt: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -306,7 +329,7 @@ impl CompactFeatureContext {
         let mut seen: HashSet<String> = HashSet::new();
         for hit in &response.postgres.hits {
             let file = hit.file_path.clone().unwrap_or_default();
-            let lines = line_range(hit.line_start, hit.line_end);
+            let lines = line_range(hit.line_start, hit.line_end, "n/a");
             let symbol = hit
                 .metadata
                 .get("symbol")
@@ -345,6 +368,14 @@ impl CompactFeatureContext {
                         .collect()
                 })
                 .unwrap_or_default();
+            // Inline the verbatim body for the strongest few hits. `evidence.len()`
+            // here is the post-dedup rank (hits arrive score-desc), so the first
+            // INLINE_BODY_HITS distinct hits carry their code.
+            let code_excerpt = if evidence.len() < INLINE_BODY_HITS {
+                Some(excerpt_body(&hit.content, MAX_INLINE_BODY_CHARS))
+            } else {
+                None
+            };
             evidence.push(EvidenceLine {
                 symbol,
                 file,
@@ -352,6 +383,7 @@ impl CompactFeatureContext {
                 kind,
                 relevance_pct: ((hit.score / top_score) * 100.0).round().clamp(0.0, 100.0) as u32,
                 retrieved_by,
+                code_excerpt,
             });
         }
         let distinct = evidence.len();
@@ -391,12 +423,13 @@ impl CompactFeatureContext {
             .collect();
 
         let dropped = response.feature_matches.len() - related_pages.len();
+        let inlined = evidence.len().min(INLINE_BODY_HITS);
         let mut provenance = response.provenance.clone();
         provenance.push(Breadcrumb::new(
             source::GRAPH,
             "compact_feature_context",
             format!(
-                "compacted {} hit(s) → {distinct} deduped pointer(s) (showing {}); kept {} correlated page(s), dropped {dropped} below the relevance floor (score < {MIN_RELATED_PAGE_SCORE}). Full evidence stays in the HTML.",
+                "compacted {} hit(s) → {distinct} deduped pointer(s) (showing {}, top {inlined} with inlined bodies); kept {} correlated page(s), dropped {dropped} below the relevance floor (score < {MIN_RELATED_PAGE_SCORE}). Full evidence stays in the HTML.",
                 response.postgres.hits.len(),
                 evidence.len(),
                 related_pages.len(),
@@ -425,12 +458,16 @@ impl CompactFeatureContext {
     }
 }
 
-fn line_range(start: Option<i32>, end: Option<i32>) -> String {
-    match (start, end) {
-        (Some(s), Some(e)) if s != e => format!("{s}-{e}"),
-        (Some(s), _) => s.to_string(),
-        _ => "n/a".into(),
+/// Trim a hit body to `max_chars` on a char boundary for inlining in the compact
+/// return, appending a marker when truncated so the agent knows to read the full
+/// body (in the HTML data block) before relying on anything past the cut.
+fn excerpt_body(content: &str, max_chars: usize) -> String {
+    let trimmed = content.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
     }
+    let cut: String = trimmed.chars().take(max_chars).collect();
+    format!("{cut}\n… (truncated — full body in the HTML chaos-feature-context-data block)")
 }
 
 /// Run `chaos feature-context`: focused retrieval → ALWAYS-written HTML (full
@@ -444,15 +481,11 @@ pub async fn run(
     task: &str,
     opts: &FeatureContextOptions,
 ) -> Result<Value> {
-    let repo = storage
-        .find_repository(repo)
-        .await?
-        .with_context(|| format!("repository is not indexed: {repo}"))?;
-    let repo_root = PathBuf::from(&repo.root_path);
+    let (repo, repo_root) = resolve_indexed_repo(storage, repo).await?;
     let features_dir = opts
         .features_dir
         .clone()
-        .unwrap_or_else(|| repo_root.join("docs/features_memory"));
+        .unwrap_or_else(|| features_memory_dir(&repo_root));
     let limit = if opts.limit > 0 { opts.limit } else { 10 };
     let feature_limit = if opts.feature_limit > 0 {
         opts.feature_limit
@@ -482,9 +515,7 @@ pub async fn run(
     // ALWAYS write the HTML — it carries the full evidence and the
     // agent-extractable JSON; the returned payload stays compact.
     let output = opts.output_html.clone().unwrap_or_else(|| {
-        repo_root
-            .join("docs/features_memory")
-            .join(format!("{}-context.html", safe_slug(task)))
+        features_memory_dir(&repo_root).join(format!("{}-context.html", safe_slug(task, "feature")))
     });
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
@@ -493,28 +524,6 @@ pub async fn run(
 
     let compact = CompactFeatureContext::from_response(repo.id, &response, output);
     Ok(serde_json::to_value(compact)?)
-}
-
-fn safe_slug(input: &str) -> String {
-    let slug = input
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .split('-')
-        .filter(|p| !p.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    if slug.is_empty() {
-        "feature".to_string()
-    } else {
-        slug.chars().take(80).collect::<String>()
-    }
 }
 
 #[derive(Deserialize)]
@@ -622,28 +631,7 @@ fn is_documentation_hit(hit: &crate::models::SearchHit) -> bool {
 }
 
 pub fn write_feature_context_html(path: &Path, response: &FeatureContextResponse) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_string(response)?;
-    fs::write(
-        path,
-        CONTEXT_HTML
-            .replace("__THEME__", crate::theme::THEME_CSS)
-            .replace(
-                "__BRAND_TOPBAR__",
-                &crate::theme::render_brand(&crate::theme::Brand::default(), "topbar"),
-            )
-            .replace(
-                "__BRAND_FOOTER__",
-                &crate::theme::render_brand(&crate::theme::Brand::default(), "footer"),
-            )
-            .replace(
-                "__CONTEXT__",
-                &crate::export_util::escape_script_json(&json),
-            ),
-    )?;
-    Ok(())
+    crate::export_util::write_report_page(path, CONTEXT_HTML, &serde_json::to_string(response)?)
 }
 
 pub(crate) fn read_feature_manifest(path: &Path) -> Result<Option<FeatureManifest>> {
@@ -959,7 +947,7 @@ const STOP_WORDS: &[&str] = &[
     "store",
 ];
 
-const CONTEXT_HTML: &str = r##"<!doctype html>
+pub(crate) const CONTEXT_HTML: &str = r##"<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -967,13 +955,13 @@ const CONTEXT_HTML: &str = r##"<!doctype html>
 <title>Chaos Feature Context</title>
 <style>
 __THEME__
+__REPORT_CSS__
 /* ===== feature-context components (light editorial) ===== */
 main{padding:48px 0 0;display:block}
 .grid{display:grid;grid-template-columns:minmax(360px,.8fr) minmax(520px,1.2fr);gap:24px;margin-bottom:24px}
-.panel{background:var(--color-surface-0);border:var(--border-hairline);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);padding:24px;margin-bottom:24px}
+.panel{margin-bottom:24px}
 .grid .panel{margin-bottom:0}
 .panel>h2{font:var(--type-h5);color:var(--color-ink-700);margin:0 0 14px;letter-spacing:-.01em}
-.muted{color:var(--fg-tertiary)}
 .item{border:var(--border-hairline);border-radius:var(--radius-md);background:var(--color-surface-1);padding:16px;margin-top:12px}
 .item:first-child{margin-top:0}
 .item strong{font:var(--type-h6);font-weight:500;color:var(--color-blue-700)}
@@ -986,10 +974,6 @@ main{padding:48px 0 0;display:block}
 .tag{display:inline-flex;border:var(--border-hairline);border-radius:var(--radius-pill);padding:3px 9px;margin-right:8px;font:var(--type-overline-sm);font-family:var(--font-mono);font-weight:500;color:var(--color-ink-500);background:var(--color-surface-2);text-transform:uppercase;letter-spacing:.06em}
 .tag.doc{color:var(--color-blue-700);background:var(--color-blue-100);border-color:var(--color-blue-300)}
 pre{margin:12px 0 0;padding:14px;border-radius:var(--radius-md);background:var(--color-ink-900);color:var(--color-blue-100);overflow:auto;font:var(--type-body-xs);font-family:var(--font-mono);line-height:1.55;border:var(--border-hairline);max-height:360px}
-.rel{display:inline-flex;align-items:center;gap:6px;vertical-align:middle;cursor:help}
-.rel .relbar{display:inline-block;width:64px;height:6px;border-radius:var(--radius-pill);background:var(--color-surface-3);overflow:hidden;border:var(--border-hairline)}
-.rel .relbar>i{display:block;height:100%;background:var(--color-blue-500);border-radius:var(--radius-pill)}
-.rel .relnum{font-family:var(--font-mono);font-weight:500;color:var(--fg-secondary)}
 @media(max-width:1000px){.grid{grid-template-columns:1fr}}
 </style>
 </head>
@@ -1017,22 +1001,17 @@ pre{margin:12px 0 0;padding:14px;border-radius:var(--radius-md);background:var(-
 </div>
 </main>
 <footer><div class="wrap">__BRAND_FOOTER__<span class="sp"></span><span class="meta">generated by Chaos Substrate</span></div></footer>
-<script type="application/json" id="chaos-feature-context-data">__CONTEXT__</script>
+<script type="application/json" id="chaos-feature-context-data">__DATA__</script>
 <script>
 const data=JSON.parse(document.getElementById("chaos-feature-context-data").textContent);
-function esc(v){return String(v??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;")}
+__REPORT_JS__
 function isDoc(h){return h?.metadata?.source_priority==="supplemental"||h?.metadata?.kind==="documentation"}
 function sourceTag(h){return isDoc(h)?'<span class="tag doc">docs</span>':'<span class="tag">code</span>'}
 function retrievedTags(h){return ((h?.metadata?.retrieved_by)||[]).map(m=>`<span class="tag">${esc(m)}</span>`).join("")}
 const TOP_SCORE=Math.max(1e-9,...((data.postgres?.hits)||[]).map(h=>+h.score||0));
-/* The raw number is a hybrid-retrieval FUSION score (a weighted sum of
-   normalized semantic+keyword+literal channel scores) — unbounded and not a
-   percentage. Show it instead as relevance RELATIVE to this query's strongest
-   hit, so hits are comparable to each other; keep the raw value in the tooltip. */
-function relevance(h){const s=+h.score||0;const pct=Math.max(0,Math.min(100,Math.round(s/TOP_SCORE*100)));return `<span class="rel" title="Relative to this query's strongest hit (=100%). Raw hybrid-retrieval fusion score: ${s.toFixed(2)} — a weighted sum of the semantic, keyword and literal channels (unbounded; higher = a stronger match).">relevance <span class="relbar"><i style="width:${pct}%"></i></span><span class="relnum">${pct}%</span></span>`}
-function crumbList(list){if(!list||!list.length)return '<div class="meta">No breadcrumbs recorded.</div>';return list.map(c=>`<div class="item"><strong>${esc(c.source)}</strong> <span class="tag">${esc(c.method)}</span><div class="meta">${esc(c.detail)}${c.locator?' &middot; <code>'+esc(c.locator)+'</code>':''}</div></div>`).join("")}
+function relevance(h){return relbar(h.score,TOP_SCORE)}
 document.getElementById("task").textContent=data.task;
-document.getElementById("provenance").innerHTML=crumbList(data.provenance);
+renderProvenance(document.getElementById("provenance"),data.provenance);
 const features=document.getElementById("features");
 if(!data.feature_matches.length){features.innerHTML='<div class="meta">No generated feature manifests matched. Use Postgres hits below as starting context.</div>'}
 data.feature_matches.forEach(f=>{const el=document.createElement("div");el.className="item";el.innerHTML=`<strong>${esc(f.feature?.title||f.title)}</strong><div class="meta">${esc(f.feature?.domain)} | matched by ${f.score} shared term${f.score==1?"":"s"} | ${esc(f.page)}</div><div class="meta">${(f.provenance||[]).map(c=>`<span class="tag">${esc(c.source)}</span>`).join("")}</div><div>${(f.modes||[]).map(m=>`<span class="pill">${esc(m.title)}</span>`).join("")}</div><h2 style="margin-top:14px">Claims</h2>${(f.claims||[]).map(c=>`<div class="item claim"><strong>${esc(c.title)}</strong><div>${esc(c.body)}</div><div class="meta">confidence ${Math.round((c.confidence||0)*100)}%</div></div>`).join("")}`;features.appendChild(el)});
@@ -1223,7 +1202,7 @@ mod tests {
                 line_start: Some(line),
                 line_end: Some(line + 10),
                 score,
-                content: "x".repeat(5000), // proves content is NOT in the compact return
+                content: "x".repeat(5000), // long body — top hits inline a CAPPED excerpt; the full body stays in the HTML
                 metadata: meta,
             }
         }
@@ -1283,9 +1262,17 @@ mod tests {
         assert_eq!(compact.related_pages.len(), 1);
         assert_eq!(compact.related_pages[0].title, "real");
 
-        // The compact return must not carry the 5000-char chunk content anywhere.
+        // New contract: the top hits inline a BOUNDED body so the agent reads the
+        // decisive code, but the full 5000-char content must still never reach the
+        // payload — only a capped excerpt, with the untruncated body left in the HTML.
+        let excerpt = compact.evidence[0]
+            .code_excerpt
+            .as_deref()
+            .expect("the strongest hit inlines its body");
+        assert!(excerpt.starts_with('x'));
+        assert!(excerpt.chars().count() <= super::MAX_INLINE_BODY_CHARS + 80); // + truncation marker
         let serialized = serde_json::to_string(&compact).unwrap();
-        assert!(!serialized.contains(&"x".repeat(100)));
+        assert!(!serialized.contains(&"x".repeat(5000)));
     }
 
     #[test]

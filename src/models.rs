@@ -3,6 +3,35 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+/// Generates `as_str` + `from_str` for a unit enum from explicit
+/// variant ⇒ string pairs (no case conversion) — the strings persisted in
+/// Postgres and printed in chunk headers. Serde derives are deliberately NOT
+/// generated or altered here: `Language`'s serde names (`type_script`)
+/// intentionally diverge from its `as_str` (`typescript`), and the
+/// `#[serde(rename_all)]` readback contract must not change.
+macro_rules! impl_str_conversions {
+    ($name:ident { $($variant:ident => $text:literal),+ $(,)? }) => {
+        impl $name {
+            pub fn as_str(&self) -> &'static str {
+                match self {
+                    $(Self::$variant => $text,)+
+                }
+            }
+
+            /// Inverse of [`Self::as_str`]. Returns `None` for unknown strings
+            /// so callers pick their own fallback (see `storage::row_to_node`).
+            #[allow(clippy::should_implement_trait)] // Option return, not FromStr's Result
+            #[allow(dead_code)] // not every enum has a production caller yet
+            pub fn from_str(value: &str) -> Option<Self> {
+                match value {
+                    $($text => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Language {
@@ -14,22 +43,20 @@ pub enum Language {
     Markdown,
     Pdf,
     Solidity,
+    GraphQL,
 }
 
-impl Language {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Rust => "rust",
-            Self::TypeScript => "typescript",
-            Self::JavaScript => "javascript",
-            Self::Python => "python",
-            Self::Json => "json",
-            Self::Markdown => "markdown",
-            Self::Pdf => "pdf",
-            Self::Solidity => "solidity",
-        }
-    }
-}
+impl_str_conversions!(Language {
+    Rust => "rust",
+    TypeScript => "typescript",
+    JavaScript => "javascript",
+    Python => "python",
+    Json => "json",
+    Markdown => "markdown",
+    Pdf => "pdf",
+    Solidity => "solidity",
+    GraphQL => "graphql",
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -52,32 +79,34 @@ pub enum NodeKind {
     CliCommand,
     HttpRoute,
     EnvVar,
+    GraphqlOperation,
+    GraphqlFragment,
+    GraphqlField,
 }
 
-impl NodeKind {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Repository => "repository",
-            Self::File => "file",
-            Self::Module => "module",
-            Self::Function => "function",
-            Self::Struct => "struct",
-            Self::Enum => "enum",
-            Self::Trait => "trait",
-            Self::Impl => "impl",
-            Self::Method => "method",
-            Self::Test => "test",
-            Self::Dependency => "dependency",
-            Self::Concept => "concept",
-            Self::Script => "script",
-            Self::TypeAlias => "type_alias",
-            Self::DeploymentResource => "deployment_resource",
-            Self::CliCommand => "cli_command",
-            Self::HttpRoute => "http_route",
-            Self::EnvVar => "env_var",
-        }
-    }
-}
+impl_str_conversions!(NodeKind {
+    Repository => "repository",
+    File => "file",
+    Module => "module",
+    Function => "function",
+    Struct => "struct",
+    Enum => "enum",
+    Trait => "trait",
+    Impl => "impl",
+    Method => "method",
+    Test => "test",
+    Dependency => "dependency",
+    Concept => "concept",
+    Script => "script",
+    TypeAlias => "type_alias",
+    DeploymentResource => "deployment_resource",
+    CliCommand => "cli_command",
+    HttpRoute => "http_route",
+    EnvVar => "env_var",
+    GraphqlOperation => "graphql_operation",
+    GraphqlFragment => "graphql_fragment",
+    GraphqlField => "graphql_field",
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -98,26 +127,22 @@ pub enum EdgeKind {
     PrerequisiteFor,
 }
 
-impl EdgeKind {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Contains => "contains",
-            Self::Imports => "imports",
-            Self::Calls => "calls",
-            Self::UsesType => "uses_type",
-            Self::Implements => "implements",
-            Self::Defines => "defines",
-            Self::Tests => "tests",
-            Self::Documents => "documents",
-            Self::Mentions => "mentions",
-            Self::DependsOn => "depends_on",
-            Self::Configures => "configures",
-            Self::Deploys => "deploys",
-            Self::SimilarTo => "similar_to",
-            Self::PrerequisiteFor => "prerequisite_for",
-        }
-    }
-}
+impl_str_conversions!(EdgeKind {
+    Contains => "contains",
+    Imports => "imports",
+    Calls => "calls",
+    UsesType => "uses_type",
+    Implements => "implements",
+    Defines => "defines",
+    Tests => "tests",
+    Documents => "documents",
+    Mentions => "mentions",
+    DependsOn => "depends_on",
+    Configures => "configures",
+    Deploys => "deploys",
+    SimilarTo => "similar_to",
+    PrerequisiteFor => "prerequisite_for",
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Repository {
@@ -164,7 +189,7 @@ pub struct CrossRepoLink {
     pub source_community_id: Uuid,
     pub target_repo_id: Uuid,
     pub target_community_id: Uuid,
-    /// `package_dep` | `abi` | `http_route`.
+    /// `package_dep` | `abi` | `graphql` | `http_route`.
     pub kind: String,
     /// Matched names/paths + provenance breadcrumbs.
     pub evidence: Value,
@@ -251,4 +276,98 @@ pub struct SearchHit {
     pub score: f64,
     pub content: String,
     pub metadata: Value,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LANGUAGES: [Language; 9] = [
+        Language::Rust,
+        Language::TypeScript,
+        Language::JavaScript,
+        Language::Python,
+        Language::Json,
+        Language::Markdown,
+        Language::Pdf,
+        Language::Solidity,
+        Language::GraphQL,
+    ];
+
+    const NODE_KINDS: [NodeKind; 21] = [
+        NodeKind::Repository,
+        NodeKind::File,
+        NodeKind::Module,
+        NodeKind::Function,
+        NodeKind::Struct,
+        NodeKind::Enum,
+        NodeKind::Trait,
+        NodeKind::Impl,
+        NodeKind::Method,
+        NodeKind::Test,
+        NodeKind::Dependency,
+        NodeKind::Concept,
+        NodeKind::Script,
+        NodeKind::TypeAlias,
+        NodeKind::DeploymentResource,
+        NodeKind::CliCommand,
+        NodeKind::HttpRoute,
+        NodeKind::EnvVar,
+        NodeKind::GraphqlOperation,
+        NodeKind::GraphqlFragment,
+        NodeKind::GraphqlField,
+    ];
+
+    const EDGE_KINDS: [EdgeKind; 14] = [
+        EdgeKind::Contains,
+        EdgeKind::Imports,
+        EdgeKind::Calls,
+        EdgeKind::UsesType,
+        EdgeKind::Implements,
+        EdgeKind::Defines,
+        EdgeKind::Tests,
+        EdgeKind::Documents,
+        EdgeKind::Mentions,
+        EdgeKind::DependsOn,
+        EdgeKind::Configures,
+        EdgeKind::Deploys,
+        EdgeKind::SimilarTo,
+        EdgeKind::PrerequisiteFor,
+    ];
+
+    #[test]
+    fn str_conversions_round_trip() {
+        for language in LANGUAGES {
+            assert_eq!(Language::from_str(language.as_str()), Some(language));
+        }
+        for kind in NODE_KINDS {
+            assert_eq!(NodeKind::from_str(kind.as_str()), Some(kind.clone()));
+        }
+        for kind in EDGE_KINDS {
+            assert_eq!(EdgeKind::from_str(kind.as_str()), Some(kind.clone()));
+        }
+        assert_eq!(Language::from_str("cobol"), None);
+        assert_eq!(NodeKind::from_str("nonsense"), None);
+        assert_eq!(EdgeKind::from_str("nonsense"), None);
+    }
+
+    /// `storage::row_to_node`/`row_to_edge` read back with `from_str` the same
+    /// strings the serde derives persist; this pins that equality. `Language`
+    /// is deliberately absent: its serde names (`type_script`) diverge from
+    /// `as_str` (`typescript`).
+    #[test]
+    fn node_and_edge_kind_serde_strings_equal_as_str() {
+        for kind in NODE_KINDS {
+            assert_eq!(
+                serde_json::to_value(&kind).unwrap(),
+                Value::String(kind.as_str().into())
+            );
+        }
+        for kind in EDGE_KINDS {
+            assert_eq!(
+                serde_json::to_value(&kind).unwrap(),
+                Value::String(kind.as_str().into())
+            );
+        }
+    }
 }

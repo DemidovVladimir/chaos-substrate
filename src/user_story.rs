@@ -22,7 +22,9 @@
 //! ignore storyboard pages (see the isolation test).
 
 use crate::{
-    export_util::escape_script_json,
+    export_util::{
+        escape_script_json, features_memory_dir, html_escape_full as html_escape, safe_slug,
+    },
     feature_context::FeatureDefinition,
     theme::{self, Brand},
 };
@@ -647,9 +649,8 @@ pub fn write_storyboard(
     slug: &str,
     title: &str,
 ) -> Result<PathBuf> {
-    let output = repo_root
-        .join("docs/features_memory")
-        .join(format!("{}-story.html", safe_slug(slug)));
+    let output = features_memory_dir(repo_root)
+        .join(format!("{}-story.html", safe_slug(slug, "storyboard")));
     write_storyboard_to(&output, manifest, title)
 }
 
@@ -709,35 +710,6 @@ fn apply_brand_preset(manifest: &mut StoryboardManifest) -> Result<()> {
         manifest.hero_image = preset.hero_image;
     }
     Ok(())
-}
-
-/// The shared HTML escape plus `'` — this page emits single-quoted attribute
-/// values, so the apostrophe must be escaped too. The apostrophe pass runs
-/// last, matching the shared helper's `&`-first ordering.
-fn html_escape(input: &str) -> String {
-    crate::export_util::html_escape(input).replace('\'', "&#039;")
-}
-
-fn safe_slug(input: &str) -> String {
-    let slug = input
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .split('-')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    if slug.is_empty() {
-        "storyboard".to_string()
-    } else {
-        slug.chars().take(80).collect::<String>()
-    }
 }
 
 const STORYBOARD_HTML: &str = r##"<!doctype html>

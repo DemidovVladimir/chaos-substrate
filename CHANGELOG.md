@@ -4,6 +4,140 @@ All notable changes to Chaos Substrate are documented here. Versions before
 0.12.0 predate this file; see the git history (`P0`–`P5` commits) for the
 hierarchical-memory build-out.
 
+## 0.24.0 — 2026-08-20
+
+The GraphQL + consolidation release: GraphQL becomes a first-class analysis
+target end-to-end — standalone schemas and operations, `gql`-embedded documents
+in TS/JS/Python, a `graphql` cross-repo link kind, and a stack API-surface
+section — while the internals are consolidated (storage split by concern behind
+two paying ports, one shared CLI/MCP pipeline, deduped export/theme utilities)
+and the extractor stops aborting on broken files. No DB migration — additive;
+run `chaos analyze` on an already-indexed repo to pick up its GraphQL files.
+
+### Added — GraphQL end-to-end
+
+- **`Language::GraphQL`** (`.graphql` / `.gql` / `.graphqls`), parsed with
+  `apollo-parser` (error-tolerant: a broken file still yields its recoverable
+  definitions; zero recovered chunks degrade to the shared whole-file
+  fallback). SDL type definitions map onto existing node kinds (object/input →
+  struct, interface → trait, enum, union/scalar/directive → type alias) with
+  `metadata.language: "graphql"`; executable documents get new
+  `graphql_operation` / `graphql_fragment` node kinds; `extend type X` stays a
+  separate node linked to its base by a `uses_type` edge tagged
+  `relation: "extends"` (linked, not folded).
+- **Edge resolution as a graphql-only post-pass** — references are queued
+  during the walk and resolved after the file loop against a graphql-only name
+  map, never through the shared walk-order `symbol_names` map (which would
+  drop forward references and let a same-named TS class capture a GraphQL
+  edge). Emits `uses_type` (field/arg types, operation selections, extensions),
+  `implements`, and fragment-spread `calls`. God-node protection mirrors the
+  external-import drop: no edges to scalar/directive targets, and `uses_type`
+  edges to a type are capped at 12 distinct referencing files (the 13th file's
+  edge is dropped); extension→base links are exempt from both gates.
+- **Embedded documents**: `` gql`…` `` / `` graphql`…` `` tagged templates and
+  `gql(…)` calls in TS/JS (interpolation holes tolerated), `gql("…")` calls in
+  Python — extracted through the same code path, anchored at the host file's
+  lines with the GraphQL document itself as the chunk body.
+- **`graphql_field` user-surface nodes** for schema root fields (qualified
+  `Query.user`, honoring custom `schema { query: … }` root mappings) — the
+  anchors for `chaos_usage` (which also matches a bare field name against
+  qualified nodes by suffix), for the new stack section, and for cross-repo
+  linking.
+- **`graphql` cross-repo link kind** (confidence 0.7): an executable operation
+  in one member repo selects a root field another member's SDL schema defines
+  (case-folded, operation types must agree, qualified-suffix rule, ≥4-char
+  field names, no chunk-scan fallback).
+- **`chaos_stack` API-surface section**: the repo's exposed API listed from
+  persisted surface nodes — HTTP routes (method + path), GraphQL root fields
+  grouped `Query.`/`Mutation.`/`Subscription.`, and CLI commands — capped with
+  `*_omitted` counts in the compact return, complete in the HTML manifest.
+- Honest limitations, stated in the outputs: GraphQL schemas are **SDL-derived
+  only** (code-first servers — async-graphql, TypeGraphQL, graphene/strawberry
+  — produce no `graphql_field` nodes yet; roadmap), and an incremental
+  `chaos add` resolves GraphQL cross-file edges only within the changed-file
+  batch — they return on the next full `chaos analyze`.
+
+### Changed
+
+- **`chaos_feature_context` inlines a bounded `code_excerpt`** on its top hits:
+  the return stays compact, but an agent no longer has to open the HTML to read
+  the strongest evidence bodies (full verbatim evidence still lives only in
+  the written page).
+- **Extraction robustness**: parse failures in code files (Rust included)
+  uniformly warn and emit a whole-file fallback chunk instead of aborting or
+  silently producing zero chunks; file-type dispatch is one exhaustive
+  `FileKind` match; the four manifest extractors share `begin_file` and the
+  run's commit SHA (no more per-manifest `git` subprocess); doc/PDF chunk
+  packing is one generic packer.
+- **Storage split + ports + blanket impls**: `src/storage.rs` split by concern
+  into `src/storage/{repo,index,merkle,community,search,graph,project,stack_queries}.rs`
+  behind the one unchanged `Storage` type (zero public-API churn). The
+  retrieval channels sit behind a new `ChunkSearch` port (with fusion-pipeline
+  tests driven by a scripted fake and an embedder stub whose `embed()` errors —
+  no fake vectors); `build_embedder` returns `Arc<dyn Embedder>`; a
+  `post_json_with_retry` helper replaces four identical embedding retry
+  closures. A full `StoragePort` was rejected as ceremony (see
+  ARCHITECTURE.md's design decisions).
+- **CLI/MCP dedup**: the duplicated analyze/obsidian/refresh/query handler
+  bodies moved to shared functions in `src/pipeline.rs` — both surfaces call
+  the same code, and an analysis run is marked completed before the
+  best-effort project relink. `chaos_project` gained the `add_docs` action for
+  parity with the 0.23.0 CLI, and `TOOL_NAMES` anti-drift tests pin the roster
+  to the tools/list builder, the dispatch match, the clap CLI, and the docs;
+  a companion test pins the plugin manifest VERSIONS to Cargo.toml's crate
+  version (the manifests carry no tool roster).
+- **Utility consolidation**: one `safe_slug`, `write_report_page`,
+  `extract_json_block`, `resolve_indexed_repo`, html/script escaping, and the
+  shared `theme::REPORT_CSS`/`REPORT_JS` splice across the 8 report templates
+  (structurally divergent templates recorded as exclusions).
+- **`http_route` cross-repo provider precision**: provider route anchors now
+  come from persisted `HttpRoute` surface nodes (method + path metadata),
+  unioned with the chunk scan (nodes win on a shared path) so scan-only
+  registrations and repos indexed before user-surface extraction keep their
+  anchors.
+
+### Fixed
+
+- A broken `.rs` file no longer **aborts the whole analyze run** (syn parse
+  failure now warns + degrades like every other language), and broken
+  Python/Solidity files now produce a whole-file chunk instead of zero chunks
+  (their parse-failure coverage gaps disappear by design).
+- MCP-written feature pages escape embedded manifest JSON with the strictly
+  safer shared `escape_script_json` (the old path only escaped `</script`).
+- MCP page slugs are capped at 80 chars like every other surface (deliberate:
+  a longer-named page written by an older version becomes an orphan).
+- Doc drift: tool rosters/counts across README/RUNBOOK/ARCHITECTURE/
+  EDITOR_SETUP/AGENTS/CLAUDE/SKILL now match the 24-tool roster (enforced by
+  tests), the plugin manifests carry the crate version (`.codex-plugin` was
+  stale at 0.21.0) and the correct `Apache-2.0` license (was `MIT`), and the
+  storyboard skill text no longer promises a placeholder mockup the renderer
+  stopped drawing (frames without a `preview` render text-only).
+- Post-review fixes:
+  - **Call-edge isolation for SDL types**: GraphQL nodes no longer enter the
+    shared symbol map or the generic call-edge pass, so a schema `type User`
+    can neither capture a same-named Python/TS call, break a repo-unique code
+    symbol's cross-file resolution, nor (embedded SDL) claim calls inside
+    `${…}` interpolation holes.
+  - **Extension-link gates**: `extend` → base merge links bypass the
+    scalar/directive gate and the fan-in cap (`extend scalar DateTime` links
+    to its base; an extension of a popular type keeps its base link).
+  - **Root-mapping aggregation**: `extend schema { … }` merges additively with
+    the Query/Mutation/Subscription defaults instead of wiping them, and a
+    run-level post-pass aggregates `schema { query: MyQuery }` mappings across
+    files, so split-file custom roots surface their `graphql_field` nodes.
+  - **`http_route` provider union**: node-derived and chunk-scan route anchors
+    are unioned (nodes win on a shared path) — a repo whose second framework
+    is visible only to the scan (NestJS decorators, `.route(` chains) no
+    longer loses those provider anchors the moment any `http_route` node
+    exists.
+  - **Vendored-schema ambiguity**: a GraphQL root field defined by more than
+    one member repo (a client vendoring the server's schema for codegen) is
+    dropped from cross-repo matching with a counted run warning, instead of
+    presenting the schema-copy carrier as a provider.
+  - **`chaos_usage` suffix merge**: the qualified-suffix `graphql_field` match
+    always runs and merges with exact-name hits (deduped by node id), so a
+    same-named resolver or type no longer hides `Query.user`.
+
 ## 0.23.0 — 2026-06-25
 
 The project-level docs + lifecycle-aware feature-story release: a project can now

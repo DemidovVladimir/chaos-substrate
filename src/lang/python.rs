@@ -1,9 +1,10 @@
 //! rustpython-parser-based Python extraction.
 //!
 //! Parses a Python source file into an AST and emits the same node/edge/chunk
-//! shapes that the old regex extractors produced. Gracefully degrades on parse
-//! failure: a warning is printed to stderr and the file node (already registered
-//! by `begin_file`) is left as-is.
+//! shapes that the old regex extractors produced. A parse failure propagates
+//! as `Err`: the extractor's language wrapper warns and degrades to a
+//! whole-file fallback chunk (the file node is already registered by
+//! `begin_file`).
 
 use crate::{
     extractor::{is_python_test_file, is_test_symbol},
@@ -19,13 +20,8 @@ use serde_json::json;
 /// Entry point called from `extractor.rs` after `begin_file` has run.
 pub(crate) fn extract(ctx: &mut FileExtraction<'_>) -> anyhow::Result<()> {
     let source = ctx.file.content.as_str();
-    let stmts = match ast::Suite::parse(source, &ctx.file.path) {
-        Ok(s) => s,
-        Err(err) => {
-            crate::lang::warn_parse_failure(&ctx.file.path, &format!("{err}"));
-            return Ok(());
-        }
-    };
+    let stmts =
+        ast::Suite::parse(source, &ctx.file.path).map_err(|err| anyhow::anyhow!("{err}"))?;
 
     let mut surface: Vec<SurfaceEntry> = Vec::new();
     walk(&stmts, ctx, &mut surface);
@@ -47,6 +43,10 @@ struct CallCollector {
     env_reads: Vec<(String, &'static str, u32)>,
     /// (name, help, start, end)
     cli_commands: Vec<(String, String, u32, u32)>,
+    /// (document text, call span) — GraphQL documents embedded as
+    /// `gql("…")` / `gql("""…""")` string-literal calls, handed to
+    /// [`crate::lang::graphql::extract_embedded_document`] after the walk.
+    graphql_docs: Vec<(String, u32, u32)>,
 }
 
 impl Visitor for CallCollector {
@@ -61,6 +61,7 @@ impl Visitor for CallCollector {
                 .push((name, node.range.start().to_usize() as u32));
         }
         self.collect_surface_call(&node);
+        self.collect_graphql_call(&node);
         self.generic_visit_expr_call(node);
     }
 
@@ -108,6 +109,23 @@ impl CallCollector {
             }
         }
     }
+
+    /// `gql("query { … }")` / `gql("""…""")` (graphql-core / gql-client
+    /// convention) — the string literal IS a GraphQL document. The whole call
+    /// span is the host anchor.
+    fn collect_graphql_call(&mut self, node: &ExprCall) {
+        if !matches!(node.func.as_ref(), Expr::Name(n) if n.id.as_str() == "gql") {
+            return;
+        }
+        let Some(text) = node.args.first().and_then(const_str) else {
+            return;
+        };
+        self.graphql_docs.push((
+            text,
+            node.range.start().to_usize() as u32,
+            node.range.end().to_usize() as u32,
+        ));
+    }
 }
 
 fn collect_calls(
@@ -147,6 +165,16 @@ fn collect_calls(
             line_start: ctx.lines.line(start as usize),
             line_end: ctx.lines.line(end as usize),
         });
+    }
+    // Embedded GraphQL documents: nodes anchor to the host call span, chunk
+    // bodies carry the GraphQL text.
+    for (text, start, end) in cc.graphql_docs {
+        crate::lang::graphql::extract_embedded_document(
+            ctx,
+            &text,
+            (start as usize, end as usize),
+            "gql-call",
+        );
     }
 }
 

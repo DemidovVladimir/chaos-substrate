@@ -1,9 +1,10 @@
 //! solang-parser-based Solidity extraction.
 //!
 //! Parses a Solidity source file into a `SourceUnit` AST and emits the same
-//! node/edge/chunk shapes that the old regex extractors produced. Gracefully
-//! degrades on parse failure: a warning is printed to stderr and the file node
-//! (already registered by `begin_file`) is left as-is.
+//! node/edge/chunk shapes that the old regex extractors produced. A parse
+//! failure propagates as `Err`: the extractor's language wrapper warns and
+//! degrades to a whole-file fallback chunk (the file node is already
+//! registered by `begin_file`).
 
 use crate::{
     extractor::{chunk_for_node, edge, slice_lines},
@@ -21,16 +22,8 @@ use uuid::Uuid;
 /// Entry point called from `extractor.rs` after `begin_file` has run.
 pub(crate) fn extract(ctx: &mut FileExtraction<'_>) -> anyhow::Result<()> {
     let source = ctx.file.content.as_str();
-    let (unit, _comments) = match solang_parser::parse(source, 0) {
-        Ok(result) => result,
-        Err(diags) => {
-            crate::lang::warn_parse_failure(
-                &ctx.file.path,
-                &format!("{} diagnostics", diags.len()),
-            );
-            return Ok(());
-        }
-    };
+    let (unit, _comments) = solang_parser::parse(source, 0)
+        .map_err(|diags| anyhow::anyhow!("{} diagnostics", diags.len()))?;
 
     for part in &unit.0 {
         match part {

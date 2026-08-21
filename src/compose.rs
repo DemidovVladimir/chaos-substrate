@@ -19,7 +19,10 @@
 
 use crate::{
     embedding::Embedder,
-    export_util::{escape_script_json, html_escape},
+    export_util::{
+        escape_script_json, existing_content_hash, features_memory_dir, html_escape,
+        resolve_indexed_repo, safe_slug,
+    },
     extractor::hash,
     feature_context::correlate_feature_manifests,
     feature_inventory::{self, FeatureInventoryOptions},
@@ -54,8 +57,8 @@ const SECTIONS: &[(&str, &str)] = &[
     ),
 ];
 
-const MANIFEST_START: &str = r#"<script type="application/json" id="chaos-composed-manifest">"#;
-const MANIFEST_END: &str = "</script>";
+/// Element id of the embedded manifest block (index and per-feature pages).
+const MANIFEST_ID: &str = "chaos-composed-manifest";
 
 /// Detail levels a persona resolves to. Explicit `level` is embedder-free;
 /// free-text `persona` is routed by prototype-embedding cosine (no keyword
@@ -189,12 +192,12 @@ pub async fn run(
     repo: &str,
     opts: &ComposeOptions,
 ) -> Result<Value> {
-    let repo = storage
-        .find_repository(repo)
-        .await?
-        .with_context(|| format!("repository is not indexed: {repo} — run chaos_analyze first; compose uses ONLY the chaos knowledge base"))?;
-    let repo_root = PathBuf::from(&repo.root_path);
-    let features_dir = repo_root.join("docs/features_memory");
+    let (repo, repo_root) = resolve_indexed_repo(storage, repo).await.with_context(|| {
+        format!(
+            "repository is not indexed: {repo} — run chaos_analyze first; compose uses ONLY the chaos knowledge base"
+        )
+    })?;
+    let features_dir = features_memory_dir(&repo_root);
 
     let mut provenance: Vec<Breadcrumb> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
@@ -269,7 +272,7 @@ pub async fn run(
         .clone()
         .unwrap_or_else(|| format!("{} — composed: {}", repo.name, section_kinds.join(" + ")));
     let default_slug = format!("{}-{}", repo.name, section_kinds.join("-"));
-    let slug = safe_slug(opts.slug.as_deref().unwrap_or(&default_slug));
+    let slug = safe_slug(opts.slug.as_deref().unwrap_or(&default_slug), "composed");
     let output = opts
         .output_html
         .clone()
@@ -386,10 +389,12 @@ pub async fn run(
     // index hash covers every per-feature page hash, so "index unchanged"
     // implies "site content unchanged" — but the files must actually exist.
     let pages_on_disk = site_pages.iter().all(|p| {
-        existing_content_hash(&features_dir.join(&p.rel_path)).as_deref()
+        existing_content_hash(&features_dir.join(&p.rel_path), MANIFEST_ID).as_deref()
             == Some(p.content_hash.as_str())
     });
-    if existing_content_hash(&output).as_deref() == Some(content_hash.as_str()) && pages_on_disk {
+    if existing_content_hash(&output, MANIFEST_ID).as_deref() == Some(content_hash.as_str())
+        && pages_on_disk
+    {
         provenance.push(Breadcrumb::new(
             source::MERKLE,
             "content_hash",
@@ -425,7 +430,8 @@ pub async fn run(
     let mut pages_cached = 0usize;
     for page in &site_pages {
         let path = features_dir.join(&page.rel_path);
-        if existing_content_hash(&path).as_deref() == Some(page.content_hash.as_str()) {
+        if existing_content_hash(&path, MANIFEST_ID).as_deref() == Some(page.content_hash.as_str())
+        {
             pages_cached += 1;
             continue;
         }
@@ -765,7 +771,7 @@ fn build_site_pages(
     let mut taken: HashMap<String, usize> = HashMap::new();
     let mut rel_path_for: HashMap<uuid::Uuid, String> = HashMap::new();
     for (_, card) in &collected.cards {
-        let base = safe_slug(&card.label);
+        let base = safe_slug(&card.label, "composed");
         let n = taken.entry(base.clone()).or_insert(0);
         *n += 1;
         let name = if *n == 1 { base } else { format!("{base}-{n}") };
@@ -1099,18 +1105,6 @@ fn subtitle_for(level: &str, kinds: &[String]) -> String {
     )
 }
 
-/// Read the content hash out of an existing composed page, if any.
-fn existing_content_hash(path: &Path) -> Option<String> {
-    let html = fs::read_to_string(path).ok()?;
-    let start = html.find(MANIFEST_START)? + MANIFEST_START.len();
-    let end = html[start..].find(MANIFEST_END)? + start;
-    let value: Value = serde_json::from_str(html[start..end].trim()).ok()?;
-    value
-        .get("content_hash")
-        .and_then(Value::as_str)
-        .map(String::from)
-}
-
 #[allow(clippy::too_many_arguments)]
 fn compact_return(
     repo: &str,
@@ -1159,28 +1153,6 @@ fn compact_return(
         "provenance": provenance,
         "warnings": warnings,
     })
-}
-
-fn safe_slug(input: &str) -> String {
-    let slug = input
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .split('-')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    if slug.is_empty() {
-        "composed".to_string()
-    } else {
-        slug.chars().take(80).collect()
-    }
 }
 
 /// Render the composed page: shared theme + optional style-preset token
@@ -1416,7 +1388,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("poi-registry.html");
         fs::write(&path, &html).unwrap();
-        assert_eq!(existing_content_hash(&path).as_deref(), Some("feedface"));
+        assert_eq!(
+            existing_content_hash(&path, MANIFEST_ID).as_deref(),
+            Some("feedface")
+        );
     }
 
     #[test]
@@ -1477,7 +1452,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("x-composed.html");
         fs::write(&path, &html).unwrap();
-        assert_eq!(existing_content_hash(&path).as_deref(), Some("abc123"));
+        assert_eq!(
+            existing_content_hash(&path, MANIFEST_ID).as_deref(),
+            Some("abc123")
+        );
     }
 
     #[test]
@@ -1494,7 +1472,7 @@ mod tests {
     #[test]
     fn missing_page_has_no_cached_hash() {
         assert_eq!(
-            existing_content_hash(Path::new("/nonexistent/x.html")),
+            existing_content_hash(Path::new("/nonexistent/x.html"), MANIFEST_ID),
             None
         );
     }

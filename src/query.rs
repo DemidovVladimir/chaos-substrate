@@ -2,7 +2,7 @@ use crate::{
     embedding::Embedder,
     graph::{best_context_paths, ContextPath},
     models::SearchHit,
-    storage::Storage,
+    storage::{ChunkSearch, Storage},
 };
 use anyhow::Result;
 use serde::Serialize;
@@ -241,9 +241,14 @@ pub async fn query_feature_context_repo(
 
 /// `first_query_embedding`: a precomputed embedding of `queries[0]`, when the
 /// caller already paid for it (the hierarchical router) — saves one embed call.
+///
+/// Takes the retrieval PORT (`&dyn ChunkSearch`), not `&Storage`: the fusion
+/// pipeline below (channel normalization + merge + rerank + recall floors) is
+/// pure composition over the channels, so tests drive it with a scripted fake
+/// while production passes the real `Storage` (which implements the port).
 #[allow(clippy::too_many_arguments)]
 async fn query_repo_with_expansions(
-    storage: &Storage,
+    storage: &dyn ChunkSearch,
     repo_id: Uuid,
     embedder: &dyn Embedder,
     original_query: &str,
@@ -300,7 +305,7 @@ async fn query_repo_with_expansions(
 }
 
 async fn retrieve_query_hits(
-    storage: &Storage,
+    storage: &dyn ChunkSearch,
     repo_id: Uuid,
     embedder: &dyn Embedder,
     query: &str,
@@ -1257,5 +1262,221 @@ mod tests {
         let mut h = hit(json!({}), score);
         tag_retrieved_by(std::slice::from_mut(&mut h), method);
         h
+    }
+
+    // ---- Fusion-pipeline tests over the ChunkSearch port --------------------
+    //
+    // HARD-RULES DEFENSE: these are test-only doubles in the same spirit as
+    // the existing FailEmbedder (storage/tests.rs). Nothing here fabricates a
+    // stored vector or bypasses Postgres in production code: the scripted
+    // ChunkSearch returns canned SearchHits (retrieval EVIDENCE, not
+    // embeddings), the embedder stub ERRORS on embed() — proving the pipeline
+    // never calls it when a precomputed query embedding is supplied — and
+    // nothing is persisted anywhere.
+
+    use crate::embedding::Embedder;
+    use crate::models::KnowledgeEdge;
+    use crate::storage::ChunkSearch;
+
+    /// Scripted retrieval channels: each port method returns its fixed list,
+    /// ignoring the query — the composed pipeline (normalization + merge +
+    /// rerank + recall floors) is what's under test.
+    struct ScriptedSearch {
+        semantic: Vec<SearchHit>,
+        keyword: Vec<SearchHit>,
+        literal: Vec<SearchHit>,
+        subject: Vec<SearchHit>,
+    }
+
+    #[async_trait::async_trait]
+    impl ChunkSearch for ScriptedSearch {
+        async fn semantic_search(
+            &self,
+            _repo_id: Uuid,
+            _provider: &str,
+            _model_id: &str,
+            _dimensions: usize,
+            _query_embedding: &[f32],
+            _limit: i64,
+        ) -> anyhow::Result<Vec<SearchHit>> {
+            Ok(self.semantic.clone())
+        }
+
+        async fn keyword_search(
+            &self,
+            _repo_id: Uuid,
+            _query: &str,
+            _limit: i64,
+        ) -> anyhow::Result<Vec<SearchHit>> {
+            Ok(self.keyword.clone())
+        }
+
+        async fn literal_search(
+            &self,
+            _repo_id: Uuid,
+            _term: &str,
+            _limit: i64,
+        ) -> anyhow::Result<Vec<SearchHit>> {
+            Ok(self.literal.clone())
+        }
+
+        async fn subject_search(
+            &self,
+            _repo_id: Uuid,
+            _terms: &[String],
+            _limit: i64,
+        ) -> anyhow::Result<Vec<SearchHit>> {
+            Ok(self.subject.clone())
+        }
+
+        async fn load_edges_for_nodes(
+            &self,
+            _repo_id: Uuid,
+            _node_ids: &[Uuid],
+        ) -> anyhow::Result<Vec<KnowledgeEdge>> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// An embedder whose `embed` ALWAYS errors: any test that succeeds while
+    /// using it has proven the pipeline made zero embed calls.
+    struct EmbedMustNotBeCalled;
+
+    #[async_trait::async_trait]
+    impl Embedder for EmbedMustNotBeCalled {
+        fn provider(&self) -> &'static str {
+            "test"
+        }
+        fn model_id(&self) -> &str {
+            "test-model"
+        }
+        fn dimensions(&self) -> usize {
+            3
+        }
+        async fn embed(&self, _input: &str) -> anyhow::Result<Vec<f32>> {
+            anyhow::bail!("embed() must not be called in this test")
+        }
+    }
+
+    fn scripted_hit(id: u128, file: &str, content: &str, score: f64) -> SearchHit {
+        SearchHit {
+            chunk_id: Uuid::from_u128(id),
+            node_id: Some(Uuid::from_u128(id + 1000)),
+            file_path: Some(file.into()),
+            line_start: Some(1),
+            line_end: Some(5),
+            score,
+            content: content.into(),
+            metadata: json!({}),
+        }
+    }
+
+    /// The scripted fixture for "banned reputation state": a literal flood
+    /// whose fused+reranked scores beat the keyword hit, two semantic hits, a
+    /// subject-named file, and one chunk shared between the semantic and
+    /// literal channels (ids 1/2 semantic, 20 keyword, 30-33 literal-only,
+    /// 40 subject).
+    fn scripted_fixture() -> ScriptedSearch {
+        let semantic = vec![
+            scripted_hit(1, "core/rep.rs", "let score = compute();", 0.44),
+            scripted_hit(2, "core/graph.rs", "let edges = load();", 0.40),
+        ];
+        let keyword = vec![scripted_hit(20, "docs/notes.md", "misc note text", 0.031)];
+        // Literal channel: fixed-score matches whose PATH carries a query token
+        // ("banned"), so rerank's path boost lifts them above the keyword hit —
+        // the flood the method-recall floor must survive. The first entry
+        // shares chunk id 1 with the semantic channel (union-tag case).
+        let literal = vec![
+            scripted_hit(1, "core/rep.rs", "let score = compute();", 0.75),
+            scripted_hit(30, "vendor/banned/words-1.ts", "const w1 = [];", 0.75),
+            scripted_hit(31, "vendor/banned/words-2.ts", "const w2 = [];", 0.75),
+            scripted_hit(32, "vendor/banned/words-3.ts", "const w3 = [];", 0.75),
+            scripted_hit(33, "vendor/banned/words-4.ts", "const w4 = [];", 0.75),
+        ];
+        // A file NAMED AFTER the query ("reputation" is a subject term).
+        let subject = vec![scripted_hit(
+            40,
+            "svc/reputation-service.ts",
+            "export const svc = {};",
+            0.7,
+        )];
+        ScriptedSearch {
+            semantic,
+            keyword,
+            literal,
+            subject,
+        }
+    }
+
+    /// The COMPOSED pipeline: channel normalization + merge + rerank + every
+    /// recall floor, driven end-to-end through the port. Asserts the window
+    /// keeps the semantic hits, rescues the keyword hit from the literal flood
+    /// (its fused score is BELOW every literal hit's), keeps the subject file,
+    /// and union-tags a chunk found by two channels — with an embedder whose
+    /// embed() errors, proving the precomputed query embedding is reused.
+    #[tokio::test]
+    async fn fusion_pipeline_composes_channels_and_floors_without_embedding() {
+        let scripted = scripted_fixture();
+        let query = "banned reputation state";
+        let query_embedding = [0.25_f32, 0.5, 0.25];
+        let response = query_repo_with_expansions(
+            &scripted,
+            Uuid::from_u128(9),
+            &EmbedMustNotBeCalled,
+            query,
+            4,
+            &[query],
+            Some(&query_embedding),
+        )
+        .await
+        .expect("pipeline must run without calling embed()");
+
+        assert_eq!(response.hits.len(), 4, "window is exactly the limit");
+        let ids: Vec<Uuid> = response.hits.iter().map(|h| h.chunk_id).collect();
+        // Both semantic hits survive (method floor reserves half the window).
+        assert!(ids.contains(&Uuid::from_u128(1)));
+        assert!(ids.contains(&Uuid::from_u128(2)));
+        // The subject-named file survives.
+        assert!(ids.contains(&Uuid::from_u128(40)));
+        // The keyword hit is RESCUED into the window although every literal
+        // flood hit out-scores it after fusion + rerank.
+        assert!(ids.contains(&Uuid::from_u128(20)));
+        // Which means no literal-only flood hit remains.
+        for flood in [30u128, 31, 32, 33] {
+            assert!(!ids.contains(&Uuid::from_u128(flood)));
+        }
+        // The chunk found by BOTH semantic and literal carries both tags.
+        let merged = response
+            .hits
+            .iter()
+            .find(|h| h.chunk_id == Uuid::from_u128(1))
+            .unwrap();
+        assert!(hit_has_method(merged, "semantic"));
+        assert!(hit_has_method(merged, "literal"));
+        // The scripted port returned no edges — no context paths.
+        assert!(response.context_paths.is_empty());
+    }
+
+    /// Fail-closed counterpart: WITHOUT a precomputed query embedding the
+    /// pipeline must embed — and with the embedder down it errors instead of
+    /// degrading to the lexical channels.
+    #[tokio::test]
+    async fn fusion_pipeline_fails_closed_when_embedding_is_needed() {
+        let scripted = scripted_fixture();
+        let query = "banned reputation state";
+        let result = query_repo_with_expansions(
+            &scripted,
+            Uuid::from_u128(9),
+            &EmbedMustNotBeCalled,
+            query,
+            4,
+            &[query],
+            None,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "no precomputed embedding + embedder down must fail closed"
+        );
     }
 }

@@ -2,11 +2,12 @@
 //!
 //! Collects, per file, the CLI commands a user can type (clap, commander,
 //! argparse, click), the HTTP routes the product serves (express/fastify,
-//! Flask/FastAPI, actix/rocket attributes, axum `.route`), and the environment
-//! variables the code reads (`std::env`, `process.env`, `os.environ`). Each
-//! becomes a first-class node (`cli_command` / `http_route` / `env_var`) with
-//! its own chunk, so "how do you operate this product" is answerable from the
-//! persisted index instead of from docs.
+//! Flask/FastAPI, actix/rocket attributes, axum `.route`), the environment
+//! variables the code reads (`std::env`, `process.env`, `os.environ`), and the
+//! GraphQL root fields an SDL schema exposes (`Query.user`). Each becomes a
+//! first-class node (`cli_command` / `http_route` / `env_var` /
+//! `graphql_field`) with its own chunk, so "how do you operate this product"
+//! is answerable from the persisted index instead of from docs.
 //!
 //! Nodes are deliberately per-file (`{path}:env:{VAR}`, never a repo-wide
 //! `env:{VAR}`): a shared hub node would glue every file reading
@@ -35,6 +36,9 @@ pub(crate) enum Surface {
     Cli,
     Route,
     Env,
+    /// A root field of a GraphQL schema (`Query.user`) — the API surface a
+    /// client can call, collected from SDL by `crate::lang::graphql`.
+    GraphqlField,
 }
 
 impl Surface {
@@ -43,6 +47,7 @@ impl Surface {
             Surface::Cli => NodeKind::CliCommand,
             Surface::Route => NodeKind::HttpRoute,
             Surface::Env => NodeKind::EnvVar,
+            Surface::GraphqlField => NodeKind::GraphqlField,
         }
     }
 
@@ -52,6 +57,7 @@ impl Surface {
             Surface::Cli => "cli",
             Surface::Route => "route",
             Surface::Env => "env",
+            Surface::GraphqlField => "graphql_field",
         }
     }
 
@@ -61,6 +67,7 @@ impl Surface {
             Surface::Cli => "CLI command",
             Surface::Route => "HTTP route",
             Surface::Env => "environment variable",
+            Surface::GraphqlField => "GraphQL field",
         }
     }
 }
@@ -157,6 +164,7 @@ pub(crate) fn emit_surface_entries(
                     Surface::Cli => "Command",
                     Surface::Route => "Route",
                     Surface::Env => "Variable",
+                    Surface::GraphqlField => "Field",
                 },
                 framework = entry.framework,
             ),

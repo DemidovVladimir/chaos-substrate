@@ -13,17 +13,16 @@
 
 use crate::{
     embedding::Embedder,
-    export_util::escape_script_json,
+    export_util::{features_memory_dir, resolve_indexed_repo, safe_slug},
     feature_context::load_feature_matches,
     provenance::{source, Breadcrumb},
     storage::{CommunityMatch, Storage},
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    fs,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -81,11 +80,7 @@ pub async fn run(
     change: &str,
     opts: &ChangePlanOptions,
 ) -> Result<Value> {
-    let repo = storage
-        .find_repository(repo)
-        .await?
-        .with_context(|| format!("repository is not indexed: {repo}"))?;
-    let repo_root = PathBuf::from(&repo.root_path);
+    let (repo, repo_root) = resolve_indexed_repo(storage, repo).await?;
     let limit = if opts.limit > 0 {
         opts.limit
     } else {
@@ -135,7 +130,7 @@ pub async fn run(
     // 2b. Prior-manifest seeding: correlate the change against previously
     //     generated feature pages (token match), then map their files onto
     //     communities so a curated existing feature deepens the decomposition.
-    let features_dir = repo_root.join("docs/features_memory");
+    let features_dir = features_memory_dir(&repo_root);
     let manifest_matches =
         load_feature_matches(change, &features_dir, limit.max(3), 24).unwrap_or_default();
     let mut manifest_files: Vec<String> = manifest_matches
@@ -355,13 +350,9 @@ pub async fn run(
 
     // 7. Always write the HTML report.
     let output = opts.output_html.clone().unwrap_or_else(|| {
-        repo_root
-            .join("docs/features_memory")
-            .join(format!("{}-plan.html", safe_slug(change)))
+        features_memory_dir(&repo_root)
+            .join(format!("{}-plan.html", safe_slug(change, "change-plan")))
     });
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
     write_change_plan_html(&output, change, &features, &warnings, &provenance)?;
 
     // 8. Compact JSON return (full detail stays in the HTML).
@@ -471,28 +462,6 @@ fn git_changed_paths(root: &Path, since: &str) -> Vec<String> {
         .collect()
 }
 
-fn safe_slug(input: &str) -> String {
-    let slug = input
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .split('-')
-        .filter(|p| !p.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    if slug.is_empty() {
-        "change-plan".to_string()
-    } else {
-        slug.chars().take(80).collect::<String>()
-    }
-}
-
 fn write_change_plan_html(
     path: &Path,
     change: &str,
@@ -507,25 +476,10 @@ fn write_change_plan_html(
         "provenance": provenance,
         "warnings": warnings,
     });
-    let json = serde_json::to_string(&data)?;
-    fs::write(
-        path,
-        PLAN_HTML
-            .replace("__THEME__", crate::theme::THEME_CSS)
-            .replace(
-                "__BRAND_TOPBAR__",
-                &crate::theme::render_brand(&crate::theme::Brand::default(), "topbar"),
-            )
-            .replace(
-                "__BRAND_FOOTER__",
-                &crate::theme::render_brand(&crate::theme::Brand::default(), "footer"),
-            )
-            .replace("__DATA__", &escape_script_json(&json)),
-    )?;
-    Ok(())
+    crate::export_util::write_report_page(path, PLAN_HTML, &serde_json::to_string(&data)?)
 }
 
-const PLAN_HTML: &str = r##"<!doctype html>
+pub(crate) const PLAN_HTML: &str = r##"<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -533,23 +487,11 @@ const PLAN_HTML: &str = r##"<!doctype html>
 <title>Change Plan</title>
 <style>
 __THEME__
+__REPORT_CSS__
 /* ===== change-plan components (light editorial) ===== */
-header.plan{background:var(--bg-sky-soft);border-bottom:var(--border-hairline)}
-header.plan .wrap{padding:48px 32px 36px}
-header.plan .eyebrow{font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.16em;color:var(--color-blue-700);margin-bottom:16px;display:flex;align-items:center;gap:10px}
-header.plan .eyebrow::before{content:"";width:22px;height:1px;background:var(--color-blue-500);display:inline-block}
-header.plan h1{font:var(--type-display-lg);letter-spacing:-.01em;color:var(--color-ink-700);margin:0 0 10px}
 #change{font:var(--type-body-lg);color:var(--color-ink-500);line-height:1.5}
 .sub{color:var(--color-ink-400);max-width:72ch;margin-top:14px;font:var(--type-body-sm);line-height:1.6}
 .sub b{color:var(--color-ink-600);font-weight:500}
-main{padding:40px 0 64px;display:grid;gap:24px}
-.panel{background:var(--color-surface-0);border:var(--border-hairline);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);padding:24px}
-h2{font:var(--type-h4);color:var(--color-ink-700);margin:0 0 16px}
-.muted{color:var(--fg-tertiary);line-height:1.5}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px;margin-bottom:2px}
-.stat{border:var(--border-hairline);border-radius:var(--radius-md);background:var(--color-surface-2);padding:18px}
-.stat b{display:block;font:var(--type-h2);font-family:var(--font-display);color:var(--color-ink-700);line-height:1}
-.stat span{display:block;color:var(--fg-tertiary);font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.08em;margin-top:8px}
 .feature{border:var(--border-hairline);border-radius:var(--radius-lg);background:var(--color-surface-0);padding:20px 22px;margin-top:14px;position:relative;box-shadow:var(--shadow-xs)}
 .feature::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:var(--radius-lg) 0 0 var(--radius-lg);background:var(--color-blue-400)}
 .feature h3{margin:0 0 4px;font:var(--type-h5);color:var(--color-ink-700);display:flex;align-items:center;flex-wrap:wrap;gap:8px}
@@ -564,21 +506,15 @@ h2{font:var(--type-h4);color:var(--color-ink-700);margin:0 0 16px}
 .via.diff{color:var(--color-purple-500);background:var(--color-purple-100)}
 .via.manifest{color:rgb(176,124,15);background:rgba(176,124,15,.12)}
 .via.both{color:#007f76;background:rgba(0,200,187,.12)}
-.matched{margin-top:10px;display:grid;gap:4px}
-.matched div{color:var(--color-ink-500);font:var(--type-body-xs);line-height:1.5}
-.matched b{color:var(--color-ink-700);font-weight:500;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.04em;font-size:10px}
 .summary{color:var(--color-ink-500);font:var(--type-body-sm);line-height:1.6;margin:10px 0;white-space:pre-wrap;max-height:130px;overflow:auto}
 .sym{display:inline-flex;align-items:center;gap:6px;border:var(--border-hairline);border-radius:var(--radius-pill);padding:4px 11px;margin:6px 6px 0 0;color:var(--color-ink-500);font:500 12px/1 var(--font-body);background:var(--color-surface-1)}
 .sym .k{color:var(--fg-tertiary);font-family:var(--font-mono);font-size:10px;text-transform:uppercase;letter-spacing:.04em}
-.item.warn{border:1px solid var(--color-blue-300);border-radius:var(--radius-md);background:var(--color-blue-50);padding:14px 16px;margin-top:12px}
-.item.warn strong{color:var(--color-blue-700);font:var(--type-h6);display:block;margin-bottom:4px}
-.item.warn div{color:var(--color-ink-500);font:var(--type-body-sm);line-height:1.5}
 </style>
 </head>
 <body data-chaos-change-plan>
 <div class="topbar"><div class="wrap">__BRAND_TOPBAR__<span class="crumb">Change plan<span class="sep">&rsaquo;</span><b>features</b></span><span class="sp"></span><span class="pilltag">Change plan</span></div></div>
 
-<header class="plan">
+<header class="ov">
   <div class="wrap">
     <div class="eyebrow">Change plan</div>
     <h1>Change Plan</h1>
@@ -602,7 +538,7 @@ h2{font:var(--type-h4);color:var(--color-ink-700);margin:0 0 16px}
 <script>
 (function(){
 var D=JSON.parse(document.getElementById("chaos-plan-data").textContent);
-function esc(v){return String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;");}
+__REPORT_JS__
 document.getElementById("change").textContent=D.change||"";
 var F=D.features||[];
 var avg=F.length?Math.round(100*F.reduce(function(a,f){return a+(f.confidence||0);},0)/F.length):0;
@@ -625,9 +561,7 @@ F.forEach(function(f){
   host.appendChild(el);
 });
 if(!host.children.length)host.innerHTML='<div class="muted">No features matched this change. Ensure the repo is indexed (chaos_analyze) so communities + summaries exist, and try a more specific description.</div>';
-var prov=document.getElementById("provenance");
-(D.provenance||[]).forEach(function(c){var el=document.createElement("div");el.className="matched";el.innerHTML='<div><b>'+esc(c.source)+'</b> '+esc(c.method)+'</div><div class="muted">'+esc(c.detail)+(c.locator?' &middot; '+esc(c.locator):'')+'</div>';prov.appendChild(el);});
-if(!prov.children.length)prov.innerHTML='<div class="muted">No breadcrumbs recorded.</div>';
+renderProvenance(document.getElementById("provenance"),D.provenance);
 var w=document.getElementById("warnings");
 (D.warnings||[]).forEach(function(x){var el=document.createElement("div");el.className="item warn";el.innerHTML='<strong>Note</strong><div>'+esc(x)+'</div>';w.appendChild(el);});
 if(!w.children.length)w.innerHTML='<div class="muted">No warnings.</div>';

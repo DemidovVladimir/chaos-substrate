@@ -7,10 +7,11 @@ vectors stored in **Postgres + pgvector**, so agents stop re-reading the whole r
 and instead get fast, source-grounded answers from durable memory. It is a single Rust binary
 (`chaos`) that exposes that memory through a CLI and a stdio MCP server.
 
-The implementation is Rust-only. It analyzes Rust, TypeScript, JavaScript, Python, and Solidity with
-**real AST parsers**, treats Markdown/MDX and text PDFs as supplemental document context, and reads a
-small set of JSON config manifests. Non-Rust languages are analysis targets only — they are parsed
-Rust-side, never run as a separate Node or Python service. It can also export a standalone
+The implementation is Rust-only. It analyzes Rust, TypeScript, JavaScript, Python, Solidity, and
+GraphQL (standalone `.graphql`/`.gql`/`.graphqls` files plus `gql`-embedded documents in TS/JS and
+Python) with **real AST parsers**, treats Markdown/MDX and text PDFs as supplemental document
+context, and reads a small set of JSON config manifests. Non-Rust languages are analysis targets
+only — they are parsed Rust-side, never run as a separate Node or Python service. It can also export a standalone
 `graph.html` page or an Obsidian vault for visual validation of the persisted graph.
 
 ## Why it exists
@@ -127,7 +128,7 @@ codex plugin marketplace add "$(pwd)"      # reads .agents/plugins/marketplace.j
 codex mcp add chaos-substrate -- "$(pwd)/target/release/chaos" --config "$(pwd)/chaos-substrate.toml" mcp
 ```
 
-**6. Verify** — the editor should list all twenty-three `chaos_*` tools; then index a repo:
+**6. Verify** — the editor should list all twenty-four `chaos_*` tools; then index a repo:
 
 ```bash
 chaos doctor                          # Postgres + pgvector + real embedder probe
@@ -167,7 +168,7 @@ cargo build --release
 ## MCP Tools
 
 The stdio MCP server speaks newline-delimited JSON-RPC (no `Content-Length` framing) and exposes
-exactly twenty-three tools. **This is the canonical tool reference.**
+exactly twenty-four tools. **This is the canonical tool reference.**
 
 | Tool | What it does | Key params | When to use |
 | --- | --- | --- | --- |
@@ -177,12 +178,13 @@ exactly twenty-three tools. **This is the canonical tool reference.**
 | `chaos_analyze` | Indexes or refreshes a repository into the persistent graph + embeddings. | `repo_path` | First, to build or update memory for a repo before querying. |
 | `chaos_add` | Incrementally indexes the files changed in git (or explicit `paths`), refreshes the Obsidian vault, and writes an interactive feature/bug page — in one shot. | `repo_path`, `paths`, `since`, `kind` (`feature`\|`bug`), `message`, `obsidian_output`, `no_obsidian`, `no_page` | After changing a few files, to update memory + docs without a full re-index. Auto-classifies feature vs bug from git. |
 | `chaos_stats` | Reports index statistics for an already-indexed repository, read from Postgres: totals (files, nodes, edges, chunks, embedded vs missing, split chunks) plus breakdowns of nodes by kind, edges by kind, chunks by type, and files by language. | `repo` | After `chaos_analyze`/`chaos_add`, to explain or sanity-check what was indexed. Read-only and embedder-free. |
-| `chaos_stack` | Reports the **tech stack** of an already-indexed repository, listed rather than counted: manifest-declared dependencies by ecosystem (npm/cargo — versions, runtime-vs-dev scope, how many workspace manifests declare each, widest-declared first), npm scripts, deployment resources (AWS CDK app entrypoints, Stack classes, L2 constructs by cloud service), indexed JS/TS configs, and the language breakdown. **Always** writes an interactive HTML inventory to `docs/features_memory/stack.html` (embedded `chaos-stack-manifest`) and returns a compact JSON summary with explicit **coverage notes** (what the index does not extract yet: Dockerfiles, CI workflows, pyproject.toml, foundry.toml, Terraform). | `repo`, `output_html` | To answer "what is this repo built with / what infrastructure does it use?" without grepping manifests. Read-only and embedder-free. |
-| `chaos_pages` | Lists the **generated feature-memory pages** of a repository — what chaos has already extracted. Scans `docs/features_memory` (or `features_dir`) and returns every HTML page with its kind (`feature`/`story`/`components`/`features`/`stack`/`impact`/`change-plan`/`feature-map`; unrecognised files appear as `other`, never hidden), the tool that writes that kind, its title, and its modified time, newest first, plus by-kind counts. Pure filesystem — works even when the repo row is missing, as long as the path exists. | `repo`, `features_dir` | To check whether a feature was already extracted before starting a new deep-dive, and to find the page to reopen — instead of `ls`/globbing the docs directory. Read-only, embedder-free, DB-optional. |
+| `chaos_stack` | Reports the **tech stack** of an already-indexed repository, listed rather than counted: manifest-declared dependencies by ecosystem (npm/cargo — versions, runtime-vs-dev scope, how many workspace manifests declare each, widest-declared first), npm scripts, deployment resources (AWS CDK app entrypoints, Stack classes, L2 constructs by cloud service), indexed JS/TS configs, the repo's exposed **API surface** from persisted user-surface nodes (HTTP routes with method + path, GraphQL root fields grouped `Query.`/`Mutation.`/`Subscription.` — SDL-derived only — and CLI commands), and the language breakdown. **Always** writes an interactive HTML inventory to `docs/features_memory/stack.html` (embedded `chaos-stack-manifest`) and returns a compact JSON summary with explicit **coverage notes** (what the index does not extract yet: Dockerfiles, CI workflows, pyproject.toml, foundry.toml, Terraform, code-first GraphQL schemas). | `repo`, `output_html` | To answer "what is this repo built with / what infrastructure does it use / what API does it expose?" without grepping manifests. Read-only and embedder-free. |
+| `chaos_pages` | Lists the **generated feature-memory pages** of a repository — what chaos has already extracted. Scans `docs/features_memory` (or `features_dir`) and returns every HTML page with its kind (`feature`/`story`/`components`/`features`/`composed`/`stack`/`impact`/`change-plan`/`feature-map`; unrecognised files appear as `other`, never hidden), the tool that writes that kind, its title, and its modified time, newest first, plus by-kind counts. Pure filesystem — works even when the repo row is missing, as long as the path exists. | `repo`, `features_dir` | To check whether a feature was already extracted before starting a new deep-dive, and to find the page to reopen — instead of `ls`/globbing the docs directory. Read-only, embedder-free, DB-optional. |
+| `chaos_gaps` | Lists the **knowledge gaps** — code retrieval cannot find. Two kinds: `coverage_gaps` (files that produced **no** chunks — invisible to every retrieval method) and `vocabulary_gaps` (chunked, but carrying almost no distinctive vocabulary after identifier splitting; background words are corpus-derived, never a hardcoded list). Pass `repo` for one repository, `repo` + `folder` for a sub-app inside a monorepo-indexed repo, or `project` to scan every member repo in one repo-tagged report. Compact return with per-file evidence samples and a `next` instruction. The fix for a vocabulary gap is repo content: a file-top docstring or folder README, then `chaos_add` those paths — never pause indexing on it. | `repo` or `project`, `folder` | To audit what the index can never find after an analyze, or when retrieval misses a file the user insists is relevant. Read-only and embedder-free. |
 | `chaos_query` | Answers a focused, source-grounded question via hybrid (semantic + keyword) retrieval. With `hierarchical`, retrieves top-down — matching feature (community) summaries first and returning the surfaced features alongside the chunk hits, falling back to flat search when no hierarchy exists. | `repo`, `question`, `limit` (default 10), `hierarchical` | To get a grounded answer about specific code without re-reading files. |
-| `chaos_feature_context` | Gathers evidence for understanding a feature: semantic/keyword hits, graph context, feature-page manifests. | `repo`, `task`, `limit` (10), `feature_limit` (3), `nodes_per_feature` (8), `features_dir`, `output_html` | Before implementing or explaining a feature, to assemble an implementation brief. Always writes a compact evidence HTML (override the path with `output_html`); the return is a compact pointer-only payload with the full code in the HTML. |
+| `chaos_feature_context` | Gathers evidence for understanding a feature: semantic/keyword hits, graph context, feature-page manifests. | `repo`, `task`, `limit` (10), `feature_limit` (3), `nodes_per_feature` (8), `features_dir`, `output_html` | Before implementing or explaining a feature, to assemble an implementation brief. Always writes a compact evidence HTML (override the path with `output_html`); the return is a compact payload whose top hits carry a bounded inline `code_excerpt` — the full evidence stays in the HTML. |
 | `chaos_impact` | Builds a feature-vs-existing-code impact report for an indexed repo and **always** writes an interactive HTML (impact summary + evidence dashboard) to `docs/features_memory/<slug>-impact.html`; returns a compact JSON summary (counts, the existing files/symbols the feature touches, warnings, and the HTML path) while the full evidence stays in the HTML. | `repo`, `feature`, `features_dir`, `output_html`, `limit` (10), `feature_limit` (3), `nodes_per_feature` (8) | Before implementing a feature, to see how it maps onto the codebase as it is today (the "before") without flooding context (the full evidence stays in the HTML). |
-| `chaos_usage` | Reports **who consumes** a symbol or surface string (env var, HTTP header, route, function) across the repo, grouped by top-level subfolder — the cross-folder "who uses this?" answer from the persisted index (user-surface `env_var`/`http_route`/`cli_command` nodes + reverse graph edges `calls`/`imports`/`uses_type`/`implements`/`tests`/`depends_on` + a literal chunk sweep). Read-only and embedder-free. **Always** writes `docs/features_memory/<slug>-usage.html` (embedded `chaos-usage-manifest`) and returns a compact per-folder JSON summary (capped lists with `sites_omitted` counts). Honest limitation surfaced as a warning: call/import edges resolve cross-file only for repo-unique names. | `repo`, `target`, `output_html` | To answer "who uses this symbol / env var / route across the codebase?" without grepping the target repo. |
+| `chaos_usage` | Reports **who consumes** a symbol or surface string (env var, HTTP header, route, GraphQL field, function) across the repo, grouped by top-level subfolder — the cross-folder "who uses this?" answer from the persisted index (user-surface `env_var`/`http_route`/`cli_command`/`graphql_field` nodes + reverse graph edges `calls`/`imports`/`uses_type`/`implements`/`tests`/`depends_on` + a literal chunk sweep; a bare GraphQL field name matches qualified `graphql_field` nodes by suffix, so `user` finds `Query.user`). Read-only and embedder-free. **Always** writes `docs/features_memory/<slug>-usage.html` (embedded `chaos-usage-manifest`) and returns a compact per-folder JSON summary (capped lists with `sites_omitted` counts). Honest limitation surfaced as a warning: call/import edges resolve cross-file only for repo-unique names. | `repo`, `target`, `output_html` | To answer "who uses this symbol / env var / route across the codebase?" without grepping the target repo. |
 | `chaos_sui_migration_impact` | Produces a Sui migration impact report for an indexed Ethereum, Solana, or mixed Web3 repo — auto-detects the source stack, maps each L1 feature onto Sui primitives (objects/dynamic fields, Coin/Kiosk/Display, capabilities, PTBs, events+GraphQL) with Walrus/Seal storage and access-control verdicts, each citing the compiled-in Sui official docs profile. Read-only, embedder-free. **Always** writes `docs/features_memory/sui-migration-impact.html` and returns a compact JSON summary. Maps impact only — does not generate Move code. | `repo`, `source` (auto\|ethereum\|solana\|mixed), `output_html`, `features_dir`, `limit` (12) | To plan a migration of an Ethereum/Solana codebase to Sui: see which features are affected, how they map to Sui primitives, and which need Walrus/Seal integration. |
 | `chaos_write_feature_website` | Writes an engineer-facing feature page plus its machine-readable manifest. **Pass the manifest only (omit `html`)** — Chaos renders the interactive page deterministically (same renderer as `chaos add`), so the LLM never authors raw HTML; an explicit `html` argument remains as a legacy path. The manifest's required `purpose` opens the page with a plain-language "what this was made for" band, and `examples` render a clickable "How you'd use it" section that highlights the code path on the graph. | `repo`, `slug`, `title`, `manifest`, `html` (legacy, optional) | To persist a reviewed feature explanation as a shareable static page that explains purpose and usage, not just structure. |
 | `chaos_obsidian` | Exports an already-indexed repository as an Obsidian vault (one Markdown note per graph node, grouped into topic notes, plus an edge manifest) read from the persisted graph. | `repo`, `output` | After `chaos_analyze` (which never writes files), to materialize the persisted graph as a browsable vault. Defaults `output` to `<repo>/chaos-obsidian-vault`. |
@@ -192,7 +194,7 @@ exactly twenty-three tools. **This is the canonical tool reference.**
 | `chaos_components` | Explains the **core components** of a big area (the step *before* feature extraction). An area like "OCL" spans several L1 communities; given an `area` (or none, for a repo-level overview) it surfaces those communities as components — each with its summary, key symbols/files, languages, and a quotient-graph role (entry/interface/core/foundation) — plus how they connect and a dependency-first read order. **Always** writes an interactive HTML overview to `docs/features_memory/<slug>-components.html` (with an embedded `chaos-components-manifest`) and returns a compact JSON summary. | `repo`, `area`, `output_html`, `limit` (8), `top_members` (12) | To understand a large subsystem and its constituent components before drilling into any single feature. |
 | `chaos_features` | Lists **all god-node features** (L1 communities) that match a filter, grouped by journey layer (entry → interface → core → foundation). The exhaustive, uncurated counterpart to `chaos_components`. The single `filter` is **auto-detected**: a path/real directory → **folder** scope; a layer word (`client`/`ui`/`api`/`core`/`contracts`) → that **layer** (so "client features" = every entry-layer feature); any other phrase is first tried as a layer **by meaning** (embedding match — "backend", "client app", "devops" resolve semantically; "backend" spans interface+core), then falls to a **topic** match; omit it for the whole repo. Force it with `layer`/`folder`/`topic`. Exact layer words and folders are embedder-free. **Always** writes an interactive HTML inventory to `docs/features_memory/<slug>-features.html` (embedded `chaos-features-manifest`) and returns a compact JSON summary (resolved filter, per-layer + language counts, per-feature label/role/folders/symbols/matched_by, provenance). | `repo` or `project`, `filter`, `layer`, `folder`, `topic`, `output_html`, `limit` (0 = all) | To inventory every feature in a layer/folder/topic — e.g. "give me all client features". With `project`, lists EVERY member repo's features in one journey-layered inventory (repo-tagged, cross-link-annotated, written to the project workspace). |
 | `chaos_compose` | **Composes ONE page from knowledge-base-backed sections** instead of several similar pages: `features` (inventory with each feature's concise L3 explanation), `correlations` (files shared between those features + prior generated pages that overlap them), `stack` (declared dependencies/scripts/deploy resources). Tailored to an **audience** — free-text `persona` resolved to beginner/practitioner/expert **by meaning** (prototype embeddings, no keyword list) or an explicit `level` (embedder-free) — and a **style preset** (`editorial` light default, `blade-runner` dark neon) plus optional `brand_preset` (e.g. `molecule`). Uses **only** the persisted index and prior manifests — never parses source files; an unservable section is a **loud error**, never a fallback. The composition is **content-hashed**: re-composing the same request over unchanged knowledge returns `cached: true` without writing, so agents don't re-ingest a memory they already hold. Writes `docs/features_memory/<slug>-composed.html` (embedded `chaos-composed-manifest`). **Site mode** (`feature_pages`): one extra hash-gated page per feature under `<slug>-composed/` — clickable from the index, cross-linked to in-scope neighbours, showing code/files, stack relations (Solidity neighbours tagged smart contracts), prior overlapping pages, and a deterministic persona-adapted walkthrough. This is the default surface for any user-facing webpage/website request. | `repo`, `sections`, `persona`, `level`, `style`, `brand_preset`, `filter`, `title`, `slug`, `output_html`, `limit`, `feature_pages` | To hand someone (a beginner, an expert, a stakeholder) one tailored page — "features under desci-infra with explanations and correlations, beginner persona, blade-runner style" — instead of stitching several standalone pages. |
-| `chaos_project` | Manages **cross-repository projects** — a named set of indexed repos (client, backend, smart contracts, infra, …). Detects **feature→feature cross-repo links** between members from the persisted index (consumer → provider): `package_dep` (one repo imports a package the other publishes), `abi` (code references a Solidity contract defined in another repo), `http_route` (a fetch/axios call path matches a route registered elsewhere). Links attach at the feature (L1) level with evidence + provenance, and refresh **automatically** after `chaos_analyze`/`chaos_add` on any member (gated by the L2 repo root hash — a no-change re-index relinks nothing). `list` also returns **every indexed repository** — the discovery call when you don't know what Chaos already knows. | `action` (`create`\|`add_repo`\|`list`\|`status`\|`relink`), `project`, `repo`, `alias`, `force` | To group client/backend/contracts/infra repos and see how features connect across them; then `chaos_features` with `project` for the cross-repo inventory. |
+| `chaos_project` | Manages **cross-repository projects** — a named set of indexed repos (client, backend, smart contracts, infra, …). Detects **feature→feature cross-repo links** between members from the persisted index (consumer → provider): `package_dep` (one repo imports a package the other publishes), `abi` (code references a Solidity contract defined in another repo), `http_route` (a fetch/axios call path matches a route registered elsewhere — anchored on persisted `HttpRoute` surface nodes unioned with the chunk scan), `graphql` (an executable GraphQL operation selects a root field another member's SDL schema defines; operation types must agree). Links attach at the feature (L1) level with evidence + provenance, and refresh **automatically** after `chaos_analyze`/`chaos_add` on any member (gated by the L2 repo root hash — a no-change re-index relinks nothing). `add_docs` indexes a directory of project-level documentation (ADRs, cross-repo design notes) as a docs-only member. `list` also returns **every indexed repository** — the discovery call when you don't know what Chaos already knows. | `action` (`create`\|`add_repo`\|`add_docs`\|`list`\|`status`\|`relink`), `project`, `repo`, `dir`, `alias`, `force` | To group client/backend/contracts/infra repos and see how features connect across them; then `chaos_features` with `project` for the cross-repo inventory. |
 | `chaos_feature_story` | Tells the **cross-repo story of one feature** across a project: matches it in **every** member repo (L1 community search + lexical label fallback), traverses the persisted cross-repo links between the matched features (pulling in a link's other endpoint — e.g. the Solidity contract a client calls — even when the query didn't match it), orders the involved features into a journey-layer **spine** (entry → interface → core → foundation = client → backend → contracts), and writes a clickable **multi-page site** (an index page + one hash-gated drill-down page per involved feature) to the project workspace. Deterministic and embedder-light (one embed for the whole query, reused across repos). Returns a compact summary (involved repos, the ordered link chain, links-by-kind, not-involved repos, the site summary, provenance, `content_hash`). Distinct from `chaos_features --project` (an inventory of all features) and `chaos_compose` (one repo's composed page). | `project`, `feature`, `style`, `brand_preset`, `output_html`, `limit` | To answer "how does feature X work across **every** repo?" end-to-end. |
 
 Agents should prefer MCP tools when available, and should not synthesize feature pages from
@@ -206,7 +208,8 @@ hits, refresh or re-target the context before writing a feature website.
 
 All non-Rust extraction uses **real AST parsers**, not regex or pattern matching. Each captures
 functions, classes/structs, interfaces/traits, enums, type aliases, class methods, imports,
-inheritance edges (Rust traits/impls and Solidity only), and (heuristic, file-scoped) call edges.
+inheritance edges (Rust traits/impls, Solidity, and GraphQL `implements`), and (heuristic,
+file-scoped) call edges.
 
 | Language | Parser | Functions | Classes/Structs | Methods | Imports | Inheritance | Calls |
 | --- | --- | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -214,6 +217,21 @@ inheritance edges (Rust traits/impls and Solidity only), and (heuristic, file-sc
 | TypeScript / JavaScript | `oxc` | ✅ | ✅ | ✅ | ✅ | ➖ | ✅ |
 | Python | `rustpython-parser` | ✅ | ✅ | ✅ | ✅ | ➖ | ✅ |
 | Solidity | `solang-parser` | ✅ | ✅ (contracts/libraries) | ✅ | ✅ | ✅ | ✅ |
+| GraphQL | `apollo-parser` | ✅ (operations/fragments) | ✅ (type definitions) | ➖ | ➖ (none in the language) | ✅ (`implements`) | ✅ (fragment spreads) |
+
+**GraphQL specifics.** Standalone `.graphql`/`.gql`/`.graphqls` files cover both halves of the
+language: SDL type systems (object/input → struct, interface → trait, enum, union/scalar/directive
+→ type alias, plus `extend` linked to its base by a `uses_type` edge tagged `relation: "extends"`)
+and executable documents (`graphql_operation` / `graphql_fragment` nodes). Schema root fields
+(`Query.user`, honoring custom `schema { query: … }` root mappings) become `graphql_field`
+user-surface nodes — the anchors for `chaos_usage`, the `chaos_stack` API-surface section, and the
+cross-repo `graphql` link kind. Documents embedded in host code are extracted too: `` gql`…` `` /
+`` graphql`…` `` tagged templates and `gql(…)` calls in TS/JS, and `gql("…")` calls in Python — the
+chunk body is the GraphQL document itself, anchored at the host file's lines. apollo-parser is
+error-tolerant: a broken file still yields its recoverable definitions. Honest limits: SDL-derived
+schemas only (code-first servers — async-graphql, TypeGraphQL, graphene/strawberry — are roadmap),
+and an incremental `chaos add` resolves GraphQL cross-file edges only within the changed-file
+batch (they return on the next full `chaos analyze`).
 
 Supplemental context:
 
@@ -246,8 +264,10 @@ Core (L0) Postgres tables: `repositories`, `analysis_runs`, `files`, `nodes`, `e
 god-nodes), `subtree_hash` columns (L2 Merkle rollup), `community_embeddings` (L3 summaries),
 `community_summary_cache` (content-addressed summary reuse), and the cross-repo project tables
 `projects`, `project_repos`, `cross_repo_links`. Migrations run via `sqlx::migrate!`
-(`migrations/001…006`) and are tracked in `_sqlx_migrations`. The `embeddings` table stores
-provider, model, dimensions, content hash, and pgvector data.
+(`migrations/001…009` — `007_fk_indexes` adds covering FK indexes, `008_identifier_tokens`
+rebuilds keyword search with identifier splitting, `009_project_docs` marks docs-only project
+members) and are tracked in `_sqlx_migrations`. The `embeddings` table stores provider, model,
+dimensions, content hash, and pgvector data.
 
 **Per-repo isolation.** `repositories.root_path` is `UNIQUE`, and every file/node/edge/chunk/
 community/embedding carries a `repo_id` foreign key (`on delete cascade`); all retrieval is scoped
@@ -265,13 +285,20 @@ chaos clean [<repo>] [--artifacts]                     # wipe the index (all rep
 chaos analyze <repo>                                   # index a repository
 chaos add <repo> [-m "<what changed>"]                 # index git-diff + refresh vault + write feature/bug page
 chaos stats <repo>                                     # report index statistics (read-only, embedder-free)
+chaos stack <repo>                                     # tech-stack + API-surface inventory (read-only, embedder-free)
+chaos pages <repo>                                     # list the generated feature-memory pages — never ls
+chaos gaps <repo> [--folder <prefix>] | --project <name>   # knowledge gaps: what retrieval can never find
 chaos query <repo> "<question>" [--limit N] [--hierarchical]   # source-grounded answer (top-down with --hierarchical)
 chaos feature-context <repo> "<task>" [--output-html page.html]
 chaos impact <repo> "<feature>"                        # feature-vs-existing-code impact report + HTML
+chaos usage <repo> "<symbol-or-surface-string>"        # who consumes X across subfolders (index-only, embedder-free)
+chaos sui-migration-impact <repo> [--source auto]      # map an EVM/Solana repo's features onto Sui primitives
 chaos change-plan <repo> "<change>" [--since <ref>]    # decompose a change into features + check order + HTML plan
 chaos components <repo> ["<area>"]                     # explain a big area's core components (overview before features)
 chaos features [<repo>] ["<filter>"] [--project <name>]   # list ALL features (folder | layer | topic auto-detect; --project spans repos)
-chaos project create|add-repo|list|status|relink       # cross-repo projects (client + backend + contracts + infra)
+chaos compose <repo> --sections features,correlations,stack [--persona "…"]   # ONE persona-tailored page (or a site) from KB sections
+chaos project create|add-repo|add-docs|list|status|relink   # cross-repo projects (client + backend + contracts + infra)
+chaos feature-story <project> "<feature>"              # cross-repo story of ONE feature as a multi-page site
 chaos storyboard <repo> --manifest story.json          # render a client-facing user-story page (no code)
 chaos graph <repo> [-o graph.html]                     # export interactive graph page
 chaos obsidian <repo> [-o vault]                       # export Obsidian vault
@@ -333,21 +360,31 @@ unavailable, analysis must fail rather than producing fake vectors.
 
 ### Key source files
 
-`src/main.rs` (clap CLI), `src/mcp.rs` (MCP server, 24 tools), `src/config.rs` (toml+env config),
-`src/storage.rs` (Postgres, sqlx), `src/embedding.rs` (OpenAI/Ollama embedders), `src/extractor.rs`
-(orchestration + Rust/Cargo/Markdown/PDF/JSON/AWS-CDK extraction + call edges),
-`src/lang/{mod,javascript,python,solidity}.rs` (oxc/rustpython/solang AST extraction),
+`src/main.rs` (clap CLI), `src/mcp.rs` (MCP server, 24 tools), `src/pipeline.rs` (the shared
+CLI/MCP pipelines — both surfaces call the same functions, so they cannot drift), `src/config.rs`
+(toml+env config), `src/storage/` (Postgres via sqlx, one `Storage` type split by concern into
+`repo`/`index`/`merkle`/`community`/`search`/`graph`/`project`/`stack_queries` modules; `search`
+also defines the `ChunkSearch` port), `src/embedding.rs` (OpenAI/Ollama embedders behind the
+`Embedder` port), `src/extractor.rs` (orchestration + Rust/Cargo/Markdown/PDF/JSON/AWS-CDK
+extraction + call edges), `src/lang/{mod,javascript,python,solidity,graphql}.rs`
+(oxc/rustpython/solang/apollo-parser AST extraction, including embedded `gql` documents),
+`src/user_surface.rs` (env-var/HTTP-route/CLI-command/GraphQL-field surface nodes),
 `src/weights.rs` (edge cost/confidence), `src/query.rs` (hybrid retrieval),
-`src/community.rs` + `src/merkle.rs` + `src/community_summary.rs` + `src/change_plan.rs` +
-`src/hierarchy_export.rs` (hierarchical memory: L1 Louvain god-nodes, L2 Merkle rollup,
-L3 hash-gated community summaries, change-plan tool, and god-node/feature-map export),
-`src/feature_context.rs` + `src/feature_export.rs` (feature pages), `src/stack.rs`
-(tech-stack inventory), `src/pages.rs` (generated-page listing), `src/project.rs` +
-`src/linker.rs` (cross-repo projects and linkers), `src/provenance.rs` (breadcrumbs),
-`src/graph_export.rs`,
-`src/obsidian_export.rs`, `src/setup.rs`, `src/hook.rs`, `src/export_util.rs`, and
-`migrations/001_init.sql` (plus `002_communities.sql`, `003_subtree_hash.sql`,
-`004_community_summary.sql`, `005_projects.sql`, `006_summary_cache.sql`).
+`src/community.rs` + `src/merkle.rs` + `src/community_summary.rs` + `src/layering.rs` +
+`src/change_plan.rs` + `src/hierarchy_export.rs` (hierarchical memory: L1 Louvain god-nodes,
+L2 Merkle rollup, L3 hash-gated community summaries, journey layering, change-plan tool, and
+god-node/feature-map export), `src/feature_context.rs` + `src/feature_export.rs` (feature pages),
+`src/stack.rs` (tech-stack + API-surface inventory), `src/pages.rs` (generated-page listing),
+`src/gaps.rs` (knowledge-gap detection), `src/usage.rs` (consumer lookup),
+`src/feature_inventory.rs` (the features inventory), `src/compose.rs` (composed pages/sites),
+`src/feature_story.rs` (cross-repo feature stories), `src/sui_migration.rs` + `src/sui_docs.rs`
+(Sui migration impact + compiled-in docs profile), `src/project.rs` + `src/linker.rs` (cross-repo
+projects and the package_dep/abi/http_route/graphql linkers), `src/provenance.rs` (breadcrumbs),
+`src/theme.rs` (shared report CSS/JS), `src/graph_export.rs` + `src/graph_serve.rs` (graph page +
+live-search server), `src/obsidian_export.rs`, `src/setup.rs`, `src/hook.rs`,
+`src/export_util.rs`, and `migrations/001_init.sql` (plus `002_communities.sql`,
+`003_subtree_hash.sql`, `004_community_summary.sql`, `005_projects.sql`, `006_summary_cache.sql`,
+`007_fk_indexes.sql`, `008_identifier_tokens.sql`, `009_project_docs.sql`).
 
 ## License
 

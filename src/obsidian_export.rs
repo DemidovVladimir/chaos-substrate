@@ -124,7 +124,7 @@ fn write_node_notes(
         if node.line_start.is_some() || node.line_end.is_some() {
             body.push_str(&format!(
                 "Lines: `{}`\n\n",
-                line_range(node.line_start, node.line_end)
+                crate::export_util::line_range(node.line_start, node.line_end, "unknown")
             ));
         }
 
@@ -282,14 +282,6 @@ fn safe_filename(value: &str) -> String {
 
 fn yaml_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-fn line_range(start: Option<i32>, end: Option<i32>) -> String {
-    match (start, end) {
-        (Some(start), Some(end)) if start != end => format!("{start}-{end}"),
-        (Some(start), _) => start.to_string(),
-        _ => "unknown".into(),
-    }
 }
 
 #[cfg(test)]

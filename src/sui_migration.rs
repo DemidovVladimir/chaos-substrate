@@ -34,13 +34,13 @@
 //! code is generated and no correctness claims are made.
 
 use crate::{
-    export_util::escape_script_json,
+    export_util::{features_memory_dir, resolve_indexed_repo},
     feature_context::load_feature_matches,
     provenance::{source, Breadcrumb},
     storage::{StackDependencyRow, Storage},
     sui_docs,
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
@@ -1191,11 +1191,7 @@ pub struct SuiMigrationManifest {
 /// Run the migration impact report: detect → classify → map to features →
 /// write HTML → return the compact JSON.
 pub async fn run(storage: &Storage, repo: &str, opts: &SuiMigrationOptions) -> Result<Value> {
-    let repo = storage
-        .find_repository(repo)
-        .await?
-        .with_context(|| format!("repository is not indexed: {repo}"))?;
-    let repo_root = PathBuf::from(&repo.root_path);
+    let (repo, repo_root) = resolve_indexed_repo(storage, repo).await?;
     let requested = opts.source.clone().unwrap_or_else(|| "auto".into());
     if !matches!(requested.as_str(), "auto" | "ethereum" | "solana" | "mixed") {
         anyhow::bail!("source must be one of: auto, ethereum, solana, mixed (got {requested})");
@@ -1387,7 +1383,7 @@ pub async fn run(storage: &Storage, repo: &str, opts: &SuiMigrationOptions) -> R
     let features_dir = opts
         .features_dir
         .clone()
-        .unwrap_or_else(|| repo_root.join("docs/features_memory"));
+        .unwrap_or_else(|| features_memory_dir(&repo_root));
     let correlation_query = correlation_query(&signals, &source_resolution.resolved);
     let related_pages: Vec<RelatedPage> = match load_feature_matches(
         &correlation_query,
@@ -1506,10 +1502,7 @@ pub async fn run(storage: &Storage, repo: &str, opts: &SuiMigrationOptions) -> R
     let output = opts
         .output_html
         .clone()
-        .unwrap_or_else(|| repo_root.join("docs/features_memory/sui-migration-impact.html"));
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+        .unwrap_or_else(|| features_memory_dir(&repo_root).join("sui-migration-impact.html"));
     write_sui_migration_html(&output, &manifest)?;
 
     Ok(compact_return(&manifest, &output, repo.id, feature_cap))
@@ -2168,25 +2161,14 @@ fn compact_return(
 // ---------------------------------------------------------------------------
 
 fn write_sui_migration_html(path: &Path, manifest: &SuiMigrationManifest) -> Result<()> {
-    let json = serde_json::to_string(manifest)?;
-    fs::write(
+    crate::export_util::write_report_page(
         path,
-        SUI_MIGRATION_HTML
-            .replace("__THEME__", crate::theme::THEME_CSS)
-            .replace(
-                "__BRAND_TOPBAR__",
-                &crate::theme::render_brand(&crate::theme::Brand::default(), "topbar"),
-            )
-            .replace(
-                "__BRAND_FOOTER__",
-                &crate::theme::render_brand(&crate::theme::Brand::default(), "footer"),
-            )
-            .replace("__DATA__", &escape_script_json(&json)),
-    )?;
-    Ok(())
+        SUI_MIGRATION_HTML,
+        &serde_json::to_string(manifest)?,
+    )
 }
 
-const SUI_MIGRATION_HTML: &str = r##"<!doctype html>
+pub(crate) const SUI_MIGRATION_HTML: &str = r##"<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -2194,23 +2176,11 @@ const SUI_MIGRATION_HTML: &str = r##"<!doctype html>
 <title>Sui migration impact</title>
 <style>
 __THEME__
+__REPORT_CSS__
 /* ===== sui migration impact (light editorial) ===== */
-header.ov{background:var(--bg-sky-soft);border-bottom:var(--border-hairline)}
-header.ov .wrap{padding:48px 32px 36px}
-header.ov .eyebrow{font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.16em;color:var(--color-blue-700);margin-bottom:16px;display:flex;align-items:center;gap:10px}
-header.ov .eyebrow::before{content:"";width:22px;height:1px;background:var(--color-blue-500);display:inline-block}
-header.ov h1{font:var(--type-display-lg);letter-spacing:-.01em;color:var(--color-ink-700);margin:0 0 10px}
 #overview{font:var(--type-body-lg);color:var(--color-ink-500);line-height:1.55;max-width:80ch}
 .sub{color:var(--color-ink-400);max-width:76ch;margin-top:14px;font:var(--type-body-sm);line-height:1.6}
-main{padding:40px 0 64px;display:grid;gap:24px}
-.panel{background:var(--color-surface-0);border:var(--border-hairline);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);padding:24px}
-h2{font:var(--type-h4);color:var(--color-ink-700);margin:0 0 16px}
 h3{font:var(--type-h5);color:var(--color-ink-700);margin:18px 0 8px}
-.muted{color:var(--fg-tertiary);line-height:1.5}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px}
-.stat{border:var(--border-hairline);border-radius:var(--radius-md);background:var(--color-surface-2);padding:18px}
-.stat b{display:block;font:var(--type-h2);font-family:var(--font-display);color:var(--color-ink-700);line-height:1}
-.stat span{display:block;color:var(--fg-tertiary);font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.08em;margin-top:8px}
 .lang{display:inline-flex;align-items:center;gap:6px;border-radius:var(--radius-pill);padding:3px 10px;margin:6px 6px 0 0;font:var(--type-overline-sm);font-family:var(--font-mono);background:var(--color-blue-50);color:var(--color-blue-700)}
 table{width:100%;border-collapse:collapse;font:var(--type-body-sm)}
 th{font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.06em;color:var(--fg-tertiary);text-align:left;padding:8px 10px;border-bottom:var(--border-hairline)}
@@ -2259,12 +2229,6 @@ td.mono{font-family:var(--font-mono)}
 .cov .box.gap{background:var(--color-blue-50)}
 .cov h4{margin:0 0 8px;font:var(--type-h6);color:var(--color-ink-700)}
 .cov li{color:var(--color-ink-500);font:var(--type-body-sm);line-height:1.6;margin:4px 0 4px 16px}
-.matched{margin-top:10px;display:grid;gap:4px}
-.matched div{color:var(--color-ink-500);font:var(--type-body-xs);line-height:1.5}
-.matched b{color:var(--color-ink-700);font-weight:500;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.04em;font-size:10px}
-.item.warn{border:1px solid var(--color-blue-300);border-radius:var(--radius-md);background:var(--color-blue-50);padding:14px 16px;margin-top:12px}
-.item.warn strong{color:var(--color-blue-700);font:var(--type-h6);display:block;margin-bottom:4px}
-.item.warn div{color:var(--color-ink-500);font:var(--type-body-sm);line-height:1.5}
 details{border:var(--border-hairline);border-radius:var(--radius-md);padding:10px 14px;margin-top:10px}
 summary{cursor:pointer;color:var(--color-ink-700);font:var(--type-h6)}
 .doc-group h4{margin:14px 0 4px;font:var(--type-h6);color:var(--color-ink-700)}
@@ -2307,7 +2271,7 @@ summary{cursor:pointer;color:var(--color-ink-700);font:var(--type-h6)}
 <script>
 (function(){
 var D=JSON.parse(document.getElementById("chaos-sui-migration-manifest").textContent);
-function esc(v){return String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;");}
+__REPORT_JS__
 function tag(v){return v?'<span class="tag '+esc(v)+'">'+esc(v)+'</span>':'';}
 function files(list,total){if(!list||!list.length)return'';var s='<div class="files">'+list.map(function(f){return '<code>'+esc(f)+'</code>';}).join("")+'</div>';if(total>list.length)s+='<div class="muted" style="font-size:12px">+'+(total-list.length)+' more file(s)</div>';return s;}
 function docs(list){if(!list||!list.length)return'';return '<div class="docs">'+list.map(function(d){return '<a href="'+esc(d.url)+'" target="_blank" rel="noopener">'+esc(d.title)+' &nearr;</a>';}).join("")+'</div>';}
@@ -2370,9 +2334,7 @@ if(!rel.children.length)rel.innerHTML='<div class="muted">No previously generate
 var cov=document.getElementById("coverage");var C=D.coverage||{};
 cov.innerHTML='<div class="box ok"><h4>Read by this report</h4><ul>'+(C.included||[]).map(function(x){return '<li>'+esc(x)+'</li>';}).join("")+'</ul></div>'+
   '<div class="box gap"><h4>Not covered</h4><ul>'+(C.not_covered||[]).map(function(x){return '<li>'+esc(x)+'</li>';}).join("")+'</ul></div>';
-var prov=document.getElementById("provenance");
-(D.provenance||[]).forEach(function(c){var el=document.createElement("div");el.className="matched";el.innerHTML='<div><b>'+esc(c.source)+'</b> '+esc(c.method)+'</div><div class="muted">'+esc(c.detail)+(c.locator?' &middot; '+esc(c.locator):'')+'</div>';prov.appendChild(el);});
-if(!prov.children.length)prov.innerHTML='<div class="muted">No breadcrumbs recorded.</div>';
+renderProvenance(document.getElementById("provenance"),D.provenance);
 var w=document.getElementById("warnings");
 (D.warnings||[]).forEach(function(x){var el=document.createElement("div");el.className="item warn";el.innerHTML='<strong>Note</strong><div>'+esc(x)+'</div>';w.appendChild(el);});
 if(!w.children.length)w.innerHTML='<div class="muted">No warnings.</div>';

@@ -8,14 +8,27 @@
 //! consumer → provider (the client feature that calls a route points at the
 //! backend feature that serves it).
 //!
-//! Three linkers, in decreasing confidence:
+//! Four linkers, in decreasing confidence:
 //!   * **package_dep** — repo B imports a package whose `name` is published by
 //!     a manifest in repo A (`package.json` / `Cargo.toml`).
 //!   * **abi** — a non-Solidity chunk references a contract / interface /
 //!     library defined in another repo's Solidity sources (word-boundary,
 //!     CamelCase-gated).
+//!   * **graphql** — an executable GraphQL operation in one repo selects a
+//!     root field exposed by another repo's schema, matched purely on the
+//!     persisted `graphql_operation` → `graphql_field` surface nodes (no
+//!     chunk-scan fallback; operation types must agree). SDL-derived schemas
+//!     only — code-first servers (async-graphql, TypeGraphQL, graphene, …)
+//!     produce no `graphql_field` nodes yet, a documented limitation. A field
+//!     defined by MORE THAN ONE member repo (vendored schema copy) has no
+//!     unambiguous provider and is dropped from matching, with a run warning.
 //!   * **http_route** — a fetch/axios/client call path in one repo matches a
-//!     route registered in another (normalized: params → `*`).
+//!     route registered in another (normalized: params → `*`). Provider route
+//!     anchors are the UNION of persisted `http_route` surface nodes and the
+//!     lexical chunk scan, deduped by path (nodes win on a shared path): the
+//!     scan still catches registrations the extractors don't emit nodes for
+//!     (NestJS decorators, `.route(` chains) and covers repos indexed before
+//!     surface extraction existed.
 //!
 //! Everything is deterministic: anchors and matches are collected in sorted
 //! order and link ids are UUIDv5 over `(project, kind, src, dst)`. Each link
@@ -23,12 +36,12 @@
 //! breadcrumbs, like every other Chaos artifact.
 
 use crate::{
-    models::{CrossRepoLink, ProjectRepo},
+    models::{CrossRepoLink, NodeKind, ProjectRepo},
     provenance::{source, Breadcrumb},
     storage::Storage,
 };
 use anyhow::Result;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use uuid::Uuid;
@@ -37,16 +50,23 @@ use uuid::Uuid;
 pub mod kind {
     pub const PACKAGE_DEP: &str = "package_dep";
     pub const ABI: &str = "abi";
+    pub const GRAPHQL: &str = "graphql";
     pub const HTTP_ROUTE: &str = "http_route";
 }
 
 /// Per-kind confidence: package imports are exact-name, ABI references are
-/// word-boundary CamelCase, route paths are normalized string matches.
+/// word-boundary CamelCase, graphql field selections are node-anchored but
+/// name-based, route paths are normalized string matches.
 fn kind_confidence(k: &str) -> f64 {
     match k {
         kind::PACKAGE_DEP => 0.9,
         kind::ABI => 0.8,
-        _ => 0.65,
+        kind::GRAPHQL => 0.7,
+        kind::HTTP_ROUTE => 0.65,
+        _ => {
+            debug_assert!(false, "unknown link kind");
+            0.65
+        }
     }
 }
 
@@ -73,6 +93,12 @@ struct RepoFacets {
     routes: Vec<(String, String)>,
     /// Normalized call paths used here → calling file (the consumer side).
     calls: Vec<(String, String)>,
+    /// GraphQL root fields exposed here (SDL-derived `graphql_field` nodes)
+    /// → (qualified name like `Query.user`, operation type, defining file).
+    graphql_fields: Vec<(String, String, String)>,
+    /// GraphQL root-field selections executed here (`graphql_operation`
+    /// nodes) → (operation type, bare field, calling file — the consumer side).
+    graphql_calls: Vec<(String, String, String)>,
 }
 
 /// A raw cross-repo match before community resolution.
@@ -117,6 +143,16 @@ pub async fn detect_project_links(
         let f = collect_facets(storage, member, &mut provenance, &mut warnings).await?;
         facets.push(f);
     }
+
+    // Root fields defined by MORE THAN ONE member repo (a client vendoring the
+    // server's schema.graphql for codegen is standard practice) say nothing
+    // about who SERVES the schema: provider identity is ambiguous, so those
+    // fields are dropped from graphql matching entirely and counted into a
+    // run warning — deterministic and honest, no guessing.
+    let fields_by_repo: Vec<&[(String, String, String)]> =
+        facets.iter().map(|f| f.graphql_fields.as_slice()).collect();
+    let ambiguous_fields = multiply_defined_graphql_fields(&fields_by_repo);
+    let mut ambiguous_graphql = 0usize;
 
     // 2. Raw matches per consumer repo against every other repo's anchors.
     let mut raw: Vec<RawMatch> = Vec::new();
@@ -223,6 +259,14 @@ pub async fn detect_project_links(
                 }
             }
         }
+
+        // graphql: this repo's executed operations vs other repos' root fields.
+        ambiguous_graphql += push_graphql_matches(ci, &facets, &ambiguous_fields, &mut raw);
+    }
+    if ambiguous_graphql > 0 {
+        warnings.push(format!(
+            "{ambiguous_graphql} graphql match(es) dropped: the selected field is defined in more than one member repo (vendored schema copy?), so the provider repo is ambiguous"
+        ));
     }
 
     provenance.push(Breadcrumb::new(
@@ -456,6 +500,30 @@ async fn collect_facets(
         .map(|(name, _, file)| (name, file))
         .collect();
 
+    // GraphQL anchors come ONLY from persisted surface nodes — no chunk-scan
+    // fallback: a repo without `graphql_field` nodes (code-first server, no
+    // SDL indexed) simply exposes no GraphQL provider facet.
+    let graphql_fields = graphql_field_anchors(
+        &storage
+            .nodes_by_kind_with_file(member.repo.id, NodeKind::GraphqlField.as_str())
+            .await?,
+    );
+    let graphql_calls = graphql_operation_calls(
+        &storage
+            .nodes_by_kind_with_file(member.repo.id, NodeKind::GraphqlOperation.as_str())
+            .await?,
+    );
+
+    // Provider route anchors from persisted `http_route` surface nodes
+    // (method/route_path metadata) — more precise per route than the lexical
+    // scan below, but NOT a superset of it (some frameworks only show up in
+    // the scan), so the two are unioned in `choose_provider_routes`.
+    let node_routes = provider_routes_from_nodes(
+        &storage
+            .nodes_by_kind_with_file(member.repo.id, NodeKind::HttpRoute.as_str())
+            .await?,
+    );
+
     // One chunk scan feeds both route anchors and consumer call paths.
     let scan_patterns: Vec<String> = [
         "%fetch(%",
@@ -478,12 +546,12 @@ async fn collect_facets(
         .scan_chunks(member.repo.id, &scan_patterns, SCAN_LIMIT)
         .await?;
 
-    let mut routes: Vec<(String, String)> = Vec::new();
+    let mut scanned_routes: Vec<(String, String)> = Vec::new();
     let mut calls: Vec<(String, String)> = Vec::new();
     for (file, content) in &chunks {
         for raw in extract_route_paths(content) {
             if let Some(norm) = normalize_route(&raw) {
-                routes.push((norm, file.clone()));
+                scanned_routes.push((norm, file.clone()));
             }
         }
         for raw in extract_call_paths(content) {
@@ -492,21 +560,24 @@ async fn collect_facets(
             }
         }
     }
-    routes.sort();
-    routes.dedup();
+    scanned_routes.sort();
+    scanned_routes.dedup();
     calls.sort();
     calls.dedup();
+    let routes = choose_provider_routes(node_routes, scanned_routes);
 
     provenance.push(Breadcrumb::new(
         source::POSTGRES,
         "collect_facets",
         format!(
-            "{}: {} package name(s), {} contract anchor(s), {} route(s), {} call path(s) from {} scanned chunk(s)",
+            "{}: {} package name(s), {} contract anchor(s), {} route(s), {} call path(s), {} graphql field(s), {} graphql selection(s) from {} scanned chunk(s)",
             member.alias,
             packages.len(),
             contracts.len(),
             routes.len(),
             calls.len(),
+            graphql_fields.len(),
+            graphql_calls.len(),
             chunks.len()
         ),
     ));
@@ -522,7 +593,151 @@ async fn collect_facets(
         contracts,
         routes,
         calls,
+        graphql_fields,
+        graphql_calls,
     })
+}
+
+/// Provider route anchors from persisted `http_route` surface nodes: each
+/// node's `route_path` metadata, normalized like every other route, paired
+/// with its defining file. Non-route paths (static assets) drop out here
+/// exactly as they do in the lexical scan.
+fn provider_routes_from_nodes(rows: &[(String, Value, String)]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = rows
+        .iter()
+        .filter_map(|(_, meta, file)| {
+            let norm = normalize_route(meta.get("route_path")?.as_str()?)?;
+            Some((norm, file.clone()))
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The UNION of node-derived and scan-derived route anchors, deduped by
+/// normalized path — node-derived wins on a shared path (the registration
+/// site is more precise evidence). Node coverage is NOT a superset of the
+/// scan's for JS/TS (NestJS decorators, `.route(` chains produce no
+/// `http_route` nodes yet), so scan-only routes must survive even when the
+/// repo has nodes; the scan also keeps covering repos indexed before surface
+/// extraction existed.
+fn choose_provider_routes(
+    from_nodes: Vec<(String, String)>,
+    from_scan: Vec<(String, String)>,
+) -> Vec<(String, String)> {
+    let node_paths: BTreeSet<String> = from_nodes.iter().map(|(path, _)| path.clone()).collect();
+    let mut routes = from_nodes;
+    routes.extend(
+        from_scan
+            .into_iter()
+            .filter(|(path, _)| !node_paths.contains(path)),
+    );
+    routes.sort();
+    routes.dedup();
+    routes
+}
+
+/// GraphQL provider anchors from persisted `graphql_field` surface nodes:
+/// (qualified name like `Query.user`, operation type, defining file). Nodes
+/// missing `operation_type` metadata are skipped — the match gate needs it.
+fn graphql_field_anchors(rows: &[(String, Value, String)]) -> Vec<(String, String, String)> {
+    let mut out: Vec<(String, String, String)> = rows
+        .iter()
+        .filter_map(|(name, meta, file)| {
+            let op = meta.get("operation_type")?.as_str()?;
+            Some((name.clone(), op.to_string(), file.clone()))
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Qualified `(name, operation_type)` root fields (case-folded, matching
+/// [`graphql_fields_match`]) defined by more than one member repo. GraphQL
+/// clients routinely vendor the server's `schema.graphql` for codegen
+/// (Apollo, graphql-codegen, Relay), so a field defined on both sides of a
+/// repo pair carries no signal about which repo actually serves it.
+fn multiply_defined_graphql_fields(
+    fields_by_repo: &[&[(String, String, String)]],
+) -> BTreeSet<(String, String)> {
+    let mut definers: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for fields in fields_by_repo {
+        let per_repo: BTreeSet<(String, String)> = fields
+            .iter()
+            .map(|(name, op, _)| (name.to_ascii_lowercase(), op.to_ascii_lowercase()))
+            .collect();
+        for key in per_repo {
+            *definers.entry(key).or_insert(0) += 1;
+        }
+    }
+    definers
+        .into_iter()
+        .filter_map(|(key, repos)| (repos > 1).then_some(key))
+        .collect()
+}
+
+/// Match one consumer repo's executed operations against every other repo's
+/// root fields, pushing the raw graphql matches. Fields in `ambiguous`
+/// (defined by more than one member repo) are skipped instead of putting a
+/// repo that merely carries a schema copy in the provider position; the skip
+/// count feeds the run warning.
+fn push_graphql_matches(
+    ci: usize,
+    facets: &[RepoFacets],
+    ambiguous: &BTreeSet<(String, String)>,
+    raw: &mut Vec<RawMatch>,
+) -> usize {
+    let mut skipped = 0usize;
+    for (op_type, field, op_file) in &facets[ci].graphql_calls {
+        for (pi, provider) in facets.iter().enumerate() {
+            if pi == ci {
+                continue;
+            }
+            for (provider_name, provider_op, provider_file) in &provider.graphql_fields {
+                if !graphql_fields_match(field, op_type, provider_name, provider_op) {
+                    continue;
+                }
+                if ambiguous.contains(&(
+                    provider_name.to_ascii_lowercase(),
+                    provider_op.to_ascii_lowercase(),
+                )) {
+                    skipped += 1;
+                    continue;
+                }
+                raw.push(RawMatch {
+                    kind: kind::GRAPHQL,
+                    value: provider_name.clone(),
+                    consumer_repo: ci,
+                    consumer_file: op_file.clone(),
+                    provider_repo: pi,
+                    provider_anchor: ProviderAnchor::File(provider_file.clone()),
+                });
+            }
+        }
+    }
+    skipped
+}
+
+/// GraphQL consumer selections from persisted `graphql_operation` nodes: one
+/// (operation type, bare root field, calling file) per selected root field.
+fn graphql_operation_calls(rows: &[(String, Value, String)]) -> Vec<(String, String, String)> {
+    let mut out: Vec<(String, String, String)> = Vec::new();
+    for (_, meta, file) in rows {
+        let Some(op) = meta.get("operation_type").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(fields) = meta.get("root_fields").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for field in fields.iter().filter_map(|v| v.as_str()) {
+            out.push((op.to_string(), field.to_string(), file.clone()));
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// Cap anchors deterministically (sorted by name), warning when dropped.
@@ -840,6 +1055,29 @@ pub fn routes_match(a: &str, b: &str) -> bool {
     short.iter().zip(tail.iter()).all(|(x, y)| seg_eq(x, y)) && concrete(&short, tail)
 }
 
+/// Does a consumer's root-field selection call a provider's schema field?
+/// Case-folded; the operation TYPES must agree (query vs mutation vs
+/// subscription — custom root type NAMES don't matter, their mapped operation
+/// type does); the bare consumer field matches the provider's qualified
+/// `Type.field` name via the suffix rule (`routes_match` precedent); fields
+/// shorter than 4 chars (`id`, `me`) never link — too generic to be evidence.
+pub fn graphql_fields_match(
+    consumer_field: &str,
+    consumer_op_type: &str,
+    provider_name: &str,
+    provider_op_type: &str,
+) -> bool {
+    let field = consumer_field.trim().to_ascii_lowercase();
+    if field.len() < 4 {
+        return false;
+    }
+    if !consumer_op_type.eq_ignore_ascii_case(provider_op_type) {
+        return false;
+    }
+    let provider = provider_name.trim().to_ascii_lowercase();
+    provider == field || provider.ends_with(&format!(".{field}"))
+}
+
 fn dir_of(path: &str) -> &str {
     match path.rfind('/') {
         Some(i) => &path[..i],
@@ -955,6 +1193,215 @@ mod tests {
         assert_eq!(normalize_route("/static/app.css"), None);
         assert_eq!(normalize_route("//cdn.example.com/x"), None);
         assert_eq!(normalize_route("/:a/:b"), None);
+    }
+
+    #[test]
+    fn kind_confidence_covers_every_kind() {
+        assert_eq!(kind_confidence(kind::PACKAGE_DEP), 0.9);
+        assert_eq!(kind_confidence(kind::ABI), 0.8);
+        assert_eq!(kind_confidence(kind::GRAPHQL), 0.7);
+        assert_eq!(kind_confidence(kind::HTTP_ROUTE), 0.65);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "unknown link kind")]
+    fn kind_confidence_rejects_unknown_kinds() {
+        kind_confidence("bogus");
+    }
+
+    #[test]
+    fn graphql_match_qualified_suffix_and_gates() {
+        // bare consumer field vs qualified provider name
+        assert!(graphql_fields_match("user", "query", "Query.user", "query"));
+        // a custom root type name still matches through the operation type
+        assert!(graphql_fields_match(
+            "user",
+            "query",
+            "MyQuery.user",
+            "query"
+        ));
+        // case-folded on both sides
+        assert!(graphql_fields_match(
+            "CreateLab",
+            "mutation",
+            "Mutation.createLab",
+            "mutation"
+        ));
+        // operation types must agree
+        assert!(!graphql_fields_match(
+            "user",
+            "mutation",
+            "Query.user",
+            "query"
+        ));
+        // short/generic fields never link
+        assert!(!graphql_fields_match("id", "query", "Query.id", "query"));
+        // the suffix must be the whole field, not a substring
+        assert!(!graphql_fields_match(
+            "user",
+            "query",
+            "Query.poweruser",
+            "query"
+        ));
+    }
+
+    #[test]
+    fn graphql_facets_from_synthetic_nodes() {
+        let field_rows = vec![
+            (
+                "Query.user".to_string(),
+                json!({
+                    "parent_type": "Query",
+                    "field": "user",
+                    "operation_type": "query",
+                    "file": "schema.graphql",
+                }),
+                "schema.graphql".to_string(),
+            ),
+            // a node without operation_type metadata cannot be matched — skipped
+            (
+                "Broken.node".to_string(),
+                json!({}),
+                "schema.graphql".to_string(),
+            ),
+        ];
+        assert_eq!(
+            graphql_field_anchors(&field_rows),
+            vec![(
+                "Query.user".to_string(),
+                "query".to_string(),
+                "schema.graphql".to_string()
+            )]
+        );
+
+        let op_rows = vec![(
+            "GetUser".to_string(),
+            json!({
+                "operation_type": "query",
+                "root_fields": ["user", "labs"],
+                "file": "src/api.ts",
+            }),
+            "src/api.ts".to_string(),
+        )];
+        assert_eq!(
+            graphql_operation_calls(&op_rows),
+            vec![
+                (
+                    "query".to_string(),
+                    "labs".to_string(),
+                    "src/api.ts".to_string()
+                ),
+                (
+                    "query".to_string(),
+                    "user".to_string(),
+                    "src/api.ts".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn http_route_provider_anchors_union_nodes_and_scan() {
+        let rows = vec![
+            (
+                "GET /api/users/:id".to_string(),
+                json!({"method": "GET", "route_path": "/api/users/:id"}),
+                "src/routes.ts".to_string(),
+            ),
+            // static-asset paths normalize to None and drop out, same as the scan
+            (
+                "GET /app.css".to_string(),
+                json!({"method": "GET", "route_path": "/app.css"}),
+                "src/static.ts".to_string(),
+            ),
+        ];
+        let from_nodes = provider_routes_from_nodes(&rows);
+        assert_eq!(
+            from_nodes,
+            vec![("/api/users/*".to_string(), "src/routes.ts".to_string())]
+        );
+
+        // A mixed repo: one framework produced a node, another (NestJS
+        // decorators, `.route(` chains) is visible only to the scan. BOTH must
+        // anchor; on a shared path the node-derived entry wins.
+        let from_scan = vec![
+            ("/api/scan".to_string(), "scan.ts".to_string()),
+            ("/api/users/*".to_string(), "scan.ts".to_string()),
+        ];
+        assert_eq!(
+            choose_provider_routes(from_nodes.clone(), from_scan.clone()),
+            vec![
+                ("/api/scan".to_string(), "scan.ts".to_string()),
+                ("/api/users/*".to_string(), "src/routes.ts".to_string()),
+            ]
+        );
+        // The scan alone still covers repos with no http_route nodes at all.
+        assert_eq!(
+            choose_provider_routes(Vec::new(), from_scan.clone()),
+            from_scan
+        );
+    }
+
+    /// Empty facets for the vendored-schema test below.
+    fn graphql_facet(fields: &[(&str, &str, &str)], calls: &[(&str, &str, &str)]) -> RepoFacets {
+        RepoFacets {
+            packages: Vec::new(),
+            contracts: Vec::new(),
+            routes: Vec::new(),
+            calls: Vec::new(),
+            graphql_fields: fields
+                .iter()
+                .map(|(n, o, f)| (n.to_string(), o.to_string(), f.to_string()))
+                .collect(),
+            graphql_calls: calls
+                .iter()
+                .map(|(o, fld, f)| (o.to_string(), fld.to_string(), f.to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn vendored_schema_field_is_ambiguous_and_never_links() {
+        // backend serves the schema; client vendors a copy for codegen; e2e
+        // executes operations. Both sides defining Query.user makes the
+        // provider ambiguous: no link at all, counted for the run warning.
+        let facets = vec![
+            graphql_facet(&[("Query.user", "query", "schema.graphql")], &[]),
+            graphql_facet(&[("Query.user", "query", "src/gen/schema.graphql")], &[]),
+            graphql_facet(&[], &[("query", "user", "tests/user.spec.ts")]),
+        ];
+        let per_repo: Vec<&[(String, String, String)]> =
+            facets.iter().map(|f| f.graphql_fields.as_slice()).collect();
+        let ambiguous = multiply_defined_graphql_fields(&per_repo);
+        assert!(ambiguous.contains(&("query.user".to_string(), "query".to_string())));
+
+        let mut raw: Vec<RawMatch> = Vec::new();
+        let skipped = push_graphql_matches(2, &facets, &ambiguous, &mut raw);
+        assert!(
+            raw.is_empty(),
+            "no repo that merely carries a schema copy may land in the provider position"
+        );
+        assert_eq!(
+            skipped, 2,
+            "both would-be providers dropped → warning fires"
+        );
+
+        // A singly-defined field still links normally.
+        let facets = vec![
+            graphql_facet(&[("Query.labs", "query", "schema.graphql")], &[]),
+            graphql_facet(&[], &[("query", "labs", "src/api.ts")]),
+        ];
+        let per_repo: Vec<&[(String, String, String)]> =
+            facets.iter().map(|f| f.graphql_fields.as_slice()).collect();
+        let ambiguous = multiply_defined_graphql_fields(&per_repo);
+        assert!(ambiguous.is_empty());
+        let mut raw: Vec<RawMatch> = Vec::new();
+        let skipped = push_graphql_matches(1, &facets, &ambiguous, &mut raw);
+        assert_eq!(skipped, 0);
+        assert_eq!(raw.len(), 1);
+        assert_eq!(raw[0].value, "Query.labs");
+        assert_eq!(raw[0].provider_repo, 0);
     }
 
     #[test]

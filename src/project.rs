@@ -19,6 +19,7 @@
 //!   * `relink <project> [--force]` — re-run the linkers (hash-gated).
 
 use crate::{
+    export_util::safe_slug,
     linker,
     models::{CrossRepoLink, Project, ProjectRepo},
     provenance::{source, Breadcrumb},
@@ -46,7 +47,7 @@ pub fn project_workspace_dir(project_name: &str) -> PathBuf {
                 .join(".chaos")
                 .join("projects")
         });
-    base.join(safe_slug(project_name))
+    base.join(safe_slug(project_name, "project"))
 }
 
 pub async fn create(storage: &Storage, name: &str) -> Result<Value> {
@@ -508,28 +509,6 @@ fn embedder_mismatch_warning(identities: &[(String, String, i32)]) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     )
-}
-
-fn safe_slug(input: &str) -> String {
-    let slug = input
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .split('-')
-        .filter(|p| !p.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    if slug.is_empty() {
-        "project".to_string()
-    } else {
-        slug.chars().take(80).collect()
-    }
 }
 
 #[cfg(test)]

@@ -19,9 +19,10 @@ walk  ────────────────  src/extractor.rs (ignore
   ▼
 per-language extraction
   ├─ Rust            ──  src/extractor.rs            (syn)
-  ├─ JS / TS         ──  src/lang/javascript.rs      (oxc)
-  ├─ Python          ──  src/lang/python.rs          (rustpython-parser)
+  ├─ JS / TS         ──  src/lang/javascript.rs      (oxc; also collects embedded gql documents)
+  ├─ Python          ──  src/lang/python.rs          (rustpython-parser; also collects gql("…") calls)
   ├─ Solidity        ──  src/lang/solidity.rs        (solang-parser)
+  ├─ GraphQL         ──  src/lang/graphql.rs         (apollo-parser; SDL + executable documents)
   └─ Markdown / PDF / JSON / AWS-CDK ── src/extractor.rs (supplemental / config context)
   │
   ▼
@@ -35,7 +36,7 @@ embeddings (chunk content → vectors)  ──  src/embedding.rs
   │   OpenAI text-embedding-3-small (1536d) OR Ollama embeddinggemma (768d)
   │   FAIL-CLOSED: no real embedder ⇒ analysis fails (never fake/random vectors)
   ▼
-Postgres + pgvector  ──  src/storage.rs (sqlx)
+Postgres + pgvector  ──  src/storage/ (sqlx; one Storage type, impl blocks split by concern)
       tables: repositories, analysis_runs, files, nodes, edges, chunks, embeddings
       hierarchy (additive): communities, community_members, community_edges,
                             subtree_hash rollup, community_embeddings,
@@ -49,7 +50,7 @@ hybrid retrieval  ──  src/query.rs
   ▼
 outputs
   ├─ CLI results (JSON on stdout)              ──  src/main.rs
-  ├─ MCP tools (23)                            ──  src/mcp.rs
+  ├─ MCP tools (24)                            ──  src/mcp.rs
   ├─ interactive graph.html                    ──  src/graph_export.rs
   ├─ Obsidian vault                            ──  src/obsidian_export.rs
   └─ feature context + feature websites        ──  src/feature_context.rs, src/feature_export.rs
@@ -66,6 +67,7 @@ right extractor. All non-Rust extraction uses **real AST parsers** — never reg
 - **TypeScript / JavaScript** — `oxc`, in `src/lang/javascript.rs`.
 - **Python** — `rustpython-parser`, in `src/lang/python.rs`.
 - **Solidity** — `solang-parser`, in `src/lang/solidity.rs`.
+- **GraphQL** — `apollo-parser`, in `src/lang/graphql.rs` (`.graphql`/`.gql`/`.graphqls`).
 
 The language extractors in `src/lang/*` share a `LineIndex` and produce a `FileExtraction`.
 Captured symbols include functions, classes/structs, interfaces/traits, enums, type aliases, class
@@ -84,8 +86,28 @@ Concrete capture specifics: the TS/JS extractor (`oxc`) reads `.ts/.tsx/.mts/.ct
 symbols by path (`*.test.*`, `*.spec.*`, `__tests__/`, `__test__/`). From `cdk.json` it extracts the
 CDK app command, `Stack` classes, and L2 construct/resource types (Lambda, DynamoDB, queues,
 buckets, API resources) as deployment-resource nodes. Rust extraction (`syn`) emits no byte offsets
-(nodes carry `line_start`/`line_end` only); `EdgeKind::UsesType` is defined but never emitted, and a
-method-on-type is represented with a `Contains` edge rather than a dedicated `method_of` edge.
+(nodes carry `line_start`/`line_end` only); `EdgeKind::UsesType` is emitted only by the GraphQL
+post-pass (Rust extraction still never emits it), and a method-on-type is represented with a
+`Contains` edge rather than a dedicated `method_of` edge.
+
+GraphQL extraction (`apollo-parser`, error-tolerant — a broken file still yields its recoverable
+definitions, and zero recovered chunks degrade to the shared whole-file fallback) covers SDL type
+systems and executable documents. Type definitions map onto existing node kinds (object/input →
+struct, interface → trait, enum, union/scalar/directive → type alias) with
+`metadata.language: "graphql"`; operations and fragments get their own `graphql_operation` /
+`graphql_fragment` kinds, and schema root fields become `graphql_field` user-surface nodes
+(qualified `Query.user`, honoring custom `schema { query: … }` root mappings). References are
+resolved *after* the file loop against a graphql-only name map — never through the shared,
+walk-order-populated `symbol_names` map, which would drop forward references and let a
+same-named TS class capture a GraphQL edge — yielding `uses_type` (field/arg types, operation
+selections, `extend` → base tagged `relation: "extends"`), `implements`, and fragment-spread
+`calls` edges. God-node protection mirrors the external-import drop: no edges to scalar/directive
+targets, and `uses_type` edges to a type are capped at 12 distinct referencing files (the 13th
+file's edge is dropped); extension→base links are exempt from both gates. Documents embedded in host code (`` gql`…` `` tagged templates and `gql(…)` calls
+in TS/JS, `gql("…")` calls in Python) run through the same extractor with host-file line anchors
+and the document itself as the chunk body. Roadmap: code-first schema recovery (async-graphql,
+TypeGraphQL, graphene/strawberry) is not extracted yet — SDL is the only schema source — and an
+incremental `chaos add` resolves GraphQL cross-file edges only within the changed-file batch.
 
 ### Persistence and runs
 
@@ -124,11 +146,12 @@ for this block and ignore pages without it.
 
 | If you want to…                                  | Edit                                                              |
 | ------------------------------------------------ | ---------------------------------------------------------------- |
-| Add / change a **language**                      | add `src/lang/<lang>.rs`, wire dispatch + extension mapping in `src/extractor.rs`, add the variant to `Language` in `src/models.rs` |
+| Add / change a **language**                      | add `src/lang/<lang>.rs`, wire a `FileKind` variant + dispatch in `src/extractor.rs`, add the variant to `Language` in `src/models.rs` |
+| Change **GraphQL extraction** (SDL / documents / edge resolution) | `src/lang/graphql.rs` (embedded-document collection: `src/lang/javascript.rs`, `src/lang/python.rs`) |
 | Change **edge weights** (cost / confidence)      | `src/weights.rs`                                                  |
 | Add / change a **CLI command**                   | `src/main.rs` (clap `Commands`)                                  |
 | Add / change an **MCP tool**                     | `src/mcp.rs` (`tools/list` schema + `handle_tool_call`)          |
-| Change the **database schema**                   | add a file in `migrations/` *and* update `src/storage.rs`        |
+| Change the **database schema**                   | add a file in `migrations/` *and* update the matching `src/storage/*.rs` module |
 | Change **retrieval / ranking**                   | `src/query.rs`                                                   |
 | Change **embeddings** (provider / model / dims)  | `src/embedding.rs` (+ `src/config.rs` for config & `DATABASE_URL`/env) |
 | Change **node / edge / chunk shapes** or enums   | `src/models.rs`                                                  |
@@ -170,8 +193,12 @@ no embedder**.
 - **P6 — cross-repository projects.** A **project** (`src/project.rs`,
   `migrations/005_projects.sql`) groups indexed repositories (client, backend, smart contracts,
   infra, …) and maintains **feature→feature cross-repo links** between their L1 communities,
-  detected by the linkers in `src/linker.rs` (`package_dep` / `abi` / `http_route`,
-  consumer → provider) purely from the persisted index. Links attach at L1 — never L0, whose
+  detected by the linkers in `src/linker.rs` (`package_dep` / `abi` / `http_route` / `graphql`,
+  consumer → provider) purely from the persisted index — the `http_route` provider side anchors on
+  persisted `HttpRoute` surface nodes unioned with the chunk scan (nodes win on a shared path),
+  and `graphql` matches executable
+  operations against another member's SDL-derived `graphql_field` nodes (operation types must
+  agree; code-first servers expose no provider facet yet). Links attach at L1 — never L0, whose
   FK-protected schema stays frozen — and follow the same hash-gated pipeline as L3: every
   `analyze`/`add` ends by relinking the repo's projects, gated by the L2 `repo_root_hash`
   (`project_repos.linked_repo_hash`), so a no-change re-index relinks nothing. The project-wide
@@ -197,13 +224,40 @@ no-change re-index does zero summary work. Recorded design verdicts:
   would break the determinism invariant for no benefit; the fallback for any disconnected community
   is a connected-components post-split. A post-Louvain consolidation folds sub-threshold fragments
   (`MIN_COMMUNITY_SIZE = 4`, `src/community.rs`) into their folder-preferred best-coupled neighbour.
+- **Hexagonal verdict (0.24.0): two paying ports, no `StoragePort`.** The ports that earn their
+  ceremony are `Embedder` (`src/embedding.rs` — two real HTTP adapters plus fail-closed test stubs)
+  and `ChunkSearch` (`src/storage/search.rs` — the retrieval channels plus the edge lookup the query
+  pipeline fuses; `Storage` is the production adapter, and the fusion-pipeline tests in
+  `src/query.rs` drive the composed normalization/merge/rerank/recall-floor logic through a scripted
+  fake with zero embed calls). A full `StoragePort` (~75 methods) was REJECTED: its only conceivable
+  second adapter is an in-memory store, which the hard rules forbid — that trait would be pure
+  ceremony. Instead `src/storage.rs` was split by concern into
+  `src/storage/{repo,index,merkle,community,search,graph,project,stack_queries}.rs` behind the one
+  unchanged `Storage` type (multiple `impl` blocks; zero public-API churn).
+- **Blanket impls.** `impl<T: ChunkSearch + ?Sized> ChunkSearch for &T` and
+  `impl<E: Embedder + ?Sized> Embedder for Arc<E>` make borrowed/shared handles first-class
+  implementors; `build_embedder` returns `Arc<dyn Embedder>`, so the CLI pipelines, the MCP loop,
+  and `graph --serve` share one built embedder instead of each re-wrapping a `Box`.
+- **Deferred: MCP tool-registry macro.** The tool roster in `src/mcp.rs` lives in three places
+  (`TOOL_NAMES`, the `tools/list` builder, the dispatch match) that a `register_tool!`-style macro
+  could collapse into one item per tool. Deferred deliberately: the anti-drift tests already pin the
+  three sites to each other, and a macro would bury the long per-tool description strings that
+  agents (and doc reviews) read in place.
+- **Report-template exclusions (theme consolidation).** The shared `theme::REPORT_CSS`/`REPORT_JS`
+  splice covers the 8 report templates (impact, usage, change-plan, components, stack,
+  feature-inventory, sui-migration, feature-context). Excluded as structurally divergent — their
+  copies of the shared rules are not byte-identical, so splicing would change rendered pages: the
+  compose pages (`compose.rs`), the feature-story site (`feature_story.rs`), the engineer feature
+  page (`feature_export.rs`), the feature map (`hierarchy_export.rs`), and the storyboard
+  (`user_story.rs`). They keep their own template CSS until a deliberate redesign (see the note on
+  `theme::REPORT_CSS`).
 
 ## MCP Tools
 
-The stdio MCP server exposes exactly twenty-three tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`,
+The stdio MCP server exposes exactly twenty-four tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`,
 `chaos_pages`, `chaos_gaps`, `chaos_query`, `chaos_feature_context`, `chaos_impact`, `chaos_usage`,
 `chaos_sui_migration_impact`, `chaos_write_feature_website`,
-`chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_compose`, `chaos_project`, `chaos_help`, `chaos_clean`, and `chaos_graph`. See the **MCP Tools** section of `README.md` for the
+`chaos_obsidian`, `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_compose`, `chaos_project`, `chaos_feature_story`, `chaos_help`, `chaos_clean`, and `chaos_graph`. See the **MCP Tools** section of `README.md` for the
 canonical reference of names, arguments, and intended usage.
 
 `chaos_change_plan` (CLI `chaos change-plan <repo> "<change>" [--since <ref>]`) decomposes a
@@ -227,8 +281,8 @@ These are architectural invariants — any change that violates one is wrong by 
    the memory must survive process restarts.
 3. **stdio MCP.** The MCP server stays on stdio with newline-delimited JSON-RPC (no
    `Content-Length` framing). Never write logs or diagnostics to stdout in the `mcp` path.
-4. **Rust-only extraction.** TypeScript/JavaScript, Python, and Solidity support must remain
-   Rust-side AST extraction — never a Node or Python sidecar service.
+4. **Rust-only extraction.** TypeScript/JavaScript, Python, Solidity, and GraphQL support must
+   remain Rust-side AST extraction — never a Node or Python sidecar service.
 
 > MCP and plugin configuration must launch the **release binary** directly
 > (`target/release/chaos --config <cfg> mcp`) over stdio. `cargo run` is acceptable only for

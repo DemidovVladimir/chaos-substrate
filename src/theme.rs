@@ -23,6 +23,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::export_util::html_escape_full as esc;
+
 /// Optional, code-free branding for a generated page. All fields default to
 /// empty; an empty [`Brand`] renders a neutral "Add your logo" placeholder.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -99,17 +101,6 @@ pub fn brand_logo_src_ok(src: &str) -> bool {
     !(lower.starts_with("javascript:")
         || lower.starts_with("vbscript:")
         || (lower.starts_with("data:") && !lower.starts_with("data:image/")))
-}
-
-/// HTML-escape for text rendered into element bodies and double-quoted
-/// attributes.
-fn esc(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#039;")
 }
 
 /// A neutral, vendor-free mark used when a brand has a name but no logo image —
@@ -377,6 +368,63 @@ footer .sp{flex:1}
 footer .meta{font:var(--type-body-sm);color:var(--color-blue-500)}
 "#;
 
+/// Shared component CSS for the REPORT pages (impact, usage, change-plan,
+/// components, stack, feature-inventory, sui-migration, feature-context) —
+/// the ~22 rules those templates used to carry as near-identical copies, now
+/// spliced once via the `__REPORT_CSS__` placeholder in
+/// `export_util::write_report_page`. Page-specific CSS comes AFTER the splice
+/// in each template, so a page can still override a shared rule (e.g. usage's
+/// monospace `header.ov h1`).
+///
+/// EXCLUDED from this consolidation (structurally divergent pages, recorded
+/// here for the ARCHITECTURE roadmap note): the compose pages
+/// (`compose.rs` — flex `.stats`, hero-based chrome), the feature-story site
+/// (`feature_story.rs`), the engineer feature page (`feature_export.rs`), the
+/// feature map (`hierarchy_export.rs` — split-pane `.panel`), and the
+/// storyboard (`user_story.rs`). Their copies of these rules are NOT
+/// byte-identical, so splicing would change those pages; they keep their own
+/// template CSS until a deliberate redesign.
+pub const REPORT_CSS: &str = r#"/* ===== shared report chrome (theme::REPORT_CSS) ===== */
+header.ov{background:var(--bg-sky-soft);border-bottom:var(--border-hairline)}
+header.ov .wrap{padding:48px 32px 36px}
+header.ov .eyebrow{font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.16em;color:var(--color-blue-700);margin-bottom:16px;display:flex;align-items:center;gap:10px}
+header.ov .eyebrow::before{content:"";width:22px;height:1px;background:var(--color-blue-500);display:inline-block}
+header.ov h1{font:var(--type-display-lg);letter-spacing:-.01em;color:var(--color-ink-700);margin:0 0 10px}
+main{padding:40px 0 64px;display:grid;gap:24px}
+.panel{background:var(--color-surface-0);border:var(--border-hairline);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);padding:24px}
+h2{font:var(--type-h4);color:var(--color-ink-700);margin:0 0 16px}
+.muted{color:var(--fg-tertiary);line-height:1.5}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px}
+.stat{border:var(--border-hairline);border-radius:var(--radius-md);background:var(--color-surface-2);padding:18px}
+.stat b{display:block;font:var(--type-h2);font-family:var(--font-display);color:var(--color-ink-700);line-height:1}
+.stat span{display:block;color:var(--fg-tertiary);font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.08em;margin-top:8px}
+.matched{margin-top:10px;display:grid;gap:4px}
+.matched div{color:var(--color-ink-500);font:var(--type-body-xs);line-height:1.5}
+.matched b{color:var(--color-ink-700);font-weight:500;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.04em;font-size:10px}
+.item.warn{border:1px solid var(--color-blue-300);border-radius:var(--radius-md);background:var(--color-blue-50);padding:14px 16px;margin-top:12px}
+.item.warn strong{color:var(--color-blue-700);font:var(--type-h6);display:block;margin-bottom:4px}
+.item.warn div{color:var(--color-ink-500);font:var(--type-body-sm);line-height:1.5}
+.rel{display:inline-flex;align-items:center;gap:6px;vertical-align:middle;cursor:help}
+.rel .relbar{display:inline-block;width:64px;height:6px;border-radius:var(--radius-pill);background:var(--color-surface-3);overflow:hidden;border:var(--border-soft)}
+.rel .relbar>i{display:block;height:100%;background:var(--color-blue-500);border-radius:var(--radius-pill)}
+.rel .relnum{font-family:var(--font-mono);font-weight:500;color:var(--fg-secondary)}
+"#;
+
+/// Shared in-page JS helpers for the same report pages, spliced via the
+/// `__REPORT_JS__` placeholder inside each template's script (function
+/// declarations, so position within the script does not matter): `esc()` (the
+/// 5-entity HTML escape — each rendered page must define it exactly once),
+/// `renderProvenance()` (the breadcrumb renderer over `.matched` rows), and
+/// `relbar()` (the relevance bar for `.rel`, which never shows a bare fusion
+/// score — raw value stays in the tooltip).
+pub const REPORT_JS: &str = r##"function esc(v){return String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;");}
+function renderProvenance(host,list){(list||[]).forEach(function(c){var el=document.createElement("div");el.className="matched";el.innerHTML='<div><b>'+esc(c.source)+'</b> '+esc(c.method)+'</div><div class="muted">'+esc(c.detail)+(c.locator?' &middot; '+esc(c.locator):'')+'</div>';host.appendChild(el);});if(!host.children.length)host.innerHTML='<div class="muted">No breadcrumbs recorded.</div>';}
+/* Raw retrieval scores are unbounded fusion sums, not percentages. Render them
+   RELATIVE to the strongest entry in their own list (=100%) so the rows are
+   comparable; keep the raw number in the tooltip. */
+function relbar(v,top){var s=+v||0;var t=Math.max(1e-9,+top||0);var p=Math.max(0,Math.min(100,Math.round(s/t*100)));return '<span class="rel" title="Relevance relative to the strongest match in this list (=100%). Raw retrieval fusion score: '+s.toFixed(2)+' — unbounded; higher = a stronger match.">relevance <span class="relbar"><i style="width:'+p+'%"></i></span><span class="relnum">'+p+'%</span></span>';}
+"##;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,5 +495,48 @@ mod tests {
         let html = render_brand(&brand, "topbar");
         assert!(html.contains("brand-link"));
         assert!(html.contains("href=\"https://acme.example\""));
+    }
+
+    /// Every report page carries the shared chrome exactly once: one `esc()`
+    /// definition (from `REPORT_JS`, never a per-template copy), the shared
+    /// provenance renderer, and the `REPORT_CSS` block — and no unfilled
+    /// splice placeholders.
+    #[test]
+    fn report_templates_carry_shared_chrome_exactly_once() {
+        let templates: [(&str, &str); 8] = [
+            ("impact", crate::impact::IMPACT_HTML),
+            ("usage", crate::usage::USAGE_HTML),
+            ("change_plan", crate::change_plan::PLAN_HTML),
+            ("components", crate::components::COMPONENTS_HTML),
+            ("stack", crate::stack::STACK_HTML),
+            ("feature_inventory", crate::feature_inventory::FEATURES_HTML),
+            ("sui_migration", crate::sui_migration::SUI_MIGRATION_HTML),
+            ("feature_context", crate::feature_context::CONTEXT_HTML),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        for (name, template) in templates {
+            let path = dir.path().join(format!("{name}.html"));
+            crate::export_util::write_report_page(&path, template, "{}").unwrap();
+            let html = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(
+                html.matches("function esc(").count(),
+                1,
+                "{name}: expected exactly one esc() definition"
+            );
+            assert!(
+                html.contains("function renderProvenance("),
+                "{name}: missing the shared provenance renderer"
+            );
+            assert!(
+                html.contains("shared report chrome (theme::REPORT_CSS)"),
+                "{name}: missing the shared REPORT_CSS block"
+            );
+            for placeholder in ["__REPORT_CSS__", "__REPORT_JS__", "__THEME__", "__DATA__"] {
+                assert!(
+                    !html.contains(placeholder),
+                    "{name}: unfilled placeholder {placeholder}"
+                );
+            }
+        }
     }
 }

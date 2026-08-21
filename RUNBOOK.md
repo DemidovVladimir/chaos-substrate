@@ -71,7 +71,10 @@ cp chaos-substrate.example.toml chaos-substrate.toml   # if you keep an example;
 # 3. Apply database migrations (sqlx::migrate!, tracked in _sqlx_migrations)
 #    Includes the layered memory: 002_communities (L1 god-nodes),
 #    003_subtree_hash (L2 Merkle rollup), 004_community_summary (L3 summaries),
-#    005_projects (cross-repo projects), 006_summary_cache (summary reuse cache).
+#    005_projects (cross-repo projects), 006_summary_cache (summary reuse cache),
+#    007_fk_indexes (covering FK indexes), 008_identifier_tokens (identifier-split
+#    keyword search — backfills from stored text, no re-analyze), and
+#    009_project_docs (docs-only project members).
 cargo run -- migrate
 # or: target/release/chaos --config chaos-substrate.toml migrate
 
@@ -137,7 +140,8 @@ Feature vs bug is auto-detected from the branch name + latest commit subject (`f
 → bug, else feature); override with `--kind`. Generated artifact directories (the vault,
 `features_memory`, plus everything in `indexing.skip_dirs`) are excluded, so `chaos add` never
 re-indexes its own output. Cross-file call edges into *unchanged* files are not rebuilt incrementally
-— run `chaos analyze` (or `chaos refresh`) for a full graph rebuild. Like `analyze`, it requires a
+(the same holds for GraphQL type/fragment edges, which resolve only within the changed-file batch)
+— run `chaos analyze` for a full graph rebuild. Like `analyze`, it requires a
 real embedder.
 
 ## Clean / Reset
@@ -200,10 +204,13 @@ Lists (not just counts) what the repo is built with, read from the persisted ind
 manifest-declared dependencies by ecosystem (npm/cargo — versions, runtime-vs-dev scope, how many
 workspace manifests declare each, widest-declared first), npm scripts, deployment resources (AWS
 CDK app entrypoints, Stack classes, L2 constructs grouped by cloud service), indexed JS/TS configs,
+the repo's exposed **API surface** (HTTP routes with method + path, GraphQL root fields grouped
+`Query.`/`Mutation.`/`Subscription.`, and CLI commands — all from persisted user-surface nodes),
 and the file-language breakdown. Always writes an interactive HTML inventory (every entry) and
 prints a compact JSON summary (capped lists with `*_omitted` counts). The output states its
 coverage explicitly — Dockerfiles, CI workflows, pyproject.toml, foundry.toml and Terraform are not
-indexed yet and are named as such rather than silently omitted.
+indexed yet, and the GraphQL rows are SDL-derived only (code-first schemas are named as a gap
+rather than silently omitted).
 
 ## Pages
 
@@ -215,12 +222,31 @@ chaos pages /path/to/repo --features-dir ~/.chaos/projects/myapp   # scan a proj
 
 The chaos-native replacement for `ls docs/features_memory`: scans the features directory, recognises
 every chaos-generated HTML page by its embedded manifest block, and lists each one with its kind
-(`feature` / `story` / `components` / `features` / `stack` / `impact` / `change-plan` /
-`feature-map`), the tool that writes that kind, its title, and its modified time, newest first, plus
+(`feature` / `story` / `components` / `features` / `composed` / `stack` / `impact` /
+`change-plan` / `feature-map`), the tool that writes that kind, its title, and its modified time, newest first, plus
 by-kind counts. HTML files without a recognised block are listed as `other` — nothing is hidden.
 Read-only and embedder-free; the repo argument is resolved against the index first, but a plain
 directory path works even if unindexed (the scan is pure filesystem). Use it to check whether a
 feature was already extracted before running a new deep-dive.
+
+## Gaps
+
+```sh
+# What can code retrieval NEVER find in this repo?
+chaos gaps /path/to/repo
+chaos gaps /path/to/repo --folder apps/processor    # scope to a sub-app of a monorepo
+chaos gaps --project molecule                       # scan EVERY member repo of a project
+```
+
+Lists the knowledge gaps of an indexed repository, in two kinds: `coverage_gaps` (files that
+produced **no** chunks — invisible to every retrieval method; re-add them, and report a chunking
+bug if they stay empty) and `vocabulary_gaps` (chunked code whose indexed text carries too little
+distinctive vocabulary to match any meaningful query — single-letter names, abbreviation soup, no
+docstrings). Corpus-driven and deterministic: the background vocabulary is derived from the repo's
+own document frequencies, never a hardcoded stop list. Read-only, embedder-free, compact output
+with per-file evidence samples. The fix for a vocabulary gap is repo content — write a file-top
+docstring or folder README saying what the file is for, then `chaos add` those paths; never pause
+indexing waiting for it.
 
 ## Feature Context
 
@@ -246,8 +272,30 @@ chaos impact /path/to/repo "Add a new language extractor"
 
 Builds a feature-vs-existing-code impact report and **always** writes an interactive HTML (an
 impact summary + the evidence dashboard) to `docs/features_memory/<slug>-impact.html`, showing how
-a feature maps onto the codebase as it is today (the "before"). Unlike `feature-context` (which only
-writes HTML when `--output-html` is passed), `impact` always produces the page.
+a feature maps onto the codebase as it is today (the "before"). Like `feature-context` (which always
+writes `docs/features_memory/<slug>-context.html`, overridable with `--output-html`), `impact`
+always produces the page.
+
+## Usage
+
+```sh
+# Who consumes X across the repo's subfolders?
+chaos usage /path/to/repo "DATABASE_URL"
+chaos usage /path/to/repo "x-service-token"
+chaos usage /path/to/repo "Query.user"          # or the bare field name: "user"
+chaos usage /path/to/repo "merge_files_index" --limit 10
+```
+
+Answers "who uses this?" for a symbol or surface string — an env var, an HTTP header, a route, a
+GraphQL field, a function — grouped by top-level subfolder, entirely from the persisted index (the
+chaos-native replacement for `rg`/`grep` on the target repo). Three embedder-free sources: the
+user-surface nodes (`env_var` / `http_route` / `cli_command` / `graphql_field`; a bare GraphQL
+field name matches qualified nodes by suffix, so `user` finds `Query.user`), the reverse graph
+edges (`calls` / `imports` / `uses_type` / `implements` / `tests` / `depends_on`), and a literal
+chunk sweep as the cross-language catch-all. **Always** writes an interactive HTML report to
+`docs/features_memory/<slug>-usage.html` and prints a compact per-folder summary (capped lists
+with `sites_omitted` counts). Honest limitation, surfaced as a warning: call/import edges resolve
+cross-file only for repo-unique names.
 
 ## Sui Migration Impact
 
@@ -346,12 +394,34 @@ embedder. **Always** writes an interactive HTML inventory to
 detected, per-layer + language counts, per-feature label/role/folders/symbols/`matched_by`,
 provenance). `--limit 0` (default) returns everything.
 
+## Compose
+
+```sh
+chaos compose /path/to/repo --sections features,correlations,stack --persona "a beginner engineer new to this stack"
+chaos compose /path/to/repo --sections features --level expert --style blade-runner --brand-preset molecule
+chaos compose /path/to/repo --sections features,stack --filter desci-infra --feature-pages
+```
+
+Composes **one** page (or, with `--feature-pages`, a clickable per-feature site under
+`<slug>-composed/`) from knowledge-base-backed sections instead of several similar standalone
+pages: `features` (the inventory with each feature's concise L3 explanation), `correlations`
+(files shared between those features plus prior generated pages that overlap them), and `stack`.
+The audience is a free-text `--persona` resolved to beginner/practitioner/expert **by meaning**
+(prototype embeddings; `--level` is the embedder-free path), and the look is a style preset
+(`editorial` light default, `blade-runner` dark neon) plus an optional `--brand-preset`. Every
+section resolves from the persisted index and prior manifests only — a section it cannot serve
+(repo not indexed, no L1 hierarchy, unknown section/style) is a loud error naming the fix. The
+composition is content-hashed: re-composing the same request over unchanged knowledge returns
+`cached: true` without writing. The page lands at `docs/features_memory/<slug>-composed.html`
+with an embedded `chaos-composed-manifest`.
+
 ## Projects (cross-repository)
 
 ```sh
 chaos project create molecule
 chaos project add-repo molecule /path/to/client --alias client     # repo must be indexed
 chaos project add-repo molecule /path/to/contracts --alias contracts
+chaos project add-docs molecule /path/to/workspace --alias docs    # project-level docs (ADRs, design notes)
 chaos project list                     # projects + EVERY indexed repo (the discovery call)
 chaos project status molecule          # members, link staleness, links by kind, embedder check
 chaos project relink molecule          # hash-gated; --force to override
@@ -363,9 +433,18 @@ A **project** groups indexed repositories (client, backend, smart contracts, inf
 **feature→feature cross-repo links** between them, detected from the persisted index only
 (consumer → provider): `package_dep` (a manifest `name` one repo publishes is imported by another),
 `abi` (non-Solidity code references a contract/interface defined in another repo), `http_route` (a
-fetch/axios call path matches a route registered elsewhere; params normalize to `*`). Links attach
-at the feature (L1) level with evidence + provenance breadcrumbs and live in `cross_repo_links`
-(`migrations/005_projects.sql`).
+fetch/axios call path matches a route registered elsewhere; params normalize to `*`; the provider
+side anchors on persisted `HttpRoute` surface nodes unioned with the chunk scan — nodes win on a
+shared path, scan-only registrations still anchor), and `graphql` (an executable GraphQL operation in one repo selects
+a root field another repo's SDL schema defines; operation types must agree, and code-first servers
+expose no provider facet yet). Links attach at the feature (L1) level with evidence + provenance
+breadcrumbs and live in `cross_repo_links` (`migrations/005_projects.sql`).
+
+`add-docs` indexes a directory of **project-level documentation** — the cross-repo design notes,
+ADRs, and migration spikes no single member repo owns — as a docs-only member through the normal
+pipeline. The directory may sit *above* the member repos (e.g. the workspace root): nested member
+repos are pruned from the walk, and re-running on the same directory is an idempotent refresh
+(`migrations/009_project_docs.sql` marks docs members so they don't count as code repos).
 
 The project layer follows the same layered pipeline as L1–L3: **every `analyze`/`add` on a member
 repo ends by relinking its projects**, gated by the L2 repo root hash
@@ -374,6 +453,26 @@ nothing, and `add-repo` always links the new member (its gate hash starts NULL).
 feature inventory is written to the project workspace — `~/.chaos/projects/<slug>/` or
 `$CHAOS_PROJECT_DIR/<slug>/` — because no single repo's `docs/` can own a multi-repo page. All
 member repos must share one embedder config; `status`/`relink` warn on mismatch.
+
+## Feature story (cross-repo)
+
+```sh
+chaos feature-story molecule "lab tokenization and access control"
+chaos feature-story molecule "membership invites" --style blade-runner --brand-preset molecule
+```
+
+Tells the cross-repo story of **one** feature across a project — the focused counterpart to
+`chaos features --project` (which inventories *all* features). It matches the feature in every
+member repo (L1 community semantic search plus a lexical label fallback), traverses the persisted
+cross-repo links — pulling in a link's other endpoint (e.g. the Solidity contract a client calls)
+even when the query didn't match it directly — and orders the involved features into a
+journey-layer spine (entry → interface → core → foundation = client → backend → contracts).
+Features whose identity the indexed docs mark as replaced land in a separate "Legacy / superseded"
+band instead of being interleaved with their replacements. Writes a clickable multi-page site to
+the project workspace (an index page plus one hash-gated drill-down page per involved feature) and
+prints a compact summary — involved repos, the ordered link chain, links by kind, repos not
+involved, provenance, `content_hash`. Deterministic and embedder-light: one embed for the whole
+query, reused across repos.
 
 ## Provenance breadcrumbs
 
@@ -459,7 +558,7 @@ chaos setup --scope user              # scope: user | local | project
 chaos setup --scope project
 ```
 
-Claude Code — full plugin (skill + 23 MCP tools + hooks) or MCP server only:
+Claude Code — full plugin (skill + 24 MCP tools + hooks) or MCP server only:
 
 ```sh
 claude --plugin-dir /abs/path/to/chaos-substrate     # plugin, local testing
@@ -536,7 +635,7 @@ cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-**Functional smoke test.** Index a repo containing Rust/Solidity/TS/JS/Python, run a query, export
+**Functional smoke test.** Index a repo containing Rust/Solidity/TS/JS/Python/GraphQL, run a query, export
 `graph.html` and confirm it shows the persisted nodes/edges, exercise the MCP server over stdio, and
 verify vectors survive a process restart. The MCP server speaks **newline-delimited JSON-RPC**, not
 Content-Length-framed LSP messages.
@@ -558,7 +657,8 @@ dimension disagrees with the configured value is rejected rather than stored. Th
 `/api/embed` with `{model, input}` and reads the first vector from the `embeddings` field (not the
 legacy `/api/embeddings` endpoint).
 
-**Code-review focus.** Watch for schema drift between `src/models.rs`, `src/storage.rs`, and
-`migrations/001_init.sql`; AST span-to-line (`LineIndex`) offset errors; parser failures
-(`oxc`/`rustpython`/`solang`) degrading gracefully (skip the file, never abort the run); and the
+**Code-review focus.** Watch for schema drift between `src/models.rs`, the `src/storage/` modules,
+and `migrations/001_init.sql`; AST span-to-line (`LineIndex`) offset errors; parser failures
+(`syn`/`oxc`/`rustpython`/`solang`; `apollo-parser` never fails, it leaves a partial tree)
+degrading gracefully (warn + whole-file fallback chunk, never abort the run); and the
 query path validating provider/model/dimensions before searching.

@@ -13,6 +13,7 @@
 //! index first (name or path of an indexed repository); a plain directory
 //! path that is not indexed works too, since the scan is pure filesystem.
 
+use crate::export_util::{extract_json_block, features_memory_dir};
 use crate::provenance::{source, Breadcrumb};
 use crate::storage::Storage;
 use anyhow::{Context, Result};
@@ -64,8 +65,8 @@ pub struct PagesOptions {
 pub struct PageEntry {
     /// File name within the features directory.
     pub file: String,
-    /// `feature` | `story` | `components` | `features` | `stack` | `impact`
-    /// | `change-plan` | `feature-map` | `other`.
+    /// `feature` | `story` | `components` | `features` | `composed` | `stack`
+    /// | `impact` | `change-plan` | `feature-map` | `other`.
     pub kind: String,
     /// The chaos tool that writes this kind of page (empty for `other`).
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -105,7 +106,7 @@ pub async fn run(storage: &Storage, repo: &str, opts: &PagesOptions) -> Result<P
     let features_dir = opts
         .features_dir
         .clone()
-        .unwrap_or_else(|| repo_root.join("docs/features_memory"));
+        .unwrap_or_else(|| features_memory_dir(&repo_root));
 
     let mut warnings = Vec::new();
     let mut pages = Vec::new();
@@ -208,14 +209,6 @@ fn read_page_entry(path: &Path) -> Result<PageEntry> {
         subtitle: String::new(),
         modified,
     })
-}
-
-/// Pull the embedded `<script type="application/json" id="...">` block.
-fn extract_json_block(html: &str, id: &str) -> Option<Value> {
-    let marker = format!("id=\"{id}\">");
-    let start = html.find(&marker)? + marker.len();
-    let end = html[start..].find("</script>")?;
-    serde_json::from_str(html[start..start + end].trim()).ok()
 }
 
 /// The page's display title, whichever field this manifest kind uses:

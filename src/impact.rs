@@ -14,7 +14,7 @@
 
 use crate::{
     embedding::Embedder,
-    export_util::escape_script_json,
+    export_util::{features_memory_dir, line_range, resolve_indexed_repo, safe_slug},
     feature_context::{
         build_feature_context_warnings, feature_context_provenance, load_feature_matches,
         FeatureContextResponse,
@@ -24,13 +24,12 @@ use crate::{
     query::query_feature_context_repo,
     storage::Storage,
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
-    fs,
     path::{Path, PathBuf},
 };
 
@@ -57,15 +56,11 @@ pub async fn run(
     feature: &str,
     opts: &ImpactOptions,
 ) -> Result<Value> {
-    let repo = storage
-        .find_repository(repo)
-        .await?
-        .with_context(|| format!("repository is not indexed: {repo}"))?;
-    let repo_root = PathBuf::from(&repo.root_path);
+    let (repo, repo_root) = resolve_indexed_repo(storage, repo).await?;
     let features_dir = opts
         .features_dir
         .clone()
-        .unwrap_or_else(|| repo_root.join("docs/features_memory"));
+        .unwrap_or_else(|| features_memory_dir(&repo_root));
     let limit = if opts.limit > 0 { opts.limit } else { 10 };
     let feature_limit = if opts.feature_limit > 0 {
         opts.feature_limit
@@ -106,13 +101,9 @@ pub async fn run(
     ));
 
     let output = opts.output_html.clone().unwrap_or_else(|| {
-        repo_root
-            .join("docs/features_memory")
-            .join(format!("{}-impact.html", safe_slug(feature)))
+        features_memory_dir(&repo_root)
+            .join(format!("{}-impact.html", safe_slug(feature, "feature")))
     });
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
     write_impact_html(&output, &response, &summary)?;
 
     // Compact return — the full evidence is in the HTML, not this payload.
@@ -188,7 +179,7 @@ impl ImpactSummary {
                 symbols.push(AffectedSymbol {
                     name: symbol.to_string(),
                     file: hit.file_path.clone().unwrap_or_default(),
-                    lines: line_range(hit.line_start, hit.line_end),
+                    lines: line_range(hit.line_start, hit.line_end, "n/a"),
                     symbol_kind: hit
                         .metadata
                         .get("kind")
@@ -261,36 +252,6 @@ fn is_doc_hit(hit: &SearchHit) -> bool {
             .is_some_and(|k| k == "documentation")
 }
 
-fn line_range(start: Option<i32>, end: Option<i32>) -> String {
-    match (start, end) {
-        (Some(s), Some(e)) if s != e => format!("{s}-{e}"),
-        (Some(s), _) => s.to_string(),
-        _ => "n/a".into(),
-    }
-}
-
-fn safe_slug(input: &str) -> String {
-    let slug = input
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .split('-')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    if slug.is_empty() {
-        "feature".to_string()
-    } else {
-        slug.chars().take(80).collect::<String>()
-    }
-}
-
 fn write_impact_html(
     path: &Path,
     response: &FeatureContextResponse,
@@ -304,25 +265,10 @@ fn write_impact_html(
         "feature_matches": response.feature_matches,
         "hits": response.postgres.hits,
     });
-    let json = serde_json::to_string(&data)?;
-    fs::write(
-        path,
-        IMPACT_HTML
-            .replace("__THEME__", crate::theme::THEME_CSS)
-            .replace(
-                "__BRAND_TOPBAR__",
-                &crate::theme::render_brand(&crate::theme::Brand::default(), "topbar"),
-            )
-            .replace(
-                "__BRAND_FOOTER__",
-                &crate::theme::render_brand(&crate::theme::Brand::default(), "footer"),
-            )
-            .replace("__DATA__", &escape_script_json(&json)),
-    )?;
-    Ok(())
+    crate::export_util::write_report_page(path, IMPACT_HTML, &serde_json::to_string(&data)?)
 }
 
-const IMPACT_HTML: &str = r##"<!doctype html>
+pub(crate) const IMPACT_HTML: &str = r##"<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -330,18 +276,12 @@ const IMPACT_HTML: &str = r##"<!doctype html>
 <title>Feature Impact</title>
 <style>
 __THEME__
+__REPORT_CSS__
 /* ===== impact components (light editorial) ===== */
 .lede{color:var(--fg-secondary);line-height:1.5;margin-top:6px}
 .sub{color:var(--fg-tertiary);max-width:64ch;margin-top:10px;font:var(--type-body-sm);line-height:1.55}
 .sub b{color:var(--fg-secondary);font-weight:500}
-main{padding:40px 0 8px;display:grid;gap:24px}
-.panel{background:var(--color-surface-0);border:var(--border-hairline);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);padding:24px}
-.panel h2{font:var(--type-h4);color:var(--color-ink-700);margin:0 0 16px;letter-spacing:-.01em}
 .panel h3{font:var(--type-overline-sm);margin:16px 0 8px;color:var(--fg-tertiary);text-transform:uppercase;letter-spacing:.12em}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:6px}
-.stat{border:var(--border-hairline);border-radius:var(--radius-md);background:var(--color-surface-2);padding:14px 16px}
-.stat b{display:block;font:var(--type-h2);font-family:var(--font-display);color:var(--color-ink-700);line-height:1.1}
-.stat span{color:var(--fg-tertiary);font:var(--type-body-xs)}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:24px}@media(max-width:900px){.grid2{grid-template-columns:1fr}}
 .row{display:flex;justify-content:space-between;gap:10px;align-items:center;border:var(--border-hairline);border-radius:var(--radius-sm);background:var(--color-surface-1);padding:10px 12px;margin-top:8px;font:var(--type-body-sm);overflow-wrap:anywhere}
 .row .meta{color:var(--fg-tertiary);font:var(--type-body-xs);font-family:var(--font-mono);white-space:nowrap}
@@ -352,16 +292,10 @@ main{padding:40px 0 8px;display:grid;gap:24px}
 .item{border:var(--border-hairline);border-radius:var(--radius-md);background:var(--color-surface-1);padding:16px;margin-top:12px}
 .item strong{color:var(--color-blue-700);font-weight:500}
 .item.doc strong{color:var(--color-purple-500)}
-.item.warn{border-color:var(--color-blue-300);background:var(--color-blue-50)}.item.warn strong{color:var(--color-blue-700)}
 .item .muted{color:var(--fg-tertiary);font:var(--type-body-sm);margin:2px 0}
 pre{margin:12px 0 0;padding:16px;border-radius:var(--radius-md);background:var(--color-surface-3);color:var(--color-ink-700);overflow:auto;font:var(--type-body-xs);font-family:var(--font-mono);line-height:1.55;border:var(--border-soft);max-height:340px}
 pre code{background:none;padding:0;border-radius:0}
 .pill{display:inline-block;border:var(--border-hairline);border-radius:var(--radius-pill);padding:4px 10px;margin:5px 6px 0 0;color:var(--color-blue-700);background:var(--color-blue-50);font:var(--type-body-xs)}
-.muted{color:var(--fg-tertiary);line-height:1.5}
-.rel{display:inline-flex;align-items:center;gap:6px;vertical-align:middle;cursor:help}
-.rel .relbar{display:inline-block;width:64px;height:6px;border-radius:var(--radius-pill);background:var(--color-surface-3);overflow:hidden;border:var(--border-soft)}
-.rel .relbar>i{display:block;height:100%;background:var(--color-blue-500);border-radius:var(--radius-pill)}
-.rel .relnum{font-family:var(--font-mono);font-weight:500;color:var(--fg-secondary)}
 </style>
 </head>
 <body data-chaos-impact>
@@ -388,20 +322,14 @@ pre code{background:none;padding:0;border-radius:0}
 (function(){
 var D=JSON.parse(document.getElementById("chaos-impact-data").textContent);
 var I=D.impact||{};
-function esc(v){return String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;");}
+__REPORT_JS__
 function isDoc(h){var m=h&&h.metadata||{};return m.source_priority==="supplemental"||m.kind==="documentation";}
 function retrievedTags(h){var m=(h&&h.metadata&&h.metadata.retrieved_by)||[];return m.map(function(x){return '<span class="tag">'+esc(x)+'</span>';}).join("");}
-/* Raw retrieval scores are unbounded fusion sums, not percentages. Render them
-   RELATIVE to the strongest entry in their own list (=100%) so the rows are
-   comparable; keep the raw number in the tooltip. */
-function relbar(v,top){var s=+v||0;var t=Math.max(1e-9,+top||0);var p=Math.max(0,Math.min(100,Math.round(s/t*100)));return '<span class="rel" title="Relevance relative to the strongest match in this list (=100%). Raw retrieval fusion score: '+s.toFixed(2)+' — unbounded; higher = a stronger match.">relevance <span class="relbar"><i style="width:'+p+'%"></i></span><span class="relnum">'+p+'%</span></span>';}
 var topFile=Math.max.apply(null,[1e-9].concat((I.affected_files||[]).map(function(f){return +f.top_score||0;})));
 var topSym=Math.max.apply(null,[1e-9].concat((I.affected_symbols||[]).map(function(s){return +s.score||0;})));
 var topHit=Math.max.apply(null,[1e-9].concat((D.hits||[]).map(function(h){return +h.score||0;})));
 document.getElementById("task").textContent=D.task||"";
-var prov=document.getElementById("provenance");
-(D.provenance||[]).forEach(function(c){var el=document.createElement("div");el.className="item";el.innerHTML='<strong>'+esc(c.source)+'</strong> <span class="tag">'+esc(c.method)+'</span><div class="muted">'+esc(c.detail)+(c.locator?' &middot; <code>'+esc(c.locator)+'</code>':'')+'</div>';prov.appendChild(el);});
-if(!prov.children.length)prov.innerHTML='<div class="muted">No breadcrumbs recorded.</div>';
+renderProvenance(document.getElementById("provenance"),D.provenance);
 var stat=[["affected_file_count","files affected"],["affected_symbol_count","symbols affected"],["code_hits","code hits"],["doc_hits","doc hits"],["warnings","warnings"]];
 document.getElementById("stats").innerHTML=stat.map(function(s){return '<div class="stat"><b>'+(I[s[0]]||0)+'</b><span>'+s[1]+'</span></div>';}).join("");
 var files=document.getElementById("files");
@@ -431,6 +359,7 @@ mod tests {
     use crate::models::SearchHit;
     use crate::query::QueryResponse;
     use serde_json::json;
+    use std::fs;
     use uuid::Uuid;
 
     fn hit(file: &str, score: f64, metadata: Value) -> SearchHit {

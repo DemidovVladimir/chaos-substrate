@@ -1,7 +1,3 @@
-// The MCP `tools/list` response is one large `serde_json::json!` literal; with
-// 24 tool schemas it expands past the default macro recursion limit (128).
-#![recursion_limit = "256"]
-
 mod add;
 mod change_plan;
 mod community;
@@ -31,6 +27,7 @@ mod merkle;
 mod models;
 mod obsidian_export;
 mod pages;
+mod pipeline;
 mod project;
 mod provenance;
 mod query;
@@ -52,11 +49,7 @@ pub use config::Config;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use embedding::build_embedder;
-use extractor::{current_commit, RustRepositoryExtractor};
-use feature_export::refresh_project_exports;
 use graph_export::write_graph_html;
-use obsidian_export::write_obsidian_vault;
-use query::query_repo;
 use serde_json::json;
 use std::path::PathBuf;
 use storage::Storage;
@@ -644,90 +637,9 @@ async fn main() -> Result<()> {
         Commands::Analyze { repo_path } => {
             let storage = Storage::connect(&config.storage.database_url).await?;
             let embedder = build_embedder(&config.embedding)?;
-            let commit = current_commit(&repo_path);
-            let repo = storage
-                .upsert_repository(&repo_path, commit.as_deref())
-                .await?;
-            let run_id = storage.begin_analysis(repo.id, commit.as_deref()).await?;
-            let outcome = async {
-                let extractor = RustRepositoryExtractor::new(config.indexing.clone());
-                let result = extractor.extract(&repo_path, repo.id, commit)?;
-                // Embeddings for unchanged content survive the wipe (restored by
-                // content hash inside the replace transaction) — only genuinely
-                // new/changed chunks are left to embed.
-                let reused = storage.replace_repo_index(repo.id, &result).await?;
-                let missing = storage
-                    .chunks_missing_embeddings(
-                        repo.id,
-                        embedder.provider(),
-                        embedder.model_id(),
-                        embedder.dimensions(),
-                    )
-                    .await?;
-                embedding::embed_missing_chunks(&storage, embedder.as_ref(), &missing).await?;
-                // L1: derive + persist the community layer from the written graph.
-                let detection = community::detect_and_persist(
-                    &storage,
-                    repo.id,
-                    &community::CommunityConfig::default(),
-                )
-                .await?;
-                // L2: roll the content-hash leaves up to file/community/repo roots.
-                let merkle = merkle::compute_and_persist(&storage, repo.id).await?;
-                // L3: hash-gated community summaries, embedded by the real embedder.
-                let summary =
-                    community_summary::summarize_repo(&storage, embedder.as_ref(), repo.id).await?;
-                Result::<_, anyhow::Error>::Ok((
-                    result,
-                    reused,
-                    missing.len(),
-                    detection,
-                    merkle,
-                    summary,
-                ))
-            }
-            .await;
-
-            match outcome {
-                Ok((result, reused_embeddings, embedded, detection, merkle, summary)) => {
-                    storage.finish_analysis(run_id, "completed", None).await?;
-                    // P6: keep the project layer fresh — relink every project
-                    // containing this repo (hash-gated; empty when none).
-                    let projects = project::relink_projects_for_repo(&storage, repo.id).await;
-                    let feature_communities =
-                        detection.communities.iter().filter(|c| c.size >= 2).count();
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&json!({
-                            "repo_id": repo.id,
-                            "files": result.files.len(),
-                            "nodes": result.nodes.len(),
-                            "edges": result.edges.len(),
-                            "chunks": result.chunks.len(),
-                            "embedded_chunks": embedded,
-                            "reused_embeddings": reused_embeddings,
-                            "communities": detection.communities.len(),
-                            "feature_communities": feature_communities,
-                            "quotient_edges": detection.quotient_edges.len(),
-                            "modularity": detection.modularity,
-                            "repo_root_hash": merkle.repo_root_hash,
-                            "summaries": {
-                                "summarized": summary.summarized,
-                                "skipped": summary.skipped,
-                                "embed_calls": summary.embed_calls,
-                                "reused_from_cache": summary.reused
-                            },
-                            "projects": projects
-                        }))?
-                    );
-                }
-                Err(err) => {
-                    storage
-                        .finish_analysis(run_id, "failed", Some(&err.to_string()))
-                        .await?;
-                    return Err(err);
-                }
-            }
+            let summary =
+                pipeline::run_analyze(&config, &storage, embedder.as_ref(), &repo_path).await?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
         }
         Commands::Add {
             repo_path,
@@ -782,27 +694,16 @@ async fn main() -> Result<()> {
         } => {
             let storage = Storage::connect(&config.storage.database_url).await?;
             let embedder = build_embedder(&config.embedding)?;
-            let repo = storage
-                .find_repository(&repo)
-                .await?
-                .with_context(|| format!("repository is not indexed: {repo}"))?;
-            if hierarchical {
-                let response = query::query_repo_hierarchical(
-                    &storage,
-                    repo.id,
-                    embedder.as_ref(),
-                    &question,
-                    limit,
-                )
-                .await?;
-                println!("{}", serde_json::to_string_pretty(&response)?);
-            } else {
-                let mut response =
-                    query_repo(&storage, repo.id, embedder.as_ref(), &question, limit).await?;
-                // Return-only surface: excerpt chunk contents.
-                query::cap_hits_for_return(&mut response.hits);
-                println!("{}", serde_json::to_string_pretty(&response)?);
-            }
+            let response = pipeline::run_query(
+                &storage,
+                embedder.as_ref(),
+                &repo,
+                &question,
+                limit,
+                hierarchical,
+            )
+            .await?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Commands::FeatureContext {
             repo,
@@ -1156,7 +1057,7 @@ async fn main() -> Result<()> {
                 graph_serve::serve(
                     graph_serve::GraphServer {
                         storage,
-                        embedder: std::sync::Arc::from(embedder),
+                        embedder,
                         repo_id: repo.id,
                         html,
                     },
@@ -1167,26 +1068,8 @@ async fn main() -> Result<()> {
         }
         Commands::Obsidian { repo, output } => {
             let storage = Storage::connect(&config.storage.database_url).await?;
-            let repo = storage
-                .find_repository(&repo)
-                .await?
-                .with_context(|| format!("repository is not indexed: {repo}"))?;
-            let graph = storage.load_graph_export(&repo).await?;
-            let summary = write_obsidian_vault(&output, &graph)?;
-            let hierarchy = storage.load_community_hierarchy(&repo, 14).await?;
-            let hier = hierarchy_export::write_hierarchy(&output, &output, &hierarchy)?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json!({
-                    "output": summary.output,
-                    "repo_id": repo.id,
-                    "topics": summary.topics,
-                    "node_notes": summary.node_notes,
-                    "edges": summary.edges,
-                    "community_notes": hier.community_notes,
-                    "feature_map_html": hier.feature_map_html
-                }))?
-            );
+            let summary = pipeline::run_obsidian(&storage, &repo, Some(output)).await?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
         }
         Commands::Refresh {
             repo,
@@ -1195,42 +1078,10 @@ async fn main() -> Result<()> {
             all_features,
         } => {
             let storage = Storage::connect(&config.storage.database_url).await?;
-            let repo = storage
-                .find_repository(&repo)
-                .await?
-                .with_context(|| format!("repository is not indexed: {repo}"))?;
-            let graph = storage.load_graph_export(&repo).await?;
-            let hierarchy = storage.load_community_hierarchy(&repo, 14).await?;
-            let repo_root = PathBuf::from(&repo.root_path);
-            let obsidian_output =
-                obsidian_output.unwrap_or_else(|| repo_root.join("chaos-obsidian-vault"));
-            let features_dir =
-                features_dir.unwrap_or_else(|| repo_root.join("docs/features_memory"));
-            let summary = refresh_project_exports(
-                &graph,
-                &obsidian_output,
-                &features_dir,
-                all_features,
-                &repo_root,
-                Some(&hierarchy),
-            )?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json!({
-                    "repo_id": repo.id,
-                    "obsidian": {
-                        "output": summary.obsidian.output,
-                        "topics": summary.obsidian.topics,
-                        "node_notes": summary.obsidian.node_notes,
-                        "edges": summary.obsidian.edges
-                    },
-                    "features_dir": features_dir,
-                    "feature_pages": summary.feature_pages,
-                    "skipped_feature_pages": summary.skipped_feature_pages,
-                    "community_notes": summary.community_notes,
-                    "feature_map_html": summary.feature_map_html
-                }))?
-            );
+            let summary =
+                pipeline::run_refresh(&storage, &repo, obsidian_output, features_dir, all_features)
+                    .await?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
         }
         Commands::StructFeatures { repo, folder } => {
             let storage = Storage::connect(&config.storage.database_url).await?;

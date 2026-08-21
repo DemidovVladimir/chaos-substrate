@@ -16,6 +16,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
+pub(crate) mod graphql;
 pub(crate) mod javascript;
 pub(crate) mod python;
 pub(crate) mod solidity;
@@ -28,6 +29,50 @@ pub(crate) fn warn_parse_failure(path: &str, detail: &str) {
         path,
         "parse failed: {detail}; indexing file without symbols"
     );
+}
+
+/// Emit a whole-file chunk when symbol extraction produced no chunks for a
+/// file, mirroring the Markdown sectionless fallback. Files made of
+/// `export default {...}` configs, `.d.ts` declarations, top-level test
+/// calls, or data literals — and files whose parser FAILED — collect no
+/// symbols and would otherwise be invisible to retrieval (the file gets a
+/// graph node but zero chunks). The chunk attaches to the file node;
+/// oversized content is split later by `split_large_chunks`.
+///
+/// `chunks_before` is `result.chunks.len()` captured before the language
+/// module started emitting for this file (`result` accumulates across files,
+/// so an absolute emptiness check would be wrong).
+pub(crate) fn emit_whole_file_fallback(
+    repo_id: Uuid,
+    file: &SourceFile,
+    file_node_id: Uuid,
+    chunks_before: usize,
+    result: &mut ExtractionResult,
+    reason: &str,
+) {
+    if result.chunks.len() > chunks_before {
+        return;
+    }
+    result.chunks.push(chunk_for_node(
+        repo_id,
+        Some(file.id),
+        Some(file_node_id),
+        "code",
+        &format!(
+            "Language: {language}\nFile: {path}\nKind: whole-file fallback\nLines: 1-{line_count}\n\n{content}",
+            language = file.language.as_str(),
+            path = file.path,
+            line_count = file.line_count,
+            content = file.content,
+        ),
+        Some(1),
+        Some(file.line_count),
+        serde_json::json!({
+            "kind": "whole_file_fallback",
+            "file": file.path,
+            "reason": reason,
+        }),
+    ));
 }
 
 /// Maps a UTF-8 byte offset (as produced by every AST node span) to a 1-based
@@ -86,6 +131,12 @@ pub(crate) struct FileExtraction<'a> {
     pub symbol_names: &'a mut HashMap<String, Uuid>,
     pub result: &'a mut ExtractionResult,
     pub calls: &'a mut Vec<CallSite>,
+    /// GraphQL type/fragment references pending the graphql-only post-pass
+    /// ([`graphql::resolve_graphql_edges`]). Kept separate from `symbol_names`
+    /// on purpose: that map is walk-order-populated and shared across
+    /// languages, so resolving through it would drop forward references and
+    /// let a TS class named `User` capture a GraphQL edge.
+    pub graphql_refs: &'a mut Vec<graphql::PendingRef>,
     /// Internal-vs-external import classification for this file's language.
     pub import_filter: ImportFilter<'a>,
 }
@@ -116,6 +167,9 @@ impl<'a> FileExtraction<'a> {
     ///   (e.g. a class header + fields + method roster, when the methods are
     ///   extracted as their own symbols and a full-body chunk would duplicate
     ///   them); `None` keeps the span slice
+    ///
+    /// Returns the new node's id so callers that link symbols after the walk
+    /// (the GraphQL post-pass) can reference it.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn emit_code_symbol(
         &mut self,
@@ -131,7 +185,7 @@ impl<'a> FileExtraction<'a> {
         end_off: usize,
         chunk_meta: Value,
         code_override: Option<&str>,
-    ) {
+    ) -> Uuid {
         let line = self.lines.line(start_off);
         let end_line = self.lines.line(end_off);
         let code = match code_override {
@@ -151,7 +205,14 @@ impl<'a> FileExtraction<'a> {
             metadata: node_meta,
         };
 
-        self.symbol_names.entry(name.to_string()).or_insert(node.id);
+        // GraphQL nodes stay out of the shared cross-language symbol map: SDL
+        // types reuse the classic kinds (Struct/Trait/…), so registering them
+        // would let the generic call pass resolve a Python/TS `User(...)` call
+        // to a schema type (or make a repo-unique code symbol ambiguous).
+        // GraphQL's own refs resolve in [`graphql::resolve_graphql_edges`].
+        if language != "graphql" {
+            self.symbol_names.entry(name.to_string()).or_insert(node.id);
+        }
 
         self.result.edges.push(edge(
             self.repo_id,
@@ -176,45 +237,25 @@ impl<'a> FileExtraction<'a> {
             chunk_meta,
         ));
 
+        let node_id = node.id;
         self.result.nodes.push(node);
+        node_id
     }
 
-    /// Emit a whole-file chunk when symbol extraction produced no chunks for
-    /// this file, mirroring the Markdown sectionless fallback. Files made of
-    /// `export default {...}` configs, `.d.ts` declarations, top-level test
-    /// calls, or data literals collect no symbols and would otherwise be
-    /// invisible to retrieval (the file gets a graph node but zero chunks).
-    /// The chunk attaches to the file node; oversized content is split later
-    /// by `split_large_chunks`.
-    ///
-    /// `chunks_before` is `result.chunks.len()` captured before the language
-    /// module started emitting for this file (`result` accumulates across
-    /// files, so an absolute emptiness check would be wrong).
+    /// Thin delegate to the free [`emit_whole_file_fallback`], for language
+    /// modules that need the fallback at a specific point (JS/TS emits it
+    /// before user-surface chunks so a lone env-read chunk doesn't mask an
+    /// unindexed file body). The extractor's language wrapper also calls the
+    /// free fn centrally after each module runs.
     pub(crate) fn emit_whole_file_fallback(&mut self, chunks_before: usize, reason: &str) {
-        if self.result.chunks.len() > chunks_before {
-            return;
-        }
-        let file = self.file;
-        self.result.chunks.push(chunk_for_node(
+        emit_whole_file_fallback(
             self.repo_id,
-            Some(file.id),
-            Some(self.file_node_id),
-            "code",
-            &format!(
-                "Language: {language}\nFile: {path}\nKind: whole-file fallback\nLines: 1-{line_count}\n\n{content}",
-                language = file.language.as_str(),
-                path = file.path,
-                line_count = file.line_count,
-                content = file.content,
-            ),
-            Some(1),
-            Some(file.line_count),
-            serde_json::json!({
-                "kind": "whole_file_fallback",
-                "file": file.path,
-                "reason": reason,
-            }),
-        ));
+            self.file,
+            self.file_node_id,
+            chunks_before,
+            self.result,
+            reason,
+        );
     }
 
     /// Emit the user-surface entries (CLI commands, HTTP routes, env-var

@@ -18,7 +18,7 @@
 
 use crate::{
     embedding::Embedder,
-    export_util::{escape_script_json, html_escape},
+    export_util::{escape_script_json, existing_content_hash, html_escape, safe_slug},
     extractor::hash,
     feature_context::correlate_feature_manifests,
     feature_inventory::{self, FeatureSymbol, LangCount},
@@ -38,9 +38,8 @@ use std::{
 };
 use uuid::Uuid;
 
-const MANIFEST_START: &str =
-    r#"<script type="application/json" id="chaos-feature-story-manifest">"#;
-const MANIFEST_END: &str = "</script>";
+/// Element id of the embedded manifest block (index and per-feature pages).
+const MANIFEST_ID: &str = "chaos-feature-story-manifest";
 
 /// Minimum cosine for a community to count as a matched feature (the same floor
 /// `query_repo_hierarchical` uses).
@@ -387,7 +386,7 @@ pub async fn run(
     ));
 
     // --- 3. Assign page paths + materialize involved nodes. ---
-    let slug = safe_slug(feature);
+    let slug = safe_slug(feature, "feature");
     let index_file = format!("{slug}-story.html");
     let site_dir_name = format!("{slug}-story");
     let mut involved_ids: Vec<Uuid> = roles.keys().copied().collect();
@@ -402,10 +401,10 @@ pub async fn run(
     for id in &involved_ids {
         let (li, ci) = cidx[id];
         let lo = &loaded[li];
-        let base = safe_slug(&format!(
-            "{}-{}",
-            lo.alias, lo.hierarchy.communities[ci].label
-        ));
+        let base = safe_slug(
+            &format!("{}-{}", lo.alias, lo.hierarchy.communities[ci].label),
+            "feature",
+        );
         let n = taken.entry(base.clone()).or_insert(0);
         *n += 1;
         let name = if *n == 1 { base } else { format!("{base}-{n}") };
@@ -533,11 +532,12 @@ pub async fn run(
     let content_hash = hash(&hash_input);
 
     let pages_on_disk = site_pages.iter().all(|p| {
-        existing_content_hash(&workspace.join(&p.rel_path)).as_deref()
+        existing_content_hash(&workspace.join(&p.rel_path), MANIFEST_ID).as_deref()
             == Some(p.content_hash.as_str())
     });
-    let cached =
-        existing_content_hash(&output).as_deref() == Some(content_hash.as_str()) && pages_on_disk;
+    let cached = existing_content_hash(&output, MANIFEST_ID).as_deref()
+        == Some(content_hash.as_str())
+        && pages_on_disk;
 
     let mut pages_written = 0usize;
     let mut pages_cached = 0usize;
@@ -551,7 +551,9 @@ pub async fn run(
     } else {
         for page in &site_pages {
             let path = workspace.join(&page.rel_path);
-            if existing_content_hash(&path).as_deref() == Some(page.content_hash.as_str()) {
+            if existing_content_hash(&path, MANIFEST_ID).as_deref()
+                == Some(page.content_hash.as_str())
+            {
                 pages_cached += 1;
                 continue;
             }
@@ -687,9 +689,32 @@ const MIN_LEGACY_DOC_HITS: usize = 2;
 /// Tokens too generic to identify a specific feature in prose (so they can't
 /// drive a co-mention match or a symbol overlap).
 const GENERIC_TOKENS: [&str; 26] = [
-    "service", "services", "contract", "contracts", "token", "tokens", "core", "client", "api",
-    "store", "main", "index", "feature", "features", "lib", "libs", "src", "app", "apps", "common",
-    "utils", "util", "types", "config", "packages", "package",
+    "service",
+    "services",
+    "contract",
+    "contracts",
+    "token",
+    "tokens",
+    "core",
+    "client",
+    "api",
+    "store",
+    "main",
+    "index",
+    "feature",
+    "features",
+    "lib",
+    "libs",
+    "src",
+    "app",
+    "apps",
+    "common",
+    "utils",
+    "util",
+    "types",
+    "config",
+    "packages",
+    "package",
 ];
 
 fn is_generic_token(t: &str) -> bool {
@@ -874,7 +899,9 @@ async fn detect_supersession(
     let mut doc_chunks: HashMap<Uuid, String> = HashMap::new();
     let mut doc_loc: HashMap<Uuid, (String, Option<i32>)> = HashMap::new();
     for m in members {
-        let kw = storage.keyword_search_docs(m.repo.id, cue_query, 40).await?;
+        let kw = storage
+            .keyword_search_docs(m.repo.id, cue_query, 40)
+            .await?;
         let sem = storage
             .semantic_search_docs(
                 m.repo.id,
@@ -906,7 +933,8 @@ async fn detect_supersession(
     let mut legacy_targets: HashMap<usize, Vec<(usize, Breadcrumb)>> = HashMap::new();
     let mut variant_links: HashMap<usize, Vec<(usize, f64)>> = HashMap::new();
     let mut current_side: HashSet<usize> = HashSet::new();
-    let (mut d1_count, mut d2_count, mut variant_count, mut used_docs) = (0usize, 0usize, 0usize, false);
+    let (mut d1_count, mut d2_count, mut variant_count, mut used_docs) =
+        (0usize, 0usize, 0usize, false);
 
     // --- D1: documentation-evidence supersession. ---
     // Two gates, both required (conservative — false grouping is fine, a false
@@ -1006,10 +1034,12 @@ async fn detect_supersession(
         if legacy_nodes.contains(&ia) || legacy_nodes.contains(&ib) {
             continue; // already classified by doc evidence
         }
-        let a_linked =
-            snaps[ia].role == "linked-in" && snaps[ia].score == 0.0 && abi_linked.contains(&snaps[ia].id);
-        let b_linked =
-            snaps[ib].role == "linked-in" && snaps[ib].score == 0.0 && abi_linked.contains(&snaps[ib].id);
+        let a_linked = snaps[ia].role == "linked-in"
+            && snaps[ia].score == 0.0
+            && abi_linked.contains(&snaps[ia].id);
+        let b_linked = snaps[ib].role == "linked-in"
+            && snaps[ib].score == 0.0
+            && abi_linked.contains(&snaps[ib].id);
         let a_matched = snaps[ia].role == "matched" && snaps[ia].score >= MIN_SEMANTIC_SCORE;
         let b_matched = snaps[ib].role == "matched" && snaps[ib].score >= MIN_SEMANTIC_SCORE;
         let overlap = snaps[ia].symbols.intersection(&snaps[ib].symbols).count();
@@ -1161,7 +1191,7 @@ fn build_site_pages(
                 let symbols: HashSet<String> =
                     node.top_symbols.iter().map(|s| s.name.clone()).collect();
                 correlate_feature_manifests(
-                    &loaded[li].root.join("docs/features_memory"),
+                    &crate::export_util::features_memory_dir(&loaded[li].root),
                     &files,
                     &symbols,
                     "",
@@ -1328,18 +1358,6 @@ fn framing(
     (title, subtitle)
 }
 
-/// Read the content hash out of an existing story page (index or per-feature).
-fn existing_content_hash(path: &Path) -> Option<String> {
-    let html = fs::read_to_string(path).ok()?;
-    let start = html.find(MANIFEST_START)? + MANIFEST_START.len();
-    let end = html[start..].find(MANIFEST_END)? + start;
-    let value: Value = serde_json::from_str(html[start..end].trim()).ok()?;
-    value
-        .get("content_hash")
-        .and_then(Value::as_str)
-        .map(String::from)
-}
-
 #[allow(clippy::too_many_arguments)]
 fn compact_return(
     manifest: &FeatureStoryManifest,
@@ -1426,28 +1444,6 @@ fn compact_return(
             "Cross-repo story site written. The index manifest (chaos-feature-story-manifest) holds the full spine + link chain; per-feature pages carry the code + links. Narrate the spine for the user; the content_hash is the dedup key."
         },
     })
-}
-
-fn safe_slug(input: &str) -> String {
-    let slug = input
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .split('-')
-        .filter(|p| !p.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    if slug.is_empty() {
-        "feature".to_string()
-    } else {
-        slug.chars().take(80).collect()
-    }
 }
 
 fn render_index_html(
@@ -1707,12 +1703,16 @@ mod tests {
     fn existing_content_hash_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("x-story.html");
-        let html =
-            format!("<html>{MANIFEST_START}{{\"content_hash\":\"abc123\"}}{MANIFEST_END}</html>");
+        let html = format!(
+            "<html><script type=\"application/json\" id=\"{MANIFEST_ID}\">{{\"content_hash\":\"abc123\"}}</script></html>"
+        );
         std::fs::write(&path, html).unwrap();
-        assert_eq!(existing_content_hash(&path).as_deref(), Some("abc123"));
         assert_eq!(
-            existing_content_hash(&dir.path().join("missing.html")),
+            existing_content_hash(&path, MANIFEST_ID).as_deref(),
+            Some("abc123")
+        );
+        assert_eq!(
+            existing_content_hash(&dir.path().join("missing.html"), MANIFEST_ID),
             None
         );
     }
@@ -1720,10 +1720,10 @@ mod tests {
     #[test]
     fn safe_slug_is_kebab_and_bounded() {
         assert_eq!(
-            safe_slug("Lab Tokenization & Access!"),
+            safe_slug("Lab Tokenization & Access!", "feature"),
             "lab-tokenization-access"
         );
-        assert_eq!(safe_slug("   "), "feature");
+        assert_eq!(safe_slug("   ", "feature"), "feature");
     }
 
     fn node(alias: &str, layer: &str, members: i32) -> StoryNode {

@@ -62,6 +62,11 @@ pub const IMPORTS_SOLIDITY: EdgeWeight = EdgeWeight::new(0.30, 1.00);
 pub const CALLS_HEURISTIC: EdgeWeight = EdgeWeight::new(0.35, 0.70);
 /// Type/contract inheritance or trait implementation (AST-exact for Solidity; small discount for cross-language heuristics).
 pub const IMPLEMENTS: EdgeWeight = EdgeWeight::new(0.20, 0.95);
+/// GraphQL type reference (field return/arg type, operation selection types,
+/// type extension → base). The reference itself is parser-certain; the small
+/// discount mirrors IMPLEMENTS because the target is resolved within one
+/// indexed run rather than by a compiler.
+pub const USES_TYPE: EdgeWeight = EdgeWeight::new(0.20, 0.95);
 /// File defines a user-facing entrypoint — a CLI command or an HTTP route
 /// (parser-certain: clap/commander/argparse/click definitions, framework-shaped
 /// route registrations).

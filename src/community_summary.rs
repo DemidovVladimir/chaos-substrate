@@ -266,6 +266,8 @@ fn is_definition_kind(kind: &str) -> bool {
             | "module"
             | "type_alias"
             | "deployment_resource"
+            | "graphql_operation"
+            | "graphql_fragment"
     )
 }
 

@@ -112,6 +112,10 @@ impl RustRepositoryExtractor {
 
         let mut symbol_names: HashMap<String, Uuid> = HashMap::new();
         let mut calls: Vec<crate::lang::CallSite> = Vec::new();
+        // GraphQL type/fragment references, resolved AFTER the file loop by a
+        // graphql-only post-pass (never through `symbol_names` — see
+        // `lang::graphql::resolve_graphql_edges`).
+        let mut graphql_refs: Vec<crate::lang::graphql::PendingRef> = Vec::new();
         // The repo's own workspace package names, so JS/TS/Solidity extraction
         // can tell an internal workspace import (kept) from a third-party
         // node_modules one (dropped, so it doesn't form or name a god-node
@@ -121,79 +125,61 @@ impl RustRepositoryExtractor {
         let workspace_crates = self.workspace_crate_names(root);
         let python_roots = self.python_module_roots(root);
         for path in paths {
-            let rel = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .to_string();
-            if rel.ends_with("Cargo.toml") {
-                self.extract_cargo(root, &path, repo_id, repo_node.id, &mut result)?;
+            // source_paths/extract_paths only pass indexable files; the guard
+            // keeps a direct caller from slipping an unknown file through.
+            let Some(file_kind) = detect_file_kind(&path) else {
                 continue;
-            }
-            if rel.ends_with("package.json") {
-                self.extract_package_json(root, &path, repo_id, repo_node.id, &mut result)?;
-                continue;
-            }
-            if rel.ends_with("cdk.json") {
-                self.extract_cdk_json(root, &path, repo_id, repo_node.id, &mut result)?;
-                continue;
-            }
-            if rel.ends_with("tsconfig.json") || rel.ends_with("jsconfig.json") {
-                self.extract_json_config(root, &path, repo_id, repo_node.id, &mut result)?;
-                continue;
-            }
-            if markdown_language(&path).is_some() {
-                self.extract_markdown_file(
+            };
+            match file_kind {
+                FileKind::CargoManifest => self.extract_cargo(
                     root,
                     &path,
                     repo_id,
                     commit_sha.clone(),
                     repo_node.id,
                     &mut result,
-                )?;
-                continue;
-            }
-            if solidity_language(&path).is_some() {
-                self.extract_solidity_file(
-                    root,
-                    &path,
-                    repo_id,
-                    commit_sha.clone(),
-                    repo_node.id,
-                    &mut symbol_names,
-                    &mut calls,
-                    &workspace_packages,
-                    &mut result,
-                )?;
-                continue;
-            }
-            if pdf_language(&path).is_some() {
-                self.extract_pdf_file(
+                )?,
+                FileKind::PackageJson => self.extract_package_json(
                     root,
                     &path,
                     repo_id,
                     commit_sha.clone(),
                     repo_node.id,
                     &mut result,
-                )?;
-                continue;
-            }
-            if python_language(&path).is_some() {
-                self.extract_python_file(
+                )?,
+                FileKind::CdkJson => self.extract_cdk_json(
                     root,
                     &path,
                     repo_id,
                     commit_sha.clone(),
                     repo_node.id,
-                    &mut symbol_names,
-                    &mut calls,
-                    &python_roots,
                     &mut result,
-                )?;
-                continue;
-            }
-            if path.extension().and_then(|s| s.to_str()) == Some("rs") {
-                self.extract_rust_file(
+                )?,
+                FileKind::JsonConfig => self.extract_json_config(
+                    root,
+                    &path,
+                    repo_id,
+                    commit_sha.clone(),
+                    repo_node.id,
+                    &mut result,
+                )?,
+                FileKind::Markdown => self.extract_markdown_file(
+                    root,
+                    &path,
+                    repo_id,
+                    commit_sha.clone(),
+                    repo_node.id,
+                    &mut result,
+                )?,
+                FileKind::Pdf => self.extract_pdf_file(
+                    root,
+                    &path,
+                    repo_id,
+                    commit_sha.clone(),
+                    repo_node.id,
+                    &mut result,
+                )?,
+                FileKind::Rust => self.extract_rust_file(
                     root,
                     &path,
                     repo_id,
@@ -202,25 +188,74 @@ impl RustRepositoryExtractor {
                     &mut symbol_names,
                     &workspace_crates,
                     &mut result,
-                )?;
-            }
-            if let Some(language) = js_ts_language(&path) {
-                self.extract_js_ts_file(
+                )?,
+                FileKind::JsTs(language) => self.extract_lang_file(
                     root,
                     &path,
                     repo_id,
                     commit_sha.clone(),
                     repo_node.id,
                     language,
+                    crate::lang::ImportFilter::NpmWorkspace(&workspace_packages),
+                    crate::lang::javascript::extract,
                     &mut symbol_names,
                     &mut calls,
-                    &workspace_packages,
+                    &mut graphql_refs,
                     &mut result,
-                )?;
+                )?,
+                FileKind::Python => self.extract_lang_file(
+                    root,
+                    &path,
+                    repo_id,
+                    commit_sha.clone(),
+                    repo_node.id,
+                    Language::Python,
+                    crate::lang::ImportFilter::PythonRoots(&python_roots),
+                    crate::lang::python::extract,
+                    &mut symbol_names,
+                    &mut calls,
+                    &mut graphql_refs,
+                    &mut result,
+                )?,
+                FileKind::Solidity => self.extract_lang_file(
+                    root,
+                    &path,
+                    repo_id,
+                    commit_sha.clone(),
+                    repo_node.id,
+                    Language::Solidity,
+                    // npm-style bare imports (`@openzeppelin/...`) are external
+                    // unless they name a workspace package; relative `.sol`
+                    // imports dedupe.
+                    crate::lang::ImportFilter::NpmWorkspace(&workspace_packages),
+                    crate::lang::solidity::extract,
+                    &mut symbol_names,
+                    &mut calls,
+                    &mut graphql_refs,
+                    &mut result,
+                )?,
+                FileKind::GraphQL => self.extract_lang_file(
+                    root,
+                    &path,
+                    repo_id,
+                    commit_sha.clone(),
+                    repo_node.id,
+                    Language::GraphQL,
+                    // GraphQL emits no imports, so the filter is inert;
+                    // reusing the npm-workspace set avoids a third variant.
+                    crate::lang::ImportFilter::NpmWorkspace(&workspace_packages),
+                    crate::lang::graphql::extract,
+                    &mut symbol_names,
+                    &mut calls,
+                    &mut graphql_refs,
+                    &mut result,
+                )?,
             }
         }
 
         add_call_edges(repo_id, &mut result, &calls, &symbol_names);
+        crate::lang::graphql::resolve_graphql_edges(repo_id, &mut result, &graphql_refs);
+        crate::lang::graphql::surface_split_file_root_fields(repo_id, &mut result);
         deduplicate_nodes(&mut result);
         split_large_chunks(&mut result);
         Ok(result)
@@ -450,11 +485,7 @@ impl RustRepositoryExtractor {
             let parent_hash = hash(&full);
             for (idx, part) in parts.into_iter().enumerate() {
                 let mut metadata = base_meta.clone();
-                if let Some(obj) = metadata.as_object_mut() {
-                    obj.insert("split_part".into(), json!(idx + 1));
-                    obj.insert("split_total".into(), json!(total));
-                    obj.insert("parent_content_hash".into(), json!(parent_hash));
-                }
+                stamp_split_part(&mut metadata, idx + 1, total, &parent_hash);
                 let line_start = section.line_start + part.line_offset;
                 let line_end =
                     (line_start + part.line_count.saturating_sub(1)).min(section.line_end);
@@ -546,11 +577,9 @@ impl RustRepositoryExtractor {
                 let parent_hash = hash(&full);
                 for (idx, pdf_part) in parts.into_iter().enumerate() {
                     let mut metadata = base_meta.clone();
-                    if let Some(obj) = metadata.as_object_mut() {
-                        obj.insert("split_part".into(), json!(idx + 1));
-                        obj.insert("split_total".into(), json!(total));
-                        obj.insert("parent_content_hash".into(), json!(parent_hash));
-                        if has_pages {
+                    stamp_split_part(&mut metadata, idx + 1, total, &parent_hash);
+                    if has_pages {
+                        if let Some(obj) = metadata.as_object_mut() {
                             obj.insert(
                                 "pages".into(),
                                 json!(format!("{}-{}", pdf_part.page_start, pdf_part.page_end)),
@@ -591,37 +620,23 @@ impl RustRepositoryExtractor {
         root: &Path,
         path: &Path,
         repo_id: Uuid,
+        commit_sha: Option<String>,
         repo_node_id: Uuid,
         result: &mut ExtractionResult,
     ) -> Result<()> {
-        let content = fs::read_to_string(path)?;
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string();
-        let file = SourceFile {
-            id: Uuid::new_v4(),
+        let (file, file_node_id) = begin_file(
+            root,
+            path,
             repo_id,
-            commit_sha: current_commit(root),
-            path: rel.clone(),
-            language: Language::Rust,
-            content: content.clone(),
-            content_hash: hash(&content),
-            line_count: content.lines().count() as i32,
-        };
-        result.files.push(file.clone());
-
-        let file_node = file_node(repo_id, &file, &rel);
-        result.edges.push(edge(
-            repo_id,
+            commit_sha,
             repo_node_id,
-            file_node.id,
-            EdgeKind::Contains,
+            Language::Rust,
             weights::CONTAINS_CODE,
             json!({}),
-        ));
-        result.nodes.push(file_node.clone());
+            result,
+        )?;
+        let content = file.content.clone();
+        let rel = file.path.clone();
 
         let parsed: toml::Value =
             toml::from_str(&content).unwrap_or(toml::Value::Table(Default::default()));
@@ -641,7 +656,7 @@ impl RustRepositoryExtractor {
                     };
                     result.edges.push(edge(
                         repo_id,
-                        file_node.id,
+                        file_node_id,
                         node.id,
                         EdgeKind::DependsOn,
                         weights::DEPENDS_ON,
@@ -669,37 +684,23 @@ impl RustRepositoryExtractor {
         root: &Path,
         path: &Path,
         repo_id: Uuid,
+        commit_sha: Option<String>,
         repo_node_id: Uuid,
         result: &mut ExtractionResult,
     ) -> Result<()> {
-        let content = fs::read_to_string(path)?;
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string();
-        let file = SourceFile {
-            id: Uuid::new_v4(),
+        let (file, file_node_id) = begin_file(
+            root,
+            path,
             repo_id,
-            commit_sha: current_commit(root),
-            path: rel.clone(),
-            language: Language::Json,
-            content: content.clone(),
-            content_hash: hash(&content),
-            line_count: content.lines().count() as i32,
-        };
-        result.files.push(file.clone());
-
-        let file_node = file_node(repo_id, &file, &rel);
-        result.edges.push(edge(
-            repo_id,
+            commit_sha,
             repo_node_id,
-            file_node.id,
-            EdgeKind::Contains,
+            Language::Json,
             weights::CONTAINS_CODE,
             json!({}),
-        ));
-        result.nodes.push(file_node.clone());
+            result,
+        )?;
+        let content = file.content.clone();
+        let rel = file.path.clone();
 
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap_or(json!({}));
 
@@ -730,7 +731,7 @@ impl RustRepositoryExtractor {
                     };
                     result.edges.push(edge(
                         repo_id,
-                        file_node.id,
+                        file_node_id,
                         node.id,
                         EdgeKind::DependsOn,
                         weights::DEPENDS_ON,
@@ -747,7 +748,7 @@ impl RustRepositoryExtractor {
             result.chunks.push(chunk_for_node(
                 repo_id,
                 Some(file.id),
-                Some(file_node.id),
+                Some(file_node_id),
                 "dependency",
                 &format!(
                     "File: {rel}\nEcosystem: npm\nDependencies ({}):\n{}\n",
@@ -777,7 +778,7 @@ impl RustRepositoryExtractor {
                 };
                 result.edges.push(edge(
                     repo_id,
-                    file_node.id,
+                    file_node_id,
                     node.id,
                     EdgeKind::Defines,
                     weights::DEFINES_SCRIPT,
@@ -793,7 +794,7 @@ impl RustRepositoryExtractor {
             result.chunks.push(chunk_for_node(
                 repo_id,
                 Some(file.id),
-                Some(file_node.id),
+                Some(file_node_id),
                 "script",
                 &format!(
                     "File: {rel}\nNPM scripts ({}):\n{}\n",
@@ -813,47 +814,35 @@ impl RustRepositoryExtractor {
         root: &Path,
         path: &Path,
         repo_id: Uuid,
+        commit_sha: Option<String>,
         repo_node_id: Uuid,
         result: &mut ExtractionResult,
     ) -> Result<()> {
-        let content = fs::read_to_string(path)?;
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string();
-        let file = SourceFile {
-            id: Uuid::new_v4(),
+        let (file, file_node_id) = begin_file(
+            root,
+            path,
             repo_id,
-            commit_sha: current_commit(root),
-            path: rel.clone(),
-            language: Language::Json,
-            content: content.clone(),
-            content_hash: hash(&content),
-            line_count: content.lines().count() as i32,
-        };
-        result.files.push(file.clone());
-
-        let file_node = file_node(repo_id, &file, &rel);
-        result.edges.push(edge(
-            repo_id,
+            commit_sha,
             repo_node_id,
-            file_node.id,
-            EdgeKind::Contains,
+            Language::Json,
             weights::CONTAINS_CODE,
             json!({}),
-        ));
+            result,
+        )?;
+        let rel = file.path.clone();
         result.chunks.push(chunk_for_node(
             repo_id,
             Some(file.id),
-            Some(file_node.id),
+            Some(file_node_id),
             "config",
-            &format!("File: {rel}\nJavaScript/TypeScript configuration:\n\n{content}"),
+            &format!(
+                "File: {rel}\nJavaScript/TypeScript configuration:\n\n{content}",
+                content = file.content
+            ),
             Some(1),
             Some(file.line_count),
             json!({"config": rel}),
         ));
-        result.nodes.push(file_node);
         Ok(())
     }
 
@@ -862,37 +851,23 @@ impl RustRepositoryExtractor {
         root: &Path,
         path: &Path,
         repo_id: Uuid,
+        commit_sha: Option<String>,
         repo_node_id: Uuid,
         result: &mut ExtractionResult,
     ) -> Result<()> {
-        let content = fs::read_to_string(path)?;
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string();
-        let file = SourceFile {
-            id: Uuid::new_v4(),
+        let (file, file_node_id) = begin_file(
+            root,
+            path,
             repo_id,
-            commit_sha: current_commit(root),
-            path: rel.clone(),
-            language: Language::Json,
-            content: content.clone(),
-            content_hash: hash(&content),
-            line_count: content.lines().count() as i32,
-        };
-        result.files.push(file.clone());
-
-        let file_node = file_node(repo_id, &file, &rel);
-        result.edges.push(edge(
-            repo_id,
+            commit_sha,
             repo_node_id,
-            file_node.id,
-            EdgeKind::Contains,
+            Language::Json,
             weights::CONTAINS_CODE,
             json!({}),
-        ));
-        result.nodes.push(file_node.clone());
+            result,
+        )?;
+        let content = file.content.clone();
+        let rel = file.path.clone();
 
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap_or(json!({}));
         let app = parsed.get("app").and_then(|v| v.as_str()).unwrap_or("");
@@ -909,7 +884,7 @@ impl RustRepositoryExtractor {
         };
         result.edges.push(edge(
             repo_id,
-            file_node.id,
+            file_node_id,
             node.id,
             EdgeKind::Configures,
             weights::CONFIGURES_APP,
@@ -929,7 +904,6 @@ impl RustRepositoryExtractor {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     fn extract_rust_file(
         &self,
@@ -956,8 +930,24 @@ impl RustRepositoryExtractor {
         let content = file.content.clone();
         let rel = file.path.clone();
 
-        let syntax = syn::parse_file(&content)
-            .with_context(|| format!("failed to parse Rust syntax in {rel}"))?;
+        // A broken .rs file degrades like every other code language — warn +
+        // whole-file fallback chunk — instead of aborting the whole run.
+        let chunks_before = result.chunks.len();
+        let syntax = match syn::parse_file(&content) {
+            Ok(syntax) => syntax,
+            Err(err) => {
+                crate::lang::warn_parse_failure(&rel, &err.to_string());
+                crate::lang::emit_whole_file_fallback(
+                    repo_id,
+                    &file,
+                    file_node_id,
+                    chunks_before,
+                    result,
+                    "parse_failed",
+                );
+                return Ok(());
+            }
+        };
 
         crate::user_surface::emit_surface_entries(
             repo_id,
@@ -1187,8 +1177,13 @@ impl RustRepositoryExtractor {
         }
     }
 
+    /// Shared dispatch for the AST language modules (JS/TS, Python, Solidity —
+    /// the languages driven through [`crate::lang::FileExtraction`]): register
+    /// the file, run the language's `extract`, and degrade uniformly — a parse
+    /// failure warns and falls through to the whole-file fallback chunk
+    /// instead of aborting the run.
     #[allow(clippy::too_many_arguments)]
-    fn extract_js_ts_file(
+    fn extract_lang_file(
         &self,
         root: &Path,
         path: &Path,
@@ -1196,9 +1191,11 @@ impl RustRepositoryExtractor {
         commit_sha: Option<String>,
         repo_node_id: Uuid,
         language: Language,
+        import_filter: crate::lang::ImportFilter<'_>,
+        extract: fn(&mut crate::lang::FileExtraction<'_>) -> Result<()>,
         symbol_names: &mut HashMap<String, Uuid>,
         calls: &mut Vec<crate::lang::CallSite>,
-        workspace_packages: &HashSet<String>,
+        graphql_refs: &mut Vec<crate::lang::graphql::PendingRef>,
         result: &mut ExtractionResult,
     ) -> Result<()> {
         let (file, file_node_id) = begin_file(
@@ -1212,6 +1209,7 @@ impl RustRepositoryExtractor {
             json!({}),
             result,
         )?;
+        let chunks_before = result.chunks.len();
         let mut ctx = crate::lang::FileExtraction {
             repo_id,
             file: &file,
@@ -1220,88 +1218,24 @@ impl RustRepositoryExtractor {
             symbol_names,
             result,
             calls,
-            import_filter: crate::lang::ImportFilter::NpmWorkspace(workspace_packages),
+            graphql_refs,
+            import_filter,
         };
-        crate::lang::javascript::extract(&mut ctx)?;
-
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn extract_solidity_file(
-        &self,
-        root: &Path,
-        path: &Path,
-        repo_id: Uuid,
-        commit_sha: Option<String>,
-        repo_node_id: Uuid,
-        symbol_names: &mut HashMap<String, Uuid>,
-        calls: &mut Vec<crate::lang::CallSite>,
-        workspace_packages: &HashSet<String>,
-        result: &mut ExtractionResult,
-    ) -> Result<()> {
-        let (file, file_node_id) = begin_file(
-            root,
-            path,
+        let reason = match extract(&mut ctx) {
+            Ok(()) => "no_symbols_extracted",
+            Err(err) => {
+                crate::lang::warn_parse_failure(&file.path, &format!("{err:#}"));
+                "parse_failed"
+            }
+        };
+        crate::lang::emit_whole_file_fallback(
             repo_id,
-            commit_sha,
-            repo_node_id,
-            Language::Solidity,
-            weights::CONTAINS_CODE,
-            json!({}),
-            result,
-        )?;
-        let mut ctx = crate::lang::FileExtraction {
-            repo_id,
-            file: &file,
+            &file,
             file_node_id,
-            lines: crate::lang::LineIndex::new(&file.content),
-            symbol_names,
+            chunks_before,
             result,
-            calls,
-            // npm-style bare imports (`@openzeppelin/...`) are external unless
-            // they name a workspace package; relative `.sol` imports dedupe.
-            import_filter: crate::lang::ImportFilter::NpmWorkspace(workspace_packages),
-        };
-        crate::lang::solidity::extract(&mut ctx)?;
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn extract_python_file(
-        &self,
-        root: &Path,
-        path: &Path,
-        repo_id: Uuid,
-        commit_sha: Option<String>,
-        repo_node_id: Uuid,
-        symbol_names: &mut HashMap<String, Uuid>,
-        calls: &mut Vec<crate::lang::CallSite>,
-        python_roots: &HashSet<String>,
-        result: &mut ExtractionResult,
-    ) -> Result<()> {
-        let (file, file_node_id) = begin_file(
-            root,
-            path,
-            repo_id,
-            commit_sha,
-            repo_node_id,
-            Language::Python,
-            weights::CONTAINS_CODE,
-            json!({}),
-            result,
-        )?;
-        let mut ctx = crate::lang::FileExtraction {
-            repo_id,
-            file: &file,
-            file_node_id,
-            lines: crate::lang::LineIndex::new(&file.content),
-            symbol_names,
-            result,
-            calls,
-            import_filter: crate::lang::ImportFilter::PythonRoots(python_roots),
-        };
-        crate::lang::python::extract(&mut ctx)?;
+            reason,
+        );
         Ok(())
     }
 
@@ -1571,6 +1505,15 @@ fn add_call_edges(
         if !is_code_symbol_kind(&node.kind) {
             continue;
         }
+        // GraphQL SDL types reuse the classic kinds (Struct/Trait/Enum/
+        // TypeAlias) but must not enter the call machinery in either
+        // direction: as callees they'd capture same-named cross-language
+        // calls (and make repo-unique code symbols ambiguous), and as
+        // `innermost_caller` candidates an embedded-SDL node spanning its
+        // host template would claim calls inside `${…}` interpolation holes.
+        if node.metadata.get("language").and_then(|v| v.as_str()) == Some("graphql") {
+            continue;
+        }
         let Some(file) = node.metadata.get("file").and_then(|v| v.as_str()) else {
             continue;
         };
@@ -1740,21 +1683,66 @@ fn file_node(repo_id: Uuid, file: &SourceFile, rel: &str) -> KnowledgeNode {
     }
 }
 
+/// Everything the extractor knows how to index, resolved from a path by
+/// [`detect_file_kind`]. One variant per extraction routine, so the
+/// `extract_files` dispatch is a single exhaustive match and adding a
+/// language/manifest kind cannot silently miss a dispatch arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileKind {
+    CargoManifest,
+    PackageJson,
+    CdkJson,
+    /// `tsconfig.json` / `jsconfig.json`.
+    JsonConfig,
+    Markdown,
+    Pdf,
+    Rust,
+    JsTs(Language),
+    Python,
+    Solidity,
+    /// `.graphql` / `.gql` / `.graphqls` (SDL or executable documents).
+    GraphQL,
+}
+
+/// Classify `path` as one of the indexable [`FileKind`]s, or `None` when the
+/// extractor has no routine for it. The detection sets are disjoint (exact
+/// manifest file names vs. per-language extensions), so ordering carries no
+/// meaning.
+pub(crate) fn detect_file_kind(path: &Path) -> Option<FileKind> {
+    match path.file_name().and_then(|s| s.to_str()) {
+        Some("Cargo.toml") => return Some(FileKind::CargoManifest),
+        Some("package.json") => return Some(FileKind::PackageJson),
+        Some("cdk.json") => return Some(FileKind::CdkJson),
+        Some("tsconfig.json" | "jsconfig.json") => return Some(FileKind::JsonConfig),
+        _ => {}
+    }
+    if markdown_language(path).is_some() {
+        return Some(FileKind::Markdown);
+    }
+    if solidity_language(path).is_some() {
+        return Some(FileKind::Solidity);
+    }
+    if pdf_language(path).is_some() {
+        return Some(FileKind::Pdf);
+    }
+    if python_language(path).is_some() {
+        return Some(FileKind::Python);
+    }
+    if graphql_language(path).is_some() {
+        return Some(FileKind::GraphQL);
+    }
+    if path.extension().and_then(|s| s.to_str()) == Some("rs") {
+        return Some(FileKind::Rust);
+    }
+    js_ts_language(path).map(FileKind::JsTs)
+}
+
 /// True when `path` is a file the extractor knows how to index. Shared by the
 /// full-repo walk ([`RustRepositoryExtractor::source_paths`]) and the
 /// incremental path filter ([`RustRepositoryExtractor::extract_paths`]) so both
 /// agree on exactly which files become knowledge.
 pub(crate) fn is_indexable_path(path: &Path) -> bool {
-    let file_name = path.file_name().and_then(|s| s.to_str());
-    matches!(
-        file_name,
-        Some("Cargo.toml" | "package.json" | "cdk.json" | "tsconfig.json" | "jsconfig.json")
-    ) || path.extension().and_then(|s| s.to_str()) == Some("rs")
-        || markdown_language(path).is_some()
-        || solidity_language(path).is_some()
-        || pdf_language(path).is_some()
-        || js_ts_language(path).is_some()
-        || python_language(path).is_some()
+    detect_file_kind(path).is_some()
 }
 
 fn js_ts_language(path: &Path) -> Option<Language> {
@@ -1793,6 +1781,13 @@ fn pdf_language(path: &Path) -> Option<Language> {
 fn python_language(path: &Path) -> Option<Language> {
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "py" | "pyi" => Some(Language::Python),
+        _ => None,
+    }
+}
+
+fn graphql_language(path: &Path) -> Option<Language> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "graphql" | "gql" | "graphqls" => Some(Language::GraphQL),
         _ => None,
     }
 }
@@ -1946,6 +1941,22 @@ fn deduplicate_nodes(result: &mut ExtractionResult) {
     result.nodes = unique_nodes;
 }
 
+/// Stamp the metadata every chunk splitter records on a part: its 1-based
+/// index, the part count, and the parent content's hash (what ties parts back
+/// to the unsplit chunk in stats/dedup).
+fn stamp_split_part(
+    metadata: &mut serde_json::Value,
+    part: usize,
+    total: usize,
+    parent_hash: &str,
+) {
+    if let Some(obj) = metadata.as_object_mut() {
+        obj.insert("split_part".into(), json!(part));
+        obj.insert("split_total".into(), json!(total));
+        obj.insert("parent_content_hash".into(), json!(parent_hash));
+    }
+}
+
 fn split_large_chunks(result: &mut ExtractionResult) {
     let mut chunks = Vec::with_capacity(result.chunks.len());
     for chunk in result.chunks.drain(..) {
@@ -1969,11 +1980,7 @@ fn split_large_chunks(result: &mut ExtractionResult) {
         let part_count = parts.len();
         for (idx, part) in parts.into_iter().enumerate() {
             let mut metadata = chunk.metadata.clone();
-            if let Some(obj) = metadata.as_object_mut() {
-                obj.insert("split_part".into(), json!(idx + 1));
-                obj.insert("split_total".into(), json!(part_count));
-                obj.insert("parent_content_hash".into(), json!(chunk.content_hash));
-            }
+            stamp_split_part(&mut metadata, idx + 1, part_count, &chunk.content_hash);
             let (line_start, line_end) = part_line_range(&chunk, body_start, &part);
             let content = format!(
                 "{}\nChunk part: {}/{}\n\n{}",
@@ -2301,40 +2308,72 @@ fn section_doc_units(text: &str, budget: usize) -> Vec<DocUnit> {
 }
 
 /// Greedily pack units into parts of at most `budget` chars, joining with
-/// blank lines (block separation). A sub-heading unit starts a new part once
-/// the current one is ≥ 60% full, so parts align with document structure.
-fn pack_doc_units(units: Vec<DocUnit>, budget: usize) -> Vec<DocPart> {
-    let mut parts: Vec<DocPart> = Vec::new();
+/// blank lines (block separation). A `starts_group` unit (a markdown
+/// sub-heading) starts a new part once the current one is ≥ 60% full, so parts
+/// align with document structure; PDF units always carry `starts_group:
+/// false`, which is what lets both packers share this one implementation.
+/// Each unit carries a `Copy` tag (the PDF page number; `()` for markdown) and
+/// each packed part reports the first and last tag it covers.
+fn pack_units<T: Copy>(
+    units: Vec<(DocUnit, T)>,
+    budget: usize,
+    initial_tag: T,
+) -> Vec<(DocPart, T, T)> {
+    let mut parts: Vec<(DocPart, T, T)> = Vec::new();
     let mut text = String::new();
     let mut offset = 0usize;
     let mut end = 0usize;
-    for unit in units {
+    let mut tag_start = initial_tag;
+    let mut tag_end = initial_tag;
+    for (unit, tag) in units {
         let separator = if text.is_empty() { 0 } else { 2 };
         let overflow = text.len() + separator + unit.text.len() > budget;
         let group_break = unit.starts_group && text.len() >= budget * 3 / 5;
         if !text.is_empty() && (overflow || group_break) {
-            parts.push(DocPart {
-                text: std::mem::take(&mut text),
-                line_offset: offset,
-                line_count: end.saturating_sub(offset).max(1),
-            });
+            parts.push((
+                DocPart {
+                    text: std::mem::take(&mut text),
+                    line_offset: offset,
+                    line_count: end.saturating_sub(offset).max(1),
+                },
+                tag_start,
+                tag_end,
+            ));
         }
         if text.is_empty() {
             offset = unit.line_offset;
+            tag_start = tag;
         } else {
             text.push_str("\n\n");
         }
         text.push_str(&unit.text);
         end = unit.line_offset + unit.line_count;
+        tag_end = tag;
     }
     if !text.trim().is_empty() {
-        parts.push(DocPart {
-            text,
-            line_offset: offset,
-            line_count: end.saturating_sub(offset).max(1),
-        });
+        parts.push((
+            DocPart {
+                text,
+                line_offset: offset,
+                line_count: end.saturating_sub(offset).max(1),
+            },
+            tag_start,
+            tag_end,
+        ));
     }
     parts
+}
+
+/// [`pack_units`] for markdown documentation sections (no tag).
+fn pack_doc_units(units: Vec<DocUnit>, budget: usize) -> Vec<DocPart> {
+    pack_units(
+        units.into_iter().map(|unit| (unit, ())).collect(),
+        budget,
+        (),
+    )
+    .into_iter()
+    .map(|(part, _, _)| part)
+    .collect()
 }
 
 /// A packed PDF part with the 1-based page range it covers (pages are only
@@ -2420,50 +2459,17 @@ fn pdf_doc_units(content: &str, budget: usize) -> Vec<(DocUnit, usize)> {
     units
 }
 
-/// Greedy paragraph packing for PDF text, tracking the page range each part
-/// covers. Same packing rule as [`pack_doc_units`].
+/// [`pack_units`] for PDF text, tagging each part with the 1-based page range
+/// it covers.
 fn pack_pdf_units(units: Vec<(DocUnit, usize)>, budget: usize) -> Vec<PdfPart> {
-    let mut parts: Vec<PdfPart> = Vec::new();
-    let mut text = String::new();
-    let mut offset = 0usize;
-    let mut end = 0usize;
-    let mut page_start = 1usize;
-    let mut page_end = 1usize;
-    for (unit, page) in units {
-        let separator = if text.is_empty() { 0 } else { 2 };
-        if !text.is_empty() && text.len() + separator + unit.text.len() > budget {
-            parts.push(PdfPart {
-                part: DocPart {
-                    text: std::mem::take(&mut text),
-                    line_offset: offset,
-                    line_count: end.saturating_sub(offset).max(1),
-                },
-                page_start,
-                page_end,
-            });
-        }
-        if text.is_empty() {
-            offset = unit.line_offset;
-            page_start = page;
-        } else {
-            text.push_str("\n\n");
-        }
-        text.push_str(&unit.text);
-        end = unit.line_offset + unit.line_count;
-        page_end = page;
-    }
-    if !text.trim().is_empty() {
-        parts.push(PdfPart {
-            part: DocPart {
-                text,
-                line_offset: offset,
-                line_count: end.saturating_sub(offset).max(1),
-            },
+    pack_units(units, budget, 1)
+        .into_iter()
+        .map(|(part, page_start, page_end)| PdfPart {
+            part,
             page_start,
             page_end,
-        });
-    }
-    parts
+        })
+        .collect()
 }
 
 /// Split an oversized markdown section into structure-respecting parts.
@@ -2825,6 +2831,68 @@ mod tests {
         assert_eq!(result.files[0].path, "a.rs");
         assert!(result.nodes.iter().any(|n| n.name == "alpha"));
         assert!(!result.nodes.iter().any(|n| n.name == "beta"));
+    }
+
+    #[test]
+    fn detect_file_kind_matches_legacy_indexable_set() {
+        // Parity fixture: every path the pre-FileKind `is_indexable_path`
+        // accepted (manifests, every extension, `.d.ts`) or rejected.
+        let cases: &[(&str, bool)] = &[
+            ("Cargo.toml", true),
+            ("crates/core/Cargo.toml", true),
+            ("package.json", true),
+            ("infra/cdk.json", true),
+            ("tsconfig.json", true),
+            ("jsconfig.json", true),
+            ("config/other.json", false),
+            ("xCargo.toml", false),
+            ("src/main.rs", true),
+            ("README.md", true),
+            ("docs/guide.mdx", true),
+            ("NOTES.MD", true),
+            ("contracts/Token.sol", true),
+            ("paper.pdf", true),
+            ("app.ts", true),
+            ("app.tsx", true),
+            ("app.mts", true),
+            ("app.cts", true),
+            ("app.js", true),
+            ("app.jsx", true),
+            ("app.mjs", true),
+            ("app.cjs", true),
+            ("types.d.ts", true),
+            ("service.py", true),
+            ("stubs.pyi", true),
+            ("schema.graphql", true),
+            ("queries.gql", true),
+            ("types.graphqls", true),
+            ("notes.txt", false),
+            ("Makefile", false),
+            ("image.png", false),
+        ];
+        for (path, expected) in cases {
+            let path = Path::new(path);
+            assert_eq!(
+                detect_file_kind(path).is_some(),
+                *expected,
+                "{}",
+                path.display()
+            );
+            assert_eq!(is_indexable_path(path), *expected, "{}", path.display());
+        }
+        // The data-carrying kinds resolve to the right language.
+        assert_eq!(
+            detect_file_kind(Path::new("types.d.ts")),
+            Some(FileKind::JsTs(Language::TypeScript))
+        );
+        assert_eq!(
+            detect_file_kind(Path::new("app.mjs")),
+            Some(FileKind::JsTs(Language::JavaScript))
+        );
+        assert_eq!(
+            detect_file_kind(Path::new("schema.GRAPHQL")),
+            Some(FileKind::GraphQL)
+        );
     }
 
     #[test]
@@ -4189,6 +4257,12 @@ function uniqueRenderBody(): string {
             "def (:\n    this is not python\n",
         )
         .unwrap();
+        fs::write(dir.path().join("broken.rs"), "fn broken( {{{ not rust\n").unwrap();
+        fs::write(
+            dir.path().join("broken.sol"),
+            "contract {{{ this is not solidity ]]]\n",
+        )
+        .unwrap();
         let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
         // Must NOT return Err — one bad file cannot abort the whole run.
         let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
@@ -4197,19 +4271,687 @@ function uniqueRenderBody(): string {
             .nodes
             .iter()
             .any(|n| n.name == "fine" && n.kind == NodeKind::Function));
-        // The broken file still produced a File node (degrade, not drop).
-        assert!(result
+        for broken in ["broken.py", "broken.rs", "broken.sol"] {
+            // The broken file still produced a File node (degrade, not drop)…
+            assert!(
+                result
+                    .nodes
+                    .iter()
+                    .any(|n| n.kind == NodeKind::File && n.name == broken),
+                "file node for {broken}"
+            );
+            // …plus a whole-file fallback chunk, so it stays retrievable.
+            assert!(
+                result.chunks.iter().any(|c| {
+                    c.metadata.get("kind").and_then(|v| v.as_str()) == Some("whole_file_fallback")
+                        && c.metadata.get("file").and_then(|v| v.as_str()) == Some(broken)
+                }),
+                "whole-file fallback chunk for {broken}"
+            );
+            // No symbols were fabricated from the broken file.
+            assert!(
+                !result.nodes.iter().any(|n| {
+                    n.metadata.get("file").and_then(|v| v.as_str()) == Some(broken)
+                        && n.kind == NodeKind::Function
+                }),
+                "no fabricated symbols for {broken}"
+            );
+        }
+        // The parser-rejected files carry the parse_failed reason.
+        for broken in ["broken.py", "broken.rs"] {
+            assert!(
+                result.chunks.iter().any(|c| {
+                    c.metadata.get("file").and_then(|v| v.as_str()) == Some(broken)
+                        && c.metadata.get("reason").and_then(|v| v.as_str()) == Some("parse_failed")
+                }),
+                "parse_failed reason for {broken}"
+            );
+        }
+    }
+
+    /// Find the graphql-language node named `name` (types, operations,
+    /// fragments, and surface fields all carry `metadata.language: "graphql"`).
+    fn graphql_node<'a>(result: &'a ExtractionResult, name: &str) -> &'a KnowledgeNode {
+        result
             .nodes
             .iter()
-            .any(|n| n.kind == NodeKind::File && n.name == "broken.py"));
-        // No symbols were fabricated from the broken file.
+            .find(|n| {
+                n.name == name
+                    && n.metadata.get("language").and_then(|v| v.as_str()) == Some("graphql")
+            })
+            .unwrap_or_else(|| panic!("graphql node {name}"))
+    }
+
+    fn has_edge(
+        result: &ExtractionResult,
+        kind: EdgeKind,
+        source: &KnowledgeNode,
+        target: &KnowledgeNode,
+    ) -> bool {
+        result.edges.iter().any(|e| {
+            e.kind == kind && e.source_node_id == source.id && e.target_node_id == target.id
+        })
+    }
+
+    #[test]
+    fn graphql_sdl_types_root_fields_and_edges_extracted() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("schema.graphql"),
+            r#"schema {
+  query: MyQuery
+}
+
+type MyQuery {
+  user(id: ID!): User
+  search(term: String!): SearchResult
+}
+
+interface Node {
+  id: ID!
+}
+
+type User implements Node {
+  id: ID!
+  role: Role
+  created: DateTime
+  home: Location
+}
+
+type Location {
+  lat: Float
+  lng: Float
+}
+
+enum Role {
+  ADMIN
+  MEMBER
+}
+
+union SearchResult = User | Location
+
+scalar DateTime
+
+input UserFilter {
+  role: Role
+}
+
+directive @auth(requires: Role) on FIELD_DEFINITION
+"#,
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        // SDL kinds map onto the existing node-kind vocabulary.
+        let my_query = graphql_node(&result, "MyQuery");
+        assert_eq!(my_query.kind, NodeKind::Struct);
+        assert_eq!(my_query.stable_id, "schema.graphql:graphql:object:MyQuery");
+        assert_eq!(graphql_node(&result, "Node").kind, NodeKind::Trait);
+        assert_eq!(graphql_node(&result, "Role").kind, NodeKind::Enum);
+        assert_eq!(
+            graphql_node(&result, "SearchResult").kind,
+            NodeKind::TypeAlias
+        );
+        assert_eq!(graphql_node(&result, "DateTime").kind, NodeKind::TypeAlias);
+        assert_eq!(graphql_node(&result, "UserFilter").kind, NodeKind::Struct);
+        assert_eq!(graphql_node(&result, "auth").kind, NodeKind::TypeAlias);
+
+        let user = graphql_node(&result, "User");
+        let node_iface = graphql_node(&result, "Node");
+        assert!(has_edge(&result, EdgeKind::Implements, user, node_iface));
+
+        // Field/union/input type references become UsesType edges.
+        let role = graphql_node(&result, "Role");
+        let location = graphql_node(&result, "Location");
+        let search = graphql_node(&result, "SearchResult");
+        let filter = graphql_node(&result, "UserFilter");
+        assert!(has_edge(&result, EdgeKind::UsesType, my_query, user));
+        assert!(has_edge(&result, EdgeKind::UsesType, user, role));
+        assert!(has_edge(&result, EdgeKind::UsesType, user, location));
+        assert!(has_edge(&result, EdgeKind::UsesType, search, user));
+        assert!(has_edge(&result, EdgeKind::UsesType, filter, role));
+
+        // Hub gate: no UsesType edges TO the custom scalar, even though
+        // `User.created: DateTime` references it.
+        let scalar = graphql_node(&result, "DateTime");
+        assert!(
+            !result
+                .edges
+                .iter()
+                .any(|e| e.kind == EdgeKind::UsesType && e.target_node_id == scalar.id),
+            "no UsesType edges to a custom scalar"
+        );
+
+        // Root fields honor `schema { query: MyQuery }` and become
+        // user-surface nodes with a Defines edge from the file node.
+        let field = graphql_node(&result, "MyQuery.user");
+        assert_eq!(field.kind, NodeKind::GraphqlField);
+        assert_eq!(field.metadata["operation_type"], "query");
+        assert_eq!(field.metadata["parent_type"], "MyQuery");
+        assert_eq!(field.metadata["args"][0], "id: ID!");
+        assert_eq!(
+            graphql_node(&result, "MyQuery.search").kind,
+            NodeKind::GraphqlField
+        );
+        let file_node = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::File && n.name == "schema.graphql")
+            .unwrap();
+        assert!(has_edge(&result, EdgeKind::Defines, file_node, field));
+        // Non-root types expose no surface fields.
         assert!(!result
             .nodes
             .iter()
-            .any(
-                |n| n.metadata.get("file").and_then(|v| v.as_str()) == Some("broken.py")
-                    && n.kind == NodeKind::Function
-            ));
+            .any(|n| n.kind == NodeKind::GraphqlField && n.name.starts_with("User.")));
+    }
+
+    #[test]
+    fn graphql_type_extension_links_to_base_across_files() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("a.graphql"),
+            "type Query {\n  user: User\n}\n\ntype User {\n  id: ID!\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("b.graphql"),
+            "extend type Query {\n  audits: [User!]!\n}\n",
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        // Linked, not folded: base and extension stay separate nodes.
+        let base = result
+            .nodes
+            .iter()
+            .find(|n| n.stable_id == "a.graphql:graphql:object:Query")
+            .expect("base type node");
+        let ext = result
+            .nodes
+            .iter()
+            .find(|n| n.stable_id == "b.graphql:graphql:extend_object:Query")
+            .expect("extension node");
+        let extends = result
+            .edges
+            .iter()
+            .find(|e| {
+                e.kind == EdgeKind::UsesType
+                    && e.source_node_id == ext.id
+                    && e.target_node_id == base.id
+            })
+            .expect("extension -> base edge");
+        assert_eq!(extends.metadata["relation"], "extends");
+
+        // The extension's field type resolves cross-file too.
+        let user = graphql_node(&result, "User");
+        assert!(has_edge(&result, EdgeKind::UsesType, ext, user));
+
+        // Extending a root type surfaces its fields.
+        let field = graphql_node(&result, "Query.audits");
+        assert_eq!(field.kind, NodeKind::GraphqlField);
+        assert_eq!(field.metadata["operation_type"], "query");
+    }
+
+    #[test]
+    fn graphql_executable_documents_extract_operations_and_fragments() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("types.graphql"),
+            "type Query {\n  user(id: ID!): User\n  health: String\n}\n\ntype User {\n  id: ID!\n  name: String\n}\n\ntype AdminUser {\n  permissions: [String!]!\n}\n\ninput UserFilter {\n  name: String\n}\n",
+        )
+        .unwrap();
+        // The spread references UserParts BEFORE its definition, and the
+        // types live in another file: both must resolve via the post-pass.
+        fs::write(
+            dir.path().join("queries.graphql"),
+            "query GetUser($id: ID!, $filter: UserFilter) {\n  user(id: $id) {\n    ...UserParts\n    ... on AdminUser {\n      permissions\n    }\n  }\n}\n\nfragment UserParts on User {\n  id\n  name\n}\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("anon.graphql"), "{\n  health\n}\n").unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        let op = graphql_node(&result, "GetUser");
+        assert_eq!(op.kind, NodeKind::GraphqlOperation);
+        assert_eq!(op.stable_id, "queries.graphql:graphql:operation:GetUser");
+        assert_eq!(op.metadata["operation_type"], "query");
+        assert_eq!(op.metadata["root_fields"], json!(["user"]));
+
+        // Anonymous operations synthesize operation-type + first root field.
+        let anon = graphql_node(&result, "query:health");
+        assert_eq!(anon.kind, NodeKind::GraphqlOperation);
+
+        let fragment = graphql_node(&result, "UserParts");
+        assert_eq!(fragment.kind, NodeKind::GraphqlFragment);
+        assert_eq!(fragment.metadata["type_condition"], "User");
+
+        // Spread -> Calls (forward reference inside the file).
+        assert!(has_edge(&result, EdgeKind::Calls, op, fragment));
+        // Inline fragment + variable types -> UsesType (cross-file).
+        let admin = graphql_node(&result, "AdminUser");
+        let filter = graphql_node(&result, "UserFilter");
+        assert!(has_edge(&result, EdgeKind::UsesType, op, admin));
+        assert!(has_edge(&result, EdgeKind::UsesType, op, filter));
+        // Fragment type condition -> UsesType (cross-file).
+        let user = graphql_node(&result, "User");
+        assert!(has_edge(&result, EdgeKind::UsesType, fragment, user));
+    }
+
+    #[test]
+    fn graphql_broken_file_degrades_and_partial_tree_still_extracts() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("partial.graphql"),
+            "type Good {\n  id: ID!\n}\n\ntype {{{%%\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("broken.graphql"), "%%% not graphql &&&\n").unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        // Must NOT return Err — apollo-parser degrades, never aborts the run.
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        // The recoverable definition in the partially-broken file survives.
+        assert_eq!(graphql_node(&result, "Good").kind, NodeKind::Struct);
+
+        // The unrecoverable file degrades to a file node + fallback chunk.
+        assert!(result
+            .nodes
+            .iter()
+            .any(|n| n.kind == NodeKind::File && n.name == "broken.graphql"));
+        assert!(
+            result.chunks.iter().any(|c| {
+                c.metadata.get("kind").and_then(|v| v.as_str()) == Some("whole_file_fallback")
+                    && c.metadata.get("file").and_then(|v| v.as_str()) == Some("broken.graphql")
+                    && c.metadata.get("reason").and_then(|v| v.as_str()) == Some("parse_failed")
+            }),
+            "whole-file fallback chunk with parse_failed reason for broken.graphql"
+        );
+    }
+
+    #[test]
+    fn graphql_uses_type_fan_in_cap_drops_hub_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("shared.graphql"),
+            "type SharedThing {\n  id: ID!\n}\n",
+        )
+        .unwrap();
+        // 14 distinct files referencing one type: only the first 12 distinct
+        // files (deterministic order) keep their UsesType edges.
+        for i in 0..14 {
+            fs::write(
+                dir.path().join(format!("t{i:02}.graphql")),
+                format!("type Consumer{i:02} {{\n  s: SharedThing\n}}\n"),
+            )
+            .unwrap();
+        }
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        let shared = graphql_node(&result, "SharedThing");
+        let fan_in = result
+            .edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::UsesType && e.target_node_id == shared.id)
+            .count();
+        assert_eq!(fan_in, 12, "fan-in cap keeps 12 of 14 referencing files");
+    }
+
+    #[test]
+    fn graphql_type_does_not_capture_same_named_python_call() {
+        let dir = tempfile::tempdir().unwrap();
+        // The repo's only `User` definition is a GraphQL SDL type: the
+        // unique-name global fallback must NOT resolve the Python call to it.
+        fs::write(
+            dir.path().join("schema.graphql"),
+            "type User {\n  id: ID!\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("app.py"),
+            "def make_user():\n    return User(1)\n",
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        let user_type = graphql_node(&result, "User");
+        let maker = result.nodes.iter().find(|n| n.name == "make_user").unwrap();
+        assert!(
+            !result.edges.iter().any(|e| e.kind == EdgeKind::Calls
+                && e.source_node_id == maker.id
+                && e.target_node_id == user_type.id),
+            "a Python call must not resolve to a GraphQL schema type"
+        );
+    }
+
+    #[test]
+    fn graphql_type_does_not_make_a_code_symbol_ambiguous() {
+        let dir = tempfile::tempdir().unwrap();
+        // `User` is repo-unique among CODE symbols; the same-named schema type
+        // must not bump global_count and kill the cross-file resolution.
+        fs::write(
+            dir.path().join("a.ts"),
+            "export function User() {\n  return 1;\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("b.ts"),
+            "export function build() {\n  return User();\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("schema.graphql"),
+            "type User {\n  id: ID!\n}\n",
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        let ts_user = result
+            .nodes
+            .iter()
+            .find(|n| {
+                n.name == "User" && n.metadata.get("file").and_then(|v| v.as_str()) == Some("a.ts")
+            })
+            .unwrap();
+        let build = result.nodes.iter().find(|n| n.name == "build").unwrap();
+        assert!(
+            result.edges.iter().any(|e| e.kind == EdgeKind::Calls
+                && e.source_node_id == build.id
+                && e.target_node_id == ts_user.id),
+            "cross-file call to the TS `User` must survive indexing schema.graphql"
+        );
+    }
+
+    #[test]
+    fn embedded_graphql_type_never_claims_interpolation_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        // The embedded `type Widget` node spans the whole host template, so
+        // without the language gate it wins innermost_caller for the call
+        // inside the `${…}` hole and a Calls edge is emitted FROM the schema
+        // type TO the JS helper.
+        fs::write(
+            dir.path().join("schema.ts"),
+            r#"import { gql } from "@apollo/client";
+
+export function fieldList() { return "id name"; }
+
+export const WIDGET = gql`
+  type Widget {
+    id: ID!
+  }
+  ${fieldList()}
+`;
+"#,
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        let widget = graphql_node(&result, "Widget");
+        assert!(
+            !result
+                .edges
+                .iter()
+                .any(|e| e.kind == EdgeKind::Calls && e.source_node_id == widget.id),
+            "an embedded schema type must not be attributed calls from interpolation holes"
+        );
+    }
+
+    #[test]
+    fn graphql_scalar_extension_links_to_its_base() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.graphql"), "scalar DateTime\n").unwrap();
+        fs::write(
+            dir.path().join("b.graphql"),
+            "extend scalar DateTime @specifiedBy(url: \"https://example.com/iso\")\n",
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        let base = result
+            .nodes
+            .iter()
+            .find(|n| n.stable_id == "a.graphql:graphql:scalar:DateTime")
+            .expect("base scalar node");
+        let ext = result
+            .nodes
+            .iter()
+            .find(|n| n.stable_id == "b.graphql:graphql:extend_scalar:DateTime")
+            .expect("scalar extension node");
+        let extends = result
+            .edges
+            .iter()
+            .find(|e| {
+                e.kind == EdgeKind::UsesType
+                    && e.source_node_id == ext.id
+                    && e.target_node_id == base.id
+            })
+            .expect("extension -> base edge despite the scalar gate");
+        assert_eq!(extends.metadata["relation"], "extends");
+    }
+
+    #[test]
+    fn graphql_extension_link_survives_the_fan_in_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("shared.graphql"),
+            "type SharedThing {\n  id: ID!\n}\n",
+        )
+        .unwrap();
+        // 13 consumer files fill the fan-in cap (12 slots) before the
+        // extension file (sorted last) is processed.
+        for i in 0..13 {
+            fs::write(
+                dir.path().join(format!("t{i:02}.graphql")),
+                format!("type Consumer{i:02} {{\n  s: SharedThing\n}}\n"),
+            )
+            .unwrap();
+        }
+        fs::write(
+            dir.path().join("z_extend.graphql"),
+            "extend type SharedThing {\n  extra: Int\n}\n",
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        let shared = result
+            .nodes
+            .iter()
+            .find(|n| n.stable_id == "shared.graphql:graphql:object:SharedThing")
+            .expect("base type node");
+        let ext = result
+            .nodes
+            .iter()
+            .find(|n| n.stable_id == "z_extend.graphql:graphql:extend_object:SharedThing")
+            .expect("extension node");
+        let extends = result
+            .edges
+            .iter()
+            .find(|e| {
+                e.kind == EdgeKind::UsesType
+                    && e.source_node_id == ext.id
+                    && e.target_node_id == shared.id
+            })
+            .expect("extension -> base edge despite a full fan-in cap");
+        assert_eq!(extends.metadata["relation"], "extends");
+        // The cap itself still holds for plain uses_type refs.
+        let plain_fan_in = result
+            .edges
+            .iter()
+            .filter(|e| {
+                e.kind == EdgeKind::UsesType
+                    && e.target_node_id == shared.id
+                    && e.metadata["relation"] == "uses_type"
+            })
+            .count();
+        assert_eq!(
+            plain_fan_in, 12,
+            "cap keeps 12 of 13 plain referencing files"
+        );
+    }
+
+    #[test]
+    fn graphql_extend_schema_keeps_default_root_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        // `extend schema` ADDS to the (default) roots per the spec — it must
+        // not wipe the Query default and unsurface Query.user.
+        fs::write(
+            dir.path().join("schema.graphql"),
+            "extend schema {\n  subscription: Sub\n}\n\ntype Query {\n  user(id: ID!): User\n}\n\ntype Sub {\n  ticks: Int\n}\n\ntype User {\n  id: ID!\n}\n",
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        let user_field = graphql_node(&result, "Query.user");
+        assert_eq!(user_field.kind, NodeKind::GraphqlField);
+        assert_eq!(user_field.metadata["operation_type"], "query");
+        let ticks = graphql_node(&result, "Sub.ticks");
+        assert_eq!(ticks.metadata["operation_type"], "subscription");
+    }
+
+    #[test]
+    fn graphql_split_file_custom_root_surfaces_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        // The mapping and the root type live in DIFFERENT files: the run-level
+        // post-pass must aggregate the mapping and surface MyQuery.labs.
+        fs::write(
+            dir.path().join("schema.graphql"),
+            "schema {\n  query: MyQuery\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("query.graphql"),
+            "type MyQuery {\n  labs: [Lab!]!\n}\n\ntype Lab {\n  id: ID!\n}\n",
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        let field = graphql_node(&result, "MyQuery.labs");
+        assert_eq!(field.kind, NodeKind::GraphqlField);
+        assert_eq!(field.metadata["operation_type"], "query");
+        assert_eq!(field.metadata["parent_type"], "MyQuery");
+        assert_eq!(field.metadata["file"], "query.graphql");
+        // Exactly once — the post-pass must not double-emit anything.
+        assert_eq!(
+            result
+                .nodes
+                .iter()
+                .filter(|n| n.name == "MyQuery.labs")
+                .count(),
+            1
+        );
+        let file_node = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::File && n.name == "query.graphql")
+            .unwrap();
+        assert!(has_edge(&result, EdgeKind::Defines, file_node, field));
+    }
+
+    #[test]
+    fn ts_gql_tagged_template_and_call_extract_embedded_documents() {
+        let dir = tempfile::tempdir().unwrap();
+        // Line numbers matter: the operation template spans host lines 3-10
+        // (incl. the `${EXTRA}` interpolation hole), the call-form fragment
+        // template spans host lines 12-16.
+        fs::write(
+            dir.path().join("queries.ts"),
+            r#"import { gql } from "@apollo/client";
+
+export const GET_USER = gql`
+  query GetUser($id: ID!) {
+    user(id: $id) {
+      ...UserParts
+    }
+  }
+  ${EXTRA}
+`;
+
+export const USER_PARTS = gql(`
+  fragment UserParts on User {
+    name
+  }
+`);
+"#,
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        // Tagged template -> operation node anchored to the HOST template span.
+        let op = graphql_node(&result, "GetUser");
+        assert_eq!(op.kind, NodeKind::GraphqlOperation);
+        assert_eq!(op.stable_id, "queries.ts:graphql:operation:GetUser");
+        assert_eq!(op.metadata["origin"], "gql-tagged-template");
+        assert_eq!(op.metadata["file"], "queries.ts");
+        assert_eq!(op.metadata["root_fields"], json!(["user"]));
+        assert_eq!(op.line_start, Some(3));
+        assert_eq!(op.line_end, Some(10));
+
+        // gql() call form -> fragment node anchored to its template span.
+        let fragment = graphql_node(&result, "UserParts");
+        assert_eq!(fragment.kind, NodeKind::GraphqlFragment);
+        assert_eq!(fragment.metadata["origin"], "gql-call");
+        assert_eq!(fragment.line_start, Some(12));
+        assert_eq!(fragment.line_end, Some(16));
+
+        // The spread resolves across embedded documents via the post-pass.
+        assert!(has_edge(&result, EdgeKind::Calls, op, fragment));
+
+        // The chunk body is the GraphQL document, never a host-file slice.
+        let chunk = result
+            .chunks
+            .iter()
+            .find(|c| c.node_id == Some(op.id))
+            .expect("operation chunk");
+        assert!(chunk.content.contains("query GetUser"));
+        assert!(chunk.content.contains("...UserParts"));
+        assert!(
+            !chunk.content.contains("export const"),
+            "chunk body must be the document, not a host slice"
+        );
+    }
+
+    #[test]
+    fn python_gql_call_extracts_embedded_document() {
+        let dir = tempfile::tempdir().unwrap();
+        // The gql("""…""") call spans host lines 3-9.
+        fs::write(
+            dir.path().join("client.py"),
+            "from gql import gql\n\nGET_USER = gql(\"\"\"\nquery GetUser {\n  user {\n    id\n  }\n}\n\"\"\")\n",
+        )
+        .unwrap();
+        let extractor = RustRepositoryExtractor::new(IndexingConfig::default());
+        let result = extractor.extract(dir.path(), Uuid::new_v4(), None).unwrap();
+
+        let op = graphql_node(&result, "GetUser");
+        assert_eq!(op.kind, NodeKind::GraphqlOperation);
+        assert_eq!(op.stable_id, "client.py:graphql:operation:GetUser");
+        assert_eq!(op.metadata["origin"], "gql-call");
+        assert_eq!(op.metadata["file"], "client.py");
+        assert_eq!(op.metadata["root_fields"], json!(["user"]));
+        assert_eq!(op.line_start, Some(3));
+        assert_eq!(op.line_end, Some(9));
+
+        let chunk = result
+            .chunks
+            .iter()
+            .find(|c| c.node_id == Some(op.id))
+            .expect("operation chunk");
+        assert!(chunk.content.contains("query GetUser"));
+        assert!(
+            !chunk.content.contains("GET_USER ="),
+            "chunk body must be the document, not a host slice"
+        );
     }
 
     #[test]

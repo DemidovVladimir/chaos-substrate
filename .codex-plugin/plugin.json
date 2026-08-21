@@ -1,13 +1,13 @@
 {
   "name": "chaos-substrate",
-  "version": "0.21.0",
+  "version": "0.24.0",
   "description": "Agent guidance, MCP tools, and wrappers for indexing projects, querying code memory, decomposing changes into features over a layered hierarchy, generating feature-context explanations, and composing client-facing feature storyboards with real-UI previews.",
   "author": {
     "name": "Chaos Substrate"
   },
   "homepage": "https://github.com/chaos-substrate/chaos-substrate",
   "repository": "https://github.com/chaos-substrate/chaos-substrate",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "keywords": [
     "code-memory",
     "knowledge-graph",
@@ -16,7 +16,8 @@
     "typescript",
     "javascript",
     "python",
-    "solidity"
+    "solidity",
+    "graphql"
   ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",

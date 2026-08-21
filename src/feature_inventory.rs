@@ -29,7 +29,7 @@
 
 use crate::{
     embedding::Embedder,
-    export_util::escape_script_json,
+    export_util::{features_memory_dir, join_human, language_for, resolve_indexed_repo, safe_slug},
     hierarchy_export::{CommunityDetail, CommunityHierarchy},
     layering::{self, Layer},
     provenance::{source, Breadcrumb},
@@ -40,7 +40,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    fs,
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
@@ -349,21 +348,14 @@ pub async fn run(
     filter: Option<&str>,
     opts: &FeatureInventoryOptions,
 ) -> Result<Value> {
-    let repo = storage
-        .find_repository(repo)
-        .await?
-        .with_context(|| format!("repository is not indexed: {repo}"))?;
-    let repo_root = PathBuf::from(&repo.root_path);
+    let (repo, repo_root) = resolve_indexed_repo(storage, repo).await?;
 
     let (collected, resolved) = collect(storage, embedder, &repo, filter, opts).await?;
 
-    let output = opts.output_html.clone().unwrap_or_else(|| {
-        default_output(
-            &repo_root.join("docs/features_memory"),
-            &resolved,
-            &repo.name,
-        )
-    });
+    let output = opts
+        .output_html
+        .clone()
+        .unwrap_or_else(|| default_output(&features_memory_dir(&repo_root), &resolved, &repo.name));
     assemble_and_write(
         collected.cards,
         &resolved,
@@ -987,8 +979,8 @@ fn build_cards(
 /// Default `<dir>/<slug>-features.html` output path.
 fn default_output(dir: &Path, resolved: &ResolvedFilter, name: &str) -> PathBuf {
     let slug = match &resolved.value {
-        Some(v) => format!("{}-{}", safe_slug(v), resolved.kind.as_str()),
-        None => safe_slug(name),
+        Some(v) => format!("{}-{}", safe_slug(v, "features"), resolved.kind.as_str()),
+        None => safe_slug(name, "features"),
     };
     dir.join(format!("{slug}-features.html"))
 }
@@ -1109,9 +1101,6 @@ fn assemble_and_write(
     };
 
     // Always write the HTML page.
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
     write_features_html(output, &manifest)?;
 
     // A curated call is a re-render of an inventory the agent already has —
@@ -1585,25 +1574,6 @@ pub(crate) fn language_tally(files: &[String]) -> Vec<LangCount> {
     out
 }
 
-fn language_for(path: &str) -> String {
-    let ext = Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    match ext.as_str() {
-        "rs" => "Rust",
-        "ts" | "tsx" => "TypeScript",
-        "js" | "jsx" | "mjs" | "cjs" => "JavaScript",
-        "py" => "Python",
-        "sol" => "Solidity",
-        "md" | "mdx" => "Markdown",
-        "pdf" => "PDF",
-        _ => "",
-    }
-    .to_string()
-}
-
 /// Deterministic extractive overview (pure — same inputs ⇒ same text).
 fn compose_overview(
     resolved: &ResolvedFilter,
@@ -1642,7 +1612,7 @@ fn compose_overview(
             .iter()
             .map(|l| format!("{} {}", l.count, l.layer))
             .collect();
-        format!(" — {} by journey layer", join_human_strings(&parts))
+        format!(" — {} by journey layer", join_human(&parts))
     };
     format!("{scope}{breakdown}. Grouped entry → interface → core → foundation.")
 }
@@ -1660,60 +1630,11 @@ fn framing(resolved: &ResolvedFilter, repo_name: &str) -> (String, String) {
     (title, subtitle)
 }
 
-fn join_human_strings(items: &[String]) -> String {
-    match items.len() {
-        0 => String::new(),
-        1 => items[0].clone(),
-        2 => format!("{} and {}", items[0], items[1]),
-        _ => {
-            let (last, head) = items.split_last().unwrap();
-            format!("{}, and {}", head.join(", "), last)
-        }
-    }
-}
-
-fn safe_slug(input: &str) -> String {
-    let slug = input
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .split('-')
-        .filter(|p| !p.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    if slug.is_empty() {
-        "features".to_string()
-    } else {
-        slug.chars().take(80).collect::<String>()
-    }
-}
-
 fn write_features_html(path: &Path, manifest: &FeatureInventoryManifest) -> Result<()> {
-    let json = serde_json::to_string(manifest)?;
-    fs::write(
-        path,
-        FEATURES_HTML
-            .replace("__THEME__", crate::theme::THEME_CSS)
-            .replace(
-                "__BRAND_TOPBAR__",
-                &crate::theme::render_brand(&crate::theme::Brand::default(), "topbar"),
-            )
-            .replace(
-                "__BRAND_FOOTER__",
-                &crate::theme::render_brand(&crate::theme::Brand::default(), "footer"),
-            )
-            .replace("__DATA__", &escape_script_json(&json)),
-    )?;
-    Ok(())
+    crate::export_util::write_report_page(path, FEATURES_HTML, &serde_json::to_string(manifest)?)
 }
 
-const FEATURES_HTML: &str = r##"<!doctype html>
+pub(crate) const FEATURES_HTML: &str = r##"<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -1721,22 +1642,10 @@ const FEATURES_HTML: &str = r##"<!doctype html>
 <title>Feature inventory</title>
 <style>
 __THEME__
+__REPORT_CSS__
 /* ===== feature inventory (light editorial) ===== */
-header.ov{background:var(--bg-sky-soft);border-bottom:var(--border-hairline)}
-header.ov .wrap{padding:48px 32px 36px}
-header.ov .eyebrow{font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.16em;color:var(--color-blue-700);margin-bottom:16px;display:flex;align-items:center;gap:10px}
-header.ov .eyebrow::before{content:"";width:22px;height:1px;background:var(--color-blue-500);display:inline-block}
-header.ov h1{font:var(--type-display-lg);letter-spacing:-.01em;color:var(--color-ink-700);margin:0 0 10px}
 #overview{font:var(--type-body-lg);color:var(--color-ink-500);line-height:1.55;max-width:80ch}
 .sub{color:var(--color-ink-400);max-width:76ch;margin-top:14px;font:var(--type-body-sm);line-height:1.6}
-main{padding:40px 0 64px;display:grid;gap:24px}
-.panel{background:var(--color-surface-0);border:var(--border-hairline);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);padding:24px}
-h2{font:var(--type-h4);color:var(--color-ink-700);margin:0 0 16px}
-.muted{color:var(--fg-tertiary);line-height:1.5}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px}
-.stat{border:var(--border-hairline);border-radius:var(--radius-md);background:var(--color-surface-2);padding:18px}
-.stat b{display:block;font:var(--type-h2);font-family:var(--font-display);color:var(--color-ink-700);line-height:1}
-.stat span{display:block;color:var(--fg-tertiary);font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.08em;margin-top:8px}
 .grp{margin-top:8px}
 .grp>h3{font:var(--type-h5);color:var(--color-ink-700);margin:18px 0 6px;display:flex;align-items:center;gap:10px}
 .grp>h3 .pill{display:inline-flex;align-items:center;border-radius:var(--radius-pill);padding:2px 10px;font:var(--type-overline-sm);font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.06em}
@@ -1756,15 +1665,9 @@ h2{font:var(--type-h4);color:var(--color-ink-700);margin:0 0 16px}
 .chip{display:inline-flex;align-items:center;gap:6px;border:var(--border-hairline);border-radius:var(--radius-pill);padding:4px 11px;margin:6px 6px 0 0;color:var(--color-ink-500);font:500 12px/1 var(--font-body);background:var(--color-surface-1)}
 .chip .k{color:var(--fg-tertiary);font-family:var(--font-mono);font-size:10px;text-transform:uppercase;letter-spacing:.04em}
 .lang{display:inline-flex;align-items:center;gap:6px;border-radius:var(--radius-pill);padding:3px 10px;margin:6px 6px 0 0;font:var(--type-overline-sm);font-family:var(--font-mono);background:var(--color-blue-50);color:var(--color-blue-700)}
-.matched{margin-top:10px;display:grid;gap:4px}
-.matched div{color:var(--color-ink-500);font:var(--type-body-xs);line-height:1.5}
-.matched b{color:var(--color-ink-700);font-weight:500;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.04em;font-size:10px}
 .note{margin:6px 0 2px;color:var(--color-ink-700);font:var(--type-body-sm);line-height:1.6}
 .blurb{color:var(--color-ink-500);font:var(--type-body-sm);line-height:1.6;margin:2px 0 6px;max-width:80ch}
 .grp>h3 .ico{font-size:18px;line-height:1}
-.item.warn{border:1px solid var(--color-blue-300);border-radius:var(--radius-md);background:var(--color-blue-50);padding:14px 16px;margin-top:12px}
-.item.warn strong{color:var(--color-blue-700);font:var(--type-h6);display:block;margin-bottom:4px}
-.item.warn div{color:var(--color-ink-500);font:var(--type-body-sm);line-height:1.5}
 </style>
 </head>
 <body data-chaos-features>
@@ -1794,7 +1697,7 @@ h2{font:var(--type-h4);color:var(--color-ink-700);margin:0 0 16px}
 <script>
 (function(){
 var D=JSON.parse(document.getElementById("chaos-features-manifest").textContent);
-function esc(v){return String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;");}
+__REPORT_JS__
 document.getElementById("title").textContent=D.title||"Feature inventory";
 var fk=D.filter||{};
 document.getElementById("eyebrow").textContent=fk.value?(fk.kind+" · "+fk.value+(fk.detected?" (auto)":"")):"Whole repository";
@@ -1851,9 +1754,7 @@ if(domains.length){
   });
 }
 if(!host.children.length)host.innerHTML='<div class="muted">No features matched. Ensure the repo is indexed (chaos_analyze) so communities exist, then try a broader filter or omit it.</div>';
-var prov=document.getElementById("provenance");
-(D.provenance||[]).forEach(function(c){var el=document.createElement("div");el.className="matched";el.innerHTML='<div><b>'+esc(c.source)+'</b> '+esc(c.method)+'</div><div class="muted">'+esc(c.detail)+(c.locator?' &middot; '+esc(c.locator):'')+'</div>';prov.appendChild(el);});
-if(!prov.children.length)prov.innerHTML='<div class="muted">No breadcrumbs recorded.</div>';
+renderProvenance(document.getElementById("provenance"),D.provenance);
 var w=document.getElementById("warnings");
 (D.warnings||[]).forEach(function(x){var el=document.createElement("div");el.className="item warn";el.innerHTML='<strong>Note</strong><div>'+esc(x)+'</div>';w.appendChild(el);});
 if(!w.children.length)w.innerHTML='<div class="muted">No warnings.</div>';

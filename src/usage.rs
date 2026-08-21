@@ -22,16 +22,15 @@
 //! and embedder-free — it runs even when no embedder is configured.
 
 use crate::{
-    export_util::escape_script_json,
+    export_util::{features_memory_dir, join_human, resolve_indexed_repo, safe_slug},
     provenance::{source, Breadcrumb},
     storage::{ConsumerRow, NodeRef, Storage},
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, HashSet},
-    fs,
     path::{Path, PathBuf},
 };
 
@@ -49,7 +48,7 @@ const MAX_DEFINITIONS_IN_RETURN: usize = 12;
 /// Per-term literal sweep budget (the storage layer additionally caps ≤2/file).
 const LITERAL_BUDGET: i64 = 200;
 /// User-surface node kinds — these ARE use sites, not definitions.
-const SURFACE_KINDS: &[&str] = &["env_var", "http_route", "cli_command"];
+const SURFACE_KINDS: &[&str] = &["env_var", "http_route", "cli_command", "graphql_field"];
 /// Edge kinds that count as CONSUMPTION of a target (excludes structural
 /// `contains`/`defines`/`documents`).
 const CONSUMER_EDGE_KINDS: &[&str] = &[
@@ -130,11 +129,7 @@ pub async fn run(
     if target.is_empty() {
         anyhow::bail!("target is required (the symbol or surface string whose consumers to find)");
     }
-    let repo = storage
-        .find_repository(repo)
-        .await?
-        .with_context(|| format!("repository is not indexed: {repo}"))?;
-    let repo_root = PathBuf::from(&repo.root_path);
+    let (repo, repo_root) = resolve_indexed_repo(storage, repo).await?;
     // Hard upper bound so a large `limit` can't blow the compact-return budget
     // (the HTML always holds every site regardless).
     let limit = if opts.limit > 0 {
@@ -148,7 +143,29 @@ pub async fn run(
 
     // 1. Resolve the target to graph nodes, partitioned into user-surface use
     //    sites and code definitions (whose consumers come from reverse edges).
-    let nodes: Vec<NodeRef> = storage.nodes_by_name_exact(repo.id, target).await?;
+    let mut nodes: Vec<NodeRef> = storage.nodes_by_name_exact(repo.id, target).await?;
+    // Qualified-suffix match: a bare GraphQL field name (`user`) misses the
+    // exact lookup because SDL surface nodes are qualified (`Query.user`).
+    // ALWAYS also matched and merged (deduped by node id) — gating it on an
+    // empty exact lookup would let any same-named node (a `fn user`, the
+    // `User` type) shadow the field's definition site entirely.
+    let suffix_matched: Vec<NodeRef> = storage
+        .nodes_by_kind_refs(repo.id, "graphql_field")
+        .await?
+        .into_iter()
+        .filter(|n| is_qualified_suffix(&n.name, target))
+        .collect();
+    if !suffix_matched.is_empty() {
+        provenance.push(Breadcrumb::new(
+            source::POSTGRES,
+            "graphql_field_suffix_match",
+            format!(
+                "`{target}` additionally matched {} qualified GraphQL field node(s) ending in `.{target}`",
+                suffix_matched.len()
+            ),
+        ));
+        merge_suffix_matches(&mut nodes, suffix_matched);
+    }
     let mut definitions: Vec<UsageDefinition> = Vec::new();
     let mut def_ids: Vec<uuid::Uuid> = Vec::new();
     let mut surface_sites: Vec<UsageSite> = Vec::new();
@@ -359,13 +376,8 @@ pub async fn run(
 
     // 6. Always write the HTML report.
     let output = opts.output_html.clone().unwrap_or_else(|| {
-        repo_root
-            .join("docs/features_memory")
-            .join(format!("{}-usage.html", safe_slug(target)))
+        features_memory_dir(&repo_root).join(format!("{}-usage.html", safe_slug(target, "usage")))
     });
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
     write_usage_html(&output, &manifest)?;
 
     // 7. Compact JSON return — capped per folder and per definition; full detail
@@ -430,6 +442,7 @@ fn surface_mechanism(kind: &str) -> String {
         "env_var" => "reads env var",
         "http_route" => "registers route",
         "cli_command" => "defines CLI command",
+        "graphql_field" => "defines GraphQL field",
         other => other,
     }
     .to_string()
@@ -446,6 +459,26 @@ fn edge_mechanism(edge_kind: &str) -> String {
         other => other,
     }
     .to_string()
+}
+
+/// Merge suffix-matched `graphql_field` nodes into the exact-match set,
+/// deduped by node id. The suffix channel always runs alongside the exact
+/// lookup, so a same-named non-graphql node cannot shadow `Query.user`.
+fn merge_suffix_matches(nodes: &mut Vec<NodeRef>, matched: Vec<NodeRef>) {
+    let mut seen: HashSet<uuid::Uuid> = nodes.iter().map(|n| n.id).collect();
+    for node in matched {
+        if seen.insert(node.id) {
+            nodes.push(node);
+        }
+    }
+}
+
+/// Does a qualified GraphQL field name (`Query.user`) end with `.{target}`?
+/// Case-insensitive (matching the exact lookup's `lower(...)` comparison);
+/// the leading dot keeps `user` from matching `Query.poweruser`.
+fn is_qualified_suffix(name: &str, target: &str) -> bool {
+    name.to_ascii_lowercase()
+        .ends_with(&format!(".{}", target.to_ascii_lowercase()))
 }
 
 /// Top-level subfolder of a path (`(root)` for a root-level file).
@@ -468,6 +501,7 @@ fn distinct_languages(sites: &[UsageSite]) -> Vec<String> {
     out
 }
 
+/// The shared extension map plus the config-file kinds this report also lists.
 fn language_for(path: &str) -> String {
     let ext = Path::new(path)
         .extension()
@@ -475,19 +509,11 @@ fn language_for(path: &str) -> String {
         .unwrap_or("")
         .to_ascii_lowercase();
     match ext.as_str() {
-        "rs" => "Rust",
-        "ts" | "tsx" => "TypeScript",
-        "js" | "jsx" | "mjs" | "cjs" => "JavaScript",
-        "py" => "Python",
-        "sol" => "Solidity",
-        "md" | "mdx" => "Markdown",
-        "pdf" => "PDF",
-        "json" => "JSON",
-        "toml" => "TOML",
-        "yaml" | "yml" => "YAML",
-        _ => "",
+        "json" => "JSON".to_string(),
+        "toml" => "TOML".to_string(),
+        "yaml" | "yml" => "YAML".to_string(),
+        _ => crate::export_util::language_for(path),
     }
-    .to_string()
 }
 
 /// Deterministic extractive overview paragraph (pure — same inputs ⇒ same text).
@@ -516,60 +542,11 @@ fn compose_overview(
     )
 }
 
-fn join_human(items: &[&str]) -> String {
-    match items.len() {
-        0 => String::new(),
-        1 => items[0].to_string(),
-        2 => format!("{} and {}", items[0], items[1]),
-        _ => {
-            let (last, head) = items.split_last().unwrap();
-            format!("{}, and {}", head.join(", "), last)
-        }
-    }
-}
-
-fn safe_slug(input: &str) -> String {
-    let slug = input
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .split('-')
-        .filter(|p| !p.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    if slug.is_empty() {
-        "usage".to_string()
-    } else {
-        slug.chars().take(80).collect::<String>()
-    }
-}
-
 fn write_usage_html(path: &Path, manifest: &UsageManifest) -> Result<()> {
-    let json = serde_json::to_string(manifest)?;
-    fs::write(
-        path,
-        USAGE_HTML
-            .replace("__THEME__", crate::theme::THEME_CSS)
-            .replace(
-                "__BRAND_TOPBAR__",
-                &crate::theme::render_brand(&crate::theme::Brand::default(), "topbar"),
-            )
-            .replace(
-                "__BRAND_FOOTER__",
-                &crate::theme::render_brand(&crate::theme::Brand::default(), "footer"),
-            )
-            .replace("__DATA__", &escape_script_json(&json)),
-    )?;
-    Ok(())
+    crate::export_util::write_report_page(path, USAGE_HTML, &serde_json::to_string(manifest)?)
 }
 
-const USAGE_HTML: &str = r##"<!doctype html>
+pub(crate) const USAGE_HTML: &str = r##"<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -577,21 +554,11 @@ const USAGE_HTML: &str = r##"<!doctype html>
 <title>Usage</title>
 <style>
 __THEME__
+__REPORT_CSS__
 /* ===== usage report (light editorial) ===== */
-header.ov{background:var(--bg-sky-soft);border-bottom:var(--border-hairline)}
-header.ov .wrap{padding:48px 32px 36px}
-header.ov .eyebrow{font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.16em;color:var(--color-blue-700);margin-bottom:16px}
-header.ov h1{font:var(--type-display-lg);letter-spacing:-.01em;color:var(--color-ink-700);margin:0 0 10px;font-family:var(--font-mono)}
+header.ov h1{font-family:var(--font-mono)}
 #overview{font:var(--type-body-lg);color:var(--color-ink-500);line-height:1.55;max-width:78ch}
 .sub{color:var(--color-ink-400);max-width:74ch;margin-top:14px;font:var(--type-body-sm);line-height:1.6}
-main{padding:40px 0 64px;display:grid;gap:24px}
-.panel{background:var(--color-surface-0);border:var(--border-hairline);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);padding:24px}
-h2{font:var(--type-h4);color:var(--color-ink-700);margin:0 0 16px}
-.muted{color:var(--fg-tertiary);line-height:1.5}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px}
-.stat{border:var(--border-hairline);border-radius:var(--radius-md);background:var(--color-surface-2);padding:18px}
-.stat b{display:block;font:var(--type-h2);font-family:var(--font-display);color:var(--color-ink-700);line-height:1}
-.stat span{display:block;color:var(--fg-tertiary);font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.08em;margin-top:8px}
 .folder{border:var(--border-hairline);border-radius:var(--radius-lg);background:var(--color-surface-0);padding:18px 20px;margin-top:14px;box-shadow:var(--shadow-xs)}
 .folder h3{margin:0 0 6px;font:var(--type-h5);color:var(--color-ink-700);font-family:var(--font-mono);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .folder .count{display:inline-flex;align-items:center;justify-content:center;min-width:26px;height:24px;padding:0 8px;border-radius:var(--radius-pill);background:var(--color-ink-600);color:#fff;font:var(--type-overline-sm);font-family:var(--font-mono)}
@@ -606,11 +573,6 @@ h2{font:var(--type-h4);color:var(--color-ink-700);margin:0 0 16px}
 .site .who{color:var(--fg-tertiary);font:var(--type-body-xs);font-family:var(--font-mono)}
 .def{border:var(--border-hairline);border-radius:var(--radius-md);background:var(--color-surface-1);padding:10px 14px;margin-top:8px;font:var(--type-body-sm)}
 .def code{font-family:var(--font-mono);color:var(--color-blue-700)}
-.matched div{color:var(--color-ink-500);font:var(--type-body-xs);line-height:1.5}
-.matched b{color:var(--color-ink-700);font-weight:500;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.04em;font-size:10px}
-.item.warn{border:1px solid var(--color-blue-300);border-radius:var(--radius-md);background:var(--color-blue-50);padding:14px 16px;margin-top:12px}
-.item.warn strong{color:var(--color-blue-700);font:var(--type-h6);display:block;margin-bottom:4px}
-.item.warn div{color:var(--color-ink-500);font:var(--type-body-sm);line-height:1.5}
 </style>
 </head>
 <body data-chaos-usage>
@@ -637,7 +599,7 @@ h2{font:var(--type-h4);color:var(--color-ink-700);margin:0 0 16px}
 <script>
 (function(){
 var D=JSON.parse(document.getElementById("chaos-usage-manifest").textContent);
-function esc(v){return String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;");}
+__REPORT_JS__
 document.getElementById("title").textContent=D.title||"Usage";
 document.getElementById("overview").textContent=D.overview||"";
 document.getElementById("subtitle").textContent=D.subtitle||"";
@@ -660,9 +622,7 @@ F.forEach(function(f){
   host.appendChild(el);
 });
 if(!host.children.length)host.innerHTML='<div class="muted">No use sites found. Verify the exact name/string, or index the consuming files (chaos_analyze).</div>';
-var prov=document.getElementById("provenance");
-(D.provenance||[]).forEach(function(c){var el=document.createElement("div");el.className="matched";el.innerHTML='<div><b>'+esc(c.source)+'</b> '+esc(c.method)+'</div><div class="muted">'+esc(c.detail)+(c.locator?' &middot; '+esc(c.locator):'')+'</div>';prov.appendChild(el);});
-if(!prov.children.length)prov.innerHTML='<div class="muted">No breadcrumbs recorded.</div>';
+renderProvenance(document.getElementById("provenance"),D.provenance);
 var w=document.getElementById("warnings");
 (D.warnings||[]).forEach(function(x){var el=document.createElement("div");el.className="item warn";el.innerHTML='<strong>Note</strong><div>'+esc(x)+'</div>';w.appendChild(el);});
 if(!w.children.length)w.innerHTML='<div class="muted">No warnings.</div>';
@@ -675,6 +635,7 @@ if(!w.children.length)w.innerHTML='<div class="muted">No warnings.</div>';
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn top_folder_buckets_root_and_nested() {
@@ -687,8 +648,53 @@ mod tests {
     fn mechanisms_are_human_readable() {
         assert_eq!(surface_mechanism("env_var"), "reads env var");
         assert_eq!(surface_mechanism("http_route"), "registers route");
+        assert_eq!(surface_mechanism("graphql_field"), "defines GraphQL field");
         assert_eq!(edge_mechanism("uses_type"), "uses type");
         assert_eq!(edge_mechanism("calls"), "calls");
+    }
+
+    #[test]
+    fn suffix_matches_merge_with_exact_hits() {
+        // A resolver `fn user` (or a `User` type — the exact lookup is
+        // case-insensitive) must not shadow the `Query.user` surface node:
+        // the suffix channel always runs and merges, deduped by node id.
+        let exact = NodeRef {
+            id: uuid::Uuid::new_v4(),
+            kind: "function".into(),
+            name: "user".into(),
+            file: Some("src/resolvers.ts".into()),
+            line_start: Some(10),
+        };
+        let field = NodeRef {
+            id: uuid::Uuid::new_v4(),
+            kind: "graphql_field".into(),
+            name: "Query.user".into(),
+            file: Some("schema.graphql".into()),
+            line_start: Some(2),
+        };
+        let mut nodes = vec![exact.clone()];
+        // A duplicate id in the matched set must not produce a second entry.
+        merge_suffix_matches(&mut nodes, vec![field.clone(), field.clone()]);
+        assert_eq!(nodes.len(), 2);
+        assert!(nodes.iter().any(|n| n.name == "user"));
+        assert!(nodes.iter().any(|n| n.name == "Query.user"));
+        // Merging again with an id already present is a no-op.
+        merge_suffix_matches(&mut nodes, vec![field]);
+        assert_eq!(nodes.len(), 2);
+    }
+
+    #[test]
+    fn graphql_field_suffix_lookup_matches_qualified_names() {
+        // `chaos usage repo user` must find the qualified `Query.user` node.
+        assert!(is_qualified_suffix("Query.user", "user"));
+        assert!(is_qualified_suffix("Mutation.createUser", "createuser"));
+        assert!(is_qualified_suffix("MyQuery.User", "user"));
+        // The dot boundary keeps partial-word and unqualified names out.
+        assert!(!is_qualified_suffix("Query.poweruser", "user"));
+        assert!(!is_qualified_suffix("user", "user"));
+        assert!(!is_qualified_suffix("Query.user", "query"));
+        // graphql_field nodes count as use sites, not definitions.
+        assert!(SURFACE_KINDS.contains(&"graphql_field"));
     }
 
     #[test]

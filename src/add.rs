@@ -11,6 +11,7 @@
 
 use crate::{
     embedding::Embedder,
+    export_util::{features_memory_dir, line_range},
     extractor::{current_commit, RustRepositoryExtractor},
     feature_context::{
         correlate_feature_manifests, FeatureClaim, FeatureContextEdge, FeatureContextNode,
@@ -211,7 +212,7 @@ pub async fn run(
         let summary = write_obsidian_vault(&output, &graph)?;
         // Regenerate the god-node notes + feature map from the persisted layers.
         let hierarchy = storage.load_community_hierarchy(&repo, 14).await?;
-        let features_dir = repo_root.join("docs/features_memory");
+        let features_dir = features_memory_dir(&repo_root);
         let hier = crate::hierarchy_export::write_hierarchy(&output, &features_dir, &hierarchy)?;
         json!({
             "output": summary.output,
@@ -228,9 +229,7 @@ pub async fn run(
     } else {
         let manifest = build_manifest(&repo_root, kind, &title, &graph, &changed_rel);
         let slug = safe_slug(&format!("{kind}-{title}"));
-        let output = repo_root
-            .join("docs/features_memory")
-            .join(format!("{slug}.html"));
+        let output = features_memory_dir(&repo_root).join(format!("{slug}.html"));
         if let Some(parent) = output.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -462,31 +461,12 @@ fn humanize_branch(branch: &str) -> String {
         .to_string()
 }
 
-/// Lowercase, hyphen-joined, alphanumeric slug; never empty.
+/// The shared slug, plus a trim of any hyphen the 80-char cap leaves dangling
+/// (this module's page filenames historically never end in `-`).
 fn safe_slug(input: &str) -> String {
-    let slug = input
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .split('-')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    if slug.is_empty() {
-        "chaos-add".to_string()
-    } else {
-        slug.chars()
-            .take(80)
-            .collect::<String>()
-            .trim_matches('-')
-            .to_string()
-    }
+    crate::export_util::safe_slug(input, "chaos-add")
+        .trim_matches('-')
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -646,7 +626,7 @@ fn build_manifest(
     // page surfaces the existing features it overlaps (shared files / symbols),
     // and so its provenance can record the correlation. Excludes its own slug.
     let slug = safe_slug(&format!("{kind}-{title}"));
-    let features_dir = repo_root.join("docs/features_memory");
+    let features_dir = features_memory_dir(repo_root);
     let correlate_files: HashSet<String> = changed_rel.iter().cloned().collect();
     let correlate_symbols: HashSet<String> = changed
         .iter()
@@ -924,7 +904,7 @@ fn graph_node_to_feature(
     changed: bool,
 ) -> FeatureContextNode {
     let file = node.file_path.clone().unwrap_or_default();
-    let lines = line_range(node.line_start, node.line_end);
+    let lines = line_range(node.line_start, node.line_end, "n/a");
     let code = if file.is_empty() {
         String::new()
     } else {
@@ -1027,14 +1007,6 @@ fn read_snippet(repo_root: &Path, file: &str, start: Option<i32>, end: Option<i3
         out.push_str(&format!("{:>4}  {}\n", start + offset, line));
     }
     out
-}
-
-fn line_range(start: Option<i32>, end: Option<i32>) -> String {
-    match (start, end) {
-        (Some(start), Some(end)) if start != end => format!("{start}-{end}"),
-        (Some(start), _) => start.to_string(),
-        _ => "n/a".into(),
-    }
 }
 
 fn humanize(value: &str) -> String {

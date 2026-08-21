@@ -374,6 +374,9 @@ const palette = {
   script: '#0891b2',
   type_alias: '#4f46e5',
   deployment_resource: '#16a34a',
+  graphql_operation: '#c026d3',
+  graphql_fragment: '#a21caf',
+  graphql_field: '#e10098',
   topic: '#111827'
 };
 const edgePalette = {
@@ -398,6 +401,9 @@ const kindPriority = {
   test: 9,
   deployment_resource: 10,
   type_alias: 11,
+  graphql_operation: 11,
+  graphql_fragment: 12,
+  graphql_field: 10,
   script: 12,
   dependency: 13,
   concept: 14,

@@ -3,8 +3,9 @@
 //! Parses a JavaScript or TypeScript source file using the `oxc` parser and emits
 //! the same node/edge/chunk shapes the old regex extractors produced, with the
 //! added benefit that class methods are now captured as `Function` symbols.
-//! Gracefully degrades on parse failure: a warning is printed to stderr and the
-//! file node (already registered by `begin_file`) is left as-is.
+//! A parse failure propagates as `Err`: the extractor's language wrapper warns
+//! and degrades to a whole-file fallback chunk (the file node is already
+//! registered by `begin_file`).
 
 use crate::{
     extractor::{
@@ -19,9 +20,9 @@ use crate::{
 use anyhow::Result;
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    BindingPattern, Class, Expression, Function, ImportDeclaration, MethodDefinition,
+    Argument, BindingPattern, Class, Expression, Function, ImportDeclaration, MethodDefinition,
     NewExpression, TSEnumDeclaration, TSInterfaceDeclaration, TSTypeAliasDeclaration,
-    VariableDeclarator,
+    TaggedTemplateExpression, TemplateLiteral, VariableDeclarator,
 };
 use oxc_ast_visit::{walk, Visit};
 use oxc_parser::Parser;
@@ -97,7 +98,14 @@ struct Collector {
     env_reads: Vec<(String, u32)>,
     /// (name, start, end) — commander/yargs-style `.command('name …')`.
     cli_commands: Vec<(String, u32, u32)>,
+    /// (document text, host template span, origin) — GraphQL documents
+    /// embedded as ``gql`…` `` tagged templates or `gql(`…`)` calls, handed
+    /// to [`crate::lang::graphql::extract_embedded_document`] after the walk.
+    graphql_docs: Vec<(String, u32, u32, &'static str)>,
 }
+
+/// Tag/callee identifiers whose template argument is a GraphQL document.
+const GQL_TAGS: &[&str] = &["gql", "graphql"];
 
 /// Receivers whose `.get(`/`.post(`/… calls count as server-side route
 /// registrations (same shape as the linker's provider markers).
@@ -270,9 +278,27 @@ impl<'a> Visit<'a> for Collector {
         walk::walk_import_declaration(self, it);
     }
 
+    fn visit_tagged_template_expression(&mut self, it: &TaggedTemplateExpression<'a>) {
+        // gql`query { … }` / graphql`…` — the template IS a GraphQL document.
+        if let Some(tag) = it.tag.get_identifier_reference() {
+            if GQL_TAGS.contains(&tag.name.as_str()) {
+                self.graphql_docs.push((
+                    template_text(&it.quasi),
+                    it.quasi.span.start,
+                    it.quasi.span.end,
+                    "gql-tagged-template",
+                ));
+            }
+        }
+        walk::walk_tagged_template_expression(self, it);
+    }
+
     fn visit_call_expression(&mut self, it: &oxc_ast::ast::CallExpression<'a>) {
         if let Some(id) = it.callee.get_identifier_reference() {
             self.calls.push((id.name.to_string(), it.span.start));
+            if GQL_TAGS.contains(&id.name.as_str()) {
+                self.collect_gql_call(it);
+            }
         } else if let oxc_ast::ast::Expression::StaticMemberExpression(m) = &it.callee {
             self.calls
                 .push((m.property.name.to_string(), it.span.start));
@@ -349,6 +375,35 @@ impl Collector {
             }
         }
     }
+
+    /// Call form of an embedded document: `gql(`…`)` / `gql("…")`. The
+    /// argument's span (not the whole call) is the host anchor, mirroring the
+    /// tagged-template path.
+    fn collect_gql_call(&mut self, it: &oxc_ast::ast::CallExpression<'_>) {
+        match it.arguments.first() {
+            Some(Argument::TemplateLiteral(t)) => {
+                self.graphql_docs
+                    .push((template_text(t), t.span.start, t.span.end, "gql-call"))
+            }
+            Some(Argument::StringLiteral(s)) => {
+                self.graphql_docs
+                    .push((s.value.to_string(), s.span.start, s.span.end, "gql-call"))
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The GraphQL text of a template literal: cooked (or raw, when an invalid
+/// escape left cooking undone) quasi parts joined with `"\n"` across the
+/// interpolation holes — apollo-parser tolerates the resulting blank lines
+/// and still yields every definition.
+fn template_text(t: &TemplateLiteral<'_>) -> String {
+    t.quasis
+        .iter()
+        .map(|q| q.value.cooked.as_ref().unwrap_or(&q.value.raw).as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Is this expression literally `process.env`?
@@ -391,11 +446,10 @@ pub(crate) fn extract(ctx: &mut FileExtraction<'_>) -> Result<()> {
 
     let chunks_before = ctx.result.chunks.len();
 
-    // Graceful degrade: if parse produced no usable AST
+    // No usable AST: report the failure — the extractor's language wrapper
+    // warns and emits the whole-file fallback chunk centrally.
     if !ret.errors.is_empty() && ret.program.body.is_empty() {
-        crate::lang::warn_parse_failure(&ctx.file.path, &format!("{} errors", ret.errors.len()));
-        ctx.emit_whole_file_fallback(chunks_before, "parse_failed");
-        return Ok(());
+        anyhow::bail!("{} errors", ret.errors.len());
     }
 
     let mut collector = Collector {
@@ -427,6 +481,18 @@ pub(crate) fn extract(ctx: &mut FileExtraction<'_>) -> Result<()> {
             callee,
             line: ctx.lines.line(off as usize) as i32,
         });
+    }
+
+    // Embedded GraphQL documents (gql tagged templates / calls): nodes anchor
+    // to the host template span, chunk bodies carry the GraphQL text, and the
+    // emitted chunks keep a queries-only file out of the whole-file fallback.
+    for (text, start, end, origin) in collector.graphql_docs {
+        crate::lang::graphql::extract_embedded_document(
+            ctx,
+            &text,
+            (start as usize, end as usize),
+            origin,
+        );
     }
 
     // Config objects, .d.ts declarations, top-level test() specs, and data

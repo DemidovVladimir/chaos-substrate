@@ -4,10 +4,12 @@
 //! the manifest-DECLARED dependencies (package.json / Cargo.toml entries, with
 //! versions and runtime-vs-dev scope), npm scripts, deployment resources (AWS
 //! CDK apps, Stack classes, and L2 constructs grouped by cloud service),
-//! indexed JS/TS configs, and the file-language breakdown. `chaos_stats` only
-//! *counts* these node kinds; this tool *lists* them — so an agent asked "what
-//! is the stack / infrastructure here?" never has to fall back to grepping
-//! manifests off disk.
+//! indexed JS/TS configs, the file-language breakdown, and the exposed API
+//! SURFACE read from persisted user-surface nodes — HTTP routes (method +
+//! path), GraphQL root fields (grouped Query/Mutation/Subscription, SDL-derived),
+//! and CLI commands. `chaos_stats` only *counts* these node kinds; this tool
+//! *lists* them — so an agent asked "what is the stack / infrastructure /
+//! API here?" never has to fall back to grepping manifests off disk.
 //!
 //! Read-only and embedder-free, like `chaos_stats`. Like the other surfacing
 //! tools it ALWAYS writes an interactive HTML inventory (default
@@ -22,16 +24,16 @@
 //! rather than silently omitted.
 
 use crate::{
-    export_util::escape_script_json,
+    export_util::{features_memory_dir, resolve_indexed_repo},
+    models::NodeKind,
     provenance::{source, Breadcrumb},
     storage::{StackDependencyRow, StackDeploymentRow, StackScriptRow, Storage},
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
     path::{Path, PathBuf},
 };
 
@@ -43,6 +45,9 @@ const MAX_COMPACT_MANIFESTS: usize = 20;
 const MAX_COMPACT_STACKS: usize = 40;
 const MAX_COMPACT_SCRIPTS: usize = 15;
 const MAX_COMPACT_CONFIGS: usize = 15;
+const MAX_COMPACT_ROUTES: usize = 25;
+const MAX_COMPACT_GRAPHQL_FIELDS: usize = 25;
+const MAX_COMPACT_CLI_COMMANDS: usize = 20;
 
 #[derive(Debug, Default, Clone)]
 pub struct StackOptions {
@@ -65,6 +70,7 @@ pub struct StackManifest {
     pub scripts_total: usize,
     pub infrastructure: Vec<TechnologyStack>,
     pub config_files: Vec<String>,
+    pub api_surface: ApiSurface,
     pub coverage: Coverage,
     pub provenance: Vec<Breadcrumb>,
     pub warnings: Vec<String>,
@@ -160,6 +166,55 @@ pub struct ServiceSummary {
     pub examples: Vec<String>,
 }
 
+/// The repository's EXPOSED API surface, listed (not counted) from persisted
+/// user-surface nodes: HTTP routes, GraphQL root fields, CLI commands.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ApiSurface {
+    /// Distinct routes, `(method, path)`-deduped, sorted by path then method.
+    pub http_routes: Vec<ApiRoute>,
+    /// Root fields grouped by operation type (query, mutation, subscription).
+    pub graphql: Vec<GraphqlRootGroup>,
+    /// Distinct CLI commands, programs first.
+    pub cli_commands: Vec<CliCommandSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ApiRoute {
+    /// `GET` | `POST` | … | `ANY`.
+    pub method: String,
+    pub path: String,
+    /// Distinct defining frameworks (express, axum, flask, route-attribute…).
+    pub frameworks: Vec<String>,
+    /// Files the route is registered in (deduped, sorted).
+    pub files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphqlRootGroup {
+    /// `query` | `mutation` | `subscription` (honors custom root-type mappings).
+    pub operation_type: String,
+    pub fields: Vec<GraphqlFieldSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphqlFieldSummary {
+    /// Qualified name as persisted: `Query.user` (or a custom root type).
+    pub name: String,
+    /// `name: Type` argument signatures from the SDL.
+    pub args: Vec<String>,
+    pub files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CliCommandSummary {
+    pub name: String,
+    /// `program` | `command` | `subcommand`.
+    pub role: String,
+    /// First doc line, when the extractor captured one.
+    pub help: String,
+    pub files: Vec<String>,
+}
+
 /// What the report covers — and, just as importantly, what the index does not
 /// extract yet, so an agent never mistakes this inventory for a complete scan.
 #[derive(Debug, Clone, Serialize)]
@@ -177,6 +232,7 @@ impl Coverage {
                 "AWS CDK: cdk.json app entrypoints, Stack classes, L2 constructs by service".into(),
                 "tsconfig/jsconfig configuration files".into(),
                 "file-language breakdown of everything indexed".into(),
+                "API surface: persisted http_route / graphql_field / cli_command user-surface nodes (GraphQL root fields come from SDL schemas)".into(),
             ],
             not_indexed: vec![
                 "Dockerfile / docker-compose.yml".into(),
@@ -184,6 +240,7 @@ impl Coverage {
                 "pyproject.toml / requirements.txt / go.mod".into(),
                 "foundry.toml / hardhat config contents (the TS/JS code itself is indexed, the toolchain config is not extracted)".into(),
                 "Terraform / CloudFormation templates".into(),
+                "code-first GraphQL schemas (async-graphql, TypeGraphQL, graphene/strawberry resolvers) — only SDL-derived schemas expose root fields here".into(),
             ],
         }
     }
@@ -192,20 +249,13 @@ impl Coverage {
 /// Run the inventory: query the persisted facets → aggregate → write HTML →
 /// return the compact JSON.
 pub async fn run(storage: &Storage, repo: &str, opts: &StackOptions) -> Result<Value> {
-    let repo = storage
-        .find_repository(repo)
-        .await?
-        .with_context(|| format!("repository is not indexed: {repo}"))?;
-    let repo_root = PathBuf::from(&repo.root_path);
+    let (repo, repo_root) = resolve_indexed_repo(storage, repo).await?;
     let manifest = build_manifest(storage, &repo).await?;
 
     let output = opts
         .output_html
         .clone()
-        .unwrap_or_else(|| repo_root.join("docs/features_memory/stack.html"));
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+        .unwrap_or_else(|| features_memory_dir(&repo_root).join("stack.html"));
     write_stack_html(&output, &manifest)?;
 
     Ok(compact_return(&manifest, &output, repo.id))
@@ -269,6 +319,28 @@ pub(crate) async fn build_manifest(
         )
         .with_locator("files"),
     );
+    let route_nodes = storage
+        .nodes_by_kind_with_file(repo.id, NodeKind::HttpRoute.as_str())
+        .await?;
+    let graphql_nodes = storage
+        .nodes_by_kind_with_file(repo.id, NodeKind::GraphqlField.as_str())
+        .await?;
+    let cli_nodes = storage
+        .nodes_by_kind_with_file(repo.id, NodeKind::CliCommand.as_str())
+        .await?;
+    provenance.push(
+        Breadcrumb::new(
+            source::POSTGRES,
+            "nodes_by_kind_with_file",
+            format!(
+                "API surface nodes: {} http_route, {} graphql_field, {} cli_command",
+                route_nodes.len(),
+                graphql_nodes.len(),
+                cli_nodes.len()
+            ),
+        )
+        .with_locator("nodes"),
+    );
 
     if dependencies.is_empty() && deployments.is_empty() {
         warnings.push(
@@ -280,6 +352,7 @@ pub(crate) async fn build_manifest(
     let ecosystems = aggregate_ecosystems(&dependencies);
     let script_summaries = aggregate_scripts(&scripts);
     let infrastructure = aggregate_infrastructure(&deployments);
+    let api_surface = aggregate_api_surface(&route_nodes, &graphql_nodes, &cli_nodes);
 
     let totals = StackTotals {
         packages: ecosystems.iter().map(|e| e.packages.len()).sum(),
@@ -293,6 +366,7 @@ pub(crate) async fn build_manifest(
         &languages,
         &ecosystems,
         &infrastructure,
+        &api_surface,
         &totals,
     );
 
@@ -300,7 +374,7 @@ pub(crate) async fn build_manifest(
         schema_version: "stack-inventory-1".to_string(),
         repo_name: repo.name.clone(),
         title: format!("{} — tech stack", repo.name),
-        subtitle: "Declared dependencies, scripts, deployment resources, and configs read from the persisted index — what this repository is built with, with explicit coverage notes."
+        subtitle: "Declared dependencies, scripts, deployment resources, configs, and the exposed API surface read from the persisted index — what this repository is built with, with explicit coverage notes."
             .to_string(),
         overview,
         languages,
@@ -310,6 +384,7 @@ pub(crate) async fn build_manifest(
         scripts_total: scripts.len(),
         infrastructure,
         config_files,
+        api_surface,
         coverage: Coverage::current(),
         provenance,
         warnings,
@@ -520,12 +595,152 @@ fn aggregate_infrastructure(rows: &[StackDeploymentRow]) -> Vec<TechnologyStack>
     out
 }
 
+/// Per-field accumulator while folding graphql_field rows: SDL arg signatures
+/// (first definition wins) + the defining files.
+type GraphqlFieldAcc = BTreeMap<String, (Vec<String>, BTreeSet<String>)>;
+
+/// Fold persisted user-surface node rows `(name, metadata, file)` into the
+/// listed API surface. Pure and deterministic (BTreeMaps throughout); nodes
+/// are per-file by design, so the same route/field/command defined in several
+/// files dedupes into one entry carrying every defining file.
+fn aggregate_api_surface(
+    route_nodes: &[(String, Value, String)],
+    graphql_nodes: &[(String, Value, String)],
+    cli_nodes: &[(String, Value, String)],
+) -> ApiSurface {
+    let meta_str = |meta: &Value, key: &str| -> Option<String> {
+        meta.get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+
+    // (path, method) -> (frameworks, files); path-first keys sort the output.
+    let mut routes: BTreeMap<(String, String), (BTreeSet<String>, BTreeSet<String>)> =
+        BTreeMap::new();
+    for (name, meta, file) in route_nodes {
+        // Metadata carries method/route_path; fall back to the persisted
+        // "METHOD /path" node name for pre-metadata indexes.
+        let (method, path) = match (meta_str(meta, "method"), meta_str(meta, "route_path")) {
+            (Some(m), Some(p)) => (m, p),
+            _ => match name.split_once(' ') {
+                Some((m, p)) if p.starts_with('/') => (m.to_string(), p.to_string()),
+                _ => ("ANY".to_string(), name.clone()),
+            },
+        };
+        let entry = routes.entry((path, method)).or_default();
+        if let Some(framework) = meta_str(meta, "framework") {
+            entry.0.insert(framework);
+        }
+        if !file.is_empty() {
+            entry.1.insert(file.clone());
+        }
+    }
+    let http_routes = routes
+        .into_iter()
+        .map(|((path, method), (frameworks, files))| ApiRoute {
+            method,
+            path,
+            frameworks: frameworks.into_iter().collect(),
+            files: files.into_iter().collect(),
+        })
+        .collect();
+
+    // operation_type -> qualified field name -> (args, files).
+    let mut graphql: BTreeMap<String, GraphqlFieldAcc> = BTreeMap::new();
+    for (name, meta, file) in graphql_nodes {
+        let op = meta_str(meta, "operation_type").unwrap_or_else(|| "query".to_string());
+        let entry = graphql
+            .entry(op)
+            .or_default()
+            .entry(name.clone())
+            .or_default();
+        if entry.0.is_empty() {
+            if let Some(args) = meta.get("args").and_then(Value::as_array) {
+                entry.0 = args
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect();
+            }
+        }
+        if !file.is_empty() {
+            entry.1.insert(file.clone());
+        }
+    }
+    let mut graphql: Vec<GraphqlRootGroup> = graphql
+        .into_iter()
+        .map(|(operation_type, fields)| GraphqlRootGroup {
+            operation_type,
+            fields: fields
+                .into_iter()
+                .map(|(name, (args, files))| GraphqlFieldSummary {
+                    name,
+                    args,
+                    files: files.into_iter().collect(),
+                })
+                .collect(),
+        })
+        .collect();
+    // Journey order query → mutation → subscription, anything else after.
+    let op_rank = |op: &str| match op {
+        "query" => 0,
+        "mutation" => 1,
+        "subscription" => 2,
+        _ => 3,
+    };
+    graphql.sort_by(|a, b| {
+        op_rank(&a.operation_type)
+            .cmp(&op_rank(&b.operation_type))
+            .then_with(|| a.operation_type.cmp(&b.operation_type))
+    });
+
+    // (role rank, name, role) -> (help, files); programs before subcommands.
+    let role_rank = |role: &str| match role {
+        "program" => 0u8,
+        "command" => 1,
+        "subcommand" => 2,
+        _ => 3,
+    };
+    let mut cli: BTreeMap<(u8, String, String), (String, BTreeSet<String>)> = BTreeMap::new();
+    for (name, meta, file) in cli_nodes {
+        let role = meta_str(meta, "role").unwrap_or_else(|| "command".to_string());
+        let entry = cli
+            .entry((role_rank(&role), name.clone(), role))
+            .or_default();
+        if entry.0.is_empty() {
+            if let Some(help) = meta_str(meta, "help") {
+                entry.0 = help;
+            }
+        }
+        if !file.is_empty() {
+            entry.1.insert(file.clone());
+        }
+    }
+    let cli_commands = cli
+        .into_iter()
+        .map(|((_, name, role), (help, files))| CliCommandSummary {
+            name,
+            role,
+            help,
+            files: files.into_iter().collect(),
+        })
+        .collect();
+
+    ApiSurface {
+        http_routes,
+        graphql,
+        cli_commands,
+    }
+}
+
 /// Deterministic extractive overview (pure — same inputs ⇒ same text).
 fn compose_overview(
     repo_name: &str,
     languages: &Value,
     ecosystems: &[EcosystemStack],
     infrastructure: &[TechnologyStack],
+    api: &ApiSurface,
     totals: &StackTotals,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
@@ -563,6 +778,20 @@ fn compose_overview(
     }
     if totals.scripts > 0 {
         parts.push(format!("{} npm script(s)", totals.scripts));
+    }
+    let mut api_parts: Vec<String> = Vec::new();
+    if !api.http_routes.is_empty() {
+        api_parts.push(format!("{} HTTP route(s)", api.http_routes.len()));
+    }
+    let graphql_fields: usize = api.graphql.iter().map(|g| g.fields.len()).sum();
+    if graphql_fields > 0 {
+        api_parts.push(format!("{graphql_fields} GraphQL root field(s)"));
+    }
+    if !api.cli_commands.is_empty() {
+        api_parts.push(format!("{} CLI command(s)", api.cli_commands.len()));
+    }
+    if !api_parts.is_empty() {
+        parts.push(format!("API surface: {}", api_parts.join(", ")));
     }
     if parts.is_empty() {
         return format!(
@@ -626,6 +855,33 @@ fn compact_return(manifest: &StackManifest, output: &Path, repo_id: uuid::Uuid) 
         .len()
         .saturating_sub(MAX_COMPACT_CONFIGS);
 
+    let api = &manifest.api_surface;
+    let graphql_groups: Vec<Value> = api
+        .graphql
+        .iter()
+        .map(|group| {
+            let fields_omitted = group
+                .fields
+                .len()
+                .saturating_sub(MAX_COMPACT_GRAPHQL_FIELDS);
+            json!({
+                "operation_type": group.operation_type,
+                "fields_total": group.fields.len(),
+                "fields": group.fields.iter().take(MAX_COMPACT_GRAPHQL_FIELDS).collect::<Vec<_>>(),
+                "fields_omitted": fields_omitted,
+            })
+        })
+        .collect();
+    let api_surface = json!({
+        "http_routes_total": api.http_routes.len(),
+        "http_routes": api.http_routes.iter().take(MAX_COMPACT_ROUTES).collect::<Vec<_>>(),
+        "http_routes_omitted": api.http_routes.len().saturating_sub(MAX_COMPACT_ROUTES),
+        "graphql": graphql_groups,
+        "cli_commands_total": api.cli_commands.len(),
+        "cli_commands": api.cli_commands.iter().take(MAX_COMPACT_CLI_COMMANDS).collect::<Vec<_>>(),
+        "cli_commands_omitted": api.cli_commands.len().saturating_sub(MAX_COMPACT_CLI_COMMANDS),
+    });
+
     json!({
         "status": "ok",
         "repo": manifest.repo_name,
@@ -640,6 +896,7 @@ fn compact_return(manifest: &StackManifest, output: &Path, repo_id: uuid::Uuid) 
         "infrastructure": infrastructure,
         "config_files": manifest.config_files.iter().take(MAX_COMPACT_CONFIGS).collect::<Vec<_>>(),
         "config_files_omitted": configs_omitted,
+        "api_surface": api_surface,
         "coverage": manifest.coverage,
         "provenance": manifest.provenance,
         "output_html": output,
@@ -648,25 +905,10 @@ fn compact_return(manifest: &StackManifest, output: &Path, repo_id: uuid::Uuid) 
 }
 
 fn write_stack_html(path: &Path, manifest: &StackManifest) -> Result<()> {
-    let json = serde_json::to_string(manifest)?;
-    fs::write(
-        path,
-        STACK_HTML
-            .replace("__THEME__", crate::theme::THEME_CSS)
-            .replace(
-                "__BRAND_TOPBAR__",
-                &crate::theme::render_brand(&crate::theme::Brand::default(), "topbar"),
-            )
-            .replace(
-                "__BRAND_FOOTER__",
-                &crate::theme::render_brand(&crate::theme::Brand::default(), "footer"),
-            )
-            .replace("__DATA__", &escape_script_json(&json)),
-    )?;
-    Ok(())
+    crate::export_util::write_report_page(path, STACK_HTML, &serde_json::to_string(manifest)?)
 }
 
-const STACK_HTML: &str = r##"<!doctype html>
+pub(crate) const STACK_HTML: &str = r##"<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -674,23 +916,11 @@ const STACK_HTML: &str = r##"<!doctype html>
 <title>Tech stack</title>
 <style>
 __THEME__
+__REPORT_CSS__
 /* ===== tech stack inventory (light editorial) ===== */
-header.ov{background:var(--bg-sky-soft);border-bottom:var(--border-hairline)}
-header.ov .wrap{padding:48px 32px 36px}
-header.ov .eyebrow{font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.16em;color:var(--color-blue-700);margin-bottom:16px;display:flex;align-items:center;gap:10px}
-header.ov .eyebrow::before{content:"";width:22px;height:1px;background:var(--color-blue-500);display:inline-block}
-header.ov h1{font:var(--type-display-lg);letter-spacing:-.01em;color:var(--color-ink-700);margin:0 0 10px}
 #overview{font:var(--type-body-lg);color:var(--color-ink-500);line-height:1.55;max-width:80ch}
 .sub{color:var(--color-ink-400);max-width:76ch;margin-top:14px;font:var(--type-body-sm);line-height:1.6}
-main{padding:40px 0 64px;display:grid;gap:24px}
-.panel{background:var(--color-surface-0);border:var(--border-hairline);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);padding:24px}
-h2{font:var(--type-h4);color:var(--color-ink-700);margin:0 0 16px}
 h3{font:var(--type-h5);color:var(--color-ink-700);margin:18px 0 8px}
-.muted{color:var(--fg-tertiary);line-height:1.5}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px}
-.stat{border:var(--border-hairline);border-radius:var(--radius-md);background:var(--color-surface-2);padding:18px}
-.stat b{display:block;font:var(--type-h2);font-family:var(--font-display);color:var(--color-ink-700);line-height:1}
-.stat span{display:block;color:var(--fg-tertiary);font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.08em;margin-top:8px}
 .lang{display:inline-flex;align-items:center;gap:6px;border-radius:var(--radius-pill);padding:3px 10px;margin:6px 6px 0 0;font:var(--type-overline-sm);font-family:var(--font-mono);background:var(--color-blue-50);color:var(--color-blue-700)}
 table{width:100%;border-collapse:collapse;font:var(--type-body-sm)}
 th{font:var(--type-overline-sm);text-transform:uppercase;letter-spacing:.06em;color:var(--fg-tertiary);text-align:left;padding:8px 10px;border-bottom:var(--border-hairline)}
@@ -708,12 +938,6 @@ td.num,th.num{text-align:right}
 .cov .box.gap{background:var(--color-blue-50)}
 .cov h4{margin:0 0 8px;font:var(--type-h6);color:var(--color-ink-700)}
 .cov li{color:var(--color-ink-500);font:var(--type-body-sm);line-height:1.6;margin:4px 0 4px 16px}
-.matched{margin-top:10px;display:grid;gap:4px}
-.matched div{color:var(--color-ink-500);font:var(--type-body-xs);line-height:1.5}
-.matched b{color:var(--color-ink-700);font-weight:500;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.04em;font-size:10px}
-.item.warn{border:1px solid var(--color-blue-300);border-radius:var(--radius-md);background:var(--color-blue-50);padding:14px 16px;margin-top:12px}
-.item.warn strong{color:var(--color-blue-700);font:var(--type-h6);display:block;margin-bottom:4px}
-.item.warn div{color:var(--color-ink-500);font:var(--type-body-sm);line-height:1.5}
 details{border:var(--border-hairline);border-radius:var(--radius-md);padding:10px 14px;margin-top:10px}
 summary{cursor:pointer;color:var(--color-ink-700);font:var(--type-h6)}
 </style>
@@ -737,6 +961,7 @@ summary{cursor:pointer;color:var(--color-ink-700);font:var(--type-h6)}
     <section class="panel" data-stack-infra><h2>Deployment &amp; infrastructure</h2><div id="infrastructure"></div></section>
     <section class="panel" data-stack-scripts><h2>Scripts</h2><div id="scripts"></div></section>
     <section class="panel" data-stack-configs><h2>Configuration files</h2><div id="configs"></div></section>
+    <section class="panel" data-stack-api><h2>API surface</h2><div class="muted" style="margin-bottom:10px">What this repository exposes, listed from persisted user-surface nodes &mdash; HTTP routes, GraphQL root fields (SDL-derived; code-first schemas are not extracted yet), and CLI commands.</div><div id="api"></div></section>
     <section class="panel" data-stack-coverage><h2>Coverage</h2><div class="muted" style="margin-bottom:10px">What this inventory reads from the index &mdash; and what the extractor does not persist yet (read those files directly if you need them).</div><div class="cov" id="coverage"></div></section>
     <section class="panel" data-stack-provenance><h2>How this was generated</h2><div id="provenance"></div></section>
     <section class="panel"><h2>Warnings</h2><div id="warnings"></div></section>
@@ -749,7 +974,7 @@ summary{cursor:pointer;color:var(--color-ink-700);font:var(--type-h6)}
 <script>
 (function(){
 var D=JSON.parse(document.getElementById("chaos-stack-manifest").textContent);
-function esc(v){return String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;");}
+__REPORT_JS__
 document.getElementById("title").textContent=D.title||"Tech stack";
 document.getElementById("overview").textContent=D.overview||"";
 document.getElementById("subtitle").textContent=D.subtitle||"";
@@ -789,12 +1014,31 @@ if((D.scripts||[]).length){
 }else{sc.innerHTML='<div class="muted">No npm scripts in the index.</div>';}
 var cf=document.getElementById("configs");
 cf.innerHTML=(D.config_files||[]).length?(D.config_files.map(function(c){return '<span class="lang">'+esc(c)+'</span>';}).join("")):'<div class="muted">No JS/TS config files in the index.</div>';
+var api=document.getElementById("api");var A=D.api_surface||{};
+var files=function(fs){return esc((fs||[]).join(", "));};
+if((A.http_routes||[]).length){
+  var sec=document.createElement("div");
+  sec.innerHTML='<h3>HTTP routes ('+A.http_routes.length+')</h3><table><tr><th>Method</th><th>Path</th><th>Framework</th><th>Defined in</th></tr>'+
+    A.http_routes.map(function(r){return '<tr><td class="mono">'+esc(r.method)+'</td><td class="mono">'+esc(r.path)+'</td><td class="mono">'+esc((r.frameworks||[]).join(", "))+'</td><td class="mono">'+files(r.files)+'</td></tr>';}).join("")+'</table>';
+  api.appendChild(sec);
+}
+(A.graphql||[]).forEach(function(g){
+  var sec=document.createElement("div");
+  sec.innerHTML='<h3>GraphQL '+esc(g.operation_type)+' root fields ('+(g.fields||[]).length+')</h3><table><tr><th>Field</th><th>Arguments</th><th>Defined in</th></tr>'+
+    (g.fields||[]).map(function(f){return '<tr><td class="mono">'+esc(f.name)+'</td><td class="mono">'+esc((f.args||[]).join(", "))+'</td><td class="mono">'+files(f.files)+'</td></tr>';}).join("")+'</table>';
+  api.appendChild(sec);
+});
+if((A.cli_commands||[]).length){
+  var sec=document.createElement("div");
+  sec.innerHTML='<h3>CLI commands ('+A.cli_commands.length+')</h3><table><tr><th>Command</th><th>Role</th><th>Help</th><th>Defined in</th></tr>'+
+    A.cli_commands.map(function(c){return '<tr><td class="mono">'+esc(c.name)+'</td><td>'+esc(c.role)+'</td><td>'+esc(c.help||"")+'</td><td class="mono">'+files(c.files)+'</td></tr>';}).join("")+'</table>';
+  api.appendChild(sec);
+}
+if(!api.children.length)api.innerHTML='<div class="muted">No API surface nodes in the index &mdash; the repo may expose none, or the last index may predate user-surface extraction.</div>';
 var cov=document.getElementById("coverage");var C=D.coverage||{};
 cov.innerHTML='<div class="box ok"><h4>Read from the index</h4><ul>'+(C.included||[]).map(function(x){return '<li>'+esc(x)+'</li>';}).join("")+'</ul></div>'+
   '<div class="box gap"><h4>Not indexed yet</h4><ul>'+(C.not_indexed||[]).map(function(x){return '<li>'+esc(x)+'</li>';}).join("")+'</ul></div>';
-var prov=document.getElementById("provenance");
-(D.provenance||[]).forEach(function(c){var el=document.createElement("div");el.className="matched";el.innerHTML='<div><b>'+esc(c.source)+'</b> '+esc(c.method)+'</div><div class="muted">'+esc(c.detail)+(c.locator?' &middot; '+esc(c.locator):'')+'</div>';prov.appendChild(el);});
-if(!prov.children.length)prov.innerHTML='<div class="muted">No breadcrumbs recorded.</div>';
+renderProvenance(document.getElementById("provenance"),D.provenance);
 var w=document.getElementById("warnings");
 (D.warnings||[]).forEach(function(x){var el=document.createElement("div");el.className="item warn";el.innerHTML='<strong>Note</strong><div>'+esc(x)+'</div>';w.appendChild(el);});
 if(!w.children.length)w.innerHTML='<div class="muted">No warnings.</div>';
@@ -807,6 +1051,7 @@ if(!w.children.length)w.innerHTML='<div class="muted">No warnings.</div>';
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn dep(
         eco: &str,
@@ -966,12 +1211,22 @@ mod tests {
             scripts: 3,
             ..Default::default()
         };
-        let a = compose_overview("molecule_core", &langs, &ecosystems, &[], &totals);
-        let b = compose_overview("molecule_core", &langs, &ecosystems, &[], &totals);
+        let api = aggregate_api_surface(
+            &[(
+                "GET /health".into(),
+                json!({"method": "GET", "route_path": "/health", "framework": "axum"}),
+                "src/server.rs".into(),
+            )],
+            &[],
+            &[],
+        );
+        let a = compose_overview("molecule_core", &langs, &ecosystems, &[], &api, &totals);
+        let b = compose_overview("molecule_core", &langs, &ecosystems, &[], &api, &totals);
         assert_eq!(a, b);
         assert!(a.contains("typescript"));
         assert!(a.contains("1 distinct npm package(s)"));
         assert!(a.contains("3 npm script(s)"));
+        assert!(a.contains("API surface: 1 HTTP route(s)"));
     }
 
     #[test]
@@ -1000,6 +1255,7 @@ mod tests {
             scripts_total: 0,
             infrastructure: Vec::new(),
             config_files: Vec::new(),
+            api_surface: ApiSurface::default(),
             coverage: Coverage::current(),
             provenance: Vec::new(),
             warnings: Vec::new(),
@@ -1015,6 +1271,154 @@ mod tests {
         // Uniform rows — no mixed-shape sentinel objects inside the array.
         for row in eco["top_packages"].as_array().unwrap() {
             assert!(row.get("name").is_some());
+        }
+    }
+
+    #[test]
+    fn api_surface_groups_dedupes_and_orders() {
+        let routes = vec![
+            (
+                "GET /api/users/:id".into(),
+                json!({"method": "GET", "route_path": "/api/users/:id", "framework": "express"}),
+                "server/routes.ts".into(),
+            ),
+            // Same route registered from a second file → one entry, two files.
+            (
+                "GET /api/users/:id".into(),
+                json!({"method": "GET", "route_path": "/api/users/:id", "framework": "express"}),
+                "server/admin.ts".into(),
+            ),
+            // Pre-metadata node: method/path recovered from the node name.
+            (
+                "POST /api/users".into(),
+                json!({}),
+                "server/routes.ts".into(),
+            ),
+        ];
+        let graphql = vec![
+            (
+                "Mutation.createUser".into(),
+                json!({"operation_type": "mutation", "args": ["input: CreateUser!"]}),
+                "schema.graphql".into(),
+            ),
+            (
+                "Query.user".into(),
+                json!({"operation_type": "query", "args": ["id: ID!"]}),
+                "schema.graphql".into(),
+            ),
+            // Custom root type mapped via `schema { query: MyQuery }` still
+            // lands in the query group through operation_type.
+            (
+                "MyQuery.labs".into(),
+                json!({"operation_type": "query", "args": []}),
+                "schema2.graphql".into(),
+            ),
+        ];
+        let cli = vec![
+            (
+                "analyze".into(),
+                json!({"role": "subcommand", "help": "Index a repository."}),
+                "src/main.rs".into(),
+            ),
+            (
+                "chaos".into(),
+                json!({"role": "program", "help": "Chaos CLI."}),
+                "src/main.rs".into(),
+            ),
+        ];
+        let api = aggregate_api_surface(&routes, &graphql, &cli);
+
+        assert_eq!(api.http_routes.len(), 2);
+        // Sorted by path: /api/users before /api/users/:id.
+        assert_eq!(api.http_routes[0].method, "POST");
+        assert_eq!(api.http_routes[0].path, "/api/users");
+        assert_eq!(api.http_routes[1].path, "/api/users/:id");
+        assert_eq!(
+            api.http_routes[1].files,
+            vec![
+                "server/admin.ts".to_string(),
+                "server/routes.ts".to_string()
+            ]
+        );
+        assert_eq!(api.http_routes[1].frameworks, vec!["express".to_string()]);
+
+        // Grouped query → mutation, custom root type in the query group.
+        assert_eq!(api.graphql.len(), 2);
+        assert_eq!(api.graphql[0].operation_type, "query");
+        let query_names: Vec<&str> = api.graphql[0]
+            .fields
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
+        assert_eq!(query_names, vec!["MyQuery.labs", "Query.user"]);
+        assert_eq!(api.graphql[0].fields[1].args, vec!["id: ID!".to_string()]);
+        assert_eq!(api.graphql[1].operation_type, "mutation");
+
+        // Program before subcommand.
+        assert_eq!(api.cli_commands[0].name, "chaos");
+        assert_eq!(api.cli_commands[0].role, "program");
+        assert_eq!(api.cli_commands[1].name, "analyze");
+        assert_eq!(api.cli_commands[1].help, "Index a repository.");
+    }
+
+    #[test]
+    fn compact_return_caps_api_surface_and_lifts_omissions() {
+        let routes: Vec<(String, Value, String)> = (0..30)
+            .map(|i| {
+                (
+                    format!("GET /r{i:02}"),
+                    json!({"method": "GET", "route_path": format!("/r{i:02}")}),
+                    "server.ts".into(),
+                )
+            })
+            .collect();
+        let fields: Vec<(String, Value, String)> = (0..30)
+            .map(|i| {
+                (
+                    format!("Query.f{i:02}"),
+                    json!({"operation_type": "query", "args": []}),
+                    "schema.graphql".into(),
+                )
+            })
+            .collect();
+        let manifest = StackManifest {
+            schema_version: "stack-inventory-1".into(),
+            repo_name: "r".into(),
+            title: "t".into(),
+            subtitle: "s".into(),
+            overview: "o".into(),
+            languages: json!([]),
+            totals: StackTotals::default(),
+            ecosystems: Vec::new(),
+            scripts: Vec::new(),
+            scripts_total: 0,
+            infrastructure: Vec::new(),
+            config_files: Vec::new(),
+            api_surface: aggregate_api_surface(&routes, &fields, &[]),
+            coverage: Coverage::current(),
+            provenance: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let out = compact_return(&manifest, Path::new("/tmp/stack.html"), uuid::Uuid::nil());
+        let api = &out["api_surface"];
+        assert_eq!(
+            api["http_routes"].as_array().unwrap().len(),
+            MAX_COMPACT_ROUTES
+        );
+        assert_eq!(api["http_routes_total"], json!(30));
+        assert_eq!(api["http_routes_omitted"], json!(5));
+        let group = &api["graphql"][0];
+        assert_eq!(
+            group["fields"].as_array().unwrap().len(),
+            MAX_COMPACT_GRAPHQL_FIELDS
+        );
+        assert_eq!(group["fields_total"], json!(30));
+        assert_eq!(group["fields_omitted"], json!(5));
+        assert_eq!(api["cli_commands_total"], json!(0));
+        assert_eq!(api["cli_commands_omitted"], json!(0));
+        // Uniform rows — no mixed-shape sentinel objects inside the arrays.
+        for row in api["http_routes"].as_array().unwrap() {
+            assert!(row.get("method").is_some() && row.get("path").is_some());
         }
     }
 
@@ -1035,6 +1439,19 @@ mod tests {
             scripts_total: 0,
             infrastructure: Vec::new(),
             config_files: Vec::new(),
+            api_surface: aggregate_api_surface(
+                &[(
+                    "GET /health".into(),
+                    json!({"method": "GET", "route_path": "/health", "framework": "axum"}),
+                    "src/server.rs".into(),
+                )],
+                &[(
+                    "Query.user".into(),
+                    json!({"operation_type": "query", "args": ["id: ID!"]}),
+                    "schema.graphql".into(),
+                )],
+                &[],
+            ),
             coverage: Coverage::current(),
             provenance: vec![Breadcrumb::new(
                 source::POSTGRES,
@@ -1048,5 +1465,10 @@ mod tests {
         assert!(html.contains("chaos-stack-manifest"));
         assert!(html.contains("data-chaos-stack"));
         assert!(html.contains("Not indexed yet") || html.contains("not_indexed"));
+        // The embedded manifest carries the API surface section verbatim.
+        assert!(html.contains("data-stack-api"));
+        assert!(html.contains("api_surface"));
+        assert!(html.contains("Query.user"));
+        assert!(html.contains("/health"));
     }
 }
