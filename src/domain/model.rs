@@ -21,6 +21,7 @@ macro_rules! impl_str_conversions {
             pub fn parse(value: &str) -> Option<Self> {
                 match value { $($text => Some(Self::$variant),)+ _ => None }
             }
+            #[allow(dead_code)]
             pub const ALL: &'static [$name] = &[$($name::$variant,)+];
         }
     };

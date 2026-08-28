@@ -84,11 +84,6 @@ pub fn part_header(header: &str, i: usize, n: usize) -> String {
     format!("{header}\n// part {i}/{n}")
 }
 
-/// Whether a body exceeds the hard cap and must be split.
-pub fn needs_split(body: &str) -> bool {
-    body.len() > MAX_CHUNK_CHARS
-}
-
 /// Turn raw child-statement ranges (byte offsets relative to `body`) into a
 /// segment plan: covers the whole body (gaps merged into neighbours), every
 /// segment ≥ [`MIN_SEGMENT_CHARS`] where possible, and nothing >
@@ -303,8 +298,6 @@ mod tests {
     fn hash_and_part_header() {
         assert_eq!(content_hash("h", "b"), sha256_hex("h\nb"));
         assert_eq!(part_header("h", 2, 3), "h\n// part 2/3");
-        assert!(!needs_split("small"));
-        assert!(needs_split(&"x".repeat(MAX_CHUNK_CHARS + 1)));
     }
 
     fn line_body(lines: usize) -> String {

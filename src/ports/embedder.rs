@@ -51,18 +51,3 @@ impl<E: Embedder + ?Sized> Embedder for Arc<E> {
         (**self).embed_batch(inputs).await
     }
 }
-
-/// Cosine similarity of two equal-length vectors (0 when either is zero).
-pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
-    let (mut dot, mut na, mut nb) = (0f32, 0f32, 0f32);
-    for (x, y) in a.iter().zip(b) {
-        dot += x * y;
-        na += x * x;
-        nb += y * y;
-    }
-    if na == 0.0 || nb == 0.0 {
-        0.0
-    } else {
-        dot / (na.sqrt() * nb.sqrt())
-    }
-}

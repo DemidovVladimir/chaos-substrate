@@ -43,11 +43,6 @@ impl Postgres {
         Ok(Self { pool })
     }
 
-    /// Wrap an existing pool (tests and custom wiring).
-    pub fn from_pool(pool: PgPool) -> Self {
-        Self { pool }
-    }
-
     /// The underlying pool.
     pub fn pool(&self) -> &PgPool {
         &self.pool
@@ -73,7 +68,8 @@ impl Postgres {
         Ok(())
     }
 
-    async fn legacy_schema_reason(&self) -> Result<Option<String>> {
+    /// Why the database looks like a legacy 0.x schema, if it does (`doctor` uses this too).
+    pub async fn legacy_schema_reason(&self) -> Result<Option<String>> {
         for table in LEGACY_TABLES {
             let exists: Option<String> = sqlx::query_scalar("select to_regclass($1)::text")
                 .bind(format!("public.{table}"))
@@ -135,22 +131,6 @@ pub fn vector_literal(vector: &[f32]) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!("[{body}]")
-}
-
-/// Parse a pgvector text literal (`[0.1,0.2]`) back into floats.
-pub fn parse_vector(text: &str) -> Result<Vec<f32>> {
-    let inner = text.trim().trim_start_matches('[').trim_end_matches(']');
-    if inner.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-    inner
-        .split(',')
-        .map(|s| {
-            s.trim()
-                .parse::<f32>()
-                .with_context(|| format!("bad vector component {s:?}"))
-        })
-        .collect()
 }
 
 fn parse_kind<T>(parse: fn(&str) -> Option<T>, value: &str, what: &str) -> Result<T> {
@@ -260,16 +240,6 @@ mod tests {
     use crate::ports::search_store::SearchStore;
     use serde_json::json;
     use uuid::Uuid;
-
-    #[test]
-    fn vector_literal_roundtrip() {
-        let v = vec![1.0, -0.5, 2.25];
-        let text = vector_literal(&v);
-        assert_eq!(text, "[1,-0.5,2.25]");
-        assert_eq!(parse_vector(&text).unwrap(), v);
-        assert_eq!(vector_literal(&[f32::NAN]), "[0]");
-        assert!(parse_vector("[]").unwrap().is_empty());
-    }
 
     fn model() -> ModelRef {
         ModelRef {

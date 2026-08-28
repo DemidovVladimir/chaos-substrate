@@ -45,10 +45,19 @@ pub struct IndexingConfig {
 impl Default for IndexingConfig {
     fn default() -> Self {
         Self {
-            skip_dirs: ["\u{2e}git", "target", "node_modules", ".venv", "dist", "build", ".next", "coverage"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            skip_dirs: [
+                "\u{2e}git",
+                "target",
+                "node_modules",
+                ".venv",
+                "dist",
+                "build",
+                ".next",
+                "coverage",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
         }
     }
 }
@@ -62,15 +71,20 @@ impl Config {
     /// Ollama `embeddinggemma` (768d).
     pub fn load(path: Option<&Path>) -> Result<Self> {
         let _ = dotenvy::dotenv();
-        let path = path
-            .map(Path::to_path_buf)
-            .or_else(|| Path::new(DEFAULT_CONFIG_PATH).exists().then(|| PathBuf::from(DEFAULT_CONFIG_PATH)));
+        let path = path.map(Path::to_path_buf).or_else(|| {
+            Path::new(DEFAULT_CONFIG_PATH)
+                .exists()
+                .then(|| PathBuf::from(DEFAULT_CONFIG_PATH))
+        });
         let mut config = match path {
-            Some(p) => toml::from_str::<Config>(&fs::read_to_string(&p).with_context(|| format!("read {}", p.display()))?)
-                .with_context(|| format!("parse {}", p.display()))?,
+            Some(p) => toml::from_str::<Config>(
+                &fs::read_to_string(&p).with_context(|| format!("read {}", p.display()))?,
+            )
+            .with_context(|| format!("parse {}", p.display()))?,
             None => Config {
                 storage: StorageConfig {
-                    database_url: env::var("DATABASE_URL").context("DATABASE_URL is required without chaos-substrate.toml")?,
+                    database_url: env::var("DATABASE_URL")
+                        .context("DATABASE_URL is required without chaos-substrate.toml")?,
                 },
                 embedding: EmbeddingConfig {
                     provider: EmbeddingProvider::Ollama,
@@ -124,7 +138,8 @@ pub const PROJECT_FILE: &str = "chaos.toml";
 impl Project {
     pub fn load(path: &Path) -> Result<Self> {
         let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-        let mut project: Project = toml::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
+        let mut project: Project =
+            toml::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
         let base = path.parent().unwrap_or(Path::new("."));
         for repo in &mut project.repos {
             let p = Path::new(&repo.path);
@@ -140,7 +155,10 @@ impl Project {
 
     /// Nearest `chaos.toml` in `start` or its ancestors.
     pub fn find(start: &Path) -> Option<PathBuf> {
-        start.ancestors().map(|d| d.join(PROJECT_FILE)).find(|p| p.is_file())
+        start
+            .ancestors()
+            .map(|d| d.join(PROJECT_FILE))
+            .find(|p| p.is_file())
     }
 
     /// Resolve `--repo <alias|path>` (None = cwd) to a canonical root path.
@@ -152,7 +170,8 @@ impl Project {
                 None => PathBuf::from(r),
             },
         };
-        fs::canonicalize(&raw).with_context(|| format!("repository path {} does not exist", raw.display()))
+        fs::canonicalize(&raw)
+            .with_context(|| format!("repository path {} does not exist", raw.display()))
     }
 }
 
@@ -165,7 +184,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir(dir.path().join("api")).unwrap();
         let toml_path = dir.path().join(PROJECT_FILE);
-        fs::write(&toml_path, "name = \"demo\"\n[[repos]]\nalias = \"api\"\npath = \"./api\"\n").unwrap();
+        fs::write(
+            &toml_path,
+            "name = \"demo\"\n[[repos]]\nalias = \"api\"\npath = \"./api\"\n",
+        )
+        .unwrap();
         let project = Project::load(&toml_path).unwrap();
         assert_eq!(project.name, "demo");
         assert!(Path::new(&project.repos[0].path).is_absolute());

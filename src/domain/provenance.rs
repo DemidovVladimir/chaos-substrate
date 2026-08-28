@@ -17,7 +17,12 @@ pub struct Breadcrumb {
 
 impl Breadcrumb {
     pub fn new(source: &'static str, method: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self { source, method: method.into(), detail: detail.into(), locator: None }
+        Self {
+            source,
+            method: method.into(),
+            detail: detail.into(),
+            locator: None,
+        }
     }
 
     pub fn with_locator(mut self, locator: impl Into<String>) -> Self {

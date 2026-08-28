@@ -9,7 +9,9 @@ pub enum ChangeStatus {
     Modified,
     Deleted,
     /// `from` = old path (to be purged); the change's `path` is the new path.
-    Renamed { from: String },
+    Renamed {
+        from: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -19,7 +19,12 @@ pub trait IndexStore: Send + Sync {
     async fn upsert_repo(&self, repo: &Repo) -> Result<()>;
     async fn find_repo(&self, root_path: &str) -> Result<Option<Repo>>;
     async fn list_repos(&self) -> Result<Vec<Repo>>;
-    async fn set_repo_hashes(&self, repo_id: Uuid, commit_sha: Option<&str>, root_hash: &str) -> Result<()>;
+    async fn set_repo_hashes(
+        &self,
+        repo_id: Uuid,
+        commit_sha: Option<&str>,
+        root_hash: &str,
+    ) -> Result<()>;
 
     /// Replace the WHOLE index of a repo. Embeddings whose `(content_hash,
     /// model)` still exist in the new bundle MUST be preserved (harvested into
@@ -31,16 +36,33 @@ pub trait IndexStore: Send + Sync {
     /// `(repo_id, stable_id)`; because ids are uuid5(repo_id, stable_id) no
     /// remap is needed. Edges referencing nodes absent from both DB and bundle
     /// are skipped, not errors.
-    async fn merge_files(&self, repo_id: Uuid, purge_paths: &[String], bundle: &IndexBundle) -> Result<()>;
+    async fn merge_files(
+        &self,
+        repo_id: Uuid,
+        purge_paths: &[String],
+        bundle: &IndexBundle,
+    ) -> Result<()>;
 
     async fn load_graph(&self, repo_id: Uuid) -> Result<Graph>;
     /// `(file path, chunk content_hash)` pairs — Merkle leaves.
     async fn load_chunk_hashes(&self, repo_id: Uuid) -> Result<Vec<(String, String)>>;
-    async fn set_file_subtree_hashes(&self, repo_id: Uuid, hashes: &[(String, String)]) -> Result<()>;
+    async fn set_file_subtree_hashes(
+        &self,
+        repo_id: Uuid,
+        hashes: &[(String, String)],
+    ) -> Result<()>;
 
-    async fn chunks_missing_embeddings(&self, repo_id: Uuid, model: &ModelRef) -> Result<Vec<Chunk>>;
+    async fn chunks_missing_embeddings(
+        &self,
+        repo_id: Uuid,
+        model: &ModelRef,
+    ) -> Result<Vec<Chunk>>;
     /// `(chunk_id, content_hash, vector)`.
-    async fn save_embeddings(&self, model: &ModelRef, rows: &[(Uuid, String, Vec<f32>)]) -> Result<()>;
+    async fn save_embeddings(
+        &self,
+        model: &ModelRef,
+        rows: &[(Uuid, String, Vec<f32>)],
+    ) -> Result<()>;
 
     async fn count_chunks(&self, repo_id: Uuid) -> Result<i64>;
 }

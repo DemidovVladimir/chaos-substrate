@@ -37,7 +37,11 @@ mod layering {
                 }
             }
         }
-        walk(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(dir), forbidden, &mut out);
+        walk(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(dir),
+            forbidden,
+            &mut out,
+        );
         out
     }
 

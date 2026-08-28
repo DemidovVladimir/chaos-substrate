@@ -10,44 +10,13 @@
 
 use anyhow::{Context, Result};
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::ports::pages::{PageKind, PageStore, MANIFEST_ID};
 
 /// Filesystem-backed page writer (stateless; templates are compiled in).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FsPages;
-
-/// Lowercase, hyphen-joined, ASCII-alphanumeric slug capped at 80 chars.
-/// Falls back to `"page"` when nothing alphanumeric survives, so it is never
-/// empty and always a safe file-name stem.
-pub fn slug(s: &str) -> String {
-    let mut out = String::new();
-    let mut dash = false;
-    for ch in s.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch.to_ascii_lowercase());
-            dash = false;
-        } else if !dash && !out.is_empty() {
-            out.push('-');
-            dash = true;
-        }
-        if out.len() >= 80 {
-            break;
-        }
-    }
-    let out = out.trim_end_matches('-').to_string();
-    if out.is_empty() {
-        "page".to_string()
-    } else {
-        out
-    }
-}
-
-/// Where generated feature-memory pages live inside a repository.
-pub fn features_dir(repo_root: &Path) -> PathBuf {
-    repo_root.join("docs").join("features_memory")
-}
 
 /// Escape text for HTML body content and double- or single-quoted attributes.
 /// `&` is replaced first so later entities are not re-escaped.
@@ -283,18 +252,6 @@ impl PageStore for FsPages {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn slug_is_safe_and_bounded() {
-        assert_eq!(slug("Hello, World!  Foo"), "hello-world-foo");
-        assert_eq!(slug("!!!"), "page");
-        assert_eq!(slug("--x--"), "x");
-        assert!(slug(&"a".repeat(200)).len() <= 80);
-        assert_eq!(
-            features_dir(Path::new("/r")),
-            PathBuf::from("/r/docs/features_memory")
-        );
-    }
 
     #[test]
     fn escapes() {

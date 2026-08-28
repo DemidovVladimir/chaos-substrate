@@ -15,8 +15,6 @@ use std::time::Duration;
 
 /// Per-request timeout; generous because a local Ollama queues requests.
 pub const HTTP_TIMEOUT: Duration = Duration::from_secs(300);
-/// Texts per batched embedding request during indexing.
-pub const EMBED_BATCH_SIZE: usize = 16;
 /// Retries after the initial attempt for transient failures.
 const MAX_RETRY_TIMES: usize = 3;
 
@@ -26,24 +24,6 @@ pub fn build_embedder(cfg: &EmbeddingConfig) -> Result<Arc<dyn Embedder>> {
         EmbeddingProvider::OpenAi => Ok(Arc::new(openai::OpenAiEmbedder::new(cfg)?)),
         EmbeddingProvider::Ollama => Ok(Arc::new(ollama::OllamaEmbedder::new(cfg)?)),
     }
-}
-
-/// Embed every text sequentially in batches of [`EMBED_BATCH_SIZE`] (one
-/// request in flight — a local Ollama executes serially anyway). Output order
-/// = input order; fails closed on any provider error or count mismatch.
-pub async fn embed_all(embedder: &dyn Embedder, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-    let mut out = Vec::with_capacity(texts.len());
-    for batch in texts.chunks(EMBED_BATCH_SIZE) {
-        let vectors = embedder.embed_batch(batch).await?;
-        anyhow::ensure!(
-            vectors.len() == batch.len(),
-            "embedder returned {} vectors for {} inputs",
-            vectors.len(),
-            batch.len()
-        );
-        out.extend(vectors);
-    }
-    Ok(out)
 }
 
 pub(crate) fn http_client(provider: &str) -> Result<Client> {

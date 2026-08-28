@@ -11,7 +11,14 @@ pub struct ToolSpec {
     pub input_schema: Value,
 }
 
-pub const TOOL_NAMES: [&str; 6] = ["index", "reindex", "add", "feature", "compose", "correlations"];
+pub const TOOL_NAMES: [&str; 6] = [
+    "index",
+    "reindex",
+    "add",
+    "feature",
+    "compose",
+    "correlations",
+];
 
 pub fn mcp_name(name: &str) -> String {
     format!("chaos_{name}")
