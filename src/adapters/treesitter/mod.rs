@@ -1,22 +1,73 @@
-//! STUB — tree-sitter SourceExtractor adapter. To be implemented.
+//! tree-sitter adapter for `ports::extractor::SourceExtractor`.
+//!
+//! `walker` is the generic cursor walk; `lang` is the table-driven spec each
+//! language module fills in (`rust`, `typescript`, `python`, `solidity`,
+//! `graphql`); `markdown` is a heading-based extractor (not tree-sitter);
+//! `surface` provides user-surface passes (env vars, HTTP routes).
 
-#[cfg(test)]
-mod grammar_smoke {
-    use tree_sitter::{Language, Parser};
+pub mod graphql;
+pub mod lang;
+pub mod markdown;
+pub mod python;
+pub mod rust;
+pub mod solidity;
+pub mod surface;
+pub mod typescript;
+pub mod walker;
 
-    fn parse(lang: Language, src: &str) -> String {
-        let mut p = Parser::new();
-        p.set_language(&lang).expect("grammar ABI compatible");
-        p.parse(src, None).unwrap().root_node().to_sexp()
+use crate::domain::model::Language;
+use crate::ports::extractor::{FileExtraction, FileInput, SourceExtractor};
+use rayon::prelude::*;
+
+/// Stateless extractor: a fresh `tree_sitter::Parser` per file, so it is
+/// `Send + Sync` and parallel-safe.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TreeSitterExtractor;
+
+impl SourceExtractor for TreeSitterExtractor {
+    fn extract(&self, file: &FileInput) -> FileExtraction {
+        if file.language == Language::Markdown {
+            return markdown::extract(file);
+        }
+        match lang::spec_for(file.language, &file.path) {
+            Some(spec) => walker::extract(spec, file),
+            None => walker::file_level(file),
+        }
     }
 
+    fn extract_all(&self, files: &[FileInput]) -> Vec<FileExtraction> {
+        files.par_iter().map(|f| self.extract(f)).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
     #[test]
-    fn all_grammars_load() {
-        assert!(parse(tree_sitter_rust::LANGUAGE.into(), "fn a() {}").contains("function_item"));
-        assert!(parse(tree_sitter_typescript::LANGUAGE_TSX.into(), "const a = () => 1;").contains("arrow_function"));
-        assert!(parse(tree_sitter_javascript::LANGUAGE.into(), "function a() {}").contains("function_declaration"));
-        assert!(parse(tree_sitter_python::LANGUAGE.into(), "def a(): pass").contains("function_definition"));
-        assert!(parse(tree_sitter_solidity::LANGUAGE.into(), "contract A {}").contains("contract_declaration"));
-        assert!(parse(tree_sitter_graphql::LANGUAGE.into(), "type Query { a: Int }").contains("object_type_definition"));
+    fn extract_all_preserves_order_and_falls_back() {
+        let files = vec![
+            FileInput {
+                path: "b.rs".into(),
+                language: Language::Rust,
+                content: "fn b() {}".into(),
+            },
+            FileInput {
+                path: "a.md".into(),
+                language: Language::Markdown,
+                content: "# T\ntext".into(),
+            },
+            FileInput {
+                path: "c.rs".into(),
+                language: Language::Rust,
+                content: "fn c() {}".into(),
+            },
+        ];
+        let out = TreeSitterExtractor.extract_all(&files);
+        let paths: Vec<&str> = out.iter().map(|o| o.path.as_str()).collect();
+        assert_eq!(paths, ["b.rs", "a.md", "c.rs"]);
+        assert_eq!(out[0].symbols[0].name, "b");
+        assert_eq!(out[1].language, Some(Language::Markdown));
+        assert_eq!(out[1].content_hash.len(), 64);
     }
 }
