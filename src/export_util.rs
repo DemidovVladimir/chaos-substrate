@@ -91,6 +91,7 @@ pub(crate) fn write_report_page(path: &Path, template: &str, manifest_json: &str
             )
             .replace("__DATA__", &escape_script_json(manifest_json)),
     )?;
+    crate::site_index::refresh_quietly(path);
     Ok(())
 }
 

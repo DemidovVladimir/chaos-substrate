@@ -598,6 +598,7 @@ pub async fn run(
         }
         fs::write(&output, render_index_html(&manifest, style_css, &brand)?)?;
     }
+    crate::site_index::refresh_quietly(&output);
 
     Ok(compact_return(
         &manifest,

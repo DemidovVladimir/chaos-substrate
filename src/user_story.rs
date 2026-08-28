@@ -674,6 +674,7 @@ pub fn write_storyboard_to(
         fs::create_dir_all(parent)?;
     }
     fs::write(output, render_storyboard_html(&manifest)?)?;
+    crate::site_index::refresh_quietly(output);
     Ok(output.to_path_buf())
 }
 

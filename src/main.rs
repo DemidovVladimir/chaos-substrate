@@ -32,6 +32,7 @@ mod project;
 mod provenance;
 mod query;
 mod setup;
+mod site_index;
 mod simple_graph_optimizer;
 mod stack;
 mod storage;
@@ -158,6 +159,12 @@ enum Commands {
         /// Scan this directory instead of <repo>/docs/features_memory.
         #[arg(long)]
         features_dir: Option<PathBuf>,
+        /// Also (re)build the hub `index.html` in that directory and stamp a
+        /// shared navigation bar (Index · site front page · prev/next) into
+        /// every generated page. Every writer refreshes the hub on its own;
+        /// this flag rebuilds it on demand (e.g. after hand-deleting pages).
+        #[arg(long)]
+        index: bool,
     },
     /// Query an already indexed repository.
     Query {
@@ -680,9 +687,16 @@ async fn main() -> Result<()> {
             let summary = stack::run(&storage, &repo, &opts).await?;
             println!("{}", serde_json::to_string_pretty(&summary)?);
         }
-        Commands::Pages { repo, features_dir } => {
+        Commands::Pages {
+            repo,
+            features_dir,
+            index,
+        } => {
             let storage = Storage::connect(&config.storage.database_url).await?;
-            let opts = pages::PagesOptions { features_dir };
+            let opts = pages::PagesOptions {
+                features_dir,
+                index,
+            };
             let summary = pages::run(&storage, &repo, &opts).await?;
             println!("{}", serde_json::to_string_pretty(&summary)?);
         }

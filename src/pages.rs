@@ -53,16 +53,40 @@ const PAGE_MARKERS: &[(&str, &str, &str)] = &[
         "feature-map",
         "chaos refresh / analyze",
     ),
+    ("chaos-usage-manifest", "usage", "chaos_usage"),
+    (
+        "chaos-feature-context-data",
+        "context",
+        "chaos_feature_context",
+    ),
+    (
+        "chaos-feature-story-manifest",
+        "feature-story",
+        "chaos_feature_story",
+    ),
+    (
+        "chaos-sui-migration-manifest",
+        "sui-migration",
+        "chaos_sui_migration_impact",
+    ),
+    (
+        crate::site_index::MANIFEST_ID,
+        "index",
+        "chaos pages --index (auto-refreshed by every writer)",
+    ),
 ];
 
 #[derive(Debug, Default, Clone)]
 pub struct PagesOptions {
     /// Scan this directory instead of `<repo>/docs/features_memory`.
     pub features_dir: Option<PathBuf>,
+    /// Also (re)build the hub `index.html` and stamp the shared navigation
+    /// bar into every page (see [`crate::site_index`]).
+    pub index: bool,
 }
 
 #[derive(Debug, Serialize)]
-pub struct PageEntry {
+pub(crate) struct PageEntry {
     /// File name within the features directory.
     pub file: String,
     /// `feature` | `story` | `components` | `features` | `composed` | `stack`
@@ -87,6 +111,10 @@ pub struct PagesSummary {
     pub by_kind: BTreeMap<String, usize>,
     /// Newest first; ties broken by file name.
     pub pages: Vec<PageEntry>,
+    /// Present when `--index` ran: the hub page and how many pages had their
+    /// navigation bar (re)written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<crate::site_index::SiteIndexSummary>,
     pub provenance: Vec<Breadcrumb>,
     pub warnings: Vec<String>,
 }
@@ -111,6 +139,28 @@ pub async fn run(storage: &Storage, repo: &str, opts: &PagesOptions) -> Result<P
     let mut warnings = Vec::new();
     let mut pages = Vec::new();
     let mut scanned = 0usize;
+    let mut provenance = Vec::new();
+    let index = if opts.index {
+        let summary = crate::site_index::build(&features_dir, &repo_name)?;
+        provenance.push(
+            Breadcrumb::new(
+                source::FILE,
+                "site_index",
+                format!(
+                    "hub written with {} page(s) in {} kind(s); navigation stamped into {} page(s), {} already current",
+                    summary.listed,
+                    summary.by_kind.len(),
+                    summary.nav_stamped,
+                    summary.nav_unchanged
+                ),
+            )
+            .with_locator(summary.index_html.display().to_string()),
+        );
+        warnings.extend(summary.warnings.iter().cloned());
+        Some(summary)
+    } else {
+        None
+    };
     if features_dir.is_dir() {
         for entry in fs::read_dir(&features_dir)
             .with_context(|| format!("reading features directory {}", features_dir.display()))?
@@ -143,15 +193,17 @@ pub async fn run(storage: &Storage, repo: &str, opts: &PagesOptions) -> Result<P
         *by_kind.entry(page.kind.clone()).or_default() += 1;
     }
 
-    let provenance = vec![Breadcrumb::new(
-        source::FILE,
-        "scan_features_dir",
-        format!(
-            "{scanned} HTML file(s) scanned, {} recognised as chaos pages by embedded manifest block",
-            pages.iter().filter(|p| p.kind != "other").count()
-        ),
-    )
-    .with_locator(features_dir.display().to_string())];
+    provenance.push(
+        Breadcrumb::new(
+            source::FILE,
+            "scan_features_dir",
+            format!(
+                "{scanned} HTML file(s) scanned, {} recognised as chaos pages by embedded manifest block",
+                pages.iter().filter(|p| p.kind != "other").count()
+            ),
+        )
+        .with_locator(features_dir.display().to_string()),
+    );
 
     Ok(PagesSummary {
         repo: repo_name,
@@ -159,12 +211,13 @@ pub async fn run(storage: &Storage, repo: &str, opts: &PagesOptions) -> Result<P
         total: pages.len(),
         by_kind,
         pages,
+        index,
         provenance,
         warnings,
     })
 }
 
-fn read_page_entry(path: &Path) -> Result<PageEntry> {
+pub(crate) fn read_page_entry(path: &Path) -> Result<PageEntry> {
     let html = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let file = path
         .file_name()

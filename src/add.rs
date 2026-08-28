@@ -234,6 +234,7 @@ pub async fn run(
             fs::create_dir_all(parent)?;
         }
         fs::write(&output, render_feature_website(&manifest)?)?;
+        crate::site_index::refresh_quietly(&output);
         json!({
             "output": output,
             "slug": slug,

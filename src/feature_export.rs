@@ -61,6 +61,12 @@ pub fn refresh_project_exports(
         }
     }
 
+    // Re-rendered pages lose their navigation bar; the hub refresh stamps it
+    // back and picks up any page written since the last index build.
+    if features_dir.is_dir() {
+        crate::site_index::refresh_quietly(features_dir);
+    }
+
     Ok(RefreshSummary {
         obsidian,
         feature_pages,

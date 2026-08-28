@@ -188,12 +188,13 @@ fn tool_definition_literals() -> Vec<Value> {
         }),
         json!({
             "name": "chaos_pages",
-            "description": "List the GENERATED feature-memory pages of a repository — what chaos has ALREADY extracted. Scans docs/features_memory (or features_dir) and returns every HTML page with its KIND (feature / story / components / features / composed / stack / impact / change-plan / feature-map; unrecognised files are listed as `other`, never hidden), the tool that writes that kind, its title, and its modified time, newest first, plus by-kind counts. Read-only, embedder-free, pure filesystem. Use this INSTEAD of `ls`/globbing to check whether a feature was already extracted before running a new deep-dive, and to find the page to reopen.",
+            "description": "List the GENERATED feature-memory pages of a repository — what chaos has ALREADY extracted. The directory also carries a hub index.html (every page grouped by kind, with a filter box) and every page has a navigation bar back to it; both are refreshed by every writer and rebuilt on demand with index=true. Scans docs/features_memory (or features_dir) and returns every HTML page with its KIND (feature / story / components / features / composed / stack / impact / change-plan / feature-map; unrecognised files are listed as `other`, never hidden), the tool that writes that kind, its title, and its modified time, newest first, plus by-kind counts. Read-only, embedder-free, pure filesystem. Use this INSTEAD of `ls`/globbing to check whether a feature was already extracted before running a new deep-dive, and to find the page to reopen.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "repo": {"type": "string", "description": "Indexed repo name/path, or any directory containing generated pages."},
-                    "features_dir": {"type": "string", "description": "Scan this directory instead of <repo>/docs/features_memory (e.g. a project workspace)."}
+                    "features_dir": {"type": "string", "description": "Scan this directory instead of <repo>/docs/features_memory (e.g. a project workspace)."},
+                    "index": {"type": "boolean", "default": false, "description": "Also (re)build the hub index.html in that directory and stamp the shared navigation bar (Index · site front page · prev/next) into every page. Every writer refreshes the hub automatically; pass true to rebuild on demand."}
                 },
                 "required": ["repo"]
             }
@@ -567,6 +568,10 @@ async fn handle_tool_call(
                     .get("features_dir")
                     .and_then(Value::as_str)
                     .map(PathBuf::from),
+                index: args
+                    .get("index")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             };
             let summary = crate::pages::run(storage, repo, &opts).await?;
             Ok(tool_text(serde_json::to_string_pretty(&summary)?))
@@ -707,6 +712,7 @@ async fn handle_tool_call(
                     "llm-html (legacy)",
                 ),
             };
+            crate::site_index::refresh_quietly(&path);
             Ok(tool_text(serde_json::to_string_pretty(&json!({
                 "output_html": path,
                 "manifest_embedded": true,

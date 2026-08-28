@@ -471,6 +471,7 @@ pub async fn run(
         fs::create_dir_all(parent)?;
     }
     fs::write(&output, render_composed_html(&manifest, style_css, &brand)?)?;
+    crate::site_index::refresh_quietly(&output);
 
     let site_summary = site_value.as_ref().map(|_| {
         json!({"dir": site_dir_name, "feature_pages": site_pages.len(), "written": pages_written, "cached": pages_cached})
