@@ -19,26 +19,55 @@ fi
 
 cargo build --release >&2
 
-zip -qr "$OUT" \
-  .claude-plugin \
-  .codex-plugin \
-  .mcp.json \
-  bin \
-  skills \
-  scripts/package-cowork-plugin \
-  target/release/chaos \
-  src \
-  assets \
-  migrations \
-  Cargo.toml \
-  Cargo.lock \
-  README.md \
-  docker-compose.yml \
-  chaos-substrate.example.toml \
-  chaos-substrate.local.toml \
-  docs/EDITOR_SETUP.md \
-  docs/OLLAMA_SETUP.md \
+# Everything the plugin needs to run from an unpacked copy: manifests, the
+# wrapper + release binary, the skill, sources to rebuild, migrations, config
+# examples and the short docs. Optional entries are skipped when absent so
+# the script never fails on a doc that moved.
+FILES=(
+  .claude-plugin
+  .codex-plugin
+  .mcp.json
+  bin
+  skills
+  scripts/package-cowork-plugin
+  target/release/chaos
+  src
+  migrations
+  Cargo.toml
+  Cargo.lock
+  LICENSE
+  NOTICE
+  README.md
+  CHANGELOG.md
+  docker-compose.yml
+  chaos-substrate.example.toml
+  chaos.example.toml
+)
+OPTIONAL=(
+  ARCHITECTURE.md
+  RUNBOOK.md
+  AGENTS.md
+  CLAUDE.md
+  docs/EDITOR_SETUP.md
+  docs/OLLAMA_SETUP.md
   docs/claude_code_mcp.example.json
+)
+
+INCLUDE=()
+for f in "${FILES[@]}"; do
+  if [ ! -e "$f" ]; then
+    printf 'missing required file: %s\n' "$f" >&2
+    exit 1
+  fi
+  INCLUDE+=("$f")
+done
+for f in "${OPTIONAL[@]}"; do
+  if [ -e "$f" ]; then
+    INCLUDE+=("$f")
+  fi
+done
+
+zip -qr "$OUT" "${INCLUDE[@]}" -x '*/features_memory/*' -x '*.DS_Store'
 
 cp -f "$OUT" "$DIST/chaos-substrate-cowork-plugin.zip"
 

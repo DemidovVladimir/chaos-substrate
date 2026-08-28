@@ -1,7 +1,7 @@
 {
   "name": "chaos-substrate",
-  "version": "0.24.0",
-  "description": "Agent guidance, MCP tools, and wrappers for indexing projects, querying code memory, decomposing changes into features over a layered hierarchy, generating feature-context explanations, and composing client-facing feature storyboards with real-UI previews.",
+  "version": "1.0.0",
+  "description": "Knowledge-graph code memory for multi-repository projects. Six MCP tools: chaos_index (full index), chaos_reindex (hash-gated re-run), chaos_add (index git changes), chaos_feature (answer a feature question from the index with code excerpts, no source reads), chaos_compose (feature website), chaos_correlations (intra- and cross-repo feature links). Rust, TypeScript, JavaScript, Python, Solidity, GraphQL, Markdown; Postgres + pgvector; Ollama or OpenAI embeddings.",
   "author": {
     "name": "Chaos Substrate"
   },
@@ -23,17 +23,17 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Chaos Substrate",
-    "shortDescription": "Index projects, query code memory, and explain features.",
-    "longDescription": "Agent workflow, MCP tools, and helper commands for initializing, updating, querying, building feature context, and generating feature-memory websites with the Rust-only Chaos Substrate code knowledge memory.",
+    "shortDescription": "Index repositories once, then answer feature questions from memory instead of re-reading source.",
+    "longDescription": "Chaos Substrate builds a persistent knowledge graph of one or more repositories (tree-sitter extraction, contextual chunks, real embeddings, feature communities) in Postgres + pgvector and exposes six tools over MCP: index, reindex, add, feature, compose, correlations. After indexing, agents ask `chaos_feature` and get token-bounded answers with exact code excerpts, run `chaos_add` after edits, write a clickable feature website with `chaos_compose`, and link features across the repos of a chaos.toml project with `chaos_correlations`.",
     "developerName": "Chaos Substrate",
     "category": "Productivity",
     "capabilities": [
       "Write"
     ],
     "defaultPrompt": [
-      "Index this project with Chaos Substrate.",
-      "Explain this feature with Chaos Substrate.",
-      "Find implementation context for this feature."
+      "Index this repository with chaos_index.",
+      "Use chaos_feature to explain how this feature works.",
+      "Run chaos_add to update the index after my changes."
     ]
   }
 }

@@ -239,6 +239,29 @@ impl IndexStore for Postgres {
         bundle: &IndexBundle,
     ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
+        // Keep the embeddings of every touched path (purged or re-inserted)
+        // so a chunk whose content merely moved or came back — a reverted
+        // edit, a rename — is restored by content hash, never re-embedded.
+        let mut touched: Vec<String> = purge_paths.to_vec();
+        touched.extend(bundle.files.iter().map(|f| f.path.clone()));
+        touched.sort();
+        touched.dedup();
+        sqlx::query(
+            r#"
+            create temp table _chaos_saved_embeddings on commit drop as
+            select distinct on (c.content_hash, e.provider, e.model_id, e.dimensions)
+                   c.content_hash, e.provider, e.model_id, e.dimensions, e.embedding
+            from embeddings e
+            join chunks c on c.id = e.chunk_id
+            join files f on f.id = c.file_id
+            where c.repo_id = $1 and f.path = any($2)
+            order by c.content_hash, e.provider, e.model_id, e.dimensions
+            "#,
+        )
+        .bind(repo_id)
+        .bind(&touched)
+        .execute(&mut *tx)
+        .await?;
         if !purge_paths.is_empty() {
             sqlx::query("delete from files where repo_id = $1 and path = any($2)")
                 .bind(repo_id)
@@ -298,6 +321,19 @@ impl IndexStore for Postgres {
             })
             .collect();
         insert_chunks(&mut tx, &chunks).await?;
+        sqlx::query(
+            r#"
+            insert into embeddings (chunk_id, provider, model_id, dimensions, content_hash, embedding)
+            select c.id, s.provider, s.model_id, s.dimensions, c.content_hash, s.embedding
+            from chunks c join _chaos_saved_embeddings s on s.content_hash = c.content_hash
+            where c.repo_id = $1 and c.file_id = any($2)
+            on conflict do nothing
+            "#,
+        )
+        .bind(repo_id)
+        .bind(&file_ids)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(())
     }

@@ -1,18 +1,31 @@
+# Chaos Substrate runtime config. Copy to chaos-substrate.toml (gitignored).
+# Every key can be overridden by an environment variable (see the end).
+
 [storage]
 database_url = "postgres://chaos:chaos@localhost:54329/chaos_substrate"
 
 [embedding]
-# Real embedders only. No mock or random vectors exist in runtime code.
-# Local default (no API key). Requires Ollama running with the model pulled:
+# Real embedders only: "ollama" (local, no API key) or "open_ai" (needs
+# OPENAI_API_KEY). Default local model: EmbeddingGemma, 768 dimensions.
 #   ollama pull embeddinggemma   (or: bin/chaos ollama-setup)
-# EmbeddingGemma (Google, 308M, 768 dims) is the strongest small local model
-# for code; nomic-embed-text (also 768 dims) works as a lighter alternative.
 provider = "ollama"
 model = "embeddinggemma"
 dimensions = 768
 base_url = "http://localhost:11434"
 
-# Alternative cloud provider (needs OPENAI_API_KEY in the environment):
+# Cloud alternative:
 # provider = "open_ai"
 # model = "text-embedding-3-small"
 # dimensions = 1536
+# base_url is optional for open_ai.
+
+[indexing]
+# Directory basenames skipped while walking a repository. This is the
+# built-in default; add your own generated/vendored folders.
+skip_dirs = [".git", "target", "node_modules", ".venv", "dist", "build", ".next", "coverage"]
+
+# Environment overrides (applied after the file is read):
+#   DATABASE_URL, CHAOS_EMBED_PROVIDER (ollama|open_ai), CHAOS_EMBED_MODEL,
+#   CHAOS_EMBED_DIMENSIONS, CHAOS_EMBED_BASE_URL.
+# Without a file, DATABASE_URL is required and the embedder defaults to
+# Ollama embeddinggemma (768d). A .env file is loaded if present.

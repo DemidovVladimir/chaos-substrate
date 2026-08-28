@@ -42,8 +42,8 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "add",
-            description: "Incrementally index the files changed in git (working tree vs HEAD, or `since` a ref): added/modified files re-extracted, deleted/renamed-away files purged, only new chunks embedded, communities/summaries recomputed only where a feature's hash changed. Use after every edit instead of `reindex`.",
-            input_schema: json!({"type": "object", "properties": {"repo": repo_prop(), "since": {"type": "string", "description": "Git ref to diff against (e.g. HEAD~1, main). Default: working tree vs HEAD."}}, "required": []}),
+            description: "Incrementally index what changed since the last index: files whose content hash differs from the stored one (plus, with `since`, everything git reports in that range) are re-extracted and analyzed against the persisted graph, files gone from disk are purged, only new chunks are embedded, and communities/summaries are recomputed only where a feature's hash changed. Use after every edit instead of `reindex`.",
+            input_schema: json!({"type": "object", "properties": {"repo": repo_prop(), "since": {"type": "string", "description": "Optional git ref: also re-index everything git reports changed since it (e.g. HEAD~1, main). Content-hash drift is always detected regardless."}}, "required": []}),
         },
         ToolSpec {
             name: "feature",

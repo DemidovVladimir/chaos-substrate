@@ -1,0 +1,20 @@
+# A Chaos Substrate PROJECT: several repositories treated together.
+# Copy to chaos.toml in the directory above your repos (it is a file, not a
+# database entity). `chaos --repo <alias>` resolves through it, and
+# `chaos correlations` links features across every repo listed here.
+# Paths are absolute or relative to this file. `chaos` finds the nearest
+# chaos.toml in the current directory or its ancestors (or pass --project).
+
+name = "my-project"
+
+[[repos]]
+alias = "api"
+path = "./api"
+
+[[repos]]
+alias = "web"
+path = "./web"
+
+[[repos]]
+alias = "contracts"
+path = "./contracts"

@@ -1,662 +1,184 @@
 ---
 name: chaos-substrate
-description: Use when installing, initializing, updating, querying, or operating Chaos Substrate in any Rust, Solidity, TypeScript, JavaScript, Python, or GraphQL repository; includes Markdown/MDX and PDF context, Postgres+pgvector persistence, real OpenAI/Ollama embedders, CLI, MCP stdio, generated feature-memory websites, and agent implementation context.
+description: Use when installing, indexing, updating, or asking feature questions with Chaos Substrate in any Rust, Solidity, TypeScript, JavaScript, Python, or GraphQL repository (Markdown context included); Postgres+pgvector persistence, real Ollama/OpenAI embedders, CLI, MCP stdio, generated feature websites, and cross-repo correlations.
 ---
 
 # Chaos Substrate
 
-Use this skill when working on or operating Chaos Substrate, a Rust-only code knowledge memory for agents.
+Chaos Substrate is a Rust-only code knowledge memory. It indexes repositories into a Postgres +
+pgvector knowledge graph so that after one indexing run an agent answers feature questions from
+the index — with code excerpts and exact line ranges — instead of re-reading source files.
 
-## Product Shape
+Terms used below:
 
-- Rust, Solidity, TypeScript, JavaScript, Python, GraphQL (standalone `.graphql`/`.gql`/`.graphqls`
-  files plus `gql`-embedded documents in TS/JS/Python), Markdown, MDX, JSON config, and text PDF
-  extraction.
-- Persistent Postgres plus pgvector memory.
-- Real OpenAI and Ollama embedders only.
-- Agent surfaces are Codex plugin, Claude Code plugin, CLI, the `chaos` wrapper, static
-  graph/Obsidian exports, generated feature-context websites, feature-memory manifests, and MCP over
-  stdio.
-- Source code is prioritized over docs during code-repository queries. Markdown/MDX docs and
-  extractable text PDFs are indexed as supplemental context, not ignored.
+- **Chunk**: one AST unit (function, struct, method, Markdown section) plus a short context
+  header, stored with a real embedding vector.
+- **Community** (feature): a group of related graph nodes found by deterministic Louvain; each has
+  a templated summary whose embedding routes questions to it.
+- **Merkle hash**: content hashes rolled up chunk -> file -> community -> repo, so re-runs skip
+  what did not change and pages are only rewritten when their content hash changed.
 
-## Hierarchical Memory (L0/L1/L2/L3)
+## When to use
 
-The base graph is the L0 multigraph (files, symbols, chunks, edges). Layered on top of it — all in
-Rust, all additive, never replacing L0 — is a hierarchy that lets agents reason at the feature level:
+- "Index this repo", "update the memory after my edits", "what does feature X do / how does Y
+  work", "build the feature website", "how do the repos of this project connect".
+- Any question about an INDEXED target repository: answer with chaos tools only. No `rg`, `grep`,
+  `ls`, or generated scripts against that repo. A missing capability is a chaos feature request.
 
-- L1 communities / "god-nodes" / features: a deterministic Louvain partition of the graph
-  (`src/community.rs`) persisted as the `communities`, `community_members`, and `community_edges`
-  (quotient graph) tables. Migration `migrations/002_communities.sql`.
-- L2 Merkle rollup: each chunk `content_hash` rolls up into file -> community -> repo `subtree_hash`
-  (`src/merkle.rs`), driving `chaos add`'s feature "blast radius". Migration
-  `migrations/003_subtree_hash.sql`.
-- L3 hash-gated community summaries embedded by the REAL embedder (`src/community_summary.rs`,
-  `community_embeddings` table). Summaries are regenerated only when a community's subtree hash
-  changes, so a no-change re-index makes ZERO summary embed calls. Migration
-  `migrations/004_community_summary.sql`.
-- `src/change_plan.rs` powers `chaos_change_plan`; `src/hierarchy_export.rs` writes the Obsidian
-  god-node notes and the feature-map HTML.
+## Install and set up
 
-Everything is additive: a repository indexed before the hierarchy existed still answers
-`chaos_query`, `chaos_stats`, and `chaos_add`. The hierarchy surfaces through `chaos_query`'s
-`hierarchical` option, `chaos_change_plan`, and the god-node community notes / feature map that
-`chaos_obsidian` and `chaos_refresh` regenerate.
+1. Build: `cargo build --release` in the chaos-substrate checkout (binary `target/release/chaos`).
+2. Postgres with pgvector reachable, and a real embedder: Ollama with `ollama pull embeddinggemma`
+   (768 dims, the default) or OpenAI (`OPENAI_API_KEY`). No mock or random vectors exist.
+3. Config: `chaos-substrate.toml` (copy `chaos-substrate.example.toml`) or environment variables:
+   `DATABASE_URL`, `CHAOS_EMBED_PROVIDER` (`ollama` | `openai`), `CHAOS_EMBED_MODEL`,
+   `CHAOS_EMBED_DIMENSIONS`, `CHAOS_EMBED_BASE_URL`. Without a file, `DATABASE_URL` is required.
+4. `chaos doctor` (config, Postgres, embedder, git — exits non-zero on failure), then
+   `chaos migrate` (`--reset` drops and recreates the schema; required to leave a legacy 0.x schema).
+5. MCP: register `chaos mcp` as a stdio server (the repo ships `.mcp.json`). Tools appear as
+   `chaos_index`, `chaos_reindex`, `chaos_add`, `chaos_feature`, `chaos_compose`, `chaos_correlations`.
+6. Multi-repo project: put a `chaos.toml` next to the repos (a file, not a database entity):
 
-## Hard Boundaries
-
-- Do not edit `Cargo.toml` or `src/` unless the user explicitly asks.
-- Do not add mock embeddings, fake vector stores, in-memory persistence, HTTP APIs, Python services, TypeScript services, or live browser services. Two Rust-side carve-outs exist for persisted-graph validation: the standalone `graph.html` export, and `chaos graph --serve` — a localhost-only Rust HTTP server that gives that same page live semantic search through the real retrieval pipeline (it must never grow into a general API; MCP stays on stdio). TypeScript, JavaScript, Python, Solidity, and GraphQL are analysis targets only: their extraction belongs in the Rust extractor, never in a sidecar runtime in another language.
-- Do not downgrade persistence guarantees; memory must survive process restarts.
-- Do not replace real embedders with deterministic test-only behavior in production paths.
-
-## Working Pattern
-
-When a user asks to use Chaos Substrate in a target project, prefer MCP tools over shell commands.
-Use the `chaos` wrapper for setup, debugging, or when MCP is unavailable.
-
-If MCP tools are available, prefer them over shelling out:
-
-1. Use `chaos_analyze` to index or refresh a repository.
-2. Use `chaos_add` for one-shot incremental indexing of git-changed files (or explicit `paths`); it
-   re-embeds only the changed chunks, refreshes the Obsidian vault, and writes a feature/bug page in
-   a single call. A full `chaos_analyze` is still needed to rebuild cross-file call edges into
-   unchanged files. The page records **provenance breadcrumbs** (git diff, AST/language extraction,
-   Postgres graph load, file reads, manifest correlation) plus per-node evidence, and **correlates
-   the change with previously generated feature pages** by shared files/symbols (`related_features` +
-   a correlation claim) so a new extraction understands the existing features it overlaps.
-3. Use `chaos_stats` to report index statistics for an already-indexed repository, read from
-   Postgres: totals (files, nodes, edges, chunks, embedded vs missing, split chunks) plus breakdowns
-   of nodes by kind, edges by kind, chunks by type, and files by language. It is read-only and
-   embedder-free; use it to explain or sanity-check what an `chaos_analyze`/`chaos_add` produced.
-4. Use `chaos_query` for focused questions. It takes an optional `hierarchical` boolean (CLI
-   `query --hierarchical`): top-down retrieval that matches feature (community) summaries first and
-   returns the surfaced features alongside the chunk hits, falling back to flat search when no
-   hierarchy exists.
-5. Use `chaos_feature_context` when the user asks to explain a feature, prepare implementation
-   context, or generate a feature explanation. Hits carry `metadata.retrieved_by`
-   (semantic/keyword/literal), and the response includes top-level **provenance breadcrumbs**.
-   It returns a COMPACT payload — the top hits carry a bounded inline `code_excerpt`, the rest are
-   one-line evidence rows — and ALWAYS writes a compact evidence HTML (full verbatim code embedded
-   under `id="chaos-feature-context-data"`). Read the actual body (the inlined `code_excerpt`, the
-   HTML data block, or the source) before making any behavioral claim. The deliverable feature page
-   still comes from `chaos_write_feature_website` — a drill-down is not done until you persist the
-   composed explanation there (its return carries a `next` reminder). Chat-only explanations are
-   lost when the session ends.
-6. Use `chaos_impact` to build a feature-vs-existing-code impact report for an indexed repo. It
-   ALWAYS writes an interactive HTML (impact summary plus evidence dashboard) to
-   `docs/features_memory/<slug>-impact.html` and returns a COMPACT JSON summary — counts plus the
-   existing files/symbols the feature touches, warnings, **provenance breadcrumbs**, and the HTML
-   path. The full evidence lives only in the HTML, so it will not flood an agent context. Use it
-   to see how a proposed feature maps onto the codebase as it
-   exists today (the before). It mirrors the `chaos impact <repo> <feature>` CLI command.
-7. Use `chaos_sui_migration_impact` to produce a **Sui migration impact report** for an indexed
-   Ethereum, Solana, or mixed Web3 repo. It auto-detects the source stack (or you specify
-   `source`: auto/ethereum/solana/mixed), maps each L1 feature onto Sui primitives
-   (objects/dynamic fields, Coin/Kiosk/Display, capabilities, PTBs, events+GraphQL) with
-   Walrus/Seal storage and access-control verdicts, each verdict citing the compiled-in Sui
-   official docs profile. Read-only and embedder-free. It ALWAYS writes
-   `docs/features_memory/sui-migration-impact.html` and returns a COMPACT JSON summary — per-feature
-   Sui mappings, verdicts, provenance, and the HTML path. Maps impact only — does not generate
-   Move code. It mirrors the
-   `chaos sui-migration-impact <repo> [--source auto|ethereum|solana|mixed]` CLI command.
-8. Use `chaos_write_feature_website` only after reading `chaos_feature_context` output. Compose a
-   feature-specific MANIFEST (purpose, feature, title, subtitle, examples, claims, modes, nodes
-   with file/lines/code, edges, story) and pass it WITHOUT the `html` argument — Chaos renders the
-   full interactive page deterministically (the same renderer `chaos add` uses), so you never
-   spend tokens authoring or transmitting raw HTML. `purpose` is REQUIRED: a plain-language
-   sentence or two on what the feature was made for (who uses it, what problem it solves), rendered
-   as the page's opening band before any graph or evidence. Add at least one simple usage example
-   in `examples` (`{title, description, steps[], code, language, node_ids}`) whenever the feature
-   has a callable surface — examples render as a clickable "How you'd use it" section whose
-   `node_ids` highlight the code path on the graph. The LLM still decides the story, claims,
-   nodes, and flow from evidence; the tool owns the rendering. (Passing `html` yourself is a
-   legacy path.)
-9. Use `chaos_obsidian` to export an already-indexed repository as an Obsidian vault from the
-   persisted graph; run it after `chaos_analyze` (which never writes files) when you want browsable
-   docs. This lets an MCP-only agent generate the vault without shelling out to the CLI.
-10. Use `chaos_refresh` to regenerate project-local artifacts from the persisted index without
-   re-indexing: it rewrites the Obsidian vault and, with `all_features=true`, re-renders the
-   deterministic feature pages in `docs/features_memory` from their embedded manifests. This lets an
-   MCP-only agent refresh pages without shelling out to the CLI; run `chaos_analyze` or `chaos_add`
-   first.
-11. Use `chaos_write_storyboard` to produce a CLIENT/USER-FACING explanation of a feature — a
-    UI/UX user-story page with NO code, meant to be handed to a stakeholder or end user as an
-    interactive presentation. You supply only a structured, code-free manifest: `personas`,
-    `stories` ("As a … I want … so that …" with plain-language `acceptance` criteria), `frames`
-    (clickable steps grouped into `stage` lanes, each with a `summary`, a click-to-reveal `detail`,
-    `user_value`, and an optional `ui_hint`), `outcomes`, and a `confidence` (0..1) on every
-    frame/story/outcome plus an `overall_confidence`. A frame may also carry an optional `preview`
-    that shows the REAL client UI (not code): `{"kind":"image","src":"previews/x.png","alt":"…",
-    "caption":"…"}` for a screenshot/clip you captured (offline, leaks nothing — preferred) or
-    `{"kind":"iframe","url":"http://localhost:5173/route","caption":"…"}` to live-embed a running
-    app route (renders only while that server is up). Chaos only embeds it — it never runs a browser
-    and CANNOT synthesise the client's screens, so capture the screenshot yourself (host/Playwright)
-    or point at the user's running dev server; a frame with no `preview` renders text-only —
-    full-width copy, no mockup and no placeholder — so ASK the user/dev for real captures rather
-    than faking the UI. The tool
-    renders a light editorial **"Feature guide"** page (Access-Control lineage): a scrollytelling
-    walkthrough where each frame becomes an alternating step — with a device mockup when it has a
-    `preview`, text-only when it doesn't — role-card personas, and scroll-unlock gamification (a
-    sticky progress HUD, per-stage "cleared" badges, a completion reward). `confidence` values are optional metadata
-    and are NOT shown to the end user. OPTIONAL, all backward-compatible: top-level `hero_image` (banner
-    src) and `brand` {name, tagline, logo_src, href} for your own branding; per-persona `who`,
-    `icon`, `includes`, and `tier` (>0 places it on the role ladder); a top-level `matrix`
-    {columns, rows:[{capability, allowed[]}], caption} for a permission table; a `callout`
-    {kicker, heading, intro, title, body, points[]} for an agent-style highlight; and a `game`
-    {kicker, heading, intro, instructions, rounds:[{prompt, context[], options:[{label, correct,
-    explain}]}], win_message} for an end-of-page click-to-check mini-game. It writes to
-    `docs/features_memory/<slug>-story.html` and embeds a `chaos-storyboard-manifest` for agentic
-    reads. Compose it from real understanding (run `chaos_feature_context`/`chaos_impact` first);
-    never invent UI that does not exist. This is the user-facing sibling of
-    `chaos_write_feature_website`: storyboard = users & experience (no code); feature website =
-    engineers, graph, architecture, and source. It mirrors the
-    `chaos storyboard <repo> --manifest <file.json>` CLI command.
-
-    **Composing an ACCURATE guide (do this, in order):**
-    1. **Validate every frame is a real, user-facing UI step.** Use `chaos_query` to check whether
-       the action actually has a screen the end user touches, or is backend/server-only. A step the
-       user never performs in the UI (e.g. a sponsored/server-submitted on-chain write, or an
-       admin/CLI-only operation) does NOT belong in a user guide — drop it. Match each frame to the
-       real screen and route (e.g. `Members › Invite member`), not an imagined one.
-    2. **Use real screen captures.** Each frame's `preview` must be a REAL screenshot or a live
-       route — Chaos cannot draw the client UI, and a frame with no `preview` renders text-only
-       (full-width copy, no mockup or placeholder). Offer to embed real captures (or a running
-       dev-server route) when available; never hand-wave a mock.
-    3. **Don't show confidence.** `confidence`/`overall_confidence` are optional internal metadata
-       and are not rendered — omit them or leave them, but never describe them to the reader.
-    4. **Brand it.** Easiest: set `"brand_preset": "molecule"` — a preset **shipped inside Chaos**
-       (embedded in the binary, available to every install with no local files) that fills the
-       logo, hero banner, and company for any branding fields you leave empty. Or set `brand`
-       (name, tagline, logo_src, href) and `hero_image` yourself. Explicit values always win over the
-       preset. (Run with no branding to get the neutral "Add your logo" placeholder.)
-    5. **Keep images portable.** A `preview.src`/`hero_image` must be a `data:` URI (self-contained)
-       or a path **relative to the output HTML** whose file you place alongside it — never an
-       absolute or temp path, or the images vanish when the page is shared.
-12. Use `chaos_change_plan` to decompose a proposed change into the FEATURES (L1 communities /
-    god-nodes) it spans, with a dependency-aware check order. It matches the change description
-    against community summary embeddings, **also seeding from a real git diff via `since` and from
-    previously generated feature pages it correlates with** (shared files → communities), then ALWAYS
-    writes an interactive HTML plan to `docs/features_memory/<slug>-plan.html` and returns a COMPACT
-    JSON summary — per-feature label, confidence, `via` source (semantic/diff/manifest), `matched_by`
-    breadcrumbs, check order, top symbols, top-level `provenance`, and the HTML path. The full plan
-    lives only in the HTML, so it will not flood an agent context. It mirrors the
-    `chaos change-plan <repo> "<change>" [--since <ref>]` CLI command.
-13. Use `chaos_components` to explain the CORE COMPONENTS of a big area — the orientation step
-    BEFORE feature extraction. An area like "OCL" is bigger than a single feature (it spans several
-    L1 communities); pass an `area` (or omit it for a repo-level overview) and it surfaces those
-    communities as COMPONENTS, each with its L3 summary, key symbols/files, languages, and a
-    quotient-graph ROLE (entry/interface/core/foundation), plus how they connect and a
-    dependency-first READ ORDER. It matches the area against community summary embeddings AND
-    community labels (path-derived, so a directory-named area is caught) and correlates it with
-    previously generated feature pages (shared files → `related_features`). It ALWAYS writes an
-    interactive HTML overview to `docs/features_memory/<slug>-components.html` (embedding a
-    `chaos-components-manifest` an agent can extract) and returns a COMPACT JSON summary. Use it to
-    understand a large subsystem before drilling into any single feature, then follow up with
-    `chaos_feature_context` / `chaos_write_feature_website` per component. It mirrors the
-    `chaos components <repo> ["<area>"]` CLI command.
-14. Use `chaos_features` to list ALL god-node FEATURES (L1 communities) that match a filter, grouped
-    by journey layer (entry → interface → core → foundation) — the EXHAUSTIVE, uncurated counterpart
-    to `chaos_components`. Where `chaos_components` curates and orders ONE area, `chaos_features`
-    answers "give me EVERY feature [in this layer / under this folder / about this topic]". The single
-    `filter` is AUTO-DETECTED: a path or real directory → FOLDER scope; a single layer word like
-    `client`/`ui`/`api`/`core`/`contracts` → that journey LAYER (so "all client features" = every
-    entry-layer feature); any other phrase is first tried as a layer BY MEANING (embedding cosine
-    against per-layer prototype phrasings — "backend", "client app", "devops", "API endpoints"
-    resolve semantically, no keyword list; "backend" spans interface+core) and only then falls to a
-    TOPIC match (summary cosine + label/summary keywords); omit it for the whole repo. Force the
-    interpretation with `layer`/`folder`/`topic`. Exact layer words, folders and whole-repo listing
-    are embedder-free; semantic layer routing and topic matching use the embedder. It ALWAYS writes an
-    interactive HTML inventory to `docs/features_memory/<slug>-features.html` (embedding a
-    `chaos-features-manifest` an agent can extract) and returns a COMPACT JSON summary (resolved
-    filter + how detected, per-layer + language counts, per-feature label/role/folders/symbols/
-    `matched_by`, provenance). It mirrors the `chaos features <repo> ["<filter>"]` CLI command.
-    Pass `project` instead of `repo` to list features across EVERY repo of a project in one
-    journey-layered inventory — each card tagged with its repo alias and annotated with the
-    project's cross-repo links; the HTML goes to the project workspace
-    (`$CHAOS_PROJECT_DIR/<slug>/` or `~/.chaos/projects/<slug>/`).
-15. Use `chaos_project` to work ACROSS REPOSITORIES. A project is a named set of indexed repos
-    (client, backend, smart contracts, infra, …); Chaos detects FEATURE→FEATURE CROSS-REPO LINKS
-    between members from the persisted index (consumer → provider): `package_dep` (one repo imports
-    a package the other publishes), `abi` (client/backend code references a Solidity contract defined
-    in the contracts repo), `http_route` (a fetch/axios call path matches a route registered in
-    another repo — provider anchors come from persisted `HttpRoute` surface nodes, with a chunk-scan
-    fallback), `graphql` (an executable GraphQL operation in one repo selects a root field another
-    member's SDL schema defines; operation types must agree — code-first servers expose no provider
-    facet yet). Links attach at the feature (L1) level, carry evidence + provenance breadcrumbs,
-    and refresh AUTOMATICALLY after `chaos_analyze`/`chaos_add` on any member — gated by the L2 repo
-    root hash, so a no-change re-index relinks nothing. Actions: `create` (idempotent), `add_repo`
-    (attach an INDEXED repo under an alias like client/backend/contracts; links it immediately),
-    `add_docs` (index a directory of project-level DOCS — cross-repo design notes, ADRs, migration
-    spikes — as a docs-only member; the dir may sit ABOVE the member repos, which are pruned from
-    the walk, and re-running on the same dir is an idempotent refresh),
-    `list` (also returns EVERY indexed repository — the discovery call when you don't know what
-    Chaos already knows; a sub-app inside one indexed repo is a `chaos_features` folder/layer
-    filter, not a project), `status` (members, staleness, links by kind, embedder consistency),
-    `relink` (manual, `force` overrides the gate). All member repos must share ONE embedder config;
-    `status` warns on mismatch. It mirrors the
-    `chaos project create|add-repo|add-docs|list|status|relink` CLI commands.
-16. Use `chaos_help` (no arguments) when unsure which tool fits: it returns the recommended tool
-    order and typical workflows as static text — no database or embedder work, zero tokens until
-    called. The server's MCP `instructions` carry the one-line version automatically.
-17. Use `chaos_clean` ONLY when the user explicitly asks to clean/reset. It is DESTRUCTIVE: wipes
-    the persisted index for one repo (`repo`) or everything (omit it); `artifacts: true` also
-    deletes the generated files on disk (vault, feature pages, project workspaces). It requires
-    `confirm: true` and reports exactly what was removed; the schema survives. Cleaning does NOT
-    imply re-indexing — stop after the wipe unless the user also asked to rebuild; the index stays
-    empty until a `chaos_analyze` is requested. It mirrors `chaos clean [<repo>] [--artifacts]`.
-18. Use `chaos_graph` to export the standalone interactive L0 node/edge HTML from the persisted
-    index (embedder-free). It defaults to `docs/features_memory/graph.html` inside the repo;
-    override with `output`. The feature-level map (`feature-map.html`) comes from
-    `chaos_obsidian`/`chaos_refresh` instead. It mirrors `chaos graph <repo> -o graph.html`.
-    The static page's search box is a substring filter only. When the user wants to VALIDATE
-    semantic retrieval visually, have them run `chaos graph <repo> --serve [--port 7878]` in a
-    terminal: it serves the same page at `http://127.0.0.1:<port>/` with a live "Semantic search"
-    panel that runs the SAME hierarchical pipeline as `chaos_query` (real embedder → L1 feature
-    routing → hybrid chunk search) and shows cosine scores, `retrieved_by` badges, and highlighted
-    nodes. It is a long-running CLI server on purpose — there is no MCP wrapper for it, so do not
-    try to launch it through MCP; an embedder failure surfaces as a loud in-page error.
-    Use `chaos_gaps` when retrieval misses a file the user insists is relevant, or to audit what
-    the index can NEVER find: it lists `coverage_gaps` (files that produced no chunks — invisible
-    to every retrieval method; re-add them, and report a chunking bug if they stay empty) and
-    `vocabulary_gaps` (chunked code with no distinctive words left after identifier splitting).
-    Scope it like the other surfaces: `repo` alone, `repo` + `folder` for one sub-app of a
-    monorepo-indexed repo, or `project` for every member repo of a cross-repo project. A gaps
-    check is chaos_gaps ONLY — do not improvise one with find/grep/git or file counting; if
-    chaos_gaps is missing from the tool list, the MCP server binary is stale (rebuild + restart),
-    which is a finding to report, not a reason to fall back to shell.
-    A gaps check ENDS at the report. Coverage gaps (and any other suspected Chaos bug) are
-    findings to PRESENT to the user — never start reading or editing the chaos-substrate source
-    from a session whose working directory is a TARGET repository, even if you know its path
-    from the MCP config. Fixing Chaos is its own task, done in a chaos-substrate session the
-    user opens deliberately; two sessions editing that working tree at once corrupt each other.
-    For a vocabulary gap, ask the user what the file is for, write that as a file-top docstring or
-    folder README, then `chaos_add` those paths. NEVER pause or block indexing waiting for the
-    answer — the knowledge belongs in the repo, not in a prompt. Read-only and embedder-free; it
-    mirrors `chaos gaps <repo>`.
-19. Use `chaos_stack` when the user asks "what is this repo built with / what's the tech stack /
-    what infrastructure does it use". It LISTS what `chaos_stats` only counts, read from the
-    persisted index (read-only, embedder-free): manifest-DECLARED dependencies by ecosystem
-    (npm/cargo — name, versions, runtime-vs-dev scope, how many workspace manifests declare each,
-    widest-declared first), npm scripts, deployment resources (AWS CDK app entrypoints, Stack
-    classes, L2 constructs grouped by cloud service), indexed JS/TS configs, the repo's exposed
-    API SURFACE from persisted user-surface nodes (HTTP routes with method + path, GraphQL root
-    fields grouped `Query.`/`Mutation.`/`Subscription.` — SDL-derived only — and CLI commands),
-    and the file-language
-    breakdown. It ALWAYS writes an interactive HTML inventory to `docs/features_memory/stack.html`
-    (embedded `chaos-stack-manifest`) and returns a COMPACT JSON summary (capped lists with
-    `*_omitted` counts; every entry lives in the HTML). The return carries explicit COVERAGE notes —
-    Dockerfiles, CI workflows, pyproject.toml, foundry.toml, Terraform, and code-first GraphQL
-    schemas (async-graphql, TypeGraphQL, graphene/strawberry resolvers) are NOT indexed yet; read
-    those files directly if they matter, and say so instead of presenting the inventory as a
-    complete scan. Do NOT fall back to grepping package.json/Cargo.toml for stack questions when
-    this tool is available. It mirrors `chaos stack <repo> [--output-html out.html]`.
-20. Use `chaos_pages` to see what chaos has ALREADY extracted for a repo — the generated
-    feature-memory pages. It scans `docs/features_memory` (or `features_dir`, e.g. a project
-    workspace) and lists every HTML page with its KIND (`feature` / `story` / `components` /
-    `features` / `composed` / `stack` / `impact` / `change-plan` / `feature-map`; unrecognised
-    files appear as `other`, never hidden), the tool that writes that kind, its title, and its modified time,
-    newest first, plus by-kind counts. Read-only, embedder-free, pure filesystem (works on a plain
-    directory even if the repo row is missing). Use it INSTEAD of `ls`/globbing or shell scripts to
-    check whether a feature page already exists before starting a new deep-dive, and to find the
-    page to reopen or refresh. It mirrors `chaos pages <repo> [--features-dir DIR]`.
-21. Use `chaos_compose` as THE page-generation surface: whenever the user asks for a webpage,
-    website, or interactive info page over chaos knowledge, route the request here instead of
-    stitching together the side-pages of `chaos_features`/`chaos_stack`/`chaos_components` (those
-    remain data/inventory tools). It builds ONE page from knowledge-base-backed SECTIONS instead of
-    generating several similar standalone pages — or a whole SITE: `feature_pages: true` writes one
-    page per feature under `<slug>-composed/`, makes the index's feature cards CLICKABLE links, and
-    gives each per-feature page the feature's code/files, its quotient-graph relations to the rest
-    of the stack (Solidity neighbours tagged as smart contracts, in-scope neighbours cross-linked,
-    out-of-scope ones honestly labelled), prior overlapping generated pages, and a deterministic
-    persona-adapted walkthrough built ONLY from indexed data (each page carries an honesty note
-    saying exactly that — for UX storyboards with real screens, `chaos_write_storyboard` remains
-    the tool). Every page — index and per-feature alike — embeds its own `chaos-composed-manifest`
-    with its own `content_hash` and is INDIVIDUALLY hash-gated: the return reports written vs
-    cached page counts, and a `cached` page means you already hold that memory — do not re-read or
-    re-ingest it. Pick `sections` in render order — `features`
-    (the inventory with each feature's concise L3 explanation), `correlations` (files shared
-    between those features plus prior generated pages that overlap them), `stack` — plus an
-    AUDIENCE and a STYLE: free-text `persona` ("a very beginner software engineer who has no idea
-    about the stack") is resolved to beginner|practitioner|expert BY MEANING via prototype
-    embeddings (no keyword list; explicit `level` is the embedder-free path), `style` picks
-    `editorial` (light default) or `blade-runner` (dark neon), and `brand_preset` (e.g.
-    `molecule`) brands the page. `filter` scopes the features sections exactly like
-    `chaos_features` (folder | layer | topic, auto-detected — "desci-infra" scopes to that
-    folder). Chaos resolves EVERY section from the persisted index and prior generated manifests
-    ONLY — it never parses source files; a section it cannot serve (repo not indexed, no L1
-    hierarchy, unknown section or style name) is a LOUD ERROR naming what is missing and the
-    command that fixes it. If `chaos_compose` fails, REPORT that failure to the user as-is — do
-    NOT fall back to rg/grep/scripts to assemble a lookalike page. The page lands at
-    `docs/features_memory/<slug>-composed.html` with an embedded `chaos-composed-manifest` whose
-    sections carry full data for agent consumption, and the composition is CONTENT-HASHED: the
-    return's `content_hash` is your dedup key, and re-composing the same request over unchanged
-    knowledge returns `cached: true` with no write — when you see `cached: true`, reuse what you
-    already hold instead of re-ingesting the manifest as new memory. It mirrors
-    `chaos compose <repo> --sections features,correlations,stack [--persona "…"] [--level …]
-    [--style …] [--filter …]`.
-22. Use `chaos_usage` to answer "WHO CONSUMES this across the codebase?" for a symbol or surface
-    string — an env var, an HTTP header, a route, a GraphQL field, a function — grouped by top-level
-    subfolder. It is
-    the chaos-native replacement for `rg`/`grep` on the target repo: it resolves consumers from the
-    persisted index ONLY — user-surface `env_var`/`http_route`/`cli_command`/`graphql_field` nodes
-    (a bare GraphQL field name matches qualified nodes by suffix, so `user` finds `Query.user`),
-    reverse graph
-    edges (`calls`/`imports`/`uses_type`/`implements`/`tests`/`depends_on`), and a literal chunk
-    sweep — never by re-reading source files. Pass `repo` and the `target` string. It ALWAYS writes
-    an interactive HTML report to `docs/features_memory/<slug>-usage.html` (embedding a
-    `chaos-usage-manifest` an agent can extract) and returns a COMPACT per-folder JSON summary —
-    consumer sites grouped by subfolder, capped with `sites_omitted` counts, plus provenance and the
-    HTML path. Read-only and embedder-free. Honest limitation, surfaced as a warning: call/import
-    edges resolve cross-file only for repo-unique names (an ambiguous name like `run`/`handle` is not
-    bound across files). Use it instead of grepping the target repo when the user asks where a
-    symbol/env var/route is used or who depends on it. It mirrors the `chaos usage <repo> <target>`
-    CLI command.
-23. Use `chaos_feature_story` to tell the CROSS-REPO STORY of one feature across a PROJECT — the
-    focused, single-feature counterpart to `chaos_features --project` (which inventories ALL
-    features). Pass `project` and a free-text `feature`. It matches the feature in EVERY member repo
-    (L1 community semantic search + a lexical label fallback), loads the persisted cross-repo links
-    and TRAVERSES them — pulling in a link's other endpoint (e.g. a Solidity contract a client calls)
-    even when the query didn't match it directly — then orders the involved features into a
-    journey-layer spine (entry → interface → core → foundation = client → backend → contracts). It
-    writes a CLICKABLE MULTI-PAGE SITE to the project workspace (an index page = the spine + the
-    cross-repo link chain + repos not involved; one hash-gated drill-down page per involved feature
-    with its code/files, cross-repo links cross-linked + smart-contract tagged, prior overlapping
-    pages, and a deterministic walkthrough) and returns a COMPACT JSON summary (involved repos, the
-    ordered link chain, links_by_kind, not-involved repos, the site summary, provenance,
-    `content_hash`) — narrate the returned spine for the user; the full detail lives in the HTML.
-    Deterministic and embedder-light (ONE embed for the whole query, reused across repos). It mirrors
-    the `chaos feature-story <project> "<feature>"` CLI command, and is distinct from `chaos_compose`
-    (one repo's composed page).
-
-NEVER answer feature-extraction questions about an indexed repo by falling back to `rg`/`grep`,
-`ls`, or generated scripts against the target repo: retrieval goes through `chaos_query` /
-`chaos_feature_context` / `chaos_components` / `chaos_features`, page discovery goes through
-`chaos_pages`, and stack questions go through `chaos_stack`. If a needed capability is missing,
-say so — the fix is a new chaos tool, not a shell workaround.
-
-Treat `chaos_feature_context.warnings` as blocking for generated feature websites. If it says a
-filesystem path exists but no Postgres hits referenced it, or that docs exist but no docs were
-returned, do not call `chaos_write_feature_website` yet. Run `chaos_analyze`/`update`, or make a
-more targeted `chaos_feature_context` call that names the missing subtree/docs, then compose the
-website only after the missing evidence appears.
-
-Feature websites are interactive, not prettified Markdown — Chaos's renderer guarantees the
-interactive graph/story/architecture/code/evidence surfaces when you pass a manifest without
-`html`. Only if you author `html` yourself (legacy) must it include the
-`data-chaos-feature-website` / `data-chaos-graph` (clickable `data-node-id`) / `data-chaos-story`
-(`data-story-step`) / `data-chaos-architecture` / `data-chaos-flow` / `data-chaos-code` /
-`data-chaos-evidence` markers and JavaScript `addEventListener` interactivity.
-
-The manifest must include a non-empty `purpose` plus at least three claims, two modes, five nodes,
-three edges, and three story steps. If evidence is too thin for that, do not write a weak page; ask
-to index/query more first.
-If the feature context has warnings, preserve them in your response and resolve them before writing
-the page.
-
-Do not tell the user "I only have chaos_query" if `chaos_feature_context` or
-`chaos_write_feature_website` is available. If the MCP server cannot write the website because of
-filesystem permissions, still return the feature context from MCP and say exactly that HTML
-generation was blocked by filesystem access.
-
-Never assume the current working directory is the Chaos Substrate checkout. The agent is usually
-standing in the target project. Resolve the wrapper with this order:
-
-1. If `chaos` is on `PATH`, use `chaos`.
-2. Else if `CHAOS_SUBSTRATE_HOME` is set, use `$CHAOS_SUBSTRATE_HOME/bin/chaos`.
-3. Else if the user gave an absolute Chaos Substrate checkout path, use
-   `/absolute/path/to/chaos-substrate/bin/chaos`.
-4. Else ask for the absolute Chaos Substrate checkout path.
-
-In command examples, call this resolved wrapper as `$CHAOS`. If `chaos` is already on
-`PATH`, set `CHAOS=chaos`. Always pass the target project as an absolute path or as
-`"$PWD"` after confirming the shell is in the target project.
-
-To discover or recall the CLI, run `$CHAOS help` (or `$CHAOS help <command>` for one command's
-flags) — it works from any directory with no database or config and includes typical workflows.
-Never `cd` into the Chaos Substrate checkout to run `cargo run -- --help`.
-
-Natural language mapping:
-
-- "Set up Chaos Substrate here" or "make this project use Chaos" -> MCP `chaos_analyze`; otherwise `$CHAOS onboard <repo-path>`
-- "Go through this project and create sufficient index and explanation" -> MCP `chaos_analyze`, then `chaos_feature_context`, then compose and write with `chaos_write_feature_website`; otherwise `$CHAOS onboard <repo-path>` plus `$CHAOS explain <repo-path> "feature"`
-- "Update index" or "refresh memory" -> MCP `chaos_analyze`; otherwise `$CHAOS update <repo-path>`
-- "Add Chaos instructions to this project" -> `$CHAOS project-instructions <repo-path>` because this edits instruction files.
-- "What context do I need for X?" -> MCP `chaos_feature_context` when available; otherwise `$CHAOS context <repo-path> "X"`
-- "Generate explanation for X feature" -> MCP `chaos_feature_context`, then compose the website and call `chaos_write_feature_website`; otherwise `$CHAOS explain <repo-path> "X"`
-- "Add this to Claude Code" or "use with Claude Cowork" -> `$CHAOS claude-code-add local <project-path>` or `$CHAOS claude-code-add project <project-path>`. The path is the target Claude Code project where config should be applied.
-- "Use Ollama" or "set up local embeddings" -> run with `CHAOS_CONFIG=/absolute/path/to/chaos-substrate/chaos-substrate.local.toml`; `$CHAOS bootstrap`, `doctor`, `onboard`, `init`, and `update` enforce Ollama readiness.
-- "Run MCP" -> `$CHAOS mcp`
-
-The wrapper can install itself onto `PATH` with `bootstrap` or `install-agent`. It will build the
-release binary if missing, start Docker Compose unless `CHAOS_NO_DOCKER=1` is set for `bootstrap`,
-`doctor`, `onboard`, `init`, and `update`, run migrations, analyze the project, regenerate the
-Obsidian vault, and generate dark feature-context websites when requested. `onboard` also writes
-portable `AGENTS.md` and `CLAUDE.md` sections into the target project. `refresh` regenerates the
-Obsidian vault from Postgres. In plugin/MCP mode, feature explanation websites must be composed by
-the LLM from `chaos_feature_context` evidence and written with `chaos_write_feature_website`.
-
-`context`, `explain`, `mcp`, and `claude-code-add` assume Postgres and the selected embedder are
-already available. If they are not, run `$CHAOS doctor` or `$CHAOS init <repo-path>`
-first. In sandboxed agents such as Claude Cowork, prefer the MCP tools exposed by the host-side MCP
-server instead of trying to reach host Postgres directly from the sandbox.
-
-For code changes inside Chaos Substrate itself:
-
-1. Inspect existing docs and CLI help before changing behavior.
-2. Keep patches narrow and Rust-native.
-3. Prefer existing crate patterns and error types.
-4. Validate CLI, persistence, embedding, generated websites, and MCP stdio paths when touched.
-5. Report any skipped checks with concrete reasons.
-
-## End-User Commands
-
-Plugin package layout:
-
-```text
-.codex-plugin/plugin.json
-.claude-plugin/plugin.json
-.mcp.json
-bin/chaos
-skills/chaos-substrate/SKILL.md
+```toml
+name = "molecule"
+[[repos]]
+alias = "api"
+path = "../api"
+[[repos]]
+alias = "web"
+path = "../web"
 ```
 
-Portable setup from any target project:
+Global CLI flags: `--config <chaos-substrate.toml>`, `--project <chaos.toml>` (default: nearest
+ancestor of the cwd), `--repo <alias|path>` (default: cwd), `-v`/`-vv`. `chaos help` prints the
+agent guide with no config or database.
 
-```sh
-export CHAOS_SUBSTRATE_HOME=/absolute/path/to/chaos-substrate
-export CHAOS="$CHAOS_SUBSTRATE_HOME/bin/chaos"
+## Workflow
 
-"$CHAOS" bootstrap
-"$CHAOS" onboard "$PWD"
-"$CHAOS" project-instructions "$PWD"
-"$CHAOS" doctor
-"$CHAOS" ollama-setup
-"$CHAOS" init "$PWD"
-"$CHAOS" update "$PWD"
-"$CHAOS" context "$PWD" "authorization and RBAC"
-"$CHAOS" explain "$PWD" "authorization and RBAC"
-"$CHAOS" claude-code-add local "$PWD"
-"$CHAOS" claude-code-add project "$PWD"
-"$CHAOS" mcp
-```
+1. `index` once per repository.
+2. `add` after every edit (content-hash drift vs the index, or `--since <ref>` for a git range).
+3. `feature "<question>"` to answer; read the returned excerpts, not the files.
+4. `compose` to write the clickable feature website.
+5. `correlations` to link features within a repo and across the project's repos.
+6. `reindex` only when the index looks stale — it is a no-op when HEAD is indexed and clean.
 
-After `bootstrap`, future projects can usually use the shorter form:
+Prefer MCP tools when available; the CLI subcommands take the same arguments.
 
-```sh
-chaos onboard "$PWD"
-chaos context "$PWD" "authorization and RBAC"
-chaos explain "$PWD" "authorization and RBAC"
-```
+## Tools
 
-If `chaos` is not found immediately after bootstrap, use:
+Argument tables are copied from `src/application/tools.rs` (the single source of truth).
+`repo` everywhere: repository alias (from chaos.toml) or path; defaults to the current directory.
 
-```sh
-export PATH="$HOME/.local/bin:$PATH"
-```
+### index — `chaos index [--dry-run]` / `chaos_index`
 
-For Ollama:
+Fully index a repository: tree-sitter structural extraction -> project-wide import/call resolution
+-> contextual chunks -> real embeddings -> feature communities (L1) -> Merkle hashes (L2) ->
+hash-gated feature summaries (L3). Run once per repo; afterwards use `add`.
 
-```sh
-export CHAOS_SUBSTRATE_HOME=/absolute/path/to/chaos-substrate
-export CHAOS="$CHAOS_SUBSTRATE_HOME/bin/chaos"
+| arg | type | notes |
+|---|---|---|
+| `repo` | string | optional |
 
-CHAOS_CONFIG="$CHAOS_SUBSTRATE_HOME/chaos-substrate.local.toml" "$CHAOS" init "$PWD"
-```
+CLI-only `--dry-run`: extract, resolve and chunk; write nothing. Returns files, nodes, edges,
+chunks, `chunks_embedded`, `chunks_reused`, communities, `summaries_recomputed`,
+`call_resolution`, warnings, provenance, `skipped`.
 
-`bootstrap`, `doctor`, `onboard`, `init`, and `update` call the Ollama readiness check
-automatically when the active config uses Ollama.
+### reindex — `chaos reindex [--force]` / `chaos_reindex`
 
-If Ollama is missing, tell the user to install it from `https://ollama.com/download`. On Linux the
-official install command is usually `curl -fsSL https://ollama.com/install.sh | sh`. The default
-local embedding model is `embeddinggemma` with `dimensions = 768`.
+Re-run a full index. No-op when git HEAD equals the indexed commit and the worktree is clean
+(unless `force`). Unchanged chunks keep their embeddings (content-hash reuse).
 
-Generated artifacts live in the target project:
+| arg | type | notes |
+|---|---|---|
+| `repo` | string | optional |
+| `force` | boolean | default `false` |
 
-```text
-chaos-obsidian-vault
-docs/features_memory
-```
+### add — `chaos add [--since <ref>]` / `chaos_add`
 
-Do not scan the whole `docs/` tree for generated feature memory. Use `feature-context` or read only
-direct HTML files in `docs/features_memory` with `chaos-feature-manifest`.
+Incrementally index what changed since the last index: drifted files re-extracted against the persisted graph, deleted and
+renamed-away files purged, only new chunks embedded, communities and summaries recomputed only
+where a feature's hash changed. Use after every edit instead of `reindex`.
 
-Use `graph` / `graph.html` for full indexed-graph validation and Obsidian for broad topic/node
-exploration. Use `chaos_feature_context` plus `chaos_write_feature_website` for focused
-implementation briefs and human-readable feature pages when MCP is available.
+| arg | type | notes |
+|---|---|---|
+| `repo` | string | optional |
+| `since` | string | optional git ref: also re-index everything changed since it (e.g. `HEAD~1`); hash drift is always detected |
 
-When creating or updating feature-memory websites, make story steps explicit. Each step should have
-curated `node_ids` and, when useful, `edge_ids` in the manifest. Do not derive a story-step
-highlight by transitive graph expansion from the first node. A step should highlight only the
-subflow it explains; broader architecture or security-boundary highlights belong in `modes`.
+Returns `changed`, `purged`, nodes, chunks, `chunks_embedded`, `communities_changed`,
+`summaries_recomputed`, warnings, provenance.
 
-## Validation Commands
+### feature — `chaos feature "<question>" [--budget N] [--no-persist] [--json]` / `chaos_feature`
 
-```sh
-cargo fmt --check
-cargo test
-cargo clippy --all-targets --all-features -- -D warnings
-```
+Answer ONE feature question from the index without reading source: routes to the matching feature
+communities, retrieves the relevant chunks (semantic + keyword + literal), expands one hop over
+call/import edges, and returns a token-bounded payload. Persists the answer as a page
+(`docs/features_memory/<slug>.html`, hash-gated).
 
-Use a real Postgres database with pgvector for persistence tests. Use real OpenAI or Ollama credentials/endpoints for embedding smoke tests.
+| arg | type | notes |
+|---|---|---|
+| `question` | string | required, e.g. "how are embeddings reused on reindex" |
+| `repo` | string | optional |
+| `budget_tokens` | integer | default 6000, min 1000, max 16000 (CLI `--budget`) |
+| `persist` | boolean | default `true` (CLI `--no-persist`) |
 
-## MCP Expectations
+Return fields: `features[]` (`id`, `label`, `score`, `summary`, `files`), `excerpts[]` (`path`,
+`lines [start, end]`, `symbol`, `kind`, `score`, `why` = semantic/keyword/literal/graph, `code`,
+`code_truncated`), `graph[]` (`from`, `kind`, `to`), `surfaces[]` (env vars, HTTP routes),
+`page`, `page_cached`, `content_hash`, `tokens_used`, `warnings`, `provenance`. The CLI prints
+Markdown by default; `--json` prints the payload.
 
-- MCP transport is stdio.
-- The process should be launched directly by the agent client.
-- Keep stdout protocol-clean; diagnostics should go to stderr or structured logging that does not corrupt MCP messages.
-- The MCP server exposes TWENTY-FOUR tools: `chaos_analyze`, `chaos_add`, `chaos_stats`, `chaos_stack`, `chaos_pages`, `chaos_gaps`, `chaos_query`,
-  `chaos_feature_context`, `chaos_impact`, `chaos_usage`, `chaos_sui_migration_impact`, `chaos_write_feature_website`, `chaos_obsidian`,
-  `chaos_refresh`, `chaos_write_storyboard`, `chaos_change_plan`, `chaos_components`, `chaos_features`, `chaos_compose`, `chaos_project`, `chaos_feature_story`, `chaos_help`, `chaos_clean`, and `chaos_graph`.
-- `chaos_add` incrementally indexes only git-changed files (or explicit `paths`), refreshes the
-  Obsidian vault, and writes a feature/bug page in one call; use it instead of a full
-  `chaos_analyze` after small edits. The page carries provenance breadcrumbs and correlates the
-  change with previously generated feature pages (`related_features`).
-- `chaos_stats` is a read-only, embedder-free stats/breakdown tool: it reports index totals (files,
-  nodes, edges, chunks, embedded vs missing, split chunks) plus breakdowns of nodes by kind, edges
-  by kind, chunks by type, and files by language for an already-indexed repository; use it to
-  explain or sanity-check what an analyze/add produced. It mirrors the `chaos stats <repo>` CLI
-  command.
-- `chaos_query` answers focused source-grounded questions; its optional `hierarchical` boolean (CLI
-  `query --hierarchical`) does top-down retrieval that matches feature (community) summaries first and
-  returns the surfaced features alongside the chunk hits, falling back to flat search when no
-  hierarchy exists.
-- `chaos_feature_context` is the MCP equivalent of `chaos context`; hits carry
-  `metadata.retrieved_by` (semantic/keyword/literal) and the response includes provenance breadcrumbs.
-- `chaos_impact` builds a feature-vs-existing-code impact report for an indexed repo; it ALWAYS
-  writes an interactive HTML (impact summary plus evidence dashboard) to
-  `docs/features_memory/<slug>-impact.html` and returns a COMPACT summary — counts plus the existing
-  files/symbols the feature touches, warnings, provenance breadcrumbs, and the HTML path — keeping the
-  full evidence in the HTML only so it will not flood an agent context. It mirrors the `chaos impact <repo> <feature>` CLI command.
-- `chaos_usage` reports WHO CONSUMES a symbol or surface string (env var, HTTP header, route,
-  GraphQL field, function) across the repo, grouped by top-level subfolder — the cross-folder "who
-  uses this?" answer resolved from the persisted index ONLY (user-surface
-  `env_var`/`http_route`/`cli_command`/`graphql_field` nodes + reverse graph edges
-  `calls`/`imports`/`uses_type`/`implements`/`tests`/`depends_on` + a
-  literal chunk sweep; a bare GraphQL field name matches qualified `graphql_field` nodes by
-  suffix), so it replaces `rg`/`grep` on the target repo. Read-only and embedder-free.
-  It ALWAYS writes an interactive HTML report to `docs/features_memory/<slug>-usage.html` (embedding
-  a `chaos-usage-manifest`) and returns a COMPACT per-folder JSON summary — consumer sites grouped by
-  subfolder, capped with `sites_omitted` counts, plus provenance and the HTML path. Honest limitation
-  surfaced as a warning: call/import edges resolve cross-file only for repo-unique names. It mirrors
-  the `chaos usage <repo> <target>` CLI command.
-- `chaos_write_feature_website` is the MCP-safe write path for LLM-composed feature explanation
-  pages with embedded `chaos-feature-manifest` JSON.
-- `chaos_obsidian` exports an already-indexed repository as an Obsidian vault read from the
-  persisted graph; it lets an MCP-only agent generate the vault without shelling out to the CLI. It
-  now also regenerates god-node community notes (`vault/Communities/*.md` plus a `Feature Map.md`)
-  and an interactive `docs/features_memory/feature-map.html` from the persisted layers — no re-index
-  and no embedder.
-- `chaos_refresh` regenerates the Obsidian vault and, with `all_features=true`, re-renders the
-  deterministic feature pages in `docs/features_memory` from their embedded manifests without
-  re-indexing; it lets an MCP-only agent refresh pages without shelling out to the CLI. It also
-  regenerates the god-node community notes (`vault/Communities/*.md` plus `Feature Map.md`) and the
-  interactive `docs/features_memory/feature-map.html` from the persisted layers, with no re-index and
-  no embedder.
-- `chaos_write_storyboard` is the MCP-safe write path for a client/user-facing **"Feature guide"**: a
-  code-free UI/UX user-story page (role-card personas, "As a … I want … so that …" stories, a
-  scrollytelling walkthrough, outcomes) rendered in the
-  shared light editorial theme (Access-Control lineage) and written to
-  `docs/features_memory/<slug>-story.html` with an embedded `chaos-storyboard-manifest`. You pass a
-  structured manifest only (no HTML); Rust owns the styling and the scroll-unlock gamification.
-  Manifest minimums: at least 1 persona, 2 stories, 3 frames, and 1 outcome; every `confidence` and
-  `overall_confidence` in `[0,1]` (confidence is optional metadata, NOT shown to end users); and every
-  `story.frame_ids`/persona reference must resolve. Each walkthrough step pairs with a device mockup
-  built from the frame's optional `preview` — `image` (a REAL screenshot/clip you captured; offline
-  and private) or `iframe` (a live embed of a running app route); Chaos can't synthesise the client's
-  screens, so a frame with no `preview` renders text-only — full-width copy, no mockup or
-  placeholder (embed real captures when available). `src`/`url` must not use
-  `javascript:`/`data:text/html`. Optional, backward-compatible extras let you match the full
-  Access-Control look: `hero_image` + `brand` (your logo/company), persona `who`/`icon`/`includes`/
-  `tier`, a permission `matrix`, an agent-style `callout`, and an end-of-page `game` (a click-to-check
-  mini-game). It is user-facing — use
-  `chaos_write_feature_website` for the engineer-facing graph/architecture/code page. It mirrors the
-  `chaos storyboard <repo> --manifest <file.json>` CLI command.
-- `chaos_change_plan` decomposes a proposed change into the FEATURES (L1 communities / god-nodes) it
-  spans, with a dependency-aware check order. It matches the change description against community
-  summary embeddings, also seeding from a real git diff via `since` and from previously generated
-  feature pages it correlates with, then ALWAYS writes an interactive HTML plan to
-  `docs/features_memory/<slug>-plan.html` and returns a COMPACT JSON summary — per-feature label,
-  confidence, `via` source (semantic/diff/manifest), `matched_by` breadcrumbs, check order, top
-  symbols, top-level `provenance`, and the HTML path — keeping the full plan in the HTML only so it
-  will not flood an agent context. It mirrors the `chaos change-plan <repo> "<change>"
-  [--since <ref>]` CLI command.
-- `chaos_components` explains the CORE COMPONENTS of a big area — the orientation step BEFORE feature
-  extraction. An area like "OCL" spans several L1 communities; given an `area` (or none, for a
-  repo-level overview) it surfaces those communities as COMPONENTS, each with its L3 summary, key
-  symbols/files, languages, and a quotient-graph ROLE (entry/interface/core/foundation), plus how
-  they connect and a dependency-first READ ORDER. It matches the area against community summary
-  embeddings AND community labels (path-derived, so a directory-named area is caught) and correlates
-  it with previously generated feature pages (`related_features`). It ALWAYS writes an interactive
-  HTML overview to `docs/features_memory/<slug>-components.html` (embedding a
-  `chaos-components-manifest` an agent can extract) and returns a COMPACT JSON summary — component
-  count, per-component label/role/read_order/top symbols/`matched_by`, relationships, related pages,
-  top-level `provenance`, and the HTML path — keeping the full overview in the HTML only. Use it to
-  understand a large subsystem before drilling into any single feature. It mirrors the
-  `chaos components <repo> ["<area>"]` CLI command.
-- `chaos_features` lists ALL god-node FEATURES (L1 communities) that match a filter, grouped by
-  journey layer (entry → interface → core → foundation) — the EXHAUSTIVE, uncurated counterpart to
-  `chaos_components`. The single `filter` is AUTO-DETECTED: a path or real directory → FOLDER scope
-  (features whose code lives under it); a single layer word like `client`/`ui`/`api`/`core`/
-  `contracts` → that journey LAYER (so "all client features" = every entry-layer feature); any other
-  phrase is first tried as a layer BY MEANING (embedding cosine against per-layer prototype
-  phrasings — "backend", "client app", "devops" resolve semantically; "backend" spans
-  interface+core) and only then falls to a TOPIC match (summary cosine + label/summary keywords);
-  omit it for the whole repo. Force the interpretation with `layer`/`folder`/`topic`. Exact layer
-  words, folders and whole-repo listing are embedder-free. It ALWAYS
-  writes an interactive HTML inventory to `docs/features_memory/<slug>-features.html` (embedding a
-  `chaos-features-manifest` an agent can extract) and returns a COMPACT JSON summary sized to stay
-  inline in agent context — resolved filter + how detected, total, per-layer + language counts,
-  domain group names, ONE READABLE LINE PER FEATURE (label, layer role, member count, extra folders,
-  short symbols, and why-it-matched for topic queries), top-level `provenance`, and the HTML path;
-  full per-feature detail (full symbol paths, files, breadcrumbs) lives in the HTML manifest.
+### compose — `chaos compose [--out <dir>] [--limit N]` / `chaos_compose`
 
-  The HTML page groups features into HUMAN-READABLE DOMAINS, folder-derived automatically. When you
-  compose a curated grouping with one-line notes for your answer (domain titles like "IP-NFT Minting
-  flow — the wizard", per-feature "what's in it" notes), call `chaos_features` AGAIN with the same
-  repo/filter plus `curation: {groups: [{title, icon?, blurb?, features: [{label, note?}]}]}` — Chaos
-  re-runs the identical selection (cheap; folder/layer scopes are embedder-free) and renders YOUR
-  domains as the page's primary sections, with unplaced features falling back to auto domains
-  (tagged `auto`). Labels match by exact value or a unique trailing fragment; the return is a tiny
-  render receipt, not the inventory again. CLI parity: `chaos features <repo> "<filter>"
-  --curation curation.json`. It mirrors the `chaos features <repo> ["<filter>"]` CLI command.
+Write the feature website of a repository: an index page listing every feature community plus one
+drill-down page per feature (members, files, relations to other features, summary). Content-hash
+gated per page.
+
+| arg | type | notes |
+|---|---|---|
+| `repo` | string | optional |
+| `out` | string | output directory; default `<repo>/docs/features_memory/site` |
+| `limit` | integer | max feature pages, largest communities first |
+
+Returns `out`, `pages_written`, `pages_cached`, `communities`, `omitted`, provenance.
+
+### correlations — `chaos correlations [--repos a b] [--min-confidence 0.5]` / `chaos_correlations`
+
+Feature correlations. Intra-repo: pairs of features sharing files or symbols. Cross-repo (project
+from chaos.toml): consumer -> provider links by `package_dep` (one repo imports a package another
+publishes) and `http_route` (a client call path matches a route another repo registers). Writes
+`correlations.html` under `docs/features_memory` of the project directory (or of the single repo).
+
+| arg | type | notes |
+|---|---|---|
+| `project` | string | path to chaos.toml; default nearest ancestor of the cwd (CLI `--project`) |
+| `repos` | string[] | restrict to these aliases/paths (CLI `--repos`, or one `--repo`) |
+| `min_confidence` | number | default 0.5; drops cross-repo links below it |
+
+Returns `intra[]` (`repo`, `a`, `b`, `shared_files`, `shared_symbols`, `score`), `cross[]`
+(`consumer_repo`, `consumer_feature`, `provider_repo`, `provider_feature`, `kind`, `evidence`,
+`confidence`), `page` (`path`, `written`, `content_hash`), provenance. Every listed repo must be
+indexed first.
+
+## Token discipline
+
+- Read `excerpts[].code` from the `feature` return instead of opening files. Each excerpt carries
+  the exact `path` and `lines`; only open the source when the excerpt is `code_truncated` and the
+  missing body matters. Raise `budget_tokens` (up to 16000) before falling back to file reads.
+- `page_cached: true` on `feature`, and `pages_cached` on `compose`, mean the page already holds
+  this content. Do not re-open or re-ingest cached pages; the return payload is the answer.
+- Ask one focused question per `feature` call rather than one broad question with a large budget.
+- Run `add` before asking about code you just changed; otherwise the answer describes the old code.
+- If the embedder or Postgres is down, indexing fails loudly. Report the `doctor` failure; never
+  substitute fake vectors or a script over the target repo.
+
+## Development rules (working on Chaos itself)
+
+- Hexagonal layers, enforced by the `layering` test in `src/main.rs`: `domain` (pure, no I/O) ->
+  `ports` (traits) -> `application` (use cases) ; `adapters` implement ports; `entry` (cli, mcp,
+  doctor) wires them. Never import `crate::adapters` from domain, ports, or application.
+- Tool descriptions and schemas live only in `src/application/tools.rs`; CLI help, MCP
+  `tools/list`, and the roster test all derive from it.
+- Keep MCP on stdio, newline-delimited JSON-RPC 2.0. Keep persistence in Postgres + pgvector
+  (`migrations/001_init.sql`). Keep extraction tree-sitter in Rust — no Node/Python sidecars.
+- Validate: `cargo fmt --check`, `cargo test`, `cargo clippy --all-targets -- -D warnings`.
+- Legacy 0.24 code exists only at git tag `archive/v0.24-legacy`; do not reintroduce it.

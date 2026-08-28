@@ -1,10 +1,10 @@
 //! Use-case: incremental index of the files git reports as changed.
 //!
-//! Added/modified/renamed-to files are re-extracted and re-analyzed
-//! (resolution is limited to the changed set — a documented limitation:
-//! edges INTO unchanged files are resolved only when their targets are
-//! known to the persisted graph via stable ids, edges FROM unchanged files
-//! to new symbols wait for the next full `index`). Deleted and renamed-from
+//! Added/modified/renamed-to files are re-extracted and re-analyzed against
+//! the persisted graph (`analyze_with(.., Some(graph))`), so edges INTO
+//! unchanged files and the chunk headers match a full `index`; edges FROM
+//! unchanged files to new symbols still wait for the next full `index` (a
+//! documented limitation). Deleted and renamed-from
 //! paths are purged; every changed path is purged too and re-inserted by
 //! `merge_files`. Only chunks the store reports missing get embedded. The
 //! hierarchy is always rebuilt, but summaries are hash-gated so a no-change
@@ -57,7 +57,14 @@ pub async fn add(
     let mut omitted = 0usize;
     let mut provenance = Vec::new();
 
-    let all_changes = deps.vcs.changes(&ident.root, since)?;
+    // Explicit git range (`--since <ref>`): everything git reports in that
+    // range. Without it, detection is purely content-hash based (below) — the
+    // worktree channel would keep re-reporting uncommitted edits that are
+    // already indexed.
+    let all_changes = match since {
+        Some(_) => deps.vcs.changes(&ident.root, since)?,
+        None => Vec::new(),
+    };
     let mut purge: BTreeSet<String> = BTreeSet::new();
     let mut to_read: BTreeSet<String> = BTreeSet::new();
     for c in &all_changes {
@@ -84,24 +91,63 @@ pub async fn add(
             }
         }
     }
+    if let Some(r) = since {
+        provenance.push(
+            Breadcrumb::new(
+                source::GIT,
+                "git diff",
+                format!("{} raw changes since {r}", all_changes.len()),
+            )
+            .with_locator(ident.root_path.clone()),
+        );
+    }
+    // Reconcile against what the index actually holds: on-disk files whose
+    // content hash differs from the stored one (or that are new) are
+    // re-extracted; indexed paths missing from disk are purged. This catches
+    // what git cannot see — a reverted worktree, edits between two adds, an
+    // index that fell behind.
+    let graph = deps.store.load_graph(repo_id).await?;
+    let indexed: HashMap<String, String> = graph
+        .files
+        .iter()
+        .map(|f| (f.path.clone(), f.content_hash.clone()))
+        .collect();
+    let on_disk = deps.vcs.list_files(&ident.root, &opts.skip_dirs)?;
+    let mut disk_set: BTreeSet<String> = BTreeSet::new();
+    let mut drifted = 0usize;
+    for p in &on_disk {
+        let rel = p.to_string_lossy().replace('\\', "/");
+        disk_set.insert(rel.clone());
+        if Language::from_path(&rel).is_none() {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(ident.root.join(p)) else {
+            continue;
+        };
+        let hash = crate::domain::hash::sha256_hex(&String::from_utf8_lossy(&bytes));
+        if indexed.get(&rel) != Some(&hash) {
+            if to_read.insert(rel.clone()) {
+                drifted += 1;
+            }
+            purge.insert(rel);
+        }
+    }
+    let mut gone = 0usize;
+    for path in indexed.keys() {
+        if !disk_set.contains(path) && purge.insert(path.clone()) {
+            gone += 1;
+        }
+    }
+    provenance.push(Breadcrumb::new(
+        source::FILE,
+        "hash reconcile",
+        format!(
+            "{} indexed files vs {} on disk: {drifted} drifted, {gone} gone",
+            indexed.len(),
+            on_disk.len()
+        ),
+    ));
     let changed = purge.len();
-    provenance.push(
-        Breadcrumb::new(
-            source::GIT,
-            if since.is_some() {
-                "git diff"
-            } else {
-                "git status"
-            },
-            format!(
-                "{} raw changes → {changed} indexable ({} to re-extract, since {})",
-                all_changes.len(),
-                to_read.len(),
-                since.unwrap_or("HEAD/worktree")
-            ),
-        )
-        .with_locator(ident.root_path.clone()),
-    );
     let mut report = AddReport {
         repo: ident.root_path.clone(),
         changed,
@@ -134,10 +180,14 @@ pub async fn add(
         format!("{} changed files read", inputs.len()),
     ));
 
+    // Resolve against the persisted graph so imports/calls/relations — and the
+    // `uses:`/`calls:` chunk-header lines that hash into content_hash — come
+    // out identical to a full `index` of the same file.
     let (bundle, _call_resolution) = extract_and_analyze(
         deps,
         repo_id,
         inputs,
+        Some(&graph),
         opts.split_cos,
         &mut warnings,
         &mut omitted,
@@ -386,7 +436,7 @@ mod tests {
         let report = add(
             deps(&store, &comms, &emb, &ext, &vcs),
             dir.path(),
-            None,
+            Some("HEAD~1"),
             IndexOptions::default(),
         )
         .await

@@ -338,10 +338,20 @@ fn build_community(
     let id = hash::scoped_id(repo_id, &format!("community:{min_stable_id}"));
 
     let mut ranked = sorted.clone();
+    // Symbols before files/modules (a File node's Contains fan-out would
+    // otherwise always win), then by weighted degree.
+    let is_structural = |i: usize| {
+        matches!(
+            indexed[i].kind,
+            crate::domain::model::NodeKind::File
+                | crate::domain::model::NodeKind::Repository
+                | crate::domain::model::NodeKind::Module
+        )
+    };
     ranked.sort_by(|&a, &b| {
-        degree[b]
-            .partial_cmp(&degree[a])
-            .unwrap_or(Ordering::Equal)
+        is_structural(a)
+            .cmp(&is_structural(b))
+            .then(degree[b].partial_cmp(&degree[a]).unwrap_or(Ordering::Equal))
             .then(indexed[a].stable_id.cmp(&indexed[b].stable_id))
     });
     let top_members: Vec<String> = ranked
@@ -372,20 +382,28 @@ fn build_community(
 /// Dominant top-level directory of the member files (ties to the smallest
 /// name) joined with the top member's name. Deterministic.
 fn community_label(files: &[String], top: Option<&str>) -> String {
-    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    // The directory most of the member files live in (ties: shortest, then
+    // alphabetical) — communities usually span layers, so a common prefix
+    // would collapse to the repository root.
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for f in files {
-        let seg = f.split('/').find(|s| !s.is_empty()).unwrap_or("");
-        if !seg.is_empty() {
-            *counts.entry(seg).or_insert(0) += 1;
-        }
+        let dir = match f.rfind('/') {
+            Some(i) => &f[..i],
+            None => ".",
+        };
+        *counts.entry(dir.to_string()).or_insert(0) += 1;
     }
     let prefix = counts
         .iter()
-        .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
-        .map(|(s, _)| *s);
+        .max_by(|a, b| {
+            a.1.cmp(b.1)
+                .then(b.0.len().cmp(&a.0.len()))
+                .then(b.0.cmp(a.0))
+        })
+        .map(|(s, _)| s.clone());
     match (prefix, top) {
         (Some(p), Some(t)) => format!("{p} · {t}"),
-        (Some(p), None) => p.to_string(),
+        (Some(p), None) => p,
         (None, Some(t)) => t.to_string(),
         (None, None) => "community".to_string(),
     }

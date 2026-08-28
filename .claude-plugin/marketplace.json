@@ -9,8 +9,8 @@
   "plugins": [
     {
       "name": "chaos-substrate",
-      "description": "Persistent code knowledge memory with a layered feature hierarchy, change-plan decomposition, core-components area overviews, MCP feature-context explanations, and client-facing feature storyboards (with real-UI previews) for Rust, TypeScript, JavaScript, Python, Solidity, and GraphQL projects.",
-      "version": "0.24.0",
+      "description": "Knowledge-graph code memory for multi-repository projects (Rust, TypeScript, JavaScript, Python, Solidity, GraphQL). Six MCP tools: chaos_index, chaos_reindex, chaos_add, chaos_feature, chaos_compose, chaos_correlations. Postgres + pgvector storage, Ollama or OpenAI embeddings.",
+      "version": "1.0.0",
       "author": {
         "name": "Chaos Substrate"
       },

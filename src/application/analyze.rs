@@ -19,6 +19,7 @@
 use crate::domain::hash;
 use crate::domain::model::{Edge, EdgeKind, IndexBundle, Language, Node, NodeKind, SourceFile};
 use crate::ports::extractor::{FileExtraction, FileInput, SurfaceKind, Symbol};
+use crate::ports::index_store::Graph;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -86,34 +87,98 @@ struct SymRef {
     sym: usize,
 }
 
-/// Build the L0 graph and resolve cross-file references.
+/// The slice of a symbol resolution looks at — the same shape whether the
+/// symbol comes from a changed file's extraction or from the persisted graph.
+#[derive(Debug, Clone)]
+struct SymView<'a> {
+    stable_id: &'a str,
+    kind: NodeKind,
+    name: &'a str,
+    qualified_name: &'a str,
+    parent: Option<&'a str>,
+}
+
+/// One file in the resolution universe: the changed files come first (same
+/// order as the input slice), the known (persisted, unchanged) files after.
+#[derive(Debug, Clone)]
+struct FileView<'a> {
+    path: &'a str,
+    language: Language,
+    symbols: Vec<SymView<'a>>,
+}
+
+/// Build the L0 graph and resolve cross-file references over `files` alone
+/// (the whole repository). Production callers go through
+/// [`analyze_with`]; this stays as the closed-world entry point for tests.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn analyze(repo_id: Uuid, files: &[(FileInput, FileExtraction)]) -> Analyzed {
+    analyze_with(repo_id, files, None)
+}
+
+/// Build the L0 graph for `files` and resolve their imports, calls and
+/// relations against `files` PLUS the persisted graph `known` (when given).
+///
+/// Known symbols (every non-file, non-surface node, located through its file's
+/// path and qualified via `metadata.qualified_name`) and known File nodes take
+/// part in the definition index and import resolution exactly as if their files
+/// had been analyzed alongside — so `Unit.uses`/`Unit.calls` (the chunk header)
+/// and the resolved edge targets are identical to a full analyze of the whole
+/// repository. Known nodes whose file is in `files` are dropped first (the file
+/// is being re-extracted). The returned bundle holds ONLY `files`' nodes, edges
+/// and units; known nodes are referenced by id in edges, never re-emitted.
+pub fn analyze_with(
+    repo_id: Uuid,
+    files: &[(FileInput, FileExtraction)],
+    known: Option<&Graph>,
+) -> Analyzed {
     let mut out = Analyzed::default();
     let mut edges = EdgeSet::default();
+    let node_id_of = |stable_id: &str| hash::scoped_id(repo_id, stable_id);
+
+    // ---- resolution universe ------------------------------------------------
+    let n = files.len();
+    let mut view: Vec<FileView<'_>> = files
+        .iter()
+        .map(|(input, x)| FileView {
+            path: input.path.as_str(),
+            language: x.language.unwrap_or(input.language),
+            symbols: x
+                .symbols
+                .iter()
+                .map(|s| SymView {
+                    stable_id: s.stable_id.as_str(),
+                    kind: s.kind,
+                    name: s.name.as_str(),
+                    qualified_name: s.qualified_name.as_str(),
+                    parent: s.parent.as_deref(),
+                })
+                .collect(),
+        })
+        .collect();
+    if let Some(g) = known {
+        view.extend(known_views(g, files));
+    }
 
     // ---- lookup tables -----------------------------------------------------
-    let path_index: HashMap<&str, usize> = files
-        .iter()
-        .enumerate()
-        .map(|(i, (f, _))| (f.path.as_str(), i))
-        .collect();
+    let path_index: HashMap<&str, usize> =
+        view.iter().enumerate().map(|(i, f)| (f.path, i)).collect();
     let mut sym_by_id: HashMap<&str, SymRef> = HashMap::new();
     let mut defs_by_name: HashMap<&str, Vec<SymRef>> = HashMap::new();
     let mut typeish_by_name: HashMap<&str, Vec<SymRef>> = HashMap::new();
     let mut fields_by_qualified: HashMap<&str, Vec<SymRef>> = HashMap::new();
-    for (fi, (_, x)) in files.iter().enumerate() {
-        for (si, s) in x.symbols.iter().enumerate() {
+    for (fi, f) in view.iter().enumerate() {
+        for (si, s) in f.symbols.iter().enumerate() {
             let r = SymRef { file: fi, sym: si };
-            sym_by_id.insert(s.stable_id.as_str(), r);
+            sym_by_id.insert(s.stable_id, r);
             if is_callable(s.kind) {
-                defs_by_name.entry(s.name.as_str()).or_default().push(r);
+                defs_by_name.entry(s.name).or_default().push(r);
             }
             if is_typeish(s.kind) {
-                typeish_by_name.entry(s.name.as_str()).or_default().push(r);
+                typeish_by_name.entry(s.name).or_default().push(r);
             }
             if s.kind == NodeKind::Field {
                 fields_by_qualified
-                    .entry(s.qualified_name.as_str())
+                    .entry(s.qualified_name)
                     .or_default()
                     .push(r);
             }
@@ -136,14 +201,18 @@ pub fn analyze(repo_id: Uuid, files: &[(FileInput, FileExtraction)]) -> Analyzed
         metadata: json!({}),
     });
 
-    let mut file_ids: Vec<Uuid> = Vec::with_capacity(files.len());
-    let mut file_nodes: Vec<Uuid> = Vec::with_capacity(files.len());
+    // File node ids for the whole universe (known File nodes share the same
+    // uuid5 derivation, so an edge into one lands on the persisted node).
+    let file_nodes: Vec<Uuid> = view
+        .iter()
+        .map(|f| node_id_of(&file_stable_id(f.path)))
+        .collect();
+    let mut file_ids: Vec<Uuid> = Vec::with_capacity(n);
     for (input, x) in files {
         let language = x.language.unwrap_or(input.language);
         let file_id = hash::scoped_id(repo_id, &format!("source_file:{}", input.path));
-        let node_id = hash::scoped_id(repo_id, &file_stable_id(&input.path));
+        let node_id = node_id_of(&file_stable_id(&input.path));
         file_ids.push(file_id);
-        file_nodes.push(node_id);
         out.bundle.files.push(SourceFile {
             id: file_id,
             repo_id,
@@ -174,7 +243,6 @@ pub fn analyze(repo_id: Uuid, files: &[(FileInput, FileExtraction)]) -> Analyzed
     }
 
     // ---- symbol nodes + containment ----------------------------------------
-    let node_id_of = |stable_id: &str| hash::scoped_id(repo_id, stable_id);
     for (fi, (input, x)) in files.iter().enumerate() {
         let language = x.language.unwrap_or(input.language);
         for s in &x.symbols {
@@ -244,15 +312,15 @@ pub fn analyze(repo_id: Uuid, files: &[(FileInput, FileExtraction)]) -> Analyzed
             }
         }
     }
-    out.stats.files = files.len();
+    out.stats.files = n;
 
     // ---- imports ------------------------------------------------------------
-    // imported_files[fi] = files fi imports (resolved), in first-seen order.
-    let mut imported_files: Vec<Vec<usize>> = vec![Vec::new(); files.len()];
+    // imported_files[fi] = files fi imports (resolved, may be known), first-seen order.
+    let mut imported_files: Vec<Vec<usize>> = vec![Vec::new(); n];
     // imported_names[fi] = names available from resolved imports (uses hints).
-    let mut imported_names: Vec<Vec<String>> = vec![Vec::new(); files.len()];
+    let mut imported_names: Vec<Vec<String>> = vec![Vec::new(); n];
     for (fi, (input, x)) in files.iter().enumerate() {
-        let language = x.language.unwrap_or(input.language);
+        let language = view[fi].language;
         out.heads.push(FileHead {
             file_index: fi,
             free_ranges: x.free_ranges.clone(),
@@ -307,14 +375,14 @@ pub fn analyze(repo_id: Uuid, files: &[(FileInput, FileExtraction)]) -> Analyzed
                 call.caller.as_str(),
                 call.callee.as_str(),
                 call.receiver.as_deref(),
-                files,
+                &view,
                 &sym_by_id,
                 &defs_by_name,
                 &imported_files,
             ) else {
                 continue;
             };
-            let target_sym = &files[target.file].1.symbols[target.sym];
+            let target_sym = &view[target.file].symbols[target.sym];
             let source = if call.caller.starts_with("file:") {
                 file_nodes[fi]
             } else if sym_by_id.contains_key(call.caller.as_str()) {
@@ -322,7 +390,7 @@ pub fn analyze(repo_id: Uuid, files: &[(FileInput, FileExtraction)]) -> Analyzed
             } else {
                 file_nodes[fi]
             };
-            let target_id = node_id_of(&target_sym.stable_id);
+            let target_id = node_id_of(target_sym.stable_id);
             if source == target_id {
                 continue;
             }
@@ -330,7 +398,7 @@ pub fn analyze(repo_id: Uuid, files: &[(FileInput, FileExtraction)]) -> Analyzed
             edges.push(repo_id, source, target_id, EdgeKind::Calls, conf);
             push_unique(
                 calls_by_caller.entry(call.caller.as_str()).or_default(),
-                target_sym.name.clone(),
+                target_sym.name.to_string(),
             );
         }
     }
@@ -374,7 +442,7 @@ pub fn analyze(repo_id: Uuid, files: &[(FileInput, FileExtraction)]) -> Analyzed
             let Some((target, conf)) = resolved else {
                 continue;
             };
-            let target_id = node_id_of(&files[target.file].1.symbols[target.sym].stable_id);
+            let target_id = node_id_of(view[target.file].symbols[target.sym].stable_id);
             if target_id == source {
                 continue;
             }
@@ -409,7 +477,7 @@ pub fn analyze(repo_id: Uuid, files: &[(FileInput, FileExtraction)]) -> Analyzed
                 .parent
                 .as_deref()
                 .and_then(|p| sym_by_id.get(p))
-                .map(|r| files[r.file].1.symbols[r.sym].qualified_name.clone());
+                .map(|r| view[r.file].symbols[r.sym].qualified_name.to_string());
             out.units.push(Unit {
                 node_id: node_id_of(&s.stable_id),
                 file_index: fi,
@@ -424,6 +492,7 @@ pub fn analyze(repo_id: Uuid, files: &[(FileInput, FileExtraction)]) -> Analyzed
     out.bundle.edges = edges.into_vec();
     tracing::info!(
         files = out.stats.files,
+        known_files = view.len() - n,
         symbols = out.stats.symbols,
         nodes = out.bundle.nodes.len(),
         edges = out.bundle.edges.len(),
@@ -433,6 +502,78 @@ pub fn analyze(repo_id: Uuid, files: &[(FileInput, FileExtraction)]) -> Analyzed
         "analyzed"
     );
     out
+}
+
+/// Project the persisted graph onto [`FileView`]s: one per known file that is
+/// NOT in the changed set, carrying its symbol nodes (everything but the
+/// repository/file/surface nodes) with parents recovered from `Contains`
+/// edges. Ordered by path, symbols by stable_id — deterministic regardless of
+/// the store's row order.
+fn known_views<'a>(g: &'a Graph, changed: &[(FileInput, FileExtraction)]) -> Vec<FileView<'a>> {
+    let changed_paths: HashSet<&str> = changed.iter().map(|(f, _)| f.path.as_str()).collect();
+    let changed_ids: HashSet<&str> = changed
+        .iter()
+        .flat_map(|(_, x)| x.symbols.iter().map(|s| s.stable_id.as_str()))
+        .collect();
+    let node_by_id: HashMap<Uuid, &Node> = g.nodes.iter().map(|n| (n.id, n)).collect();
+    // child id → parent stable_id, when the parent is a symbol (not a file).
+    let parent_of: HashMap<Uuid, &str> = g
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Contains)
+        .filter_map(|e| {
+            let p = node_by_id.get(&e.source_node_id)?;
+            (is_symbol_kind(p.kind)).then_some((e.target_node_id, p.stable_id.as_str()))
+        })
+        .collect();
+    let mut file_pos: HashMap<Uuid, usize> = HashMap::new();
+    let mut views: Vec<FileView<'a>> = Vec::new();
+    let mut files: Vec<&SourceFile> = g
+        .files
+        .iter()
+        .filter(|f| !changed_paths.contains(f.path.as_str()))
+        .collect();
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    files.dedup_by(|a, b| a.path == b.path);
+    for f in files {
+        file_pos.insert(f.id, views.len());
+        views.push(FileView {
+            path: f.path.as_str(),
+            language: f.language,
+            symbols: Vec::new(),
+        });
+    }
+    let mut nodes: Vec<&Node> = g
+        .nodes
+        .iter()
+        .filter(|nd| is_symbol_kind(nd.kind) && !changed_ids.contains(nd.stable_id.as_str()))
+        .collect();
+    nodes.sort_by(|a, b| a.stable_id.cmp(&b.stable_id));
+    for nd in nodes {
+        let Some(&pos) = nd.file_id.and_then(|id| file_pos.get(&id)) else {
+            continue;
+        };
+        let qualified_name = nd
+            .metadata
+            .get("qualified_name")
+            .and_then(Value::as_str)
+            .unwrap_or(nd.name.as_str());
+        views[pos].symbols.push(SymView {
+            stable_id: nd.stable_id.as_str(),
+            kind: nd.kind,
+            name: nd.name.as_str(),
+            qualified_name,
+            parent: parent_of.get(&nd.id).copied(),
+        });
+    }
+    views
+}
+
+fn is_symbol_kind(kind: NodeKind) -> bool {
+    !matches!(
+        kind,
+        NodeKind::Repository | NodeKind::File | NodeKind::EnvVar | NodeKind::HttpRoute
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -563,7 +704,7 @@ fn resolve_call(
     caller: &str,
     callee: &str,
     receiver: Option<&str>,
-    files: &[(FileInput, FileExtraction)],
+    files: &[FileView<'_>],
     sym_by_id: &HashMap<&str, SymRef>,
     defs_by_name: &HashMap<&str, Vec<SymRef>>,
     imported_files: &[Vec<usize>],
@@ -576,7 +717,7 @@ fn resolve_call(
     // it is strictly more specific than a same-file name match.
     if self_like {
         if let Some(container) = container_of(caller, sym_by_id, files) {
-            let cont_name = files[container.file].1.symbols[container.sym].name.as_str();
+            let cont_name = files[container.file].symbols[container.sym].name;
             let cands: Vec<SymRef> = defs
                 .iter()
                 .copied()
@@ -591,7 +732,7 @@ fn resolve_call(
         let cands: Vec<SymRef> = defs
             .iter()
             .copied()
-            .filter(|r| files[r.file].1.symbols[r.sym].kind == NodeKind::Method)
+            .filter(|r| files[r.file].symbols[r.sym].kind == NodeKind::Method)
             .filter(|r| parent_name(*r, files, sym_by_id) == Some(recv))
             .collect();
         if let Some(r) = unique(&cands) {
@@ -633,24 +774,24 @@ fn resolve_call(
 fn container_of(
     caller: &str,
     sym_by_id: &HashMap<&str, SymRef>,
-    files: &[(FileInput, FileExtraction)],
+    files: &[FileView<'_>],
 ) -> Option<SymRef> {
     let r = *sym_by_id.get(caller)?;
-    let s = &files[r.file].1.symbols[r.sym];
+    let s = &files[r.file].symbols[r.sym];
     match s.kind {
         NodeKind::Type | NodeKind::Interface | NodeKind::Module | NodeKind::Enum => Some(r),
-        _ => s.parent.as_deref().and_then(|p| sym_by_id.get(p)).copied(),
+        _ => s.parent.and_then(|p| sym_by_id.get(p)).copied(),
     }
 }
 
 fn parent_name<'a>(
     r: SymRef,
-    files: &'a [(FileInput, FileExtraction)],
+    files: &'a [FileView<'a>],
     sym_by_id: &HashMap<&str, SymRef>,
 ) -> Option<&'a str> {
-    let s = &files[r.file].1.symbols[r.sym];
-    let p = *sym_by_id.get(s.parent.as_deref()?)?;
-    Some(files[p.file].1.symbols[p.sym].name.as_str())
+    let s = &files[r.file].symbols[r.sym];
+    let p = *sym_by_id.get(s.parent?)?;
+    Some(files[p.file].symbols[p.sym].name)
 }
 
 // ---- path utilities ---------------------------------------------------------
@@ -1433,6 +1574,238 @@ mod tests {
         assert_eq!(ids.len(), a.bundle.nodes.len());
         let eids: HashSet<Uuid> = a.bundle.edges.iter().map(|e| e.id).collect();
         assert_eq!(eids.len(), a.bundle.edges.len());
+    }
+
+    /// `add` (changed file + persisted graph) must produce the SAME hints and
+    /// edge targets as `index` (every file at once) — the chunk header hashes
+    /// into content_hash, so any drift re-embeds unchanged code.
+    /// `(stable_id, uses, calls, container)` — what feeds the chunk header.
+    type UnitHints = (String, Vec<String>, Vec<String>, Option<String>);
+
+    #[test]
+    fn analyze_with_known_graph_matches_full_analyze() {
+        let a_rs = file(
+            "src/a.rs",
+            "pub fn helper() {}\npub fn main() {}\n",
+            vec![
+                sym(
+                    "rust:src/a.rs:function:helper",
+                    NodeKind::Function,
+                    "helper",
+                    None,
+                ),
+                sym(
+                    "rust:src/a.rs:function:main",
+                    NodeKind::Function,
+                    "main",
+                    None,
+                ),
+            ],
+        );
+        let b_src = "use crate::a::helper;\nuse crate::c;\npub fn shared() { helper(); lonely(); Engine::start(); dup(); Vec::new(); }\npub struct Engine; impl Engine { pub fn start() { self.new(); } pub fn new() {} }\n";
+        let mut b_rs = file(
+            "src/b.rs",
+            b_src,
+            vec![
+                Symbol {
+                    byte_start: 37,
+                    byte_end: 116,
+                    ..sym(
+                        "rust:src/b.rs:function:shared",
+                        NodeKind::Function,
+                        "shared",
+                        None,
+                    )
+                },
+                sym("rust:src/b.rs:type:Engine", NodeKind::Type, "Engine", None),
+                sym(
+                    "rust:src/b.rs:module:Engine",
+                    NodeKind::Module,
+                    "Engine",
+                    None,
+                ),
+                sym(
+                    "rust:src/b.rs:method:Engine::start",
+                    NodeKind::Method,
+                    "start",
+                    Some("rust:src/b.rs:module:Engine"),
+                ),
+                sym(
+                    "rust:src/b.rs:method:Engine::new",
+                    NodeKind::Method,
+                    "new",
+                    Some("rust:src/b.rs:module:Engine"),
+                ),
+            ],
+        );
+        b_rs.1.imports = vec![imp("crate::a::helper", &[]), imp("crate::c", &[])];
+        b_rs.1.calls = vec![
+            call("rust:src/b.rs:function:shared", "helper", None), // (b) imported a.rs
+            call("rust:src/b.rs:function:shared", "lonely", None), // (b) imported c.rs
+            call("rust:src/b.rs:function:shared", "start", Some("Engine")), // (c) same file
+            call("rust:src/b.rs:function:shared", "dup", None),    // ambiguous: a.rs? no — c.rs x2
+            call("rust:src/b.rs:function:shared", "new", Some("Vec")), // foreign
+            call("rust:src/b.rs:method:Engine::start", "new", Some("self")), // (c)
+            call("rust:src/b.rs:function:shared", "solo", None), // (d) repo-unique, unimported d.rs
+        ];
+        b_rs.1.relations = vec![Relation {
+            source: "rust:src/b.rs:type:Engine".into(),
+            kind: EdgeKind::Extends,
+            target_name: "Base".into(),
+        }];
+        let c_rs = file(
+            "src/c.rs",
+            "pub fn lonely() {}\npub fn dup() {}\npub fn dup() {}\n",
+            vec![
+                sym(
+                    "rust:src/c.rs:function:lonely",
+                    NodeKind::Function,
+                    "lonely",
+                    None,
+                ),
+                sym(
+                    "rust:src/c.rs:function:dup",
+                    NodeKind::Function,
+                    "dup",
+                    None,
+                ),
+                sym(
+                    "rust:src/c.rs:function:dup#2",
+                    NodeKind::Function,
+                    "dup",
+                    None,
+                ),
+            ],
+        );
+        let d_rs = file(
+            "src/d.rs",
+            "pub fn solo() {}\npub trait Base {}\n",
+            vec![
+                sym(
+                    "rust:src/d.rs:function:solo",
+                    NodeKind::Function,
+                    "solo",
+                    None,
+                ),
+                sym(
+                    "rust:src/d.rs:interface:Base",
+                    NodeKind::Interface,
+                    "Base",
+                    None,
+                ),
+            ],
+        );
+
+        let full = analyze(repo(), &[a_rs, b_rs.clone(), c_rs, d_rs]);
+        let b_file = node_by_stable(&full, "file:src/b.rs").id;
+        let b_node_ids: HashSet<Uuid> = full
+            .bundle
+            .nodes
+            .iter()
+            .filter(|n| n.file_id == Some(full.bundle.files[1].id))
+            .map(|n| n.id)
+            .collect();
+        assert!(b_node_ids.contains(&b_file));
+        let full_units: Vec<UnitHints> = full
+            .units
+            .iter()
+            .filter(|u| u.file_index == 1)
+            .map(|u| {
+                (
+                    u.symbol.stable_id.clone(),
+                    u.uses.clone(),
+                    u.calls.clone(),
+                    u.container.clone(),
+                )
+            })
+            .collect();
+        let shared = full_units
+            .iter()
+            .find(|u| u.0 == "rust:src/b.rs:function:shared")
+            .unwrap();
+        assert_eq!(shared.2, vec!["helper", "lonely", "solo", "start"]);
+        assert_eq!(shared.1, vec!["helper"]);
+        let out_edges = |a: &Analyzed| -> Vec<(Uuid, Uuid, &'static str, u32)> {
+            let mut v: Vec<_> = a
+                .bundle
+                .edges
+                .iter()
+                .filter(|e| b_node_ids.contains(&e.source_node_id))
+                .map(|e| {
+                    (
+                        e.source_node_id,
+                        e.target_node_id,
+                        e.kind.as_str(),
+                        e.confidence.to_bits(),
+                    )
+                })
+                .collect();
+            v.sort();
+            v
+        };
+        let full_edges = out_edges(&full);
+        // Every resolution rule is exercised by an edge that leaves b.rs.
+        let has = |kind: EdgeKind, conf: f32| {
+            full_edges
+                .iter()
+                .any(|e| e.2 == kind.as_str() && e.3 == conf.to_bits())
+        };
+        assert!(has(EdgeKind::Calls, CONF_IMPORTED));
+        assert!(has(EdgeKind::Calls, CONF_RECEIVER));
+        assert!(has(EdgeKind::Calls, CONF_REPO_UNIQUE));
+        assert!(has(EdgeKind::Imports, 1.0));
+        assert!(has(EdgeKind::Extends, CONF_REPO_UNIQUE));
+
+        // The persisted graph "minus B": what the store holds for the other
+        // files (B's rows are purged by merge_files; simulate it here — and
+        // ALSO keep B's stale rows to prove they are dropped, not double-counted).
+        let mut known = Graph {
+            files: full.bundle.files.clone(),
+            nodes: full.bundle.nodes.clone(),
+            edges: full.bundle.edges.clone(),
+        };
+        for variant in [true, false] {
+            if variant {
+                known.files.retain(|f| f.path != "src/b.rs");
+                known.nodes.retain(|n| !b_node_ids.contains(&n.id));
+                known.edges.retain(|e| {
+                    !b_node_ids.contains(&e.source_node_id)
+                        && !b_node_ids.contains(&e.target_node_id)
+                });
+            }
+            let inc = analyze_with(repo(), std::slice::from_ref(&b_rs), Some(&known));
+            // Bundle carries ONLY b.rs (+ repo node).
+            assert_eq!(inc.bundle.files.len(), 1);
+            assert!(inc
+                .bundle
+                .nodes
+                .iter()
+                .all(|n| n.kind == NodeKind::Repository || b_node_ids.contains(&n.id)));
+            assert!(inc.units.iter().all(|u| u.file_index == 0));
+            let inc_units: Vec<UnitHints> = inc
+                .units
+                .iter()
+                .map(|u| {
+                    (
+                        u.symbol.stable_id.clone(),
+                        u.uses.clone(),
+                        u.calls.clone(),
+                        u.container.clone(),
+                    )
+                })
+                .collect();
+            assert_eq!(inc_units, full_units);
+            assert_eq!(out_edges(&inc), full_edges);
+            assert_eq!(inc.stats.calls_resolved, 5);
+            assert_eq!(inc.stats.imports_resolved, 2);
+            assert_eq!(inc.stats.relations_resolved, 1);
+            // Same input → same output.
+            let again = analyze_with(repo(), std::slice::from_ref(&b_rs), Some(&known));
+            assert_eq!(again.bundle.edges, inc.bundle.edges);
+        }
+        // Without the known graph the incremental result degrades (the bug).
+        let alone = analyze(repo(), std::slice::from_ref(&b_rs));
+        assert_ne!(out_edges(&alone), full_edges);
     }
 
     #[test]

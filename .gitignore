@@ -7,11 +7,8 @@
 chaos-substrate.toml
 *.dump
 
-# Generated, regenerable artifacts (rebuilt by analyze/add/refresh)
-/chaos-obsidian-vault/
-/docs/features_memory/feature-map.html
-# Default `chaos graph -o graph.html` export at the repo root
-/graph.html
+# Generated, regenerable pages (rebuilt by feature/compose/correlations)
+/docs/features_memory/
 
 # OS/editor noise
 .DS_Store

@@ -17,7 +17,7 @@ use crate::domain::{hash, merkle, summary};
 use crate::ports::community_store::CommunityStore;
 use crate::ports::embedder::Embedder;
 use crate::ports::extractor::{FileExtraction, FileInput, SourceExtractor};
-use crate::ports::index_store::IndexStore;
+use crate::ports::index_store::{Graph, IndexStore};
 use crate::ports::vcs::Vcs;
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -189,11 +189,15 @@ pub fn read_input(
 }
 
 /// Extract + analyze + chunk a set of inputs. Returns the bundle (with chunks)
-/// and the call-resolution ratio.
+/// and the call-resolution ratio. `known` is the persisted graph the inputs
+/// resolve against (incremental `add`); a full `index` passes `None` because
+/// the inputs ARE the whole repository.
+#[allow(clippy::too_many_arguments)]
 pub async fn extract_and_analyze(
     deps: Deps<'_>,
     repo_id: Uuid,
     inputs: Vec<FileInput>,
+    known: Option<&Graph>,
     split_cos: f32,
     warnings: &mut Vec<String>,
     omitted: &mut usize,
@@ -217,7 +221,7 @@ pub async fn extract_and_analyze(
         ),
     ));
     let pairs: Vec<(FileInput, FileExtraction)> = inputs.into_iter().zip(extractions).collect();
-    let analyzed = analyze::analyze(repo_id, &pairs);
+    let analyzed = analyze::analyze_with(repo_id, &pairs, known);
     let contents: Vec<(String, String)> = pairs
         .iter()
         .map(|(i, _)| (i.path.clone(), i.content.clone()))
@@ -564,6 +568,7 @@ pub async fn index(deps: Deps<'_>, root: &Path, opts: IndexOptions) -> Result<In
         deps,
         ident.id,
         inputs,
+        None,
         opts.split_cos,
         &mut warnings,
         &mut omitted,
