@@ -62,6 +62,24 @@ impl ObsidianVault {
         );
         Ok(parent.join(name))
     }
+
+    /// Take the vault's append lock (`.chaos-kb/append.lock`), held until the
+    /// returned file is dropped, so writers take turns and each one reads
+    /// the note as the last one left it.
+    fn lock(&self) -> Result<fs::File> {
+        let dir = self.root.join(".chaos-kb");
+        fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        let path = dir.join("append.lock");
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        lock.lock()
+            .with_context(|| format!("locking {}", path.display()))?;
+        Ok(lock)
+    }
 }
 
 /// The visible Markdown files under `dir`, whose vault-relative path is
@@ -424,6 +442,7 @@ impl Vault for ObsidianVault {
             !heading.is_some_and(|h| h.contains(['\n', '\r'])),
             "a heading must be one line"
         );
+        let _turn = self.lock()?;
         let file = self.file(note)?;
         let (existing, permissions) = match fs::symlink_metadata(&file) {
             Ok(meta) => {
@@ -1056,12 +1075,16 @@ mod tests {
 
     // ---- append ------------------------------------------------------------
 
-    /// Every entry under `root` whose name starts with `.` (temp files).
+    /// Every entry under `root` whose name starts with `.` (temp files),
+    /// except the `.chaos-kb` folder that holds the append lock.
     fn dot_entries(root: &Path) -> Vec<PathBuf> {
         let mut found = Vec::new();
         for entry in fs::read_dir(root).unwrap() {
             let entry = entry.unwrap();
-            if entry.file_name().to_string_lossy().starts_with('.') {
+            let name = entry.file_name();
+            if name == ".chaos-kb" {
+                continue;
+            } else if name.to_string_lossy().starts_with('.') {
                 found.push(entry.path());
             } else if entry.file_type().unwrap().is_dir() {
                 found.extend(dot_entries(&entry.path()));
@@ -1112,7 +1135,11 @@ mod tests {
         let lost: Vec<usize> = (0..8)
             .filter(|i| !written.contains(&format!("Fact number {i}.")))
             .collect();
-        assert_eq!(lost, Vec::<usize>::new(), "lost facts; the note is:\n{written}");
+        assert_eq!(
+            lost,
+            Vec::<usize>::new(),
+            "lost facts; the note is:\n{written}"
+        );
         assert_eq!(written.matches("## Facts").count(), 1, "{written}");
     }
 
