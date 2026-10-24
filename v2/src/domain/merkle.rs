@@ -16,6 +16,7 @@ use super::hash::{self, Digest};
 use super::note::{Block, Note, section};
 use super::text;
 use serde::Serialize;
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
 
 /// Hash of every folder and note, keyed by vault path: `""` is the root,
@@ -44,8 +45,29 @@ impl Tree {
     /// Build the tree of `notes` (any order; paths are unique). An empty vault
     /// has only the root, whose hash is `hash::node([])`.
     pub fn build(notes: &[Note]) -> Tree {
-        let _ = notes;
-        todo!()
+        let mut nodes = BTreeMap::new();
+        // Direct children of every folder (root `""` included), by name.
+        let mut folders: BTreeMap<String, BTreeMap<String, Digest>> = BTreeMap::new();
+        folders.insert(String::new(), BTreeMap::new());
+        for note in notes {
+            for folder in note.path.folders() {
+                folders.entry(format!("{folder}/")).or_default();
+            }
+            let hash = note_hash(&note.blocks);
+            adopt(&mut folders, note.path.as_str(), hash);
+            nodes.insert(note.path.to_string(), hash);
+        }
+        // Deepest first, so every folder is final before its parent is hashed.
+        let mut keys: Vec<String> = folders.keys().cloned().collect();
+        keys.sort_by_key(|key| Reverse(key.matches('/').count()));
+        for key in keys {
+            let hash = hash::node(folders[&key].iter().map(|(name, h)| (name.as_str(), *h)));
+            if let Some(folder) = key.strip_suffix('/') {
+                adopt(&mut folders, folder, hash);
+            }
+            nodes.insert(key, hash);
+        }
+        Tree { nodes }
     }
 
     /// Rebuild from stored `(path, hash)` pairs (the index's copy).
@@ -62,7 +84,7 @@ impl Tree {
 
     /// The root hash: one value for the whole knowledge base.
     pub fn root(&self) -> Digest {
-        todo!()
+        self.get("").unwrap_or_else(|| hash::node([]))
     }
 
     /// Hash of a folder or note, if the tree has it.
@@ -72,16 +94,52 @@ impl Tree {
 
     /// Notes added, changed or removed going from `self` to `newer`.
     pub fn diff(&self, newer: &Tree) -> Changes {
-        let _ = newer;
-        todo!()
+        let mut changes = Changes::default();
+        for (path, hash) in newer.notes() {
+            match self.get(path) {
+                None => changes.added.push(path.to_string()),
+                Some(old) if old != hash => changes.changed.push(path.to_string()),
+                Some(_) => {}
+            }
+        }
+        changes.removed = self
+            .notes()
+            .filter(|(path, _)| newer.get(path).is_none())
+            .map(|(path, _)| path.to_string())
+            .collect();
+        changes
     }
+
+    /// Note entries only: neither the root nor a folder.
+    fn notes(&self) -> impl Iterator<Item = (&str, Digest)> {
+        self.nodes()
+            .filter(|(path, _)| !path.is_empty() && !path.ends_with('/'))
+    }
+}
+
+/// Record `hash` as a child of the folder holding `path` (a note path, or a
+/// folder path without its slash), labelled by its own name:
+/// `"a/b/c.md"` goes to `"a/b/"` as `"c.md"`, `"a"` to the root as `"a"`.
+fn adopt(folders: &mut BTreeMap<String, BTreeMap<String, Digest>>, path: &str, hash: Digest) {
+    let (parent, name) = match path.rfind('/') {
+        Some(i) => (&path[..=i], &path[i + 1..]),
+        None => ("", path),
+    };
+    folders
+        .entry(parent.to_string())
+        .or_default()
+        .insert(name.to_string(), hash);
 }
 
 /// A note's hash: its blocks' fingerprints in order, each labelled with its
 /// heading path.
 pub fn note_hash(blocks: &[Block]) -> Digest {
-    let _ = (blocks, section, text::fingerprint);
-    todo!()
+    let leaves: Vec<(String, Digest)> = blocks
+        .iter()
+        .filter(|block| !text::is_blank(&block.text))
+        .map(|block| (section(&block.headings), text::fingerprint(&block.text)))
+        .collect();
+    hash::node(leaves.iter().map(|(label, leaf)| (label.as_str(), *leaf)))
 }
 
 #[cfg(test)]

@@ -3,12 +3,16 @@
 //! carries a short context line (note title and headings) for the embedder.
 
 use super::hash::{self, Digest};
-use super::note::{Location, Note, section};
+use super::note::{Block, Location, Note, section};
 use super::text;
 
 /// Upper bound on a chunk's text, in characters (about 300 tokens — small
 /// enough that one chunk is about one thing, far below the embedder's limit).
 pub const MAX_CHUNK_CHARS: usize = 1200;
+
+/// What joins packed block sources: a blank line. ASCII, so its byte length
+/// is its character count.
+const SEPARATOR: &str = "\n\n";
 
 /// One searchable passage of a note.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,8 +53,80 @@ impl Chunk {
 /// - `context` is the note title, plus ` > ` and the section when there is one;
 /// - `at.lines` spans the first to the last block of the chunk.
 pub fn chunks(note: &Note, max_chars: usize) -> Vec<Chunk> {
-    let _ = (note, max_chars, section, text::is_blank);
-    todo!()
+    assert!(max_chars > 0, "max_chars must be at least 1");
+    let mut out = Vec::new();
+    let mut pack: Vec<&Block> = Vec::new();
+    let mut pack_chars = 0;
+    for block in note.blocks.iter().filter(|b| !text::is_blank(&b.text)) {
+        let chars = block.source.chars().count();
+        let joined = pack_chars + SEPARATOR.len() + chars;
+        let fits = pack
+            .last()
+            .is_some_and(|last| last.headings == block.headings && joined <= max_chars);
+        if fits {
+            pack.push(block);
+            pack_chars = joined;
+            continue;
+        }
+        out.extend(packed(note, &pack));
+        pack.clear();
+        if chars <= max_chars {
+            pack.push(block);
+            pack_chars = chars;
+        } else {
+            let cut = pieces(&block.source, max_chars).into_iter();
+            out.extend(cut.map(|piece| chunk(note, block, block, piece.to_string())));
+        }
+    }
+    out.extend(packed(note, &pack));
+    out
+}
+
+/// The chunk of a run of packed blocks; `None` when the run is empty.
+fn packed(note: &Note, pack: &[&Block]) -> Option<Chunk> {
+    let (first, last) = (pack.first()?, pack.last()?);
+    let sources: Vec<&str> = pack.iter().map(|b| b.source.as_str()).collect();
+    Some(chunk(note, first, last, sources.join(SEPARATOR)))
+}
+
+/// A chunk of `note` spanning `first` to `last`, blocks of one section.
+fn chunk(note: &Note, first: &Block, last: &Block, text: String) -> Chunk {
+    let section = section(&first.headings);
+    let title = note.path.title();
+    let context = if section.is_empty() {
+        title.to_string()
+    } else {
+        format!("{title} > {section}")
+    };
+    let at = Location {
+        note: note.path.clone(),
+        section,
+        lines: [first.lines[0], last.lines[1]],
+    };
+    Chunk::new(at, context, text)
+}
+
+/// Cut `text` into pieces of at most `max_chars` characters, each ending at
+/// the last whitespace that keeps it within the limit, or right at the limit
+/// when there is none. Only whitespace is dropped; cuts fall between chars.
+fn pieces(text: &str, max_chars: usize) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = text.trim();
+    while !rest.is_empty() {
+        // Byte offset of the first character past the limit.
+        let Some((limit, _)) = rest.char_indices().nth(max_chars) else {
+            out.push(rest);
+            break;
+        };
+        let cut = if rest[limit..].starts_with(char::is_whitespace) {
+            limit
+        } else {
+            rest[..limit].rfind(char::is_whitespace).unwrap_or(limit)
+        };
+        out.push(rest[..cut].trim_end());
+        rest = rest[cut..].trim_start();
+    }
+    out
 }
 
 #[cfg(test)]

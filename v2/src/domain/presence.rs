@@ -27,8 +27,13 @@ impl Presence {
 /// Decide presence: an exact match wins; otherwise the best similarity must
 /// reach `min_score`.
 pub fn judge(exact: bool, best: Option<f32>, min_score: f32) -> Presence {
-    let _ = (exact, best, min_score);
-    todo!()
+    if exact {
+        Presence::Exact
+    } else if best.is_some_and(|score| score >= min_score) {
+        Presence::Similar
+    } else {
+        Presence::Absent
+    }
 }
 
 #[cfg(test)]

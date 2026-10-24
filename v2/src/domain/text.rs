@@ -3,14 +3,19 @@
 //! Markdown symbols, Unicode compatibility forms and spacing are ignored.
 
 use super::hash::{self, Digest};
+use unicode_normalization::UnicodeNormalization;
 
 /// Canonical form of `text`: Unicode NFKC, lowercase, every run of
 /// non-alphanumeric characters (punctuation, Markdown marks, whitespace)
 /// collapsed to one space, trimmed. Letters and digits of every script stay.
 /// `"- **Driving licence:** B (2015)."` → `"driving licence b 2015"`.
 pub fn normalize(text: &str) -> String {
-    let _ = text;
-    todo!()
+    let lower = text.nfkc().collect::<String>().to_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
+    words.join(" ")
 }
 
 /// Leaf hash of the normalized text. Empty when the text has no letters or
@@ -19,10 +24,11 @@ pub fn fingerprint(text: &str) -> Digest {
     hash::leaf(normalize(text).as_bytes())
 }
 
-/// True when `text` holds no letter or digit (nothing to fingerprint).
+/// True when `text` holds no letter or digit (nothing to fingerprint). Same
+/// answer as `normalize(text).is_empty()` without building the string:
+/// lowercasing never turns a letter into a non-letter or the reverse.
 pub fn is_blank(text: &str) -> bool {
-    let _ = text;
-    todo!()
+    !text.nfkc().any(char::is_alphanumeric)
 }
 
 #[cfg(test)]
