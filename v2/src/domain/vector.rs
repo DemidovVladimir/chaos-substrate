@@ -152,7 +152,11 @@ mod tests {
     fn top_k_ties_keep_input_order() {
         let q = [1.0, 0.0];
         let rows = [vec![0.5, 0.5], vec![0.5, 0.5], vec![0.5, 0.5]];
-        let got = top_k(&q, rows.iter().enumerate().map(|(i, v)| (i, v.as_slice())), 2);
+        let got = top_k(
+            &q,
+            rows.iter().enumerate().map(|(i, v)| (i, v.as_slice())),
+            2,
+        );
         assert_eq!(got.iter().map(|(i, _)| *i).collect::<Vec<_>>(), [0, 1]);
     }
 }

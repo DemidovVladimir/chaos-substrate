@@ -23,7 +23,9 @@ impl Digest {
 
     /// Parse 64 hex characters; `None` for anything else.
     pub fn from_hex(hex: &str) -> Option<Digest> {
-        blake3::Hash::from_hex(hex).ok().map(|h| Digest(*h.as_bytes()))
+        blake3::Hash::from_hex(hex)
+            .ok()
+            .map(|h| Digest(*h.as_bytes()))
     }
 }
 
@@ -74,7 +76,10 @@ mod tests {
         let d = leaf(b"x");
         let hex = d.to_hex();
         assert_eq!(hex.len(), 64);
-        assert!(hex.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(
+            hex.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        );
         assert_eq!(Digest::from_hex(&hex), Some(d));
         assert_eq!(d.to_string(), hex);
         assert_eq!(

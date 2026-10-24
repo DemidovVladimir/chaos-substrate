@@ -17,7 +17,9 @@ pub enum PathError {
     Empty,
     #[error("note path must be relative to the vault: {0}")]
     Absolute(String),
-    #[error("note path segment {0:?} is not allowed (empty, `.`/`..`, hidden, or has `\\`, `:` or a control character)")]
+    #[error(
+        "note path segment {0:?} is not allowed (empty, `.`/`..`, hidden, or has `\\`, `:` or a control character)"
+    )]
     Segment(String),
 }
 
@@ -110,7 +112,10 @@ mod tests {
     fn rejects_escapes_and_hidden_segments() {
         assert_eq!(NotePath::parse(""), Err(PathError::Empty));
         assert_eq!(NotePath::parse("   "), Err(PathError::Empty));
-        assert!(matches!(NotePath::parse("/etc/passwd"), Err(PathError::Absolute(_))));
+        assert!(matches!(
+            NotePath::parse("/etc/passwd"),
+            Err(PathError::Absolute(_))
+        ));
         for bad in [
             "../x.md",
             "a/../../x.md",
