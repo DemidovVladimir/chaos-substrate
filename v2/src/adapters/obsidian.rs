@@ -924,12 +924,13 @@ mod tests {
     }
 
     #[test]
-    fn notes_skip_files_over_the_size_limit() {
+    fn notes_read_a_big_note_whole() {
         let dir = tempdir().unwrap();
-        let max = usize::try_from(MAX_NOTE_BYTES).unwrap();
-        write(dir.path(), "max.md", "x".repeat(max));
-        write(dir.path(), "over.md", "x".repeat(max + 1));
-        assert_eq!(paths(open(dir.path()).as_ref()), ["max.md"]);
+        let big = format!("{}\n\nLast fact.\n", "word ".repeat(1024 * 1024));
+        write(dir.path(), "big.md", big);
+        let notes = open(dir.path()).notes().unwrap();
+        assert_eq!(notes.len(), 1, "a 5 MiB note is a note");
+        assert_eq!(texts(&notes[0]).last(), Some(&"Last fact."));
     }
 
     #[test]
