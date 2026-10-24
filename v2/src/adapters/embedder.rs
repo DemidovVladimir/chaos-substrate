@@ -399,9 +399,14 @@ mod tests {
         assert!(embedder.embed_documents(&[]).unwrap().is_empty());
     }
 
-    /// Answer one HTTP request on a loopback port with `status` and `body`.
-    /// Returns the base URL and the request as received: (head, payload).
-    fn serve_once(status: u16, body: &'static str) -> (String, JoinHandle<(String, String)>) {
+    /// Answer one HTTP request on a loopback port with `status`, `headers`
+    /// (each ending in `\r\n`) and `body`; a client that hangs up mid-body is
+    /// fine. Returns the base URL and the request as received: (head, payload).
+    fn serve(
+        status: u16,
+        headers: &'static str,
+        body: Vec<u8>,
+    ) -> (String, JoinHandle<(String, String)>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/v1/", listener.local_addr().unwrap());
         let server = thread::spawn(move || {
@@ -419,14 +424,108 @@ mod tests {
             let mut payload = vec![0; length];
             reader.read_exact(&mut payload).unwrap();
             let reply = format!(
-                "HTTP/1.1 {status} Status\r\nContent-Type: application/json\r\n\
-                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 {status} Status\r\n{headers}Content-Length: {}\r\n\
+                 Connection: close\r\n\r\n",
                 body.len()
             );
-            reader.get_mut().write_all(reply.as_bytes()).unwrap();
+            let stream = reader.get_mut();
+            let _ = stream
+                .write_all(reply.as_bytes())
+                .and_then(|()| stream.write_all(&body));
             (head, String::from_utf8(payload).unwrap())
         });
         (base, server)
+    }
+
+    /// [`serve`] a JSON (or plain text) body.
+    fn serve_once(status: u16, body: &'static str) -> (String, JoinHandle<(String, String)>) {
+        serve(status, "Content-Type: application/json\r\n", body.into())
+    }
+
+    /// Bits packed into bytes least significant first, as deflate packs them.
+    #[derive(Default)]
+    struct Bits {
+        bytes: Vec<u8>,
+        pending: u64,
+        count: u32,
+    }
+
+    impl Bits {
+        /// `len` bits of `value`, least significant first.
+        fn put(&mut self, value: u32, len: u32) {
+            self.pending |= u64::from(value) << self.count;
+            self.count += len;
+            while self.count >= 8 {
+                self.bytes.push(self.pending as u8);
+                self.pending >>= 8;
+                self.count -= 8;
+            }
+        }
+
+        /// A Huffman code, most significant bit first.
+        fn code(&mut self, code: u32, len: u32) {
+            self.put(code.reverse_bits() >> (32 - len), len);
+        }
+
+        fn finish(mut self) -> Vec<u8> {
+            if self.count > 0 {
+                self.bytes.push(self.pending as u8);
+            }
+            self.bytes
+        }
+    }
+
+    /// CRC-32 (IEEE), as the gzip trailer carries it.
+    fn crc32(bytes: impl Iterator<Item = u8>) -> u32 {
+        let table: Vec<u32> = (0..256)
+            .map(|n| (0..8).fold(n, |c, _| (c >> 1) ^ (0xedb8_8320 * (c & 1))))
+            .collect();
+        !bytes.fold(!0, |crc, b| {
+            table[((crc ^ u32::from(b)) & 0xff) as usize] ^ (crc >> 8)
+        })
+    }
+
+    /// A gzip stream that inflates to `prefix`, a space, then `runs` × 258
+    /// more spaces, at 13 bits per run: one fixed-Huffman deflate block
+    /// (RFC 1951 3.2.6) in a gzip member (RFC 1952).
+    fn gzip_of_spaces(prefix: &[u8], runs: usize) -> Vec<u8> {
+        let mut deflate = Bits::default();
+        deflate.put(1, 1); // the last block
+        deflate.put(1, 2); // fixed Huffman codes
+        for &byte in prefix.iter().chain(b" ") {
+            deflate.code(0x30 + u32::from(byte), 8); // literals 0..=143
+        }
+        for _ in 0..runs {
+            deflate.code(0xc5, 8); // length 258 (code 285)
+            deflate.code(0, 5); // distance 1
+        }
+        deflate.code(0, 7); // end of block (code 256)
+        let size = prefix.len() + 1 + 258 * runs;
+        let spaces = std::iter::repeat_n(b' ', size - prefix.len());
+        let mut gzip = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
+        gzip.extend(deflate.finish());
+        gzip.extend(crc32(prefix.iter().copied().chain(spaces)).to_le_bytes());
+        gzip.extend(u32::try_from(size).unwrap().to_le_bytes());
+        gzip
+    }
+
+    #[test]
+    fn responses_over_the_body_cap_are_refused_even_compressed() {
+        // Past the 10 MB cap; trailing whitespace keeps the JSON valid, so
+        // only the cap can refuse it.
+        let oversized = 11 << 20;
+        let json = r#"{"data": [{"index": 0, "embedding": [1.0]}]}"#;
+        let plain = format!("{json}{}", " ".repeat(oversized)).into_bytes();
+        let gzip = gzip_of_spaces(json.as_bytes(), oversized / 258);
+        assert!(gzip.len() < 100_000, "{} bytes", gzip.len());
+        let json_type = "Content-Type: application/json\r\n";
+        let gzipped = "Content-Type: application/json\r\nContent-Encoding: gzip\r\n";
+        for (headers, body) in [(json_type, plain), (gzipped, gzip)] {
+            let (base, _) = serve(200, headers, body);
+            let embedder = HttpEmbedder::new(&base, "nomic-embed-text", None);
+            let embedded = embedder.embed_query("oil");
+            assert!(embedded.is_err(), "{headers}: {embedded:?}");
+        }
     }
 
     #[test]

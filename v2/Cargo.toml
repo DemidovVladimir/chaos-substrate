@@ -23,7 +23,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 unicode-normalization = "0.1"
-ureq = { version = "3", features = ["json"] }
+# No gzip: ureq's 10 MB body cap counts compressed bytes, so a small gzip
+# response could inflate past it.
+ureq = { version = "3.5", default-features = false, features = ["rustls", "json"] }
 
 [dev-dependencies]
 tempfile = "3"
