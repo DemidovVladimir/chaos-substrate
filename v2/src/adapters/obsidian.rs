@@ -477,6 +477,11 @@ impl Vault for ObsidianVault {
                     meta.is_file(),
                     "refusing to write {note}: it is a symlink or not a file"
                 );
+                // The rename would replace even a read-only note.
+                ensure!(
+                    !meta.permissions().readonly(),
+                    "refusing to write {note}: it is read-only"
+                );
                 let bytes = fs::read(&file).with_context(|| format!("reading {note}"))?;
                 let text = String::from_utf8(bytes)
                     .map_err(|_| anyhow!("refusing to rewrite {note}: it is not valid UTF-8"))?;
