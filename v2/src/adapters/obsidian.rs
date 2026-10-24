@@ -422,9 +422,6 @@ fn write_atomic(file: &Path, bytes: &[u8], permissions: Option<&fs::Permissions>
     let (temp, mut out) = create_temp(file, permissions)?;
     let written = (|| {
         out.write_all(bytes)?;
-        if let Some(permissions) = permissions {
-            out.set_permissions(permissions.clone())?;
-        }
         out.sync_all()?;
         fs::rename(&temp, file)
     })();
@@ -434,17 +431,31 @@ fn write_atomic(file: &Path, bytes: &[u8], permissions: Option<&fs::Permissions>
     written.with_context(|| format!("writing {}", file.display()))
 }
 
-/// A new hidden temp file next to `file`.
-fn create_temp(file: &Path, _permissions: Option<&fs::Permissions>) -> Result<(PathBuf, fs::File)> {
+/// A new, empty hidden temp file next to `file` that already has
+/// `permissions`, so a private note's text never sits in a file others may
+/// open. On unix it is created with them, so it is never more open than the
+/// note, not even before they are set exactly.
+fn create_temp(file: &Path, permissions: Option<&fs::Permissions>) -> Result<(PathBuf, fs::File)> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let name = file.file_name().unwrap_or_default().to_string_lossy();
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let temp = file.with_file_name(format!(".{name}.{}-{n}.tmp", std::process::id()));
-    let out = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if let Some(permissions) = permissions {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        options.mode(permissions.mode() & 0o777);
+    }
+    let out = options
         .open(&temp)
         .with_context(|| format!("creating {}", temp.display()))?;
+    if let Some(permissions) = permissions
+        && let Err(e) = out.set_permissions(permissions.clone())
+    {
+        let _ = fs::remove_file(&temp);
+        return Err(e).with_context(|| format!("creating {}", temp.display()));
+    }
     Ok((temp, out))
 }
 
