@@ -65,11 +65,16 @@ const KNOWN: &[(&str, &str)] = &[
     ("во сколько я ложусь спать?", "Здоровье/Сон.md"),
 ];
 
-/// Questions the vault does not answer.
+/// Questions the vault does not answer: unrelated ones, and near misses on the
+/// same topics (the car, health, licences).
 const UNKNOWN: &[&str] = &[
     "what is the name of my dog?",
     "which football team do I support?",
     "what is my favourite pizza topping?",
+    "which company insures my car?",
+    "what is my blood pressure?",
+    "do I have a pilot licence?",
+    "which languages do I speak?",
 ];
 
 fn ollama_up() -> bool {
@@ -142,24 +147,33 @@ fn personal_vault_answers_from_the_index() {
     assert_eq!(exact.matches[0].at.note.as_str(), "Health/Treatment.md");
     assert_eq!(exact.matches[0].at.section, "Treatment > Allergies");
 
-    // Paraphrased questions: answered by similarity, from the right note.
-    let mut report = Vec::new();
-    for (question, note) in KNOWN {
-        let check = kb.check(question, DEFAULT_MIN_SCORE).unwrap();
-        let top = kb.search(question, 1, 0.0).unwrap().hits.remove(0);
-        report.push(format!(
-            "known   {:.3} {question} → {}",
-            top.score, top.at.note
-        ));
-        assert!(check.known, "{question}: {check:?}");
-        assert_eq!(top.at.note.as_str(), *note, "{question}");
+    // Paraphrased questions: answered by similarity, from the right note. The
+    // scores are printed first so a threshold change can be judged at a glance.
+    let known: Vec<_> = KNOWN
+        .iter()
+        .map(|(question, note)| {
+            let check = kb.check(question, DEFAULT_MIN_SCORE).unwrap();
+            let top = kb.search(question, 1, 0.0).unwrap().hits.remove(0);
+            (question, note, check, top)
+        })
+        .collect();
+    let unknown: Vec<_> = UNKNOWN
+        .iter()
+        .map(|question| (question, kb.check(question, DEFAULT_MIN_SCORE).unwrap()))
+        .collect();
+    for (question, _, _, top) in &known {
+        eprintln!("known   {:.3} {question} → {}", top.score, top.at.note);
     }
-    for question in UNKNOWN {
-        let check = kb.check(question, DEFAULT_MIN_SCORE).unwrap();
-        report.push(format!("unknown {:.3} {question}", check.score.unwrap()));
+    for (question, check) in &unknown {
+        eprintln!("unknown {:.3} {question}", check.score.unwrap());
+    }
+    for (question, note, check, top) in &known {
+        assert!(check.known, "{question}: {check:?}");
+        assert_eq!(top.at.note.as_str(), **note, "{question}");
+    }
+    for (question, check) in &unknown {
         assert_eq!(check.presence, Presence::Absent, "{question}: {check:?}");
     }
-    eprintln!("{}", report.join("\n"));
 
     // Nothing changed: nothing embedded, same root.
     let again = kb.sync(false).unwrap();
@@ -272,24 +286,25 @@ fn binary_serves_cli_and_mcp() {
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
     let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-    let mut call = |message: Value| -> Value {
+    // A request gets one reply line; a notification (no id) gets none.
+    let mut send = |message: Value| -> Option<Value> {
         writeln!(stdin, "{message}").unwrap();
-        serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap()
+        message.get("id")?;
+        Some(serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap())
     };
 
-    let init = call(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+    let init = send(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                   "clientInfo": {"name": "e2e", "version": "0"}}}));
+                   "clientInfo": {"name": "e2e", "version": "0"}}}))
+    .unwrap();
     assert_eq!(init["result"]["serverInfo"]["name"], "chaos-kb");
     assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
-    writeln!(
-        stdin,
-        "{}",
-        json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
-    )
-    .unwrap();
+    let initialized = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
+    assert_eq!(send(initialized), None);
+    let pong = send(json!({"jsonrpc": "2.0", "id": 9, "method": "ping"})).unwrap();
+    assert_eq!(pong, json!({"jsonrpc": "2.0", "id": 9, "result": {}}));
 
-    let list = call(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}));
+    let list = send(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).unwrap();
     let names: Vec<&str> = list["result"]["tools"]
         .as_array()
         .unwrap()
@@ -298,16 +313,18 @@ fn binary_serves_cli_and_mcp() {
         .collect();
     assert_eq!(names, ["kb_sync", "kb_remember", "kb_check", "kb_search"]);
 
-    let check = call(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-        "params": {"name": "kb_check", "arguments": {"query": "do I have a driving licence?"}}}));
+    let check = send(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {"name": "kb_check", "arguments": {"query": "do I have a driving licence?"}}}))
+    .unwrap();
     assert_eq!(check["result"]["isError"], false, "{check}");
     let body: Value =
         serde_json::from_str(check["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(body["known"], true, "{body}");
     assert_eq!(body["matches"][0]["note"], "Licences.md");
 
-    let bad = call(json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
-        "params": {"name": "kb_search", "arguments": {"query": "x", "limit": "many"}}}));
+    let bad = send(json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": {"name": "kb_search", "arguments": {"query": "x", "limit": "many"}}}))
+    .unwrap();
     assert_eq!(bad["result"]["isError"], true, "{bad}");
 
     drop(stdin);
