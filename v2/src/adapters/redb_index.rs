@@ -21,13 +21,19 @@ use std::{fs, io};
 
 /// The [`META`] key of the embedder id.
 const EMBEDDER_KEY: &str = "embedder";
+/// The [`META`] key of the table layout, and this build's layout. Bumped
+/// whenever a table changes shape: an index of another layout reads as empty,
+/// so the next sync rebuilds it.
+const FORMAT_KEY: &str = "format";
+const FORMAT: &str = "1";
 
 /// Where a block or chunk sits: note, section, first line, last line.
 type LocRow<'a> = (&'a str, &'a str, u32, u32);
 /// A chunk: its location, context and text.
 type ChunkRow<'a> = (LocRow<'a>, &'a str, &'a str);
 
-/// `"embedder"` → the embedder id of the stored vectors.
+/// `"format"` → the table layout; `"embedder"` → the embedder id of the
+/// stored vectors.
 const META: TableDefinition<&str, &str> = TableDefinition::new("meta");
 /// Merkle tree: note path → note hash.
 const TREE: TableDefinition<&str, &[u8; 32]> = TableDefinition::new("tree");
@@ -67,7 +73,8 @@ impl RedbIndex {
         Ok(file)
     }
 
-    /// Run `read` on the stored state; `empty` while the file does not exist.
+    /// Run `read` on the stored state; `empty` while the file does not exist
+    /// or holds another [`FORMAT`].
     fn read<T>(&self, empty: T, read: impl FnOnce(&ReadTransaction) -> Result<T>) -> Result<T> {
         if !self.path.exists() {
             return Ok(empty);
@@ -75,9 +82,13 @@ impl RedbIndex {
         let _lock = self.lock()?;
         let opened = open_existing(&self.path)
             .with_context(|| format!("cannot open index {}", self.path.display()))?;
-        match opened {
-            Some(db) => read(&db.begin_read()?),
-            None => Ok(empty),
+        let Some(db) = opened else {
+            return Ok(empty);
+        };
+        let txn = db.begin_read()?;
+        match existing(txn.open_table(META))? {
+            Some(meta) if is_current(&meta)? => read(&txn),
+            _ => Ok(empty),
         }
     }
 }
@@ -107,6 +118,23 @@ fn existing<T>(opened: Result<T, TableError>) -> Result<Option<T>> {
         Err(TableError::TableDoesNotExist(_)) => Ok(None),
         opened => Ok(Some(opened?)),
     }
+}
+
+/// Whether `meta` marks this build's [`FORMAT`]. Every write stores the mark
+/// with all the tables, so a marked file has them all.
+fn is_current(meta: &impl ReadableTable<&'static str, &'static str>) -> Result<bool> {
+    Ok(meta.get(FORMAT_KEY)?.is_some_and(|f| f.value() == FORMAT))
+}
+
+/// Delete every table, whatever its type.
+fn clear(txn: &WriteTransaction) -> Result<()> {
+    for table in txn.list_tables()?.collect::<Vec<_>>() {
+        txn.delete_table(table)?;
+    }
+    for table in txn.list_multimap_tables()?.collect::<Vec<_>>() {
+        txn.delete_multimap_table(table)?;
+    }
+    Ok(())
 }
 
 /// `def`, emptied: deleted and created again.
@@ -141,11 +169,22 @@ fn snapshot_in(
 
 /// Make the tables equal to `update`. Fails before writing anything when the
 /// index no longer holds `update.base` ([`Stale`]) or when a chunk has no
-/// vector, supplied or stored.
+/// vector, supplied or stored. A file of another [`FORMAT`] holds nothing,
+/// and its tables are dropped.
 fn write(txn: &WriteTransaction, update: &Update) -> Result<()> {
-    let current = snapshot_in(&txn.open_table(META)?, &txn.open_table(TREE)?)?;
+    let current = {
+        let meta = txn.open_table(META)?;
+        if is_current(&meta)? {
+            snapshot_in(&meta, &txn.open_table(TREE)?)?
+        } else {
+            None
+        }
+    };
     if current != update.base {
         return Err(Stale.into());
+    }
+    if current.is_none() {
+        clear(txn)?;
     }
     let mut vectors = txn.open_table(VECTORS)?;
     let supplied: HashSet<&Digest> = update.vectors.iter().map(|(key, _)| key).collect();
@@ -161,7 +200,9 @@ fn write(txn: &WriteTransaction, update: &Update) -> Result<()> {
         }
     }
 
-    fresh(txn, META)?.insert(EMBEDDER_KEY, update.embedder.as_str())?;
+    let mut meta = fresh(txn, META)?;
+    meta.insert(FORMAT_KEY, FORMAT)?;
+    meta.insert(EMBEDDER_KEY, update.embedder.as_str())?;
     let mut tree = fresh(txn, TREE)?;
     for (path, hash) in update.tree.notes() {
         tree.insert(path, &hash.0)?;
@@ -247,19 +288,13 @@ fn vector(key: Digest, bytes: &[u8]) -> Result<Vec<f32>> {
 impl Index for RedbIndex {
     fn snapshot(&self) -> Result<Option<Snapshot>> {
         self.read(None, |txn| {
-            let Some(meta) = existing(txn.open_table(META))? else {
-                return Ok(None);
-            };
-            snapshot_in(&meta, &txn.open_table(TREE)?)
+            snapshot_in(&txn.open_table(META)?, &txn.open_table(TREE)?)
         })
     }
 
     fn vector_keys(&self) -> Result<HashSet<Digest>> {
         self.read(HashSet::new(), |txn| {
-            let Some(vectors) = existing(txn.open_table(VECTORS))? else {
-                return Ok(HashSet::new());
-            };
-            vectors
+            txn.open_table(VECTORS)?
                 .iter()?
                 .map(|row| Ok(Digest(*row?.0.value())))
                 .collect()
@@ -281,10 +316,8 @@ impl Index for RedbIndex {
 
     fn exact(&self, fingerprint: &Digest) -> Result<Vec<Location>> {
         self.read(Vec::new(), |txn| {
-            let Some(blocks) = existing(txn.open_multimap_table(BLOCKS))? else {
-                return Ok(Vec::new());
-            };
-            let mut found = blocks
+            let mut found = txn
+                .open_multimap_table(BLOCKS)?
                 .get(&fingerprint.0)?
                 .map(|row| location(row?.value()))
                 .collect::<Result<Vec<_>>>()?;
@@ -298,10 +331,8 @@ impl Index for RedbIndex {
             return Ok(Vec::new());
         }
         self.read(Vec::new(), |txn| {
-            let Some(vectors) = existing(txn.open_table(VECTORS))? else {
-                return Ok(Vec::new());
-            };
-            let stored = vectors
+            let stored = txn
+                .open_table(VECTORS)?
                 .iter()?
                 .map(|row| {
                     let (key, bytes) = row?;
@@ -732,6 +763,59 @@ mod tests {
     }
 
     #[test]
+    fn an_index_of_another_format_reads_as_empty_and_is_rebuilt() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("index.redb");
+        // An earlier layout: chunks in a plain table, no format mark.
+        let old: TableDefinition<&[u8; 32], &str> = TableDefinition::new("chunks");
+        let db = Database::create(&path).unwrap();
+        let txn = db.begin_write().unwrap();
+        txn.open_table(META)
+            .unwrap()
+            .insert(EMBEDDER_KEY, EMBEDDER)
+            .unwrap();
+        txn.open_table(old)
+            .unwrap()
+            .insert(&[1u8; 32], "old row")
+            .unwrap();
+        txn.commit().unwrap();
+        drop(db);
+        let index = RedbIndex::new(&path);
+
+        assert_eq!(index.snapshot().unwrap(), None);
+        assert!(index.vector_keys().unwrap().is_empty());
+        assert!(index.nearest(&VA, 3).unwrap().is_empty());
+
+        index.replace(full()).unwrap();
+        assert_eq!(index.snapshot().unwrap().unwrap().tree, full().tree);
+        assert_eq!(chunks(&index.nearest(&VA, 1).unwrap()), vec![a()]);
+
+        // A layout from a later build is foreign too.
+        let db = Database::open(&path).unwrap();
+        let txn = db.begin_write().unwrap();
+        txn.open_table(META)
+            .unwrap()
+            .insert(FORMAT_KEY, "2")
+            .unwrap();
+        txn.commit().unwrap();
+        drop(db);
+        assert_eq!(index.snapshot().unwrap(), None);
+        assert!(index.exact(&fp(&a())).unwrap().is_empty());
+    }
+
+    /// Mark a hand-written file as this build's format, with all its tables.
+    fn mark(txn: &WriteTransaction) {
+        txn.open_table(META)
+            .unwrap()
+            .insert(FORMAT_KEY, FORMAT)
+            .unwrap();
+        txn.open_table(TREE).unwrap();
+        txn.open_table(VECTORS).unwrap();
+        txn.open_multimap_table(CHUNKS).unwrap();
+        txn.open_multimap_table(BLOCKS).unwrap();
+    }
+
+    #[test]
     fn undecodable_rows_are_errors_not_panics() {
         let dir = tempdir().unwrap();
         let fact = hash::leaf(b"fact");
@@ -740,6 +824,7 @@ mod tests {
         let broken = dir.path().join("broken.redb");
         let db = Database::create(&broken).unwrap();
         let txn = db.begin_write().unwrap();
+        mark(&txn);
         txn.open_multimap_table(BLOCKS)
             .unwrap()
             .insert(&fact.0, ("../escape.md", "", 1, 1))
@@ -760,6 +845,7 @@ mod tests {
         let bytes: Vec<u8> = VA.iter().flat_map(|x| x.to_le_bytes()).collect();
         let db = Database::create(&swapped).unwrap();
         let txn = db.begin_write().unwrap();
+        mark(&txn);
         txn.open_multimap_table(CHUNKS)
             .unwrap()
             .insert(

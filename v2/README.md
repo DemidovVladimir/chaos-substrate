@@ -97,7 +97,9 @@ Every command prints JSON. Here is a `check` whose answer was found by meaning:
 without opening the note.
 
 The index lives at `<vault>/.chaos-kb/index.redb`. Obsidian ignores folders whose names start
-with a dot. Deleting the folder is safe, because `sync` rebuilds it from the notes.
+with a dot. Deleting the folder is safe, because `sync` rebuilds it from the notes. An index
+written by a chaos-kb build with a different table layout reads as empty, and the next `sync`
+rebuilds it.
 
 ### From an agent (MCP)
 
