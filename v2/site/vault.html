@@ -359,7 +359,7 @@
     { label: "Oil", text: "Check monthly.", before: "# Car\n\n## Oil\n\nChange every 10k.\n\n", after: "\n\n### Brand\n\nCastrol.\n\n## Tyres\n\nWinter set.\n", section: "Car > Oil",
       note: "The text goes right under the Oil heading's own text, before its subheading ### Brand." },
     { label: "  bRaNd ", text: "Or Mobil.", before: "# Car\n\n## Oil\n\nChange every 10k.\n\n### Brand\n\nCastrol.\n\n", after: "\n\n## Tyres\n\nWinter set.\n", section: "Car > Oil > Brand",
-      note: "The heading is trimmed and matched in any case: it finds ### Brand." },
+      note: "The heading is compared as fingerprints compare text, so spacing, case and punctuation aside it finds ### Brand. brand: would find it too." },
     { label: "Tyres", text: "Summer set.", before: CAR + "\n", after: "\n", section: "Car > Tyres",
       note: "Tyres is the last heading, so its own text runs to the end of the note." },
     { label: "car", text: "Sold.", before: "# Car\n\n", after: "\n\n## Oil\n\nChange every 10k.\n\n### Brand\n\nCastrol.\n\n## Tyres\n\nWinter set.\n", section: "Car",

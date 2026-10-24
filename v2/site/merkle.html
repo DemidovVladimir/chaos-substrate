@@ -142,7 +142,7 @@
       <thead><tr><th>Text A</th><th>Text B</th><th>Fingerprints</th><th>Why</th></tr></thead>
       <tbody>
         <tr><td><code>Allergic to penicillin.</code></td><td><code>- **allergic** to PENICILLIN</code></td><td><span class="chip ok">same</span></td><td>the list marker and bold are Markdown; case and the full stop do not count</td></tr>
-        <tr><td><code>Driving licence: B (2015)</code></td><td><code>driving   LICENCE — b, 2015.</code></td><td><span class="chip ok">same</span></td><td>spacing, the colon, the brackets, the dash <code>—</code> and the comma do not count</td></tr>
+        <tr><td><code>Driving licence: B (2015)</code></td><td><code>driving   LICENCE — b, 2015.</code></td><td><span class="chip ok">same</span></td><td>spacing, a colon after a word, the brackets, the dash <code>—</code> and the comma do not count</td></tr>
         <tr><td><code>ﬁle</code></td><td><code>FILE</code></td><td><span class="chip ok">same</span></td><td>the ligature <code>ﬁ</code> is a compatibility form of <code>fi</code></td></tr>
         <tr><td><code>Blood type: A+</code></td><td><code>Blood type: A-</code></td><td><span class="chip bad">differ</span></td><td><code>+</code> and <code>-</code> are words of their own</td></tr>
         <tr><td><code>≤ 140</code></td><td><code>≥ 140</code></td><td><span class="chip bad">differ</span></td><td>every symbol outside the ignored set counts</td></tr>
@@ -200,6 +200,9 @@ root                = node([(note path, note hash) for each note, sorted by path
             <tr><td><code>Driving licence: B+ (2015).</code></td><td><code>driving licence b + 2015</code></td><td class="wrap"><code>1472e98acb8185ed2bb20ea5b501bda241f5309dee8a13ba5e5f99e5f2714dcf</code></td></tr>
             <tr><td><code>Blood type: A+</code></td><td><code>blood type a +</code></td><td class="wrap"><code>70078ac2b0cb82db77e92f9f98802b82a74dca0ad046c175832b9a1661f8f6b9</code></td></tr>
             <tr><td><code>Blood type: A-</code></td><td><code>blood type a -</code></td><td class="wrap"><code>2afc0c8042b515bb65c992c91754eeaca8f85659c75bf49686920ac5bdaf9d15</code></td></tr>
+            <tr><td><code>1.5 mg</code> or <code>1,5 mg</code></td><td><code>1 5 mg</code></td><td class="wrap"><code>f33bf556061189fe2d0c4b8c77d33237a499da3159b18dde3ef10b30924f37f4</code></td></tr>
+            <tr><td><code>1:5 mg</code></td><td><code>1 : 5 mg</code></td><td class="wrap"><code>a5729924cedcdaad62be6e924761087149ffd05a01ea5b056a1328ee6c865422</code></td></tr>
+            <tr><td><code>Bed at 23:00.</code></td><td><code>bed at 23 : 00</code></td><td class="wrap"><code>e41fa00d927bbcf2a294b23ac124fbbeada374ef9abd9ef6db41565e60573d7b</code></td></tr>
             <tr><td><code>snake_case-and/slashes</code></td><td><code>snake case - and / slashes</code></td><td class="wrap"><code>78e58d77c820233971d6db7559082e58c1141c6fc58578cd9e7252090fc8ee94</code></td></tr>
             <tr><td><code>ПРАВА: «B»</code></td><td><code>права b</code></td><td class="wrap"><code>1bb42efbc6b851e8986db49fe3364bc9602a6bb99c4285e5faab2388b16a1e77</code></td></tr>
             <tr><td><code>---</code></td><td><code>- - -</code></td><td>none: no letter or digit, never stored and never looked up</td></tr>
