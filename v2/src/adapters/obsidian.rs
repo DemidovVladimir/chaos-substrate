@@ -5,7 +5,7 @@
 use crate::domain::note::{Block, Note};
 use crate::domain::path::NotePath;
 use crate::ports::Vault;
-use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use std::fs;
 use std::io::{ErrorKind, Write};
@@ -389,6 +389,33 @@ fn section_end(markdown: &str, title: &str) -> Option<usize> {
     Some(markdown[..next].rfind(['\n', '\r']).map_or(0, |i| i + 1))
 }
 
+/// The first line of `old` that reads differently in `new`, unless `new` is
+/// `old` with text added: every heading and every block of `old` (with its
+/// heading path) must still be in `new`, in the same order.
+fn changed_line(old: &str, new: &str) -> Option<u32> {
+    let (old, new) = (parse(old), parse(new));
+    let heading = lost(
+        old.outline.iter().map(|(_, level, text)| (level, text)),
+        new.outline.iter().map(|(_, level, text)| (level, text)),
+    )
+    .map(|at| old.line(old.outline[at].0));
+    let block = lost(
+        old.done.iter().map(|b| (&b.headings, &b.text)),
+        new.done.iter().map(|b| (&b.headings, &b.text)),
+    )
+    .map(|at| old.done[at].lines[0]);
+    heading.into_iter().chain(block).min()
+}
+
+/// The position of the first item of `old` missing from `new`, each item
+/// looked for after the one found before it.
+fn lost<T: PartialEq>(
+    mut old: impl Iterator<Item = T>,
+    mut new: impl Iterator<Item = T>,
+) -> Option<usize> {
+    old.position(|item| !new.any(|n| n == item))
+}
+
 /// Write `bytes` to `file` through a hidden temp file in the same folder and a
 /// rename, so readers see the old note or the new one, never half of one.
 fn write_atomic(file: &Path, bytes: &[u8], permissions: Option<fs::Permissions>) -> Result<()> {
@@ -458,11 +485,15 @@ impl Vault for ObsidianVault {
             Err(e) if e.kind() == ErrorKind::NotFound => (String::new(), None),
             Err(e) => return Err(e).with_context(|| format!("reading {note}")),
         };
-        write_atomic(
-            &file,
-            place(&existing, heading, text).as_bytes(),
-            permissions,
-        )
+        let placed = place(&existing, heading, text);
+        if let Some(line) = changed_line(&existing, &placed) {
+            bail!(
+                "refusing to append to {note}: the new text would change how the note reads \
+                 from line {line} on, so nothing was written. An unclosed code fence or HTML \
+                 comment does that, and so does a heading with fewer `#` than its section's own"
+            );
+        }
+        write_atomic(&file, placed.as_bytes(), permissions)
     }
 }
 
@@ -1172,7 +1203,10 @@ mod tests {
         let error = refused(SECTIONS, Some("A"), "```\ncode");
         assert!(error.contains("from line 5"), "{error}");
         let error = refused("## A\n\na\n\n## B\n", Some("A"), "~~~");
-        assert!(error.contains("from line 5"), "a heading alone counts: {error}");
+        assert!(
+            error.contains("from line 5"),
+            "a heading alone counts: {error}"
+        );
     }
 
     #[test]
