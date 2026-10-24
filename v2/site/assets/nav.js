@@ -11,6 +11,7 @@ window.TUTORIAL = {
     { id: "agents", kanji: "繋", name: "Agents", blurb: "The four tools over MCP, generated from one command-line definition." }
   ],
   pages: [
+    { slug: "chaos-kb", chapter: "start", title: "Install and run", blurb: "Build one binary, pull one local model, point it at your notes and connect it to Claude Code or Codex." },
     { slug: "big-picture", chapter: "start", title: "From notes to answers", blurb: "Notes become blocks, blocks become a Merkle tree and chunks, chunks become vectors in one index file." },
 
     { slug: "merkle", chapter: "answer", title: "Merkle tree and exact check", blurb: "Fingerprints roll up to one root hash: the same words are found in one lookup, and one hash says nothing changed." },

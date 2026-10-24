@@ -21,6 +21,15 @@ sources = [
 
 # ── Start here ────────────────────────────────────────────────────────────
 
+[pages.chaos-kb]
+sources = [
+  "Cargo.toml",
+  "src/entry/cli.rs",
+  "src/entry/mcp.rs",
+  "src/adapters/embedder.rs",
+  "README.md",
+]
+
 [pages.big-picture]
 sources = [
   "src/lib.rs",
