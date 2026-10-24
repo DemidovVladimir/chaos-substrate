@@ -234,7 +234,8 @@ fn remember_edit_and_delete_round_trip() {
     assert!(kb.remember(fact, &inbox, None).unwrap().stored);
     let again = kb.remember(fact, &inbox, None).unwrap();
     assert!(!again.stored, "{again:?}");
-    let markdown = std::fs::read_to_string(dir.path().join("Inbox.md")).unwrap();
+    let inbox_text = std::fs::read_to_string(dir.path().join("Inbox.md")).unwrap();
+    assert_eq!(inbox_text.matches("Dr. Smith").count(), 1);
 
     // Formatting-only edit: same knowledge, same root.
     let licences = dir.path().join("Licences.md");
