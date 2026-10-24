@@ -1,12 +1,11 @@
-//! `check`: is this already known? First the exact path — the query's
-//! fingerprint against the Merkle leaves, no embedding — then the nearest
-//! passages by cosine similarity.
+//! `check`: is this already known? First the exact path: every block of the
+//! query looked up by fingerprint (the Merkle leaves), with no embedding.
+//! Then the nearest passages by cosine similarity.
 
 use super::{Kb, nonblank};
 use crate::domain::hash::Digest;
 use crate::domain::note::Location;
 use crate::domain::presence::{self, Presence};
-use crate::domain::text::fingerprint;
 use anyhow::Result;
 use serde::Serialize;
 
@@ -39,11 +38,7 @@ impl Kb<'_> {
     pub fn check(&self, query: &str, min_score: f32) -> Result<CheckReport> {
         let query = nonblank(query, "query")?;
         let root = self.ready()?.tree.root();
-        let exact = match fingerprint(query) {
-            Some(fp) => self.index.exact(&fp)?,
-            None => Vec::new(),
-        };
-        if !exact.is_empty() {
+        if let Some(exact) = self.stored(query)? {
             return Ok(CheckReport {
                 known: true,
                 presence: Presence::Exact,
@@ -102,6 +97,19 @@ mod tests {
         );
         let root = world.kb().sync(true).unwrap().root;
         assert_eq!(report.root, root);
+    }
+
+    #[test]
+    fn exact_means_every_block_of_the_query_is_stored() {
+        let world = World::synced();
+        let both = "Allergy: penicillin.\n\nWinter tyres go on in November.";
+        let report = world.kb().check(both, DEFAULT_MIN_SCORE).unwrap();
+        assert_eq!(report.presence, Presence::Exact);
+        let notes: Vec<&str> = report.matches.iter().map(|m| m.at.note.as_str()).collect();
+        assert_eq!(notes, ["Car/Maintenance.md", "Health/Allergies.md"]);
+        let half = "Allergy: penicillin.\n\nMy dog is called Rex.";
+        let report = world.kb().check(half, DEFAULT_MIN_SCORE).unwrap();
+        assert_ne!(report.presence, Presence::Exact);
     }
 
     #[test]

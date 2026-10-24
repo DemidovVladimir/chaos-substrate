@@ -1,11 +1,11 @@
-//! `remember`: add one fact to the vault and the index — unless the same
-//! words are already stored, which the Merkle leaves answer without embedding.
+//! `remember`: add one fact to the vault and the index, unless every block of
+//! it is already stored word for word (looked up by fingerprint, without
+//! embedding).
 
 use super::{Kb, nonblank};
 use crate::domain::hash::Digest;
 use crate::domain::note::Location;
 use crate::domain::path::NotePath;
-use crate::domain::text::fingerprint;
 use anyhow::Result;
 use serde::Serialize;
 
@@ -14,10 +14,10 @@ pub const INBOX: &str = "Inbox.md";
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RememberReport {
-    /// False when the same words were already stored (nothing written).
+    /// False when every block was already stored (nothing written).
     pub stored: bool,
     pub note: NotePath,
-    /// Where the same words already sit (when `stored` is false).
+    /// Where its blocks already sit (when `stored` is false).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub known_at: Vec<Location>,
     /// Merkle root after the call.
@@ -37,11 +37,7 @@ impl Kb<'_> {
         let heading = heading.map(str::trim).filter(|h| !h.is_empty());
         // Sync first so facts typed into the vault since the last sync count.
         let before = self.sync(false)?;
-        let known_at = match fingerprint(text) {
-            Some(fp) => self.index.exact(&fp)?,
-            None => Vec::new(),
-        };
-        if !known_at.is_empty() {
+        if let Some(known_at) = self.stored(text)? {
             return Ok(RememberReport {
                 stored: false,
                 note: note.clone(),
@@ -55,7 +51,7 @@ impl Kb<'_> {
         Ok(RememberReport {
             stored: true,
             note: note.clone(),
-            known_at,
+            known_at: Vec::new(),
             root: after.root,
             embedded: before.embedded + after.embedded,
         })
@@ -113,6 +109,18 @@ mod tests {
         assert_eq!(report.known_at[0].section, "Oil");
         assert!(world.vault.note(INBOX).is_none(), "nothing written");
         assert_eq!(report.embedded, 0);
+    }
+
+    #[test]
+    fn a_text_whose_every_block_is_stored_is_not_stored_again() {
+        let world = World::synced();
+        let both = "Allergy: penicillin.\n\nWinter tyres go on in November.";
+        let report = world.kb().remember(both, &inbox(), None).unwrap();
+        assert!(!report.stored);
+        assert_eq!(report.known_at.len(), 2);
+        assert!(world.vault.note(INBOX).is_none());
+        let half = "Allergy: penicillin.\n\nMy blood type is A+.";
+        assert!(world.kb().remember(half, &inbox(), None).unwrap().stored);
     }
 
     #[test]

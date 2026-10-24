@@ -8,6 +8,7 @@ pub mod sync;
 #[cfg(test)]
 mod testing;
 
+use crate::domain::note::Location;
 use crate::domain::{text, vector};
 use crate::ports::{Embedder, Hit, Index, Snapshot, Vault};
 use anyhow::{Context, Result, bail, ensure};
@@ -35,6 +36,30 @@ impl Kb<'_> {
             self.embedder.id()
         );
         Ok(snapshot)
+    }
+
+    /// Where every block of `markdown` is stored word for word (read as the
+    /// vault reads notes, looked up by fingerprint, no embedding); `None`
+    /// when some block is not stored.
+    fn stored(&self, markdown: &str) -> Result<Option<Vec<Location>>> {
+        let mut found = Vec::new();
+        let mut blocks = 0;
+        for fingerprint in self
+            .vault
+            .texts(markdown)
+            .iter()
+            .filter_map(|t| text::fingerprint(t))
+        {
+            let at = self.index.exact(&fingerprint)?;
+            if at.is_empty() {
+                return Ok(None);
+            }
+            found.extend(at);
+            blocks += 1;
+        }
+        found.sort();
+        found.dedup();
+        Ok((blocks > 0).then_some(found))
     }
 
     /// The `k` chunks nearest to `query` (embedded as a query, unit length).
