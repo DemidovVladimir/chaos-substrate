@@ -1,52 +1,80 @@
 //! The MCP tool roster, derived from the clap definition in `entry::cli`:
-//! one tool per subcommand (except `mcp`), named `kb_<subcommand>`, described
-//! by the subcommand's doc comment, with a JSON Schema built from its
-//! arguments. Calls are turned back into argv and parsed by the same clap
-//! definition, so defaults and validation live in exactly one place.
+//! one tool per [`Tool`] subcommand, named `kb_<subcommand>`, described by its
+//! doc comment, with a JSON Schema built from its arguments. Calls are turned
+//! back into argv and parsed by the same clap definition, so defaults and
+//! validation live in exactly one place.
 
-use super::cli::{Cli, Command, api_key_note};
+use super::cli::{Cli, Tool, api_key_note};
 use anyhow::{Context, Result, anyhow, bail};
 use clap::builder::StyledStr;
-use clap::{Arg, ArgAction, CommandFactory, Parser, Subcommand};
+use clap::{Arg, ArgAction, CommandFactory, Parser};
 use serde_json::{Map, Value, json};
 use std::any::TypeId;
 
 /// Prefix of every MCP tool name.
 pub const PREFIX: &str = "kb_";
 
-/// The subcommand that serves the tools rather than being one.
-const SERVER: &str = "mcp";
-
-/// One MCP tool.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Tool {
-    /// MCP name, e.g. `kb_check`.
-    pub name: String,
-    pub description: String,
-    /// JSON Schema (`type: object`) of the arguments.
-    pub input_schema: Value,
+/// What one MCP call may set: a tool, without the CLI's settings. Left
+/// unbuilt, its subcommands hold only their own arguments (no help flag).
+#[derive(Parser)]
+struct Call {
+    #[command(subcommand)]
+    tool: Tool,
 }
 
-/// Every tool, in subcommand order.
-pub fn tools() -> Vec<Tool> {
-    subcommands(&cli()).map(tool).collect()
+/// Every tool as a `tools/list` entry, in subcommand order.
+pub fn tools() -> Vec<Value> {
+    Call::command().get_subcommands().map(tool).collect()
 }
 
-/// Parse an MCP call (`kb_check`, `{"query": "…"}`) into a [`Command`] through
-/// clap, exactly as the CLI would. Unknown tools and invalid arguments fail
-/// with clap's message.
-pub fn command(name: &str, arguments: &Value) -> Result<Command> {
-    let cli = cli();
-    let sub = subcommand(&cli, name)?;
+/// Parse an MCP call (`kb_check`, `{"query": "…"}`) into a [`Tool`] through
+/// clap, exactly as the CLI would. `None` when no tool has that name; invalid
+/// arguments fail with clap's message.
+pub fn command(name: &str, arguments: &Value) -> Option<Result<Tool>> {
+    let call = Call::command();
+    let sub = call.find_subcommand(name.strip_prefix(PREFIX)?)?;
+    let parsed = argv(call.get_name(), sub, arguments).and_then(|argv| {
+        Call::try_parse_from(argv)
+            .map(|call| call.tool)
+            .map_err(|e| anyhow!("{}", e.to_string().trim_end()))
+    });
+    Some(parsed)
+}
+
+/// The agent workflow guide: the CLI's about text.
+pub fn instructions() -> String {
+    let cli = Cli::command();
+    help(cli.get_long_about(), cli.get_about())
+}
+
+/// The Markdown tool reference embedded in README.md between the
+/// `<!-- tools:start -->` and `<!-- tools:end -->` markers.
+pub fn markdown() -> String {
+    let call = Call::command();
+    let mut sections: Vec<String> = call
+        .get_subcommands()
+        .map(|sub| section(call.get_name(), sub))
+        .collect();
+    sections.push(settings());
+    sections.join("\n")
+}
+
+/// The command line the CLI would get for these arguments: options as
+/// `--long=value`, flags as `--long` when true, positionals after `--` in
+/// definition order (so values starting with `-` stay values).
+fn argv(bin: &str, sub: &clap::Command, arguments: &Value) -> Result<Vec<String>> {
+    let name = sub.get_name();
     let given = arguments
         .as_object()
-        .with_context(|| format!("{name} arguments must be a JSON object"))?;
-    let mut argv = vec![cli.get_name().to_string(), sub.get_name().to_string()];
+        .with_context(|| format!("{PREFIX}{name} arguments must be a JSON object"))?;
+    let mut argv = vec![bin.to_string(), name.to_string()];
     let mut positionals = Vec::new();
     for (key, value) in given {
-        let arg = own_args(sub)
-            .find(|a| a.get_id() == key.as_str())
-            .ok_or_else(|| unknown_key(sub, name, key))?;
+        let (position, arg) = sub
+            .get_arguments()
+            .enumerate()
+            .find(|(_, a)| a.get_id() == key.as_str())
+            .ok_or_else(|| unknown_key(sub, key))?;
         match (Kind::of(arg), value) {
             (_, Value::Null) => {}
             (Kind::Boolean, Value::Bool(set)) => {
@@ -59,9 +87,10 @@ pub fn command(name: &str, arguments: &Value) -> Result<Command> {
                 let text = value
                     .as_str()
                     .map_or_else(|| value.to_string(), str::to_string);
-                match arg.get_index() {
-                    Some(index) => positionals.push((index, text)),
-                    None => argv.push(format!("--{}={text}", long(arg)?)),
+                if arg.is_positional() {
+                    positionals.push((position, text));
+                } else {
+                    argv.push(format!("--{}={text}", long(arg)?));
                 }
             }
             (kind, _) => bail!("`{key}` must be a {}", kind.name()),
@@ -72,69 +101,31 @@ pub fn command(name: &str, arguments: &Value) -> Result<Command> {
         argv.push("--".into());
         argv.extend(positionals.into_iter().map(|(_, text)| text));
     }
-    Call::try_parse_from(argv)
-        .map(|call| call.command)
-        .map_err(|e| anyhow!("{}", e.to_string().trim_end()))
+    Ok(argv)
 }
 
-/// The agent workflow guide: the CLI's about text.
-pub fn instructions() -> String {
-    let cli = Cli::command();
-    help(cli.get_long_about(), cli.get_about())
-}
-
-/// The Markdown tool reference embedded in README.md between the
-/// `<!-- tools:start -->` and `<!-- tools:end -->` markers.
-pub fn markdown() -> String {
-    let cli = cli();
-    let mut sections: Vec<String> = tools().iter().map(|t| section(&cli, t)).collect();
-    sections.push(settings(&cli));
-    sections.join("\n")
-}
-
-/// The tool subcommands without the CLI's settings: what one MCP call may set.
-#[derive(Parser)]
-struct Call {
-    #[command(subcommand)]
-    command: Command,
-}
-
-/// The JSON type of an argument, read from its clap action and value parser.
+/// The JSON type of a tool argument, read from its clap action and value
+/// parser. Only the types the tools use; anything else is passed as text.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Kind {
+    /// A `bool` flag.
     Boolean,
-    Integer { unsigned: bool },
+    /// A `usize`: a non-negative integer.
+    Count,
+    /// An `f32`.
     Number,
     String,
 }
 
 impl Kind {
     fn of(arg: &Arg) -> Kind {
-        if matches!(arg.get_action(), ArgAction::SetTrue) {
-            return Kind::Boolean;
-        }
         // clap reports the parsed value's type; `AnyValueId` compares with `TypeId`.
         let parsed = arg.get_value_parser().type_id();
-        let is_any = |types: &[TypeId]| types.iter().any(|t| parsed == *t);
-        let unsigned = [
-            TypeId::of::<u8>(),
-            TypeId::of::<u16>(),
-            TypeId::of::<u32>(),
-            TypeId::of::<u64>(),
-            TypeId::of::<usize>(),
-        ];
-        let signed = [
-            TypeId::of::<i8>(),
-            TypeId::of::<i16>(),
-            TypeId::of::<i32>(),
-            TypeId::of::<i64>(),
-            TypeId::of::<isize>(),
-        ];
-        if is_any(&unsigned) {
-            Kind::Integer { unsigned: true }
-        } else if is_any(&signed) {
-            Kind::Integer { unsigned: false }
-        } else if is_any(&[TypeId::of::<f32>(), TypeId::of::<f64>()]) {
+        if matches!(arg.get_action(), ArgAction::SetTrue) {
+            Kind::Boolean
+        } else if parsed == TypeId::of::<usize>() {
+            Kind::Count
+        } else if parsed == TypeId::of::<f32>() {
             Kind::Number
         } else {
             Kind::String
@@ -144,67 +135,61 @@ impl Kind {
     fn name(self) -> &'static str {
         match self {
             Kind::Boolean => "boolean",
-            Kind::Integer { .. } => "integer",
+            Kind::Count => "integer",
             Kind::Number => "number",
             Kind::String => "string",
         }
     }
 
-    /// A clap value (a default) as JSON of this type.
-    fn json(self, raw: &str) -> Value {
+    /// The argument's default as JSON of this type. A flag's implied `false`
+    /// is only filled in when clap builds the command, so it is stated here.
+    fn default(self, arg: &Arg) -> Option<Value> {
+        if self == Kind::Boolean {
+            return Some(Value::Bool(false));
+        }
+        let raw = arg.get_default_values().first()?.to_string_lossy();
         let typed = match self {
-            Kind::Boolean => raw.parse::<bool>().ok().map(Value::from),
-            Kind::Integer { .. } => raw.parse::<i64>().ok().map(Value::from),
+            Kind::Count => raw.parse::<u64>().ok().map(Value::from),
             Kind::Number => raw.parse::<f64>().ok().map(Value::from),
-            Kind::String => None,
+            Kind::Boolean | Kind::String => None,
         };
-        typed.unwrap_or_else(|| Value::from(raw))
+        Some(typed.unwrap_or_else(|| Value::from(raw.as_ref())))
     }
 }
 
-/// The clap definition, built: help flags added, settings propagated to every
-/// subcommand, implied defaults (`false` for flags) filled in.
-fn cli() -> clap::Command {
-    let mut cli = Cli::command();
-    cli.build();
-    cli
+/// One tool argument, as both the MCP schema and the README table show it.
+struct Param {
+    id: String,
+    kind: Kind,
+    required: bool,
+    default: Option<Value>,
+    description: String,
 }
 
-/// The subcommands that are tools: those of [`Command`] except the server
-/// (clap's generated `help` subcommand is not one of them).
-fn subcommands(cli: &clap::Command) -> impl Iterator<Item = &clap::Command> {
-    cli.get_subcommands()
-        .filter(|s| Command::has_subcommand(s.get_name()) && s.get_name() != SERVER)
-}
-
-/// The subcommand behind an MCP tool name.
-fn subcommand<'a>(cli: &'a clap::Command, tool: &str) -> Result<&'a clap::Command> {
-    let name = tool.strip_prefix(PREFIX);
-    subcommands(cli)
-        .find(|s| Some(s.get_name()) == name)
-        .ok_or_else(|| {
-            let known: Vec<String> = subcommands(cli)
-                .map(|s| format!("{PREFIX}{}", s.get_name()))
-                .collect();
-            anyhow!("unknown tool `{tool}`; the tools are {}", known.join(", "))
+/// A tool's arguments, in definition order.
+fn params(sub: &clap::Command) -> Vec<Param> {
+    sub.get_arguments()
+        .map(|arg| {
+            let kind = Kind::of(arg);
+            Param {
+                id: arg.get_id().to_string(),
+                kind,
+                required: arg.is_required_set(),
+                default: kind.default(arg),
+                description: help(arg.get_long_help(), arg.get_help()),
+            }
         })
+        .collect()
 }
 
-/// A subcommand's own arguments: no help flag, no global settings.
-fn own_args(sub: &clap::Command) -> impl Iterator<Item = &Arg> {
-    sub.get_arguments().filter(|a| {
-        let generated = matches!(
-            a.get_action(),
-            ArgAction::Help | ArgAction::HelpShort | ArgAction::HelpLong | ArgAction::Version
-        );
-        !generated && !a.is_global_set()
-    })
-}
-
-fn unknown_key(sub: &clap::Command, tool: &str, key: &str) -> anyhow::Error {
-    let known: Vec<String> = own_args(sub).map(|a| format!("`{}`", a.get_id())).collect();
+fn unknown_key(sub: &clap::Command, key: &str) -> anyhow::Error {
+    let known: Vec<String> = sub
+        .get_arguments()
+        .map(|a| format!("`{}`", a.get_id()))
+        .collect();
     anyhow!(
-        "{tool} has no argument `{key}`; it takes {}",
+        "{PREFIX}{} has no argument `{key}`; it takes {}",
+        sub.get_name(),
         known.join(", ")
     )
 }
@@ -219,96 +204,80 @@ fn help(long: Option<&StyledStr>, short: Option<&StyledStr>) -> String {
     long.or(short).map(ToString::to_string).unwrap_or_default()
 }
 
-fn tool(sub: &clap::Command) -> Tool {
+/// One `tools/list` entry: name, description, and the JSON Schema of the
+/// arguments.
+fn tool(sub: &clap::Command) -> Value {
+    let params = params(sub);
     let mut properties = Map::new();
-    let mut required = Vec::new();
-    for arg in own_args(sub) {
-        let id = arg.get_id().to_string();
-        if arg.is_required_set() {
-            required.push(Value::from(id.as_str()));
+    for p in &params {
+        let mut property = json!({"type": p.kind.name(), "description": p.description});
+        if p.kind == Kind::Count {
+            property["minimum"] = json!(0);
         }
-        properties.insert(id, property(arg));
+        if let Some(default) = &p.default {
+            property["default"] = default.clone();
+        }
+        properties.insert(p.id.clone(), property);
     }
-    let mut input_schema = json!({
-        "type": "object",
-        "properties": properties,
-        "additionalProperties": false,
-    });
-    if !required.is_empty() {
-        input_schema["required"] = Value::Array(required);
-    }
-    Tool {
-        name: format!("{PREFIX}{}", sub.get_name()),
-        description: help(sub.get_long_about(), sub.get_about()),
-        input_schema,
-    }
-}
-
-fn property(arg: &Arg) -> Value {
-    let kind = Kind::of(arg);
-    let mut property = json!({
-        "type": kind.name(),
-        "description": help(arg.get_long_help(), arg.get_help()),
-    });
-    if kind == (Kind::Integer { unsigned: true }) {
-        property["minimum"] = json!(0);
-    }
-    if let [default] = arg.get_default_values() {
-        property["default"] = kind.json(&default.to_string_lossy());
-    }
-    property
-}
-
-/// One tool: heading, description, and an args table (required args first).
-fn section(cli: &clap::Command, tool: &Tool) -> String {
-    let sub = &tool.name[PREFIX.len()..];
-    let mut out = format!(
-        "### `{}` · `{} {sub}`\n\n{}\n",
-        tool.name,
-        cli.get_name(),
-        prose(&tool.description)
-    );
-    let schema = &tool.input_schema;
-    let required = |name: &str| {
-        schema["required"]
-            .as_array()
-            .is_some_and(|r| r.iter().any(|v| v == name))
-    };
-    let mut rows: Vec<_> = schema["properties"]
-        .as_object()
-        .into_iter()
-        .flatten()
+    let required: Vec<&str> = params
+        .iter()
+        .filter(|p| p.required)
+        .map(|p| p.id.as_str())
         .collect();
-    if rows.is_empty() {
+    let mut schema =
+        json!({"type": "object", "properties": properties, "additionalProperties": false});
+    if !required.is_empty() {
+        schema["required"] = json!(required);
+    }
+    json!({
+        "name": format!("{PREFIX}{}", sub.get_name()),
+        "description": help(sub.get_long_about(), sub.get_about()),
+        "inputSchema": schema,
+    })
+}
+
+/// One tool: heading, description, and an args table (required args first,
+/// then by name).
+fn section(bin: &str, sub: &clap::Command) -> String {
+    let name = sub.get_name();
+    let about = help(sub.get_long_about(), sub.get_about());
+    let mut out = format!(
+        "### `{PREFIX}{name}` · `{bin} {name}`\n\n{}\n",
+        prose(&about)
+    );
+    let mut params = params(sub);
+    if params.is_empty() {
         return out;
     }
-    rows.sort_by_key(|(name, _)| !required(name));
+    params.sort_by(|a, b| (!a.required, &a.id).cmp(&(!b.required, &b.id)));
     out.push_str("\n| arg | type | default | description |\n|---|---|---|---|\n");
-    for (name, property) in rows {
-        let mark = if required(name) { " (required)" } else { "" };
-        let mut kind = property["type"].as_str().unwrap_or_default().to_string();
-        if let Some(minimum) = property.get("minimum") {
-            kind = format!("{kind} ≥ {minimum}");
-        }
-        let default = match property.get("default") {
+    for p in params {
+        let mark = if p.required { " (required)" } else { "" };
+        let kind = match p.kind {
+            Kind::Count => "integer ≥ 0",
+            kind => kind.name(),
+        };
+        let default = match &p.default {
             Some(Value::String(s)) => format!("`{s}`"),
             Some(v) => format!("`{v}`"),
             None => String::new(),
         };
-        let description = cell(property["description"].as_str().unwrap_or_default());
         out.push_str(&format!(
-            "| `{name}`{mark} | {kind} | {default} | {description} |\n"
+            "| `{}`{mark} | {kind} | {default} | {} |\n",
+            p.id,
+            cell(&p.description)
         ));
     }
     out
 }
 
 /// The global settings every command takes, with their environment variables.
-fn settings(cli: &clap::Command) -> String {
+fn settings() -> String {
     let mut out = String::from(
         "### Settings\n\n| flag | env var | default | description |\n|---|---|---|---|\n",
     );
-    for arg in cli.get_arguments().filter(|a| a.is_global_set()) {
+    // Unbuilt, the CLI's own arguments are exactly the settings.
+    for arg in Cli::command().get_arguments() {
         let flag = arg
             .get_long()
             .map(|l| format!("`--{l}`"))
@@ -359,16 +328,12 @@ mod tests {
     use clap::CommandFactory;
     use serde_json::json;
 
-    fn tool(name: &str) -> Tool {
-        tools().into_iter().find(|t| t.name == name).expect(name)
+    fn tool(name: &str) -> Value {
+        tools().into_iter().find(|t| t["name"] == name).expect(name)
     }
 
-    fn schema(name: &str) -> Value {
-        tool(name).input_schema
-    }
-
-    fn call(name: &str, arguments: Value) -> Result<Command> {
-        command(name, &arguments)
+    fn call(name: &str, arguments: Value) -> Result<Tool> {
+        command(name, &arguments).expect("a tool")
     }
 
     fn rejection(name: &str, arguments: Value) -> String {
@@ -377,7 +342,7 @@ mod tests {
 
     #[test]
     fn one_tool_per_subcommand_except_mcp() {
-        let names: Vec<String> = tools().into_iter().map(|t| t.name).collect();
+        let names: Vec<Value> = tools().into_iter().map(|t| t["name"].clone()).collect();
         assert_eq!(names, ["kb_sync", "kb_remember", "kb_check", "kb_search"]);
     }
 
@@ -385,34 +350,45 @@ mod tests {
     fn descriptions_are_the_cli_help() {
         let mut cli = Cli::command();
         for t in tools() {
-            let sub = cli.find_subcommand_mut(&t.name[PREFIX.len()..]).unwrap();
+            let name = t["name"].as_str().unwrap();
+            let sub = cli.find_subcommand_mut(&name[PREFIX.len()..]).unwrap();
             let help = sub.render_long_help().to_string();
-            assert!(!t.description.is_empty(), "{}", t.name);
-            assert!(help.contains(&t.description), "{}:\n{help}", t.name);
-            for (arg, property) in t.input_schema["properties"].as_object().unwrap() {
+            let description = t["description"].as_str().unwrap();
+            assert!(!description.is_empty(), "{name}");
+            assert!(help.contains(description), "{name}:\n{help}");
+            for (arg, property) in t["inputSchema"]["properties"].as_object().unwrap() {
                 let description = property["description"].as_str().unwrap();
-                assert!(help.contains(description), "{}.{arg}", t.name);
+                assert!(help.contains(description), "{name}.{arg}");
             }
         }
-        let check = tool("kb_check").description;
+        let check = tool("kb_check");
+        let check = check["description"].as_str().unwrap();
         assert!(check.starts_with("Is this already in the knowledge base?"));
     }
 
     #[test]
-    fn check_requires_a_query_and_defaults_min_score() {
+    fn schemas_have_typed_defaults() {
+        let schema = |name| tool(name)["inputSchema"].clone();
+        let sync = schema("kb_sync");
+        assert_eq!(sync["additionalProperties"], false);
+        assert!(sync.get("required").is_none(), "{sync}");
+        let dry_run = &sync["properties"]["dry_run"];
+        assert_eq!(dry_run["type"], "boolean");
+        assert_eq!(dry_run["default"], false);
+
+        let remember = schema("kb_remember");
+        assert_eq!(remember["required"], json!(["text"]));
+        assert_eq!(remember["properties"]["note"]["default"], INBOX);
+        assert!(remember["properties"]["heading"].get("default").is_none());
+
         let check = schema("kb_check");
-        assert_eq!(check["type"], "object");
-        assert_eq!(check["additionalProperties"], false);
         assert_eq!(check["required"], json!(["query"]));
         assert_eq!(check["properties"]["query"]["type"], "string");
         let min_score = &check["properties"]["min_score"];
         assert_eq!(min_score["type"], "number");
         let default = min_score["default"].as_f64().map(|d| d as f32);
         assert_eq!(default, Some(DEFAULT_MIN_SCORE));
-    }
 
-    #[test]
-    fn search_limit_is_a_non_negative_integer() {
         let search = schema("kb_search");
         let limit = &search["properties"]["limit"];
         assert_eq!(limit["type"], "integer");
@@ -423,41 +399,8 @@ mod tests {
     }
 
     #[test]
-    fn sync_dry_run_is_a_boolean() {
-        let sync = schema("kb_sync");
-        assert_eq!(sync["properties"]["dry_run"]["type"], "boolean");
-        assert_eq!(sync["properties"]["dry_run"]["default"], false);
-        assert!(sync.get("required").is_none(), "{sync}");
-    }
-
-    #[test]
-    fn remember_note_defaults_to_the_inbox() {
-        let remember = schema("kb_remember");
-        assert_eq!(remember["required"], json!(["text"]));
-        assert_eq!(remember["properties"]["note"]["default"], INBOX);
-        assert!(remember["properties"]["heading"].get("default").is_none());
-    }
-
-    #[test]
-    fn global_settings_never_appear() {
-        let mut cli = Cli::command();
-        cli.build();
-        let globals: Vec<String> = cli
-            .get_arguments()
-            .map(|a| a.get_id().to_string())
-            .collect();
-        assert!(globals.iter().any(|g| g == "vault"), "{globals:?}");
-        for t in tools() {
-            let properties = t.input_schema["properties"].as_object().unwrap().clone();
-            for g in &globals {
-                assert!(!properties.contains_key(g), "{} exposes {g}", t.name);
-            }
-        }
-    }
-
-    #[test]
     fn calls_parse_like_the_cli() {
-        let sync = |dry_run| Command::Sync { dry_run };
+        let sync = |dry_run| Tool::Sync { dry_run };
         assert_eq!(call("kb_sync", json!({})).unwrap(), sync(false));
         assert_eq!(
             call("kb_sync", json!({"dry_run": true})).unwrap(),
@@ -473,7 +416,7 @@ mod tests {
                 json!({"text": "Tea at 5", "heading": "Habits"})
             )
             .unwrap(),
-            Command::Remember {
+            Tool::Remember {
                 text: "Tea at 5".into(),
                 note: INBOX.into(),
                 heading: Some("Habits".into()),
@@ -481,7 +424,7 @@ mod tests {
         );
         assert_eq!(
             call("kb_check", json!({"query": "tea"})).unwrap(),
-            Command::Check {
+            Tool::Check {
                 query: "tea".into(),
                 min_score: DEFAULT_MIN_SCORE,
             }
@@ -492,7 +435,7 @@ mod tests {
                 json!({"query": "tea", "limit": 2, "min_score": 0.25})
             )
             .unwrap(),
-            Command::Search {
+            Tool::Search {
                 query: "tea".into(),
                 limit: 2,
                 min_score: 0.25,
@@ -504,7 +447,7 @@ mod tests {
     fn values_starting_with_a_dash_stay_values() {
         assert_eq!(
             call("kb_check", json!({"query": "--help", "min_score": -0.5})).unwrap(),
-            Command::Check {
+            Tool::Check {
                 query: "--help".into(),
                 min_score: -0.5,
             }
@@ -512,7 +455,7 @@ mod tests {
         let remember = json!({"text": "-v is verbose", "note": "-x", "heading": "--y"});
         assert_eq!(
             call("kb_remember", remember).unwrap(),
-            Command::Remember {
+            Tool::Remember {
                 text: "-v is verbose".into(),
                 note: "-x".into(),
                 heading: Some("--y".into()),
@@ -524,7 +467,7 @@ mod tests {
     fn strings_are_parsed_by_clap() {
         assert_eq!(
             call("kb_check", json!({"query": "tea", "min_score": "0.7"})).unwrap(),
-            Command::Check {
+            Tool::Check {
                 query: "tea".into(),
                 min_score: 0.7,
             }
@@ -541,7 +484,7 @@ mod tests {
     fn null_means_absent() {
         assert_eq!(
             call("kb_remember", json!({"text": "tea", "heading": null})).unwrap(),
-            Command::Remember {
+            Tool::Remember {
                 text: "tea".into(),
                 note: INBOX.into(),
                 heading: None,
@@ -568,8 +511,7 @@ mod tests {
     #[test]
     fn mcp_and_unknown_tools_are_not_tools() {
         for name in ["kb_mcp", "kb_help", "kb_nope", "check", "mcp", ""] {
-            let e = rejection(name, json!({}));
-            assert!(e.contains("unknown tool"), "{name}: {e}");
+            assert!(command(name, &json!({})).is_none(), "{name}");
         }
     }
 
@@ -582,10 +524,10 @@ mod tests {
     fn markdown_has_one_section_per_tool_and_the_settings() {
         let md = markdown();
         for t in tools() {
-            let sub = &t.name[PREFIX.len()..];
-            let heading = format!("### `{}` · `chaos-kb {sub}`", t.name);
+            let name = t["name"].as_str().unwrap();
+            let heading = format!("### `{name}` · `chaos-kb {}`", &name[PREFIX.len()..]);
             assert!(md.contains(&heading), "{heading}\n{md}");
-            assert!(md.contains(&t.description), "{md}");
+            assert!(md.contains(t["description"].as_str().unwrap()), "{md}");
         }
         assert!(md.contains("| `query` (required) |"), "{md}");
         assert!(md.contains("| `--vault` | `CHAOS_KB_VAULT` |"), "{md}");

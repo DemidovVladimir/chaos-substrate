@@ -10,7 +10,7 @@ use crate::application::Kb;
 use crate::application::remember::INBOX;
 use crate::domain::path::NotePath;
 use crate::domain::presence::DEFAULT_MIN_SCORE;
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use serde::Serialize;
 use serde_json::Value;
@@ -74,6 +74,15 @@ pub fn api_key_note() -> String {
 
 #[derive(Debug, Clone, PartialEq, Subcommand)]
 pub enum Command {
+    #[command(flatten)]
+    Tool(Tool),
+    /// Serve the tools to agents over MCP (stdio, newline-delimited JSON-RPC 2.0).
+    Mcp,
+}
+
+/// The tools: every subcommand except `mcp`, which serves them.
+#[derive(Debug, Clone, PartialEq, Subcommand)]
+pub enum Tool {
     /// Bring the index up to date with the vault: rebuild the Merkle tree,
     /// embed only new or edited passages, drop deleted ones. Run after
     /// editing notes.
@@ -116,16 +125,10 @@ pub enum Command {
         #[arg(long, default_value_t = 0.0)]
         min_score: f32,
     },
-    /// Serve the tools to agents over MCP (stdio, newline-delimited JSON-RPC 2.0).
-    Mcp,
 }
 
-/// Run one tool command against the configured knowledge base.
-pub fn execute(settings: &Settings, command: &Command) -> Result<Value> {
-    ensure!(
-        *command != Command::Mcp,
-        "`mcp` serves the tools; it is not one of them"
-    );
+/// Run one tool against the configured knowledge base.
+pub fn execute(settings: &Settings, tool: &Tool) -> Result<Value> {
     let root = settings
         .vault
         .as_deref()
@@ -139,20 +142,19 @@ pub fn execute(settings: &Settings, command: &Command) -> Result<Value> {
         index: &index,
         embedder: &embedder,
     };
-    match command {
-        Command::Sync { dry_run } => json(kb.sync(*dry_run)),
-        Command::Remember {
+    match tool {
+        Tool::Sync { dry_run } => json(kb.sync(*dry_run)),
+        Tool::Remember {
             text,
             note,
             heading,
         } => json(kb.remember(text, &NotePath::parse(note)?, heading.as_deref())),
-        Command::Check { query, min_score } => json(kb.check(query, *min_score)),
-        Command::Search {
+        Tool::Check { query, min_score } => json(kb.check(query, *min_score)),
+        Tool::Search {
             query,
             limit,
             min_score,
         } => json(kb.search(query, *limit, *min_score)),
-        Command::Mcp => unreachable!("rejected above"),
     }
 }
 
@@ -175,7 +177,7 @@ pub fn main() -> ExitCode {
     let Cli { settings, command } = Cli::parse();
     let outcome = match command {
         Command::Mcp => mcp::serve(&settings),
-        tool => execute(&settings, &tool).and_then(|report| {
+        Command::Tool(tool) => execute(&settings, &tool).and_then(|report| {
             println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())
         }),
@@ -195,10 +197,6 @@ mod tests {
     use clap::CommandFactory;
     use std::path::Path;
 
-    fn parse(argv: &[&str]) -> Command {
-        Cli::try_parse_from(argv).unwrap().command
-    }
-
     fn settings(vault: Option<&str>, index: Option<&str>) -> Settings {
         Settings {
             vault: vault.map(PathBuf::from),
@@ -211,48 +209,6 @@ mod tests {
     #[test]
     fn the_definition_is_valid() {
         Cli::command().debug_assert();
-    }
-
-    #[test]
-    fn defaults() {
-        assert_eq!(
-            parse(&["chaos-kb", "sync"]),
-            Command::Sync { dry_run: false }
-        );
-        assert_eq!(
-            parse(&["chaos-kb", "remember", "tea"]),
-            Command::Remember {
-                text: "tea".into(),
-                note: INBOX.into(),
-                heading: None,
-            }
-        );
-        assert_eq!(
-            parse(&["chaos-kb", "check", "tea"]),
-            Command::Check {
-                query: "tea".into(),
-                min_score: DEFAULT_MIN_SCORE,
-            }
-        );
-        assert_eq!(
-            parse(&["chaos-kb", "search", "tea"]),
-            Command::Search {
-                query: "tea".into(),
-                limit: 5,
-                min_score: 0.0,
-            }
-        );
-    }
-
-    #[test]
-    fn check_with_min_score() {
-        assert_eq!(
-            parse(&["chaos-kb", "check", "x", "--min-score", "0.7"]),
-            Command::Check {
-                query: "x".into(),
-                min_score: 0.7,
-            }
-        );
     }
 
     #[test]
@@ -279,13 +235,7 @@ mod tests {
 
     #[test]
     fn execute_needs_a_vault() {
-        let e = execute(&settings(None, None), &Command::Sync { dry_run: true }).unwrap_err();
+        let e = execute(&settings(None, None), &Tool::Sync { dry_run: true }).unwrap_err();
         assert_eq!(e.to_string(), "set --vault or CHAOS_KB_VAULT");
-    }
-
-    #[test]
-    fn mcp_is_not_a_tool() {
-        let e = execute(&settings(Some("/notes"), None), &Command::Mcp).unwrap_err();
-        assert!(e.to_string().contains("mcp"), "{e}");
     }
 }

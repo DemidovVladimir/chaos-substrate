@@ -2,7 +2,7 @@
 //! `ping`, `tools/list` and `tools/call`. Nothing is opened or contacted
 //! before a tool is called, so the handshake is always instant.
 
-use super::cli::{self, Command, Settings};
+use super::cli::{self, Settings, Tool};
 use super::tools;
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -25,8 +25,8 @@ const INVALID_PARAMS: i64 = -32602;
 type Failure = (i64, String);
 
 /// Answer one JSON-RPC message; `None` for notifications. `run` executes a
-/// parsed tool command (the real knowledge base in production).
-pub fn handle(message: &Value, run: &dyn Fn(&Command) -> Result<Value>) -> Option<Value> {
+/// parsed tool (the real knowledge base in production).
+pub fn handle(message: &Value, run: &dyn Fn(&Tool) -> Result<Value>) -> Option<Value> {
     let Some(request) = message.as_object() else {
         let failure = (INVALID_REQUEST, "expected one JSON-RPC object".into());
         return Some(error(&Value::Null, failure));
@@ -36,7 +36,7 @@ pub fn handle(message: &Value, run: &dyn Fn(&Command) -> Result<Value>) -> Optio
     let outcome = match request.get("method").and_then(Value::as_str) {
         Some("initialize") => Ok(initialize(params)),
         Some("ping") => Ok(json!({})),
-        Some("tools/list") => Ok(list()),
+        Some("tools/list") => Ok(json!({"tools": tools::tools()})),
         Some("tools/call") => call(params, run),
         Some(method) => Err((METHOD_NOT_FOUND, format!("method not found: {method}"))),
         None => Err((INVALID_REQUEST, "a request needs a method".into())),
@@ -49,7 +49,7 @@ pub fn handle(message: &Value, run: &dyn Fn(&Command) -> Result<Value>) -> Optio
 
 /// Serve until stdin closes.
 pub fn serve(settings: &Settings) -> Result<()> {
-    let run = |command: &Command| cli::execute(settings, command);
+    let run = |tool: &Tool| cli::execute(settings, tool);
     let mut stdout = std::io::stdout();
     for line in std::io::stdin().lock().split(b'\n') {
         if let Some(reply) = answer(&line?, &run) {
@@ -62,7 +62,7 @@ pub fn serve(settings: &Settings) -> Result<()> {
 
 /// The reply line to one stdin line: `None` for blank lines and notifications,
 /// a parse error for anything that is not JSON.
-fn answer(line: &[u8], run: &dyn Fn(&Command) -> Result<Value>) -> Option<String> {
+fn answer(line: &[u8], run: &dyn Fn(&Tool) -> Result<Value>) -> Option<String> {
     if line.trim_ascii().is_empty() {
         return None;
     }
@@ -91,29 +91,20 @@ fn initialize(params: &Value) -> Value {
     })
 }
 
-fn list() -> Value {
-    let tools: Vec<Value> = tools::tools()
-        .into_iter()
-        .map(|t| json!({"name": t.name, "description": t.description, "inputSchema": t.input_schema}))
-        .collect();
-    json!({ "tools": tools })
-}
-
 /// An unknown tool is a protocol error; invalid arguments and failures are
 /// tool results with `isError`, so the model can read them and correct itself.
-fn call(params: &Value, run: &dyn Fn(&Command) -> Result<Value>) -> Result<Value, Failure> {
+fn call(params: &Value, run: &dyn Fn(&Tool) -> Result<Value>) -> Result<Value, Failure> {
     let name = params["name"]
         .as_str()
         .ok_or((INVALID_PARAMS, "tools/call needs a tool `name`".into()))?;
-    if !tools::tools().iter().any(|t| t.name == name) {
-        return Err((INVALID_PARAMS, format!("unknown tool: {name}")));
-    }
     let none = json!({});
     let arguments = match &params["arguments"] {
         Value::Null => &none,
         given => given,
     };
-    let (text, is_error) = match tools::command(name, arguments).and_then(|c| run(&c)) {
+    let parsed = tools::command(name, arguments)
+        .ok_or_else(|| (INVALID_PARAMS, format!("unknown tool: {name}")))?;
+    let (text, is_error) = match parsed.and_then(|tool| run(&tool)) {
         Ok(report) => (report.to_string(), false),
         Err(e) => (format!("{e:#}"), true),
     };
@@ -124,24 +115,23 @@ fn call(params: &Value, run: &dyn Fn(&Command) -> Result<Value>) -> Result<Value
 mod tests {
     use super::*;
     use crate::entry::cli::Cli;
-    use crate::entry::tools;
     use anyhow::anyhow;
     use clap::CommandFactory;
     use serde_json::json;
 
-    type Run = dyn Fn(&Command) -> Result<Value>;
+    type Run = dyn Fn(&Tool) -> Result<Value>;
 
     /// A stand-in knowledge base that reports the command it was given.
-    fn echo(command: &Command) -> Result<Value> {
-        Ok(json!({ "ran": format!("{command:?}") }))
+    fn echo(tool: &Tool) -> Result<Value> {
+        Ok(json!({ "ran": format!("{tool:?}") }))
     }
 
-    fn broken(_: &Command) -> Result<Value> {
+    fn broken(_: &Tool) -> Result<Value> {
         Err(anyhow!("index is locked").context("search failed"))
     }
 
-    fn untouched(command: &Command) -> Result<Value> {
-        panic!("must not run {command:?}")
+    fn untouched(tool: &Tool) -> Result<Value> {
+        panic!("must not run {tool:?}")
     }
 
     fn request(method: &str, params: Value) -> Value {
@@ -225,16 +215,6 @@ mod tests {
     }
 
     #[test]
-    fn lists_the_tools() {
-        let listed = result(request("tools/list", json!({})), &untouched);
-        let expected: Vec<Value> = tools::tools()
-            .into_iter()
-            .map(|t| json!({"name": t.name, "description": t.description, "inputSchema": t.input_schema}))
-            .collect();
-        assert_eq!(listed, json!({ "tools": expected }));
-    }
-
-    #[test]
     fn unknown_methods_are_not_found() {
         assert_eq!(error_code(request("resources/list", json!({}))), -32601);
         assert_eq!(error_code(request("server/discover", json!({}))), -32601);
@@ -263,7 +243,7 @@ mod tests {
     fn calls_run_the_parsed_command() {
         let done = call("kb_search", json!({"query": "tea", "limit": 2}), &echo);
         assert_eq!(done["isError"], false);
-        let search = Command::Search {
+        let search = Tool::Search {
             query: "tea".into(),
             limit: 2,
             min_score: 0.0,
@@ -276,7 +256,7 @@ mod tests {
     fn missing_arguments_mean_none() {
         let params = json!({"name": "kb_sync"});
         let done = result(request("tools/call", params), &echo);
-        let text = echo(&Command::Sync { dry_run: false }).unwrap().to_string();
+        let text = echo(&Tool::Sync { dry_run: false }).unwrap().to_string();
         assert_eq!(done["content"][0]["text"], text);
     }
 
