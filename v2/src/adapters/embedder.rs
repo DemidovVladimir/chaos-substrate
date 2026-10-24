@@ -4,70 +4,183 @@
 //! are applied here, and are part of the embedder id.
 
 use crate::ports::Embedder;
-use anyhow::Result;
-use serde_json::Value;
+use anyhow::{Context, Result, anyhow, ensure};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use std::time::Duration;
+
+/// End-to-end budget for one request; generous because the first call may
+/// have to load the model.
+const TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Most characters of a failed response quoted in the error.
+const ERROR_BODY_CHARS: usize = 200;
 
 /// How queries and passages are worded before embedding. The wording shapes
 /// the vectors, so the format is part of the embedder id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Format {
-    /// EmbeddingGemma's published retrieval prompts.
+    /// EmbeddingGemma's published retrieval prompts
+    /// (<https://ai.google.dev/gemma/docs/embeddinggemma/model_card>).
     GemmaRetrieval,
     /// Text as is, with the context line before a passage.
     Plain,
 }
 
 impl Format {
+    /// EmbeddingGemma under any tag or namespace gets its prompts.
     fn for_model(model: &str) -> Format {
-        let _ = model;
-        todo!()
+        if model.contains("embeddinggemma") {
+            Format::GemmaRetrieval
+        } else {
+            Format::Plain
+        }
     }
 
+    /// Versioned name; the second half of the embedder id.
     fn name(self) -> &'static str {
-        todo!()
+        match self {
+            Format::GemmaRetrieval => "gemma-retrieval-v1",
+            Format::Plain => "plain-v1",
+        }
     }
 
     fn query(self, query: &str) -> String {
-        let _ = query;
-        todo!()
+        match self {
+            Format::GemmaRetrieval => format!("task: search result | query: {query}"),
+            Format::Plain => query.to_string(),
+        }
     }
 
+    /// A passage with its context line; a blank context counts as none.
     fn document(self, context: &str, text: &str) -> String {
-        let _ = (context, text);
-        todo!()
+        let blank = context.trim().is_empty();
+        match self {
+            Format::GemmaRetrieval => {
+                let title = if blank { "none" } else { context };
+                format!("title: {title} | text: {text}")
+            }
+            Format::Plain if blank => text.to_string(),
+            Format::Plain => format!("{context}\n\n{text}"),
+        }
     }
 }
 
+/// `{base_url}/embeddings` with exactly one slash between.
 fn endpoint(base_url: &str) -> String {
-    let _ = base_url;
-    todo!()
+    format!("{}/embeddings", base_url.trim_end_matches('/'))
 }
 
 fn request_body(model: &str, inputs: &[String]) -> Value {
-    let _ = (model, inputs);
-    todo!()
+    json!({"model": model, "input": inputs})
 }
 
+#[derive(Deserialize)]
+struct EmbeddingList {
+    data: Vec<EmbeddingItem>,
+}
+
+#[derive(Deserialize)]
+struct EmbeddingItem {
+    index: usize,
+    embedding: Vec<f32>,
+}
+
+/// The vectors of a successful response, in input order. Fails unless every
+/// input index `0..expected` has exactly one non-empty vector, all of one length.
 fn parse_response(body: &str, expected: usize) -> Result<Vec<Vec<f32>>> {
-    let _ = (body, expected);
-    todo!()
+    let mut data = serde_json::from_str::<EmbeddingList>(body)
+        .context("embeddings response is not an embeddings list")?
+        .data;
+    ensure!(
+        data.len() == expected,
+        "embeddings API returned {} vectors for {expected} inputs",
+        data.len()
+    );
+    data.sort_by_key(|item| item.index);
+    ensure!(
+        data.iter().enumerate().all(|(i, item)| item.index == i),
+        "embeddings response indexes are not 0..{expected}"
+    );
+    ensure!(
+        data.iter().all(|item| !item.embedding.is_empty()),
+        "embeddings API returned an empty vector"
+    );
+    let dims = data.first().map_or(0, |item| item.embedding.len());
+    ensure!(
+        data.iter().all(|item| item.embedding.len() == dims),
+        "embeddings API returned vectors of different lengths"
+    );
+    Ok(data.into_iter().map(|item| item.embedding).collect())
 }
 
+/// The error for a non-2xx response: the status and the start of the body,
+/// with the API key blanked out first in case the server echoes it.
 fn status_error(status: u16, body: &str, api_key: Option<&str>) -> anyhow::Error {
-    let _ = (status, body, api_key);
-    todo!()
+    let body = match api_key {
+        Some(key) => body.replace(key, "[redacted]"),
+        None => body.to_string(),
+    };
+    let quoted: String = body.trim().chars().take(ERROR_BODY_CHARS).collect();
+    anyhow!("embeddings API returned HTTP {status}: {quoted}")
 }
 
+/// An embedder behind an OpenAI-compatible endpoint. One agent (and so one
+/// connection pool) per embedder.
 pub struct HttpEmbedder {
     id: String,
+    url: String,
+    model: String,
+    format: Format,
+    /// Never empty; never written into an error.
+    api_key: Option<String>,
+    agent: ureq::Agent,
 }
 
 impl HttpEmbedder {
     /// `base_url` like `http://localhost:11434/v1`; `api_key` is sent as a
-    /// bearer token when present. Nothing is contacted until the first embed.
+    /// bearer token when present (an empty key counts as none). Nothing is
+    /// contacted until the first embed.
     pub fn new(base_url: &str, model: &str, api_key: Option<String>) -> HttpEmbedder {
-        let _ = (base_url, model, api_key);
-        todo!()
+        let format = Format::for_model(model);
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(TIMEOUT))
+            // Non-2xx comes back as a response, so its body can be quoted.
+            .http_status_as_error(false)
+            .build()
+            .into();
+        HttpEmbedder {
+            id: format!("{model}|{}", format.name()),
+            url: endpoint(base_url),
+            model: model.to_string(),
+            format,
+            api_key: api_key.filter(|key| !key.is_empty()),
+            agent,
+        }
+    }
+
+    /// One request; one vector per input, in input order.
+    fn embed(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>> {
+        let mut request = self.agent.post(&self.url);
+        if let Some(key) = &self.api_key {
+            request = request.header("Authorization", format!("Bearer {key}"));
+        }
+        let mut response = request
+            .send_json(request_body(&self.model, inputs))
+            .with_context(|| format!("embeddings request to {} failed", self.url))?;
+        let body = response
+            .body_mut()
+            .read_to_string()
+            .context("reading the embeddings response")?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(status_error(
+                status.as_u16(),
+                &body,
+                self.api_key.as_deref(),
+            ));
+        }
+        parse_response(&body, inputs.len())
     }
 }
 
@@ -77,13 +190,20 @@ impl Embedder for HttpEmbedder {
     }
 
     fn embed_documents(&self, passages: &[(&str, &str)]) -> Result<Vec<Vec<f32>>> {
-        let _ = passages;
-        todo!()
+        if passages.is_empty() {
+            return Ok(Vec::new());
+        }
+        let inputs: Vec<String> = passages
+            .iter()
+            .map(|(context, text)| self.format.document(context, text))
+            .collect();
+        self.embed(&inputs)
     }
 
     fn embed_query(&self, query: &str) -> Result<Vec<f32>> {
-        let _ = query;
-        todo!()
+        let mut vectors = self.embed(&[self.format.query(query)])?;
+        // `parse_response` guarantees exactly one.
+        Ok(vectors.remove(0))
     }
 }
 
