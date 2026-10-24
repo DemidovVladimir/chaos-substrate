@@ -17,7 +17,9 @@ chaos-kb (Chaos Substrate v2) is a personal knowledge base for agents: Markdown 
 - **One source per fact.** The clap definitions in `src/entry/cli.rs` are the only definition of
   the tools, their arguments, defaults and descriptions. MCP schemas and the README tool block are
   generated from them, and `cargo test` fails when the README block drifts (the failure prints the
-  expected block). User docs live in README.md only.
+  expected block). README.md is the user reference; `site/` is the illustrated tutorial (one
+  page per feature, rules in the "When behaviour changes" section below). Nothing else holds user
+  docs.
 - **The vault is the only copy of the knowledge.** The index is derived and safe to delete.
 - No `unsafe` (forbidden in `Cargo.toml`). Rust only. Never print, log or commit secrets; the
   embeddings API key is read only from `CHAOS_KB_EMBED_API_KEY`.
