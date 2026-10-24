@@ -1094,6 +1094,29 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_appends_to_one_note_keep_every_fact() {
+        let dir = tempdir().unwrap();
+        let start = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for i in 0..8 {
+                let (root, start) = (dir.path(), &start);
+                scope.spawn(move || {
+                    let vault = ObsidianVault::new(root).unwrap();
+                    start.wait();
+                    let fact = format!("Fact number {i}.");
+                    vault.append(&note("Log"), Some("Facts"), &fact).unwrap();
+                });
+            }
+        });
+        let written = fs::read_to_string(dir.path().join("Log.md")).unwrap();
+        let lost: Vec<usize> = (0..8)
+            .filter(|i| !written.contains(&format!("Fact number {i}.")))
+            .collect();
+        assert_eq!(lost, Vec::<usize>::new(), "lost facts; the note is:\n{written}");
+        assert_eq!(written.matches("## Facts").count(), 1, "{written}");
+    }
+
+    #[test]
     fn append_rejects_empty_text_and_multiline_headings() {
         let dir = tempdir().unwrap();
         let vault = open(dir.path());
