@@ -962,6 +962,39 @@ mod tests {
     }
 
     #[test]
+    fn place_finds_a_setext_heading() {
+        assert_eq!(
+            place("Oil\n===\n\nx\n\nTyres\n-----\n\ny\n", Some("oil"), "new"),
+            "Oil\n===\n\nx\n\nnew\n\nTyres\n-----\n\ny\n"
+        );
+    }
+
+    #[test]
+    fn place_matches_a_heading_by_its_plain_text() {
+        assert_eq!(
+            place("## **Oil**\n\nx\n\n## Tyres\n", Some("Oil"), "new"),
+            "## **Oil**\n\nx\n\nnew\n\n## Tyres\n"
+        );
+    }
+
+    #[test]
+    fn place_ignores_a_hash_line_inside_front_matter() {
+        let front = "---\ntitle: Car\n# Oil\n---\n\nbody\n";
+        assert_eq!(
+            place(front, Some("Oil"), "new"),
+            format!("{front}\n## Oil\n\nnew\n")
+        );
+    }
+
+    #[test]
+    fn place_finds_a_heading_after_a_byte_order_mark() {
+        assert_eq!(
+            place("\u{feff}# Oil\n\nx\n\n# Tyres\n", Some("Oil"), "new"),
+            "\u{feff}# Oil\n\nx\n\nnew\n\n# Tyres\n"
+        );
+    }
+
+    #[test]
     fn place_keeps_existing_bytes() {
         let existing = "# Здоровье  \r\n\r\n## Лекарства\t\r\n\r\n- Аспирин\r\n\r\n\r\n\
                         ## Врачи\r\nТерапевт   ";
