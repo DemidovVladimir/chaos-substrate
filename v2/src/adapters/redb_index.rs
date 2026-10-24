@@ -2,17 +2,30 @@
 //! operation and closed right after, so a CLI call and a running MCP server
 //! can share the file; vectors are stored as little-endian `f32` bytes.
 
+use crate::domain::chunk::Chunk;
 use crate::domain::hash::Digest;
+use crate::domain::merkle::Tree;
 use crate::domain::note::Location;
+use crate::domain::path::NotePath;
+use crate::domain::vector;
 use crate::ports::{Hit, Index, Snapshot, Update};
-use anyhow::Result;
-use redb::{MultimapTableDefinition, TableDefinition};
+use anyhow::{Context, Result, anyhow, bail, ensure};
+use redb::{
+    Database, DatabaseError, Key, MultimapTableDefinition, ReadTransaction, ReadableDatabase,
+    ReadableTable, Table, TableDefinition, TableError, Value, WriteTransaction,
+};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use std::{fs, io, thread};
 
 /// How long an operation waits for another handle to close the file.
 const LOCK_PATIENCE: Duration = Duration::from_secs(3);
+/// The first pause before retrying a held file; it doubles after each try.
+const FIRST_PAUSE: Duration = Duration::from_millis(10);
+
+/// The [`META`] key of the embedder id.
+const EMBEDDER_KEY: &str = "embedder";
 
 /// Where a block or chunk sits: note, section, first line, last line.
 type LocRow<'a> = (&'a str, &'a str, u32, u32);
@@ -45,45 +58,276 @@ impl RedbIndex {
             patience: LOCK_PATIENCE,
         }
     }
+
+    /// Run `read` on the stored state; `empty` while the file does not exist.
+    fn read<T>(&self, empty: T, read: impl FnOnce(&ReadTransaction) -> Result<T>) -> Result<T> {
+        match self.open(open_existing)? {
+            Some(db) => read(&db.begin_read()?),
+            None => Ok(empty),
+        }
+    }
+
+    /// Open the file with `open`, retrying with doubling pauses while another
+    /// handle holds it, for at most `patience`.
+    fn open<T>(&self, open: impl Fn(&Path) -> Result<T, DatabaseError>) -> Result<T> {
+        let started = Instant::now();
+        let mut pause = FIRST_PAUSE;
+        loop {
+            match open(&self.path) {
+                Err(DatabaseError::DatabaseAlreadyOpen) => {
+                    let left = self.patience.saturating_sub(started.elapsed());
+                    if left.is_zero() {
+                        bail!(
+                            "index {} is held open by another process; gave up after {:?}",
+                            self.path.display(),
+                            self.patience
+                        );
+                    }
+                    thread::sleep(pause.min(left));
+                    pause *= 2;
+                }
+                opened => {
+                    return opened
+                        .with_context(|| format!("cannot open index {}", self.path.display()));
+                }
+            }
+        }
+    }
+}
+
+/// The database at `path`; `None` when there is no file yet. An empty file
+/// counts as none: `Database::create` makes the file before it takes the lock.
+fn open_existing(path: &Path) -> Result<Option<Database>, DatabaseError> {
+    match fs::metadata(path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+        Ok(file) if file.len() == 0 => Ok(None),
+        Ok(_) => Database::open(path).map(Some),
+    }
+}
+
+/// A table opened for reading; `None` until a write creates it.
+fn existing<T>(opened: Result<T, TableError>) -> Result<Option<T>> {
+    match opened {
+        Err(TableError::TableDoesNotExist(_)) => Ok(None),
+        opened => Ok(Some(opened?)),
+    }
+}
+
+/// `def`, emptied: deleted and created again.
+fn fresh<'t, K: Key + 'static, V: Value + 'static>(
+    txn: &'t WriteTransaction,
+    def: TableDefinition<K, V>,
+) -> Result<Table<'t, K, V>> {
+    txn.delete_table(def)?;
+    Ok(txn.open_table(def)?)
+}
+
+/// Make the tables equal to `update`. Fails before writing anything when a
+/// chunk has no vector, supplied or stored.
+fn write(txn: &WriteTransaction, update: &Update) -> Result<()> {
+    let mut vectors = txn.open_table(VECTORS)?;
+    let supplied: HashSet<&Digest> = update.vectors.iter().map(|(key, _)| key).collect();
+    for chunk in &update.chunks {
+        if !supplied.contains(&chunk.key) && vectors.get(&chunk.key.0)?.is_none() {
+            bail!(
+                "chunk {} ({} lines {}-{}) has no vector; the index is unchanged",
+                chunk.key,
+                chunk.at.note,
+                chunk.at.lines[0],
+                chunk.at.lines[1]
+            );
+        }
+    }
+
+    fresh(txn, META)?.insert(EMBEDDER_KEY, update.embedder.as_str())?;
+    let mut tree = fresh(txn, TREE)?;
+    for (path, hash) in update.tree.nodes() {
+        tree.insert(path, &hash.0)?;
+    }
+    let mut chunks = fresh(txn, CHUNKS)?;
+    for chunk in &update.chunks {
+        chunks.insert(&chunk.key.0, chunk_row(chunk))?;
+    }
+    txn.delete_multimap_table(BLOCKS)?;
+    let mut blocks = txn.open_multimap_table(BLOCKS)?;
+    for (fingerprint, at) in &update.blocks {
+        blocks.insert(&fingerprint.0, loc_row(at))?;
+    }
+
+    for (key, v) in &update.vectors {
+        vectors.insert(&key.0, vector_bytes(v).as_slice())?;
+    }
+    let used: HashSet<[u8; 32]> = update.chunks.iter().map(|c| c.key.0).collect();
+    vectors.retain(|key, _| used.contains(key))?;
+    Ok(())
+}
+
+// Row codecs, one pair per stored shape. Decoding never trusts the file: a
+// row that does not round-trip is an error.
+
+fn loc_row(at: &Location) -> LocRow<'_> {
+    (
+        at.note.as_str(),
+        at.section.as_str(),
+        at.lines[0],
+        at.lines[1],
+    )
+}
+
+fn location((note, section, first, last): LocRow<'_>) -> Result<Location> {
+    let parsed =
+        NotePath::parse(note).with_context(|| format!("stored note path {note:?} is invalid"))?;
+    ensure!(
+        parsed.as_str() == note,
+        "stored note path {note:?} is not canonical"
+    );
+    Ok(Location {
+        note: parsed,
+        section: section.to_string(),
+        lines: [first, last],
+    })
+}
+
+fn chunk_row(chunk: &Chunk) -> ChunkRow<'_> {
+    (
+        loc_row(&chunk.at),
+        chunk.context.as_str(),
+        chunk.text.as_str(),
+    )
+}
+
+fn chunk(key: Digest, (at, context, text): ChunkRow<'_>) -> Result<Chunk> {
+    let chunk = Chunk::new(location(at)?, context.to_string(), text.to_string());
+    ensure!(
+        chunk.key == key,
+        "stored chunk {key} does not match its content"
+    );
+    Ok(chunk)
+}
+
+fn vector_bytes(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|x| x.to_le_bytes()).collect()
+}
+
+fn vector(key: Digest, bytes: &[u8]) -> Result<Vec<f32>> {
+    ensure!(
+        bytes.len().is_multiple_of(4),
+        "stored vector {key} has {} bytes, not a whole number of f32s",
+        bytes.len()
+    );
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect())
 }
 
 impl Index for RedbIndex {
     fn snapshot(&self) -> Result<Option<Snapshot>> {
-        let _ = (&self.path, self.patience);
-        todo!()
+        self.read(None, |txn| {
+            let Some(meta) = existing(txn.open_table(META))? else {
+                return Ok(None);
+            };
+            let Some(embedder) = meta.get(EMBEDDER_KEY)? else {
+                return Ok(None);
+            };
+            let tree = txn.open_table(TREE)?;
+            let nodes = tree
+                .iter()?
+                .map(|row| {
+                    let (path, hash) = row?;
+                    Ok((path.value().to_string(), Digest(*hash.value())))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(Some(Snapshot {
+                embedder: embedder.value().to_string(),
+                tree: Tree::from_nodes(nodes),
+            }))
+        })
     }
 
     fn vector_keys(&self) -> Result<HashSet<Digest>> {
-        todo!()
+        self.read(HashSet::new(), |txn| {
+            let Some(vectors) = existing(txn.open_table(VECTORS))? else {
+                return Ok(HashSet::new());
+            };
+            vectors
+                .iter()?
+                .map(|row| Ok(Digest(*row?.0.value())))
+                .collect()
+        })
     }
 
     fn replace(&self, update: Update) -> Result<()> {
-        let _ = update;
-        todo!()
+        if let Some(dir) = self.path.parent() {
+            fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+        }
+        let db = self.open(|path| Database::create(path))?;
+        let txn = db.begin_write()?;
+        write(&txn, &update)?;
+        txn.commit()?;
+        Ok(())
     }
 
     fn exact(&self, fingerprint: &Digest) -> Result<Vec<Location>> {
-        let _ = fingerprint;
-        todo!()
+        self.read(Vec::new(), |txn| {
+            let Some(blocks) = existing(txn.open_multimap_table(BLOCKS))? else {
+                return Ok(Vec::new());
+            };
+            let mut found = blocks
+                .get(&fingerprint.0)?
+                .map(|row| location(row?.value()))
+                .collect::<Result<Vec<_>>>()?;
+            found.sort();
+            Ok(found)
+        })
     }
 
     fn nearest(&self, query: &[f32], k: usize) -> Result<Vec<Hit>> {
-        let _ = (query, k);
-        todo!()
+        if k == 0 {
+            return Ok(Vec::new());
+        }
+        self.read(Vec::new(), |txn| {
+            let Some(vectors) = existing(txn.open_table(VECTORS))? else {
+                return Ok(Vec::new());
+            };
+            let stored = vectors
+                .iter()?
+                .map(|row| {
+                    let (key, bytes) = row?;
+                    let key = Digest(*key.value());
+                    Ok((key, vector(key, bytes.value())?))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            if let Some((key, v)) = stored.iter().find(|(_, v)| v.len() != query.len()) {
+                bail!(
+                    "query has {} dimensions but stored vector {key} has {}; was the index built by another embedder?",
+                    query.len(),
+                    v.len()
+                );
+            }
+            let best = vector::top_k(query, stored.iter().map(|(key, v)| (*key, v.as_slice())), k);
+            let chunks = txn.open_table(CHUNKS)?;
+            best.into_iter()
+                .map(|(key, score)| {
+                    let row = chunks
+                        .get(&key.0)?
+                        .ok_or_else(|| anyhow!("stored vector {key} has no chunk"))?;
+                    Ok(Hit {
+                        chunk: chunk(key, row.value())?,
+                        score,
+                    })
+                })
+                .collect()
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::chunk::Chunk;
     use crate::domain::hash;
-    use crate::domain::merkle::Tree;
-    use crate::domain::path::NotePath;
-    use redb::Database;
     use std::sync::mpsc;
-    use std::thread;
-    use std::time::Instant;
     use tempfile::tempdir;
 
     const EMBEDDER: &str = "test-embedder@3d";
@@ -166,15 +410,17 @@ mod tests {
         (x - y).abs() < 1e-6
     }
 
-    /// Everything the API can tell about the index.
-    fn observe(
-        index: &RedbIndex,
-    ) -> (
+    /// Snapshot, sorted vector keys, `exact` of each fixture block, and
+    /// `nearest` along each fixture vector.
+    type Observed = (
         Option<Snapshot>,
         Vec<Digest>,
         Vec<Vec<Location>>,
         Vec<Vec<Hit>>,
-    ) {
+    );
+
+    /// Everything the API can tell about the index.
+    fn observe(index: &RedbIndex) -> Observed {
         let mut keys: Vec<Digest> = index.vector_keys().unwrap().into_iter().collect();
         keys.sort();
         let exact = [a(), b(), c()]
@@ -379,6 +625,23 @@ mod tests {
         assert!(index.exact(&fp(&a())).unwrap().is_empty());
         assert!(index.nearest(&VA, 3).unwrap().is_empty());
         assert!(!path.parent().unwrap().exists(), "no folder, no file");
+    }
+
+    #[test]
+    fn an_empty_file_reads_as_missing_until_replace_fills_it() {
+        // What a first write leaves between creating the file and taking its lock.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("index.redb");
+        fs::write(&path, b"").unwrap();
+        let index = RedbIndex::new(&path);
+
+        assert_eq!(index.snapshot().unwrap(), None);
+        assert!(index.vector_keys().unwrap().is_empty());
+        assert!(index.exact(&fp(&a())).unwrap().is_empty());
+        assert!(index.nearest(&VA, 3).unwrap().is_empty());
+
+        index.replace(full()).unwrap();
+        assert_eq!(index.snapshot().unwrap().unwrap().tree, full().tree);
     }
 
     #[test]
