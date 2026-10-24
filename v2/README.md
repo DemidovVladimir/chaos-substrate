@@ -41,7 +41,8 @@ at the repository root, which indexes code repositories into Postgres.
   Markdown syntax, keeps a link's label and its destination, and ignores case, spacing, sentence
   punctuation, quotes and brackets. `Allergic to penicillin.` and `- **allergic** to PENICILLIN`
   get the same fingerprint. Every other symbol counts, so `Blood type: A+` and `Blood type: A-`
-  stay two different facts, and so do `≤ 140` and `≥ 140`.
+  stay two different facts, and so do `≤ 140` and `≥ 140`. A colon between digits counts too:
+  `1:5` is a ratio, `1.5` a number, while `1,5` and `1.5` are the same number.
 - **Merkle tree**: the fingerprints of a note, each labelled by its headings, roll up into one
   hash per note, and the note hashes roll up into one root hash for the whole vault. This gives
   two things:
@@ -130,8 +131,8 @@ the same words already sit (`known_at`).
 
 The index lives at `<vault>/.chaos-kb/index.redb`. Obsidian ignores folders whose names start
 with a dot. Deleting the folder is safe, because `sync` rebuilds it from the notes. An index
-written by a chaos-kb build with a different table layout reads as empty, and the next `sync`
-rebuilds it.
+written by a chaos-kb build with a different table layout, older or newer, reads as empty, and
+the next `sync` rebuilds it. That re-embeds every note.
 
 ### From an agent (MCP)
 
@@ -244,17 +245,18 @@ redb reuses the freed space for later writes instead.
 - **The notes are the only copy of your knowledge.** chaos-kb writes to your notes only when you
   call `remember`. `sync`, `check` and `search` only read them.
 - **How `remember` writes**: with a heading, the fact goes right under that heading's own text,
-  before any subheading, so it reads under exactly that heading. A missing heading is added at
+  before any subheading, so it reads under exactly that heading. Headings are compared like
+  fingerprints, so `--heading oil` finds `## Oil:`. A missing heading is added at
   the end of the note. The note is written through a temporary file and a rename, so it is never
   half-written, and it keeps its file permissions. Existing text is never changed.
 - **What `remember` refuses**: writing outside the vault or through a symlinked folder or note,
   changing a read-only note or one that is not valid UTF-8, and text that would change how the
   rest of the note reads (an unclosed code fence or HTML comment, or a heading that would take
-  in the sections after it). A refused call writes nothing.
+  in the sections after it). A refused call changes no note.
 - **Several processes take turns.** A CLI command and a running MCP server can work on the same
   vault: each index operation holds `<index>.lock`, and appends hold
   `<vault>/.chaos-kb/append.lock`. When another process changed the index during a `sync`, the
-  `sync` starts over (up to three times).
+  `sync` starts over, with at most three attempts in all.
 - **Skipped when reading**: hidden files and folders (such as `.obsidian`), symlinks, files that
   are not Markdown (`.md`), and notes whose path contains `:`, `\` or a control character,
   begins with a space, or is not valid UTF-8. Every note is read whole,

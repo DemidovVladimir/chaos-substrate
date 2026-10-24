@@ -17,7 +17,8 @@ use std::collections::HashSet;
 /// Passages sent to the embedder per request.
 pub const EMBED_BATCH: usize = 32;
 
-/// How often a sync starts over when another writer changed the index first.
+/// Attempts in all, the first one included, when another writer keeps
+/// changing the index first.
 pub const SYNC_ATTEMPTS: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -35,8 +36,8 @@ pub struct SyncReport {
 }
 
 impl Kb<'_> {
-    /// Sync, starting over (up to [`SYNC_ATTEMPTS`] times) when another
-    /// writer changed the index while this one was embedding.
+    /// Sync, starting over when another writer changed the index while this
+    /// one was embedding ([`SYNC_ATTEMPTS`] attempts in all).
     pub fn sync(&self, dry_run: bool) -> Result<SyncReport> {
         let mut attempt = 1;
         loop {

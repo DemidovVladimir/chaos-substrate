@@ -144,7 +144,7 @@
         <li>remember <b>syncs first</b>, so facts you typed into the vault since the last sync count as known.</li>
         <li>When every block of the fact is already stored word for word, nothing is written. <code>stored</code> is false and <code>known_at</code> lists where those words are.</li>
         <li>Otherwise it takes the append lock, <code>.chaos-kb/append.lock</code>, so writers take turns. Read-only, symlinked and non-UTF-8 notes are refused, and so is a two-line heading.</li>
-        <li>The text goes right under its heading's own text, before any subheading. A missing heading is added at the end; without a heading, the text ends the note.</li>
+        <li>The text goes right under its heading's own text, before any subheading. Headings compare like fingerprints, so <code>oil</code> finds <code>## Oil:</code>. A missing heading is added at the end.</li>
         <li>The result must read like the old note plus the fact: every heading and block kept, in order. Otherwise nothing is written and the error names the line.</li>
         <li>The note goes to a hidden temporary file with its permissions, is flushed to disk and renamed over the note. Readers see the old note or the new one.</li>
         <li>A second sync indexes the fact. <code>embedded</code> counts the chunks both syncs embedded, and <code>root</code> is the vault's new root hash.</li>
@@ -232,7 +232,7 @@
   <div class="sec-head">
     <span class="kicker">Try it: pick a heading</span>
     <h2 id="s-place">Where remember puts a fact</h2>
-    <p>The note and every outcome come from the tests in <code>src/adapters/obsidian.rs</code>. Headings match in any case. The added text is marked.</p>
+    <p>The note and every outcome come from the tests in <code>src/adapters/obsidian.rs</code>. Headings match as fingerprints compare text: case and punctuation aside. The added text is marked.</p>
   </div>
   <div class="widget">
     <div class="presets" id="headings" role="group" aria-label="Heading"></div>

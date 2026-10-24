@@ -4,6 +4,7 @@
 
 use crate::domain::note::{Block, Note};
 use crate::domain::path::NotePath;
+use crate::domain::text;
 use crate::ports::Vault;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
@@ -336,8 +337,9 @@ fn prose(text: &str) -> String {
 }
 
 /// `existing` with `text` placed as [`Vault::append`] describes (pure): after
-/// the text right under the first heading titled `heading` (any case, the
-/// heading read as [`blocks`] reads it) and before its first subheading, so
+/// the text right under the first heading titled `heading` (the heading read
+/// as [`blocks`] reads it, then compared as fingerprints compare text: case,
+/// spacing and punctuation aside) and before its first subheading, so
 /// it reads under exactly that heading; under a new `## heading` at the end
 /// when there is no such heading; or at the end of the note. One blank line
 /// separates the text from its neighbours; the existing bytes are kept as
@@ -373,11 +375,14 @@ fn gap(before: &str) -> &'static str {
 
 /// Where the text right under the first heading titled `title` ends: where
 /// the line of the next heading starts, whatever its level (a subheading
-/// too), or at the end of the note.
+/// too), or at the end of the note. Titles match when they normalize alike,
+/// as fingerprints compare text.
 fn own_text_end(markdown: &str, title: &str) -> Option<usize> {
-    let title = title.to_lowercase();
+    let title = text::normalize(title);
     let outline = parse(markdown).outline;
-    let at = outline.iter().position(|h| h.2.to_lowercase() == title)?;
+    let at = outline
+        .iter()
+        .position(|h| text::normalize(&h.2) == title)?;
     let Some(&(next, ..)) = outline.get(at + 1) else {
         return Some(markdown.len());
     };
@@ -1092,6 +1097,16 @@ mod tests {
         assert_eq!(
             place("## **Oil**\n\nx\n\n## Tyres\n", Some("Oil"), "new"),
             "## **Oil**\n\nx\n\nnew\n\n## Tyres\n"
+        );
+        // The same words, as fingerprints read them: case and punctuation aside.
+        assert_eq!(
+            place("## Oil:\n\nx\n\n## Tyres\n", Some("oil"), "new"),
+            "## Oil:\n\nx\n\nnew\n\n## Tyres\n"
+        );
+        // Symbols still count: `C++` is not `C#`.
+        assert_eq!(
+            place("## C#\n\nx\n", Some("C++"), "new"),
+            "## C#\n\nx\n\n## C++\n\nnew\n"
         );
     }
 

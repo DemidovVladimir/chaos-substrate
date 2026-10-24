@@ -2,7 +2,8 @@
 //! texts get the same fingerprint when they say the same thing: case,
 //! spacing, sentence punctuation, quotes, brackets, leftover emphasis marks
 //! and Unicode compatibility forms are ignored. Every other symbol counts, so
-//! `A+` and `A-`, or `≤ 140` and `≥ 140`, stay different facts.
+//! `A+` and `A-`, or `≤ 140` and `≥ 140`, stay different facts, and so does a
+//! colon between digits: `1:5` is a ratio, `1.5` a number.
 
 use super::hash::{self, Digest};
 use unicode_normalization::UnicodeNormalization;
@@ -15,20 +16,28 @@ const IGNORED: &str = ".,;:!?\"'()[]{}*_`~|“”„‘’‚«»‹›—";
 /// Canonical form of plain text (Markdown syntax already removed by the vault
 /// reader): Unicode NFKC, lowercase, then words of letters, digits and their
 /// combining marks, and every other non-ignored symbol as a word of its own,
-/// joined by single spaces.
+/// joined by single spaces. A colon between two digits is kept as a word.
 /// `"Driving licence: B+ (2015)."` → `"driving licence b + 2015"`.
 pub fn normalize(text: &str) -> String {
-    let lower = text.nfkc().collect::<String>().to_lowercase();
+    let lower: Vec<char> = text
+        .nfkc()
+        .collect::<String>()
+        .to_lowercase()
+        .chars()
+        .collect();
     let mut out = String::new();
     let mut in_word = false;
-    for c in lower.chars() {
+    for (i, &c) in lower.iter().enumerate() {
         let letter = c.is_alphanumeric() || (in_word && is_combining_mark(c));
         if letter && in_word {
             out.push(c);
             continue;
         }
         in_word = letter;
-        if letter || !(c.is_whitespace() || IGNORED.contains(c) || is_combining_mark(c)) {
+        let digit = |at: Option<&char>| at.is_some_and(|c| c.is_numeric());
+        let ratio = c == ':' && i > 0 && digit(lower.get(i - 1)) && digit(lower.get(i + 1));
+        let ignored = c.is_whitespace() || IGNORED.contains(c) || is_combining_mark(c);
+        if letter || ratio || !ignored {
             if !out.is_empty() {
                 out.push(' ');
             }
@@ -88,6 +97,8 @@ mod tests {
             ("1.5 mg", "15 mg"),
             ("x < 3", "x > 3"),
             ("50% off", "50 off"),
+            ("1:5 mg", "1.5 mg"),
+            ("at 10:30", "at 10 30"),
         ] {
             assert_ne!(fingerprint(a), fingerprint(b), "{a:?} vs {b:?}");
         }
@@ -95,6 +106,12 @@ mod tests {
         assert_eq!(normalize("C++ and C#"), "c + + and c #");
         assert_eq!(normalize("-2.5"), "- 2 5");
         assert_eq!(normalize("24/7, 100%"), "24 / 7 100 %");
+        // A colon between digits is a ratio or a time; elsewhere it is punctuation.
+        assert_eq!(normalize("Ratio 1:5, at 10:30."), "ratio 1 : 5 at 10 : 30");
+        assert_eq!(normalize("Dose: 5"), "dose 5");
+        assert_eq!(normalize("Room 4:B"), "room 4 b");
+        // A decimal comma reads like a decimal point.
+        assert_eq!(fingerprint("1,5 mg"), fingerprint("1.5 mg"));
     }
 
     #[test]

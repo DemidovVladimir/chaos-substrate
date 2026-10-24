@@ -147,12 +147,13 @@
         <tr><td><code>Blood type: A+</code></td><td><code>Blood type: A-</code></td><td><span class="chip bad">differ</span></td><td><code>+</code> and <code>-</code> are words of their own</td></tr>
         <tr><td><code>≤ 140</code></td><td><code>≥ 140</code></td><td><span class="chip bad">differ</span></td><td>every symbol outside the ignored set counts</td></tr>
         <tr><td><code>1.5 mg</code></td><td><code>1-5 mg</code></td><td><span class="chip bad">differ</span></td><td>the full stop is ignored, the hyphen is not</td></tr>
+        <tr><td><code>1:5 mg</code></td><td><code>1.5 mg</code></td><td><span class="chip bad">differ</span></td><td>a colon between digits is a ratio, so it counts</td></tr>
         <tr><td><code>ab c</code></td><td><code>a bc</code></td><td><span class="chip bad">differ</span></td><td>word boundaries count</td></tr>
         <tr><td><code>ёлка</code></td><td><code>елка</code></td><td><span class="chip bad">differ</span></td><td><code>ё</code> and <code>е</code> are different letters</td></tr>
       </tbody>
     </table>
   </div>
-  <p class="note">The ignored characters are <code>. , ; : ! ? " ' ( ) [ ] { } * _ ` ~ |</code>, curly quotes, guillemets and the dash <code>—</code>. The first pair has the fingerprint <code>973c899aeacc8e7035e6746bbb7e0c0e471bc5b5af45d289e125bc722244774e</code>, computed by chaos-kb.</p>
+  <p class="note">The ignored characters are <code>. , ; : ! ? " ' ( ) [ ] { } * _ ` ~ |</code>, curly quotes, guillemets and the dash <code>—</code>, except a colon between two digits. The first pair has the fingerprint <code>973c899aeacc8e7035e6746bbb7e0c0e471bc5b5af45d289e125bc722244774e</code>, computed by chaos-kb.</p>
 </section>
 
 <section class="sec" aria-labelledby="s-rules-tabs">
