@@ -14,7 +14,16 @@ pub mod ports;
 mod layering {
     use std::{fs, path::Path};
 
-    /// Files under `src/<dir>` that name any of `forbidden` as `crate::<layer>`.
+    /// Whether Rust source `text` names `layer`: as `crate::<layer>`, through
+    /// `super::` (`super::super::<layer>`), or inside a `crate::{..}` group,
+    /// which this crate never writes so that every path shows its layer.
+    fn reaches(text: &str, layer: &str) -> bool {
+        text.contains(&format!("crate::{layer}"))
+            || text.contains(&format!("super::{layer}"))
+            || text.contains("crate::{")
+    }
+
+    /// Files under `src/<dir>` that reach any of `forbidden`.
     fn offending(dir: &str, forbidden: &[&str]) -> Vec<String> {
         fn walk(p: &Path, forbidden: &[&str], out: &mut Vec<String>) {
             for entry in fs::read_dir(p).unwrap() {
@@ -23,10 +32,8 @@ mod layering {
                     walk(&path, forbidden, out);
                 } else if path.extension().is_some_and(|e| e == "rs") {
                     let text = fs::read_to_string(&path).unwrap();
-                    for f in forbidden {
-                        if text.contains(&format!("crate::{f}")) {
-                            out.push(format!("{} uses crate::{f}", path.display()));
-                        }
+                    for f in forbidden.iter().filter(|f| reaches(&text, f)) {
+                        out.push(format!("{} reaches {f}", path.display()));
                     }
                 }
             }
@@ -35,6 +42,19 @@ mod layering {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(dir);
         walk(&root, forbidden, &mut out);
         out
+    }
+
+    #[test]
+    fn every_way_of_naming_a_layer_is_seen() {
+        for text in [
+            "use crate::adapters::obsidian;",
+            "use super::super::adapters::obsidian;",
+            "use crate::{domain::text, adapters::obsidian};",
+        ] {
+            assert!(reaches(text, "adapters"), "{text}");
+        }
+        assert!(!reaches("use crate::domain::text;", "adapters"));
+        assert!(!reaches("use super::super::testing;", "adapters"));
     }
 
     #[test]
