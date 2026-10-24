@@ -1,6 +1,6 @@
 //! The vault: a folder of Markdown notes, as Obsidian keeps them. Notes are
 //! parsed with pulldown-cmark into blocks; the folder is only ever written by
-//! [`Vault::append`], atomically.
+//! [`Vault::append`], one writer at a time and atomically.
 
 use crate::domain::note::{Block, Note};
 use crate::domain::path::NotePath;
