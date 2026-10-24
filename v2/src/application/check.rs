@@ -57,7 +57,7 @@ impl Kb<'_> {
         }
         let hits = self.similar(query, CHECK_K)?;
         let best = hits.first().map(|h| h.score);
-        let presence = presence::judge(false, best, min_score);
+        let presence = presence::judge(best, min_score);
         let matches = hits
             .into_iter()
             .filter(|h| h.score >= min_score)

@@ -20,13 +20,6 @@ impl Digest {
     pub fn to_hex(&self) -> String {
         blake3::Hash::from_bytes(self.0).to_hex().to_string()
     }
-
-    /// Parse 64 hex characters; `None` for anything else.
-    pub fn from_hex(hex: &str) -> Option<Digest> {
-        blake3::Hash::from_hex(hex)
-            .ok()
-            .map(|h| Digest(*h.as_bytes()))
-    }
 }
 
 impl fmt::Display for Digest {
@@ -78,7 +71,7 @@ mod tests {
     }
 
     #[test]
-    fn hex_round_trip() {
+    fn hex_is_64_lowercase_characters_everywhere() {
         let d = leaf(b"x");
         let hex = d.to_hex();
         assert_eq!(hex.len(), 64);
@@ -86,20 +79,11 @@ mod tests {
             hex.chars()
                 .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
         );
-        assert_eq!(Digest::from_hex(&hex), Some(d));
         assert_eq!(d.to_string(), hex);
         assert_eq!(
             serde_json::to_value(d).unwrap(),
             serde_json::Value::String(hex)
         );
-    }
-
-    #[test]
-    fn from_hex_rejects_malformed() {
-        assert_eq!(Digest::from_hex(""), None);
-        assert_eq!(Digest::from_hex("zz"), None);
-        assert_eq!(Digest::from_hex(&"a".repeat(63)), None);
-        assert_eq!(Digest::from_hex(&"g".repeat(64)), None);
     }
 
     #[test]

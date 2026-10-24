@@ -2,9 +2,6 @@
 //! is a plain dot product; nearest neighbours are an exact brute-force scan
 //! (a personal knowledge base is small enough that exact beats approximate).
 
-use std::cmp::Ordering;
-use std::collections::BinaryHeap;
-
 /// Scale `v` to unit length. `None` when it is empty, all zeros, or holds a
 /// non-finite value — such a vector has no direction to compare.
 pub fn unit(mut v: Vec<f32>) -> Option<Vec<f32>> {
@@ -26,63 +23,21 @@ pub fn dot(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
-/// A heap entry ordered so the heap's top is the entry to evict first: the
-/// lowest score, and among equal scores the latest candidate.
-struct Ranked<T> {
-    score: f32,
-    seq: usize,
-    item: T,
-}
-
-impl<T> Ord for Ranked<T> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        other
-            .score
-            .total_cmp(&self.score)
-            .then(self.seq.cmp(&other.seq))
-    }
-}
-
-impl<T> PartialOrd for Ranked<T> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl<T> PartialEq for Ranked<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == Ordering::Equal
-    }
-}
-
-impl<T> Eq for Ranked<T> {}
-
 /// The `k` candidates most similar to `query`, best first, as `(item, score)`.
-/// Ties keep the earlier candidate first, so results are deterministic.
+/// Ties keep the earlier candidate first (the sort is stable), so results
+/// are deterministic.
 pub fn top_k<'v, T>(
     query: &[f32],
     candidates: impl IntoIterator<Item = (T, &'v [f32])>,
     k: usize,
 ) -> Vec<(T, f32)> {
-    if k == 0 {
-        return Vec::new();
-    }
-    let mut heap = BinaryHeap::with_capacity(k + 1);
-    for (seq, (item, v)) in candidates.into_iter().enumerate() {
-        heap.push(Ranked {
-            score: dot(query, v),
-            seq,
-            item,
-        });
-        if heap.len() > k {
-            heap.pop();
-        }
-    }
-    // Ascending in eviction order = best first.
-    heap.into_sorted_vec()
+    let mut scored: Vec<(T, f32)> = candidates
         .into_iter()
-        .map(|r| (r.item, r.score))
-        .collect()
+        .map(|(item, v)| (item, dot(query, v)))
+        .collect();
+    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+    scored.truncate(k);
+    scored
 }
 
 #[cfg(test)]
@@ -146,6 +101,20 @@ mod tests {
         assert_eq!(top_k(&q, one.iter().map(|v| (7, v.as_slice())), 5).len(), 1);
         let none: [(u8, &[f32]); 0] = [];
         assert!(top_k(&q, none, 3).is_empty());
+    }
+
+    #[test]
+    fn a_huge_k_returns_everything_without_reserving_k_slots() {
+        let q = [1.0, 0.0];
+        let rows = [vec![1.0, 0.0], vec![0.0, 1.0]];
+        for k in [usize::MAX, 1 << 46] {
+            let got = top_k(
+                &q,
+                rows.iter().enumerate().map(|(i, v)| (i, v.as_slice())),
+                k,
+            );
+            assert_eq!(got.iter().map(|(i, _)| *i).collect::<Vec<_>>(), [0, 1]);
+        }
     }
 
     #[test]
