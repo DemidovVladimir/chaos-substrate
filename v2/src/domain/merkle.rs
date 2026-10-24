@@ -10,10 +10,10 @@
 //! folder's hash covers its direct children (folders and notes) sorted by
 //! name, each labelled by its name. Equal roots mean equal knowledge — one
 //! comparison tells an agent nothing changed. Formatting-only edits keep every
-//! hash (fingerprints ignore Markdown symbols).
+//! hash (fingerprints and heading labels ignore Markdown symbols).
 
 use super::hash::{self, Digest};
-use super::note::{Block, Note, section};
+use super::note::{Block, Note};
 use super::text;
 use serde::Serialize;
 use std::cmp::Reverse;
@@ -137,9 +137,22 @@ pub fn note_hash(blocks: &[Block]) -> Digest {
     let leaves: Vec<(String, Digest)> = blocks
         .iter()
         .filter(|block| !text::is_blank(&block.text))
-        .map(|block| (section(&block.headings), text::fingerprint(&block.text)))
+        .map(|block| {
+            (
+                heading_label(&block.headings),
+                text::fingerprint(&block.text),
+            )
+        })
         .collect();
     hash::node(leaves.iter().map(|(label, leaf)| (label.as_str(), *leaf)))
+}
+
+/// A block's heading path as a Merkle label: each heading normalized like
+/// block text (so `**Oil:**` labels like `Oil`), joined by `/`, which a
+/// normalized heading never contains — nesting stays unambiguous.
+fn heading_label(headings: &[String]) -> String {
+    let words: Vec<String> = headings.iter().map(|h| text::normalize(h)).collect();
+    words.join("/")
 }
 
 #[cfg(test)]
@@ -179,9 +192,21 @@ mod tests {
         ];
         let expected = hash::node([
             ("", text::fingerprint("Intro line")),
-            ("Car > Oil", text::fingerprint("Change every 10k km")),
+            ("car/oil", text::fingerprint("Change every 10k km")),
         ]);
         assert_eq!(note_hash(&blocks), expected);
+    }
+
+    #[test]
+    fn heading_labels_ignore_formatting_but_keep_nesting() {
+        let fact = "Change every 10k km";
+        let plain = note_hash(&[block(&["Car", "Oil"], fact)]);
+        assert_eq!(note_hash(&[block(&["**car**", "Oil:"], fact)]), plain);
+        assert_ne!(
+            note_hash(&[block(&["Car > Oil"], fact)]),
+            plain,
+            "one heading named `Car > Oil` is not two nested headings"
+        );
     }
 
     #[test]
