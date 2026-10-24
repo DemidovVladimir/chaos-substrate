@@ -45,7 +45,10 @@ impl Kb<'_> {
                 known: true,
                 presence: Presence::Exact,
                 score: None,
-                matches: exact.into_iter().map(|at| Match { at, score: None }).collect(),
+                matches: exact
+                    .into_iter()
+                    .map(|at| Match { at, score: None })
+                    .collect(),
                 root,
             });
         }
@@ -89,7 +92,11 @@ mod tests {
         assert_eq!(report.matches.len(), 1);
         assert_eq!(report.matches[0].at.note.as_str(), "Health/Allergies.md");
         assert_eq!(report.matches[0].score, None);
-        assert_eq!(world.embedder.queries.get(), 0, "no embedding on the exact path");
+        assert_eq!(
+            world.embedder.queries.get(),
+            0,
+            "no embedding on the exact path"
+        );
         let root = world.kb().sync(true).unwrap().root;
         assert_eq!(report.root, root);
     }
@@ -107,7 +114,12 @@ mod tests {
         assert!(best >= DEFAULT_MIN_SCORE);
         assert_eq!(report.matches[0].at.note.as_str(), "Car/Maintenance.md");
         assert_eq!(report.matches[0].score, Some(best));
-        assert!(report.matches.iter().all(|m| m.score.unwrap() >= DEFAULT_MIN_SCORE));
+        assert!(
+            report
+                .matches
+                .iter()
+                .all(|m| m.score.unwrap() >= DEFAULT_MIN_SCORE)
+        );
         assert_eq!(world.embedder.queries.get(), 1);
     }
 

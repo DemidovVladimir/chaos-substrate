@@ -60,10 +60,20 @@ mod tests {
     #[test]
     fn limit_and_min_score_trim_the_list() {
         let world = World::synced();
-        assert_eq!(world.kb().search("engine oil", 2, 0.0).unwrap().hits.len(), 2);
+        assert_eq!(
+            world.kb().search("engine oil", 2, 0.0).unwrap().hits.len(),
+            2
+        );
         let strict = world.kb().search("engine oil", 5, 0.5).unwrap();
         assert_eq!(strict.hits.len(), 1);
-        assert!(world.kb().search("engine oil", 0, 0.0).unwrap().hits.is_empty());
+        assert!(
+            world
+                .kb()
+                .search("engine oil", 0, 0.0)
+                .unwrap()
+                .hits
+                .is_empty()
+        );
     }
 
     #[test]

@@ -105,10 +105,14 @@ impl MemIndex {
 
 impl Index for MemIndex {
     fn snapshot(&self) -> Result<Option<Snapshot>> {
-        Ok(self.state.borrow().as_ref().map(|(embedder, tree, ..)| Snapshot {
-            embedder: embedder.clone(),
-            tree: tree.clone(),
-        }))
+        Ok(self
+            .state
+            .borrow()
+            .as_ref()
+            .map(|(embedder, tree, ..)| Snapshot {
+                embedder: embedder.clone(),
+                tree: tree.clone(),
+            }))
     }
 
     fn vector_keys(&self) -> Result<HashSet<Digest>> {
@@ -128,7 +132,8 @@ impl Index for MemIndex {
         vectors.extend(update.vectors);
         let used: HashSet<Digest> = update.chunks.iter().map(|c| c.key).collect();
         vectors.retain(|k, _| used.contains(k));
-        *self.state.borrow_mut() = Some((update.embedder, update.tree, update.chunks, update.blocks));
+        *self.state.borrow_mut() =
+            Some((update.embedder, update.tree, update.chunks, update.blocks));
         self.writes.set(self.writes.get() + 1);
         Ok(())
     }
@@ -191,7 +196,13 @@ impl StubEmbedder {
         let bias = if self.zero.get() { 0.0 } else { 0.1 };
         self.keywords
             .iter()
-            .map(|k| if self.zero.get() || !text.contains(k) { 0.0 } else { 1.0 })
+            .map(|k| {
+                if self.zero.get() || !text.contains(k) {
+                    0.0
+                } else {
+                    1.0
+                }
+            })
             .chain([bias])
             .collect()
     }
@@ -233,10 +244,7 @@ pub fn sample_notes() -> Vec<Note> {
             "Education.md",
             &[(&["University"], "Master of Science in physics, 2014.")],
         ),
-        note(
-            "Health/Allergies.md",
-            &[(&[], "Allergy: penicillin.")],
-        ),
+        note("Health/Allergies.md", &[(&[], "Allergy: penicillin.")]),
     ]
 }
 

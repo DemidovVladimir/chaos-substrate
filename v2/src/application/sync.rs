@@ -207,7 +207,10 @@ mod tests {
         let report = world.kb().sync(false).unwrap();
         assert_eq!(report.embedded, 4);
         assert_eq!(world.embedder.embedded(), 4);
-        assert_eq!(world.index.snapshot().unwrap().unwrap().embedder, "other|v1");
+        assert_eq!(
+            world.index.snapshot().unwrap().unwrap().embedder,
+            "other|v1"
+        );
     }
 
     #[test]

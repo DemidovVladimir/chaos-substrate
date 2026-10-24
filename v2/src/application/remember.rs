@@ -3,9 +3,9 @@
 
 use super::{Kb, nonblank};
 use crate::domain::hash::Digest;
-use crate::domain::text::fingerprint;
 use crate::domain::note::Location;
 use crate::domain::path::NotePath;
+use crate::domain::text::fingerprint;
 use anyhow::Result;
 use serde::Serialize;
 
@@ -85,7 +85,10 @@ mod tests {
         assert_ne!(report.root, before);
         let written = world.vault.note(INBOX).unwrap();
         assert_eq!(written.blocks.len(), 1);
-        assert_eq!(written.blocks[0].text, "Driving licence category B since 2015.");
+        assert_eq!(
+            written.blocks[0].text,
+            "Driving licence category B since 2015."
+        );
         let fp = text::fingerprint("driving licence category b since 2015");
         assert_eq!(world.index.exact(&fp).unwrap().len(), 1);
     }
@@ -95,7 +98,11 @@ mod tests {
         let world = World::synced();
         let report = world
             .kb()
-            .remember("  i CHANGE the engine oil, every 10000 km  ", &inbox(), None)
+            .remember(
+                "  i CHANGE the engine oil, every 10000 km  ",
+                &inbox(),
+                None,
+            )
             .unwrap();
         assert!(!report.stored);
         assert_eq!(report.known_at.len(), 1);

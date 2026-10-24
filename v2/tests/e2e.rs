@@ -52,7 +52,10 @@ const VAULT: &[(&str, &str)] = &[
 
 /// Questions the vault answers, with the note that holds the answer.
 const KNOWN: &[(&str, &str)] = &[
-    ("how often do I change the oil in my car?", "Car/Maintenance.md"),
+    (
+        "how often do I change the oil in my car?",
+        "Car/Maintenance.md",
+    ),
     ("when do I put the winter tyres on?", "Car/Maintenance.md"),
     ("what university degree do I have?", "Education.md"),
     ("which certifications have I passed?", "Education.md"),
@@ -85,7 +88,11 @@ fn write_vault(root: &Path) {
     }
     // Obsidian's own folder must never be indexed.
     std::fs::create_dir_all(root.join(".obsidian")).unwrap();
-    std::fs::write(root.join(".obsidian/notes.md"), "# Settings\n\nnot knowledge").unwrap();
+    std::fs::write(
+        root.join(".obsidian/notes.md"),
+        "# Settings\n\nnot knowledge",
+    )
+    .unwrap();
 }
 
 struct Parts {
@@ -128,7 +135,9 @@ fn personal_vault_answers_from_the_index() {
     assert_eq!(first.changes.added.len(), VAULT.len());
 
     // Exact words: answered from the Merkle leaves.
-    let exact = kb.check("allergic to PENICILLIN", DEFAULT_MIN_SCORE).unwrap();
+    let exact = kb
+        .check("allergic to PENICILLIN", DEFAULT_MIN_SCORE)
+        .unwrap();
     assert_eq!(exact.presence, Presence::Exact);
     assert_eq!(exact.matches[0].at.note.as_str(), "Health/Treatment.md");
     assert_eq!(exact.matches[0].at.section, "Treatment > Allergies");
@@ -138,7 +147,10 @@ fn personal_vault_answers_from_the_index() {
     for (question, note) in KNOWN {
         let check = kb.check(question, DEFAULT_MIN_SCORE).unwrap();
         let top = kb.search(question, 1, 0.0).unwrap().hits.remove(0);
-        report.push(format!("known   {:.3} {question} → {}", top.score, top.at.note));
+        report.push(format!(
+            "known   {:.3} {question} → {}",
+            top.score, top.at.note
+        ));
         assert!(check.known, "{question}: {check:?}");
         assert_eq!(top.at.note.as_str(), *note, "{question}");
     }
@@ -175,7 +187,9 @@ fn remember_edit_and_delete_round_trip() {
     assert!(stored.stored);
     let markdown = std::fs::read_to_string(dir.path().join("Inbox.md")).unwrap();
     assert!(markdown.contains("## Health") && markdown.contains("My blood type is A positive."));
-    let found = kb.check("what is my blood type?", DEFAULT_MIN_SCORE).unwrap();
+    let found = kb
+        .check("what is my blood type?", DEFAULT_MIN_SCORE)
+        .unwrap();
     assert!(found.known, "{found:?}");
     assert_eq!(found.matches[0].at.note.as_str(), "Inbox.md");
 
@@ -184,7 +198,10 @@ fn remember_edit_and_delete_round_trip() {
         .remember("my blood type is a positive", &inbox, None)
         .unwrap();
     assert!(!twice.stored);
-    assert_eq!(std::fs::read_to_string(dir.path().join("Inbox.md")).unwrap(), markdown);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Inbox.md")).unwrap(),
+        markdown
+    );
 
     // Formatting-only edit: same knowledge, same root.
     let licences = dir.path().join("Licences.md");
@@ -213,9 +230,15 @@ fn remember_edit_and_delete_round_trip() {
     std::fs::remove_file(dir.path().join("Health/Treatment.md")).unwrap();
     let purged = kb.sync(false).unwrap();
     assert_eq!(purged.changes.removed, ["Health/Treatment.md"]);
-    let gone = kb.check("allergic to penicillin", DEFAULT_MIN_SCORE).unwrap();
+    let gone = kb
+        .check("allergic to penicillin", DEFAULT_MIN_SCORE)
+        .unwrap();
     assert_ne!(gone.presence, Presence::Exact);
-    assert!(gone.matches.iter().all(|m| m.at.note.as_str() != "Health/Treatment.md"));
+    assert!(
+        gone.matches
+            .iter()
+            .all(|m| m.at.note.as_str() != "Health/Treatment.md")
+    );
 }
 
 /// Drive the real binary as an agent would: CLI sync, then an MCP session.
@@ -233,7 +256,11 @@ fn binary_serves_cli_and_mcp() {
         .args(["--vault", vault, "sync"])
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let sync: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(sync["notes"], VAULT.len());
 
@@ -255,7 +282,12 @@ fn binary_serves_cli_and_mcp() {
                    "clientInfo": {"name": "e2e", "version": "0"}}}));
     assert_eq!(init["result"]["serverInfo"]["name"], "chaos-kb");
     assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
-    writeln!(stdin, "{}", json!({"jsonrpc": "2.0", "method": "notifications/initialized"})).unwrap();
+    writeln!(
+        stdin,
+        "{}",
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
+    )
+    .unwrap();
 
     let list = call(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}));
     let names: Vec<&str> = list["result"]["tools"]
