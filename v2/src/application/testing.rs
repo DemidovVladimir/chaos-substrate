@@ -174,6 +174,17 @@ impl Index for MemIndex {
             })
             .collect())
     }
+
+    fn chunks(&self) -> Result<Vec<Chunk>> {
+        let mut out: Vec<Chunk> = self
+            .state
+            .borrow()
+            .iter()
+            .flat_map(|u| u.chunks.clone())
+            .collect();
+        out.sort_by(|a, b| (&a.at.note, a.at.lines).cmp(&(&b.at.note, b.at.lines)));
+        Ok(out)
+    }
 }
 
 /// A deterministic embedder for tests: one axis per keyword (1.0 when the

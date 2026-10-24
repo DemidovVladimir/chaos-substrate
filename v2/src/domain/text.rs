@@ -59,6 +59,36 @@ pub fn is_blank(text: &str) -> bool {
     !text.nfkc().any(char::is_alphanumeric)
 }
 
+/// The first words of a passage on one line, at most `max_chars` characters:
+/// whitespace runs become one space, and a longer text is cut at the last
+/// word boundary that fits, ending in `…`.
+pub fn gist(text: &str, max_chars: usize) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let whole = words.join(" ");
+    if whole.chars().count() <= max_chars {
+        return whole;
+    }
+    let budget = max_chars.saturating_sub(1);
+    let mut out = String::new();
+    for word in &words {
+        let joined = out.chars().count() + usize::from(!out.is_empty()) + word.chars().count();
+        if joined > budget {
+            break;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    if out.is_empty() {
+        out = words[0].chars().take(budget).collect();
+    }
+    if max_chars > 0 {
+        out.push('…');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,5 +231,27 @@ mod tests {
             assert!(!is_blank(text), "{text:?} is not blank");
             assert!(fingerprint(text).is_some(), "{text:?}");
         }
+    }
+
+    #[test]
+    fn a_gist_is_one_line_of_the_first_words() {
+        assert_eq!(
+            gist("I care more\n\nabout  comfort.", 80),
+            "I care more about comfort."
+        );
+        let long = "I care more about comfort than speed. A quiet cabin matters more to me.";
+        let g = gist(long, 40);
+        assert_eq!(g, "I care more about comfort than speed. A…");
+        assert!(g.chars().count() <= 40);
+        assert_eq!(
+            gist("Сплю с 23:30 до 7:00, после кофе плохо.", 20),
+            "Сплю с 23:30 до…"
+        );
+        assert_eq!(
+            gist("Supercalifragilistic", 8),
+            "Superca…",
+            "one long word is cut hard"
+        );
+        assert_eq!(gist("  ", 10), "");
     }
 }

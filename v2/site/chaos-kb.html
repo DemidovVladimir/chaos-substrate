@@ -31,12 +31,12 @@
   <ul class="facts">
     <li>builds with Rust <b>1.91</b> or later</li>
     <li>model <b>embeddinggemma</b> on Ollama, <code>localhost:11434</code></li>
-    <li><b>4</b> tools for agents: kb_sync, kb_remember, kb_check, kb_search</li>
+    <li><b>6</b> tools for agents: kb_sync, kb_remember, kb_check, kb_search, kb_topics, kb_read</li>
     <li>index in <code>&lt;vault&gt;/.chaos-kb/</code>, <b>safe to delete</b></li>
   </ul>
   <ul class="legend" aria-label="Colour key">
     <li><span class="chip brain">notes</span> your vault, the only copy of your knowledge</li>
-    <li><span class="chip hands"><span class="k">手</span> tools</span> chaos-kb and its four tools</li>
+    <li><span class="chip hands"><span class="k">手</span> tools</span> chaos-kb and its six tools</li>
     <li><span class="chip heart"><span class="k">心</span> model</span> the local embedding model</li>
     <li><span class="chip data">data</span> the index file</li>
   </ul>
@@ -124,7 +124,7 @@
         <li>Pick a folder of Markdown notes: an Obsidian vault, or a new empty folder. Set <code>CHAOS_KB_VAULT</code> to it. Hidden files and folders are skipped.</li>
         <li><code>chaos-kb sync</code> reads every note, embeds each passage once and writes the index into <code>.chaos-kb/</code> inside the vault. Later syncs embed only new or edited passages.</li>
         <li>Register the server with your agent: <code>claude mcp add</code> for Claude Code, <code>codex mcp add</code> for Codex. The agent then starts <code>chaos-kb mcp</code> by itself.</li>
-        <li>Before it asks you something, the agent calls <code>kb_check</code>. The same words are found without the model; otherwise the nearest passages decide, and <code>kb_search</code> reads them.</li>
+        <li>Before it asks you something, the agent calls <code>kb_check</code>. The same words are found without the model; otherwise the nearest passages decide, and <code>kb_search</code> reads them. Before a task, <code>kb_topics</code> lists what the notes hold near it and <code>kb_read</code> fetches the passages that matter.</li>
         <li>When you tell it a new fact, the agent calls <code>kb_remember</code>. The fact is appended to a note, under its heading if one is given, and indexed at once.</li>
         <li>Edited notes yourself, in Obsidian or any editor? Run <code>chaos-kb sync</code>, or let the agent call <code>kb_sync</code>. Unchanged notes cost nothing.</li>
       </ol>
@@ -165,7 +165,7 @@
     </div>
     <div class="tabpanel" id="tab-claude"><pre class="wrapjson">$ claude mcp add --scope user chaos-kb -- chaos-kb --vault ~/Knowledge mcp
 $ claude mcp list</pre>
-      <p class="note"><code>--scope user</code> makes the server available in every project; without it, only in the current one. Everything after <code>--</code> is the command Claude Code runs. Inside a session, <code>/mcp</code> shows the server and its four tools.</p></div>
+      <p class="note"><code>--scope user</code> makes the server available in every project; without it, only in the current one. Everything after <code>--</code> is the command Claude Code runs. Inside a session, <code>/mcp</code> shows the server and its six tools.</p></div>
     <div class="tabpanel" id="tab-codex" hidden><pre class="wrapjson">$ codex mcp add chaos-kb -- chaos-kb --vault /Users/you/Knowledge mcp
 Added global MCP server 'chaos-kb'.</pre>
       <p class="note">That command writes these lines to <code>~/.codex/config.toml</code> (example path), so you can also add them by hand:</p>
@@ -248,7 +248,7 @@ args = ["--vault", "/Users/you/Knowledge", "mcp"]</pre></div>
       </tbody>
     </table>
   </div>
-  <p class="note">Asking by the same words works even while Ollama is down: <code>check</code> finds stored words without the model. Only search, <code>check</code> by meaning and <code>sync</code> need it.</p>
+  <p class="note">Asking by the same words works even while Ollama is down: <code>check</code> finds stored words without the model, and <code>read</code> fetches passages by id. Only <code>search</code>, <code>topics</code>, <code>check</code> by meaning and <code>sync</code> need it.</p>
 </section>
 
 <section class="sec" aria-labelledby="s-out">

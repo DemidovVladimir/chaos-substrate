@@ -13,7 +13,8 @@ use crate::ports::{Hit, Index, Snapshot, Stale, Update};
 use anyhow::{Context, Result, bail, ensure};
 use redb::{
     Database, DatabaseError, Key, MultimapTableDefinition, ReadTransaction, ReadableDatabase,
-    ReadableTable, Table, TableDefinition, TableError, Value, WriteTransaction,
+    ReadableMultimapTable, ReadableTable, Table, TableDefinition, TableError, Value,
+    WriteTransaction,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -25,12 +26,13 @@ const EMBEDDER_KEY: &str = "embedder";
 /// whenever a table changes shape: an index of another layout reads as empty,
 /// so the next sync rebuilds it.
 const FORMAT_KEY: &str = "format";
-const FORMAT: &str = "1";
+const FORMAT: &str = "2";
 
 /// Where a block or chunk sits: note, section, first line, last line.
 type LocRow<'a> = (&'a str, &'a str, u32, u32);
-/// A chunk: its location, context and text.
-type ChunkRow<'a> = (LocRow<'a>, &'a str, &'a str);
+/// A chunk: its location, its position in the update (which orders the chunks
+/// that share a location: the pieces of a cut block), context and text.
+type ChunkRow<'a> = (LocRow<'a>, u32, &'a str, &'a str);
 
 /// `"format"` → the table layout; `"embedder"` → the embedder id of the
 /// stored vectors.
@@ -209,8 +211,9 @@ fn write(txn: &WriteTransaction, update: &Update) -> Result<()> {
     }
     txn.delete_multimap_table(CHUNKS)?;
     let mut chunks = txn.open_multimap_table(CHUNKS)?;
-    for chunk in &update.chunks {
-        chunks.insert(&chunk.key.0, chunk_row(chunk))?;
+    for (position, chunk) in update.chunks.iter().enumerate() {
+        let position = u32::try_from(position).context("too many chunks for one index")?;
+        chunks.insert(&chunk.key.0, chunk_row(chunk, position))?;
     }
     txn.delete_multimap_table(BLOCKS)?;
     let mut blocks = txn.open_multimap_table(BLOCKS)?;
@@ -252,15 +255,16 @@ fn location((note, section, first, last): LocRow<'_>) -> Result<Location> {
     })
 }
 
-fn chunk_row(chunk: &Chunk) -> ChunkRow<'_> {
+fn chunk_row(chunk: &Chunk, position: u32) -> ChunkRow<'_> {
     (
         loc_row(&chunk.at),
+        position,
         chunk.context.as_str(),
         chunk.text.as_str(),
     )
 }
 
-fn chunk(key: Digest, (at, context, text): ChunkRow<'_>) -> Result<Chunk> {
+fn chunk(key: Digest, (at, _, context, text): ChunkRow<'_>) -> Result<Chunk> {
     let chunk = Chunk::new(location(at)?, context.to_string(), text.to_string());
     ensure!(
         chunk.key == key,
@@ -360,6 +364,25 @@ impl Index for RedbIndex {
             }
             hits.truncate(k);
             Ok(hits)
+        })
+    }
+
+    fn chunks(&self) -> Result<Vec<Chunk>> {
+        self.read(Vec::new(), |txn| {
+            let mut out = Vec::new();
+            for entry in txn.open_multimap_table(CHUNKS)?.iter()? {
+                let (key, rows) = entry?;
+                let key = Digest(*key.value());
+                for row in rows {
+                    let row = row?;
+                    let value = row.value();
+                    out.push((value.1, chunk(key, value)?));
+                }
+            }
+            out.sort_by(|(p, a), (q, b)| {
+                (&a.at.note, a.at.lines, p).cmp(&(&b.at.note, b.at.lines, q))
+            });
+            Ok(out.into_iter().map(|(_, chunk)| chunk).collect())
         })
     }
 }
@@ -610,6 +633,41 @@ mod tests {
     }
 
     #[test]
+    fn chunks_lists_every_stored_chunk_in_reading_order() {
+        let dir = tempdir().unwrap();
+        let index = RedbIndex::new(&dir.path().join("index.redb"));
+        assert!(
+            index.chunks().unwrap().is_empty(),
+            "nothing before the first sync"
+        );
+        index.replace(full()).unwrap();
+        assert_eq!(index.chunks().unwrap(), vec![c(), a(), b()]);
+    }
+
+    #[test]
+    fn chunks_at_one_place_keep_the_order_they_were_given() {
+        // The pieces of a cut block share their lines; only the order sync
+        // gave them says which comes first. Their keys sort one way, so one
+        // of the two orders below would fail if the index went by key.
+        let one = chunk("Car.md", "Table", [7, 9], "| part | one |");
+        let two = chunk("Car.md", "Table", [7, 9], "| part | two |");
+        let dir = tempdir().unwrap();
+        let index = RedbIndex::new(&dir.path().join("index.redb"));
+        for order in [
+            vec![one.clone(), two.clone()],
+            vec![two.clone(), one.clone()],
+        ] {
+            let mut given = vec![c()];
+            given.extend(order);
+            let vectors: Vec<(Digest, &[f32])> = given.iter().map(|ch| (ch.key, &VA[..])).collect();
+            index
+                .replace(on(&index, update(given.clone(), &vectors)))
+                .unwrap();
+            assert_eq!(index.chunks().unwrap(), given);
+        }
+    }
+
+    #[test]
     fn nearest_rejects_a_query_of_another_dimension() {
         let dir = tempdir().unwrap();
         let index = RedbIndex::new(&dir.path().join("index.redb"));
@@ -791,11 +849,12 @@ mod tests {
         assert_eq!(chunks(&index.nearest(&VA, 1).unwrap()), vec![a()]);
 
         // A layout from a later build is foreign too.
+        let later = (FORMAT.parse::<u32>().unwrap() + 1).to_string();
         let db = Database::open(&path).unwrap();
         let txn = db.begin_write().unwrap();
         txn.open_table(META)
             .unwrap()
-            .insert(FORMAT_KEY, "2")
+            .insert(FORMAT_KEY, later.as_str())
             .unwrap();
         txn.commit().unwrap();
         drop(db);
@@ -857,6 +916,7 @@ mod tests {
                         c.at.lines[0],
                         c.at.lines[1],
                     ),
+                    0,
                     c.context.as_str(),
                     c.text.as_str(),
                 ),

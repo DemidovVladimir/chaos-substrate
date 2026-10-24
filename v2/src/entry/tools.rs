@@ -60,8 +60,9 @@ pub fn markdown() -> String {
 }
 
 /// The command line the CLI would get for these arguments: options as
-/// `--long=value`, flags as `--long` when true, positionals after `--` in
-/// definition order (so values starting with `-` stay values).
+/// `--long=value`, flags as `--long` when true, a list as one value per
+/// item, positionals after `--` in definition order and a list's items in
+/// their own order (so values starting with `-` stay values).
 fn argv(bin: &str, sub: &clap::Command, arguments: &Value) -> Result<Vec<String>> {
     let name = sub.get_name();
     let given = arguments
@@ -83,25 +84,46 @@ fn argv(bin: &str, sub: &clap::Command, arguments: &Value) -> Result<Vec<String>
                 }
             }
             (Kind::Boolean, _) => bail!("`{key}` must be true or false"),
+            (Kind::List, Value::Array(items)) => {
+                for item in items {
+                    let text = item
+                        .as_str()
+                        .with_context(|| format!("`{key}` must be a list of strings"))?;
+                    push(arg, position, text.to_string(), &mut argv, &mut positionals)?;
+                }
+            }
             (_, Value::String(_) | Value::Number(_)) => {
                 let text = value
                     .as_str()
                     .map_or_else(|| value.to_string(), str::to_string);
-                if arg.is_positional() {
-                    positionals.push((position, text));
-                } else {
-                    argv.push(format!("--{}={text}", long(arg)?));
-                }
+                push(arg, position, text, &mut argv, &mut positionals)?;
             }
             (kind, _) => bail!("`{key}` must be a {}", kind.name()),
         }
     }
     if !positionals.is_empty() {
-        positionals.sort();
+        // Stable: a list's items keep their order.
+        positionals.sort_by_key(|(position, _)| *position);
         argv.push("--".into());
         argv.extend(positionals.into_iter().map(|(_, text)| text));
     }
     Ok(argv)
+}
+
+/// One value of `arg`: an option on `argv`, or a positional for later.
+fn push(
+    arg: &Arg,
+    position: usize,
+    text: String,
+    argv: &mut Vec<String>,
+    positionals: &mut Vec<(usize, String)>,
+) -> Result<()> {
+    if arg.is_positional() {
+        positionals.push((position, text));
+    } else {
+        argv.push(format!("--{}={text}", long(arg)?));
+    }
+    Ok(())
 }
 
 /// The JSON type of a tool argument, read from its clap action and value
@@ -115,6 +137,8 @@ enum Kind {
     /// An `f32`.
     Number,
     String,
+    /// A `Vec<String>`: an array of strings.
+    List,
 }
 
 impl Kind {
@@ -123,6 +147,8 @@ impl Kind {
         let parsed = arg.get_value_parser().type_id();
         if matches!(arg.get_action(), ArgAction::SetTrue) {
             Kind::Boolean
+        } else if matches!(arg.get_action(), ArgAction::Append) {
+            Kind::List
         } else if parsed == TypeId::of::<usize>() {
             Kind::Count
         } else if parsed == TypeId::of::<f32>() {
@@ -138,6 +164,7 @@ impl Kind {
             Kind::Count => "integer",
             Kind::Number => "number",
             Kind::String => "string",
+            Kind::List => "array",
         }
     }
 
@@ -151,7 +178,7 @@ impl Kind {
         let typed = match self {
             Kind::Count => raw.parse::<u64>().ok().map(Value::from),
             Kind::Number => raw.parse::<f64>().ok().map(Value::from),
-            Kind::Boolean | Kind::String => None,
+            Kind::Boolean | Kind::String | Kind::List => None,
         };
         Some(typed.unwrap_or_else(|| Value::from(raw.as_ref())))
     }
@@ -214,6 +241,12 @@ fn tool(sub: &clap::Command) -> Value {
         if p.kind == Kind::Count {
             property["minimum"] = json!(0);
         }
+        if p.kind == Kind::List {
+            property["items"] = json!({"type": "string"});
+            if p.required {
+                property["minItems"] = json!(1);
+            }
+        }
         if let Some(default) = &p.default {
             property["default"] = default.clone();
         }
@@ -255,6 +288,7 @@ fn section(bin: &str, sub: &clap::Command) -> String {
         let mark = if p.required { " (required)" } else { "" };
         let kind = match p.kind {
             Kind::Count => "integer ≥ 0",
+            Kind::List => "list of strings",
             kind => kind.name(),
         };
         let default = match &p.default {
@@ -323,6 +357,7 @@ fn cell(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::application::remember::INBOX;
+    use crate::application::topics::DEFAULT_TOPICS;
     use crate::domain::presence::DEFAULT_MIN_SCORE;
     use crate::entry::cli::Cli;
     use clap::CommandFactory;
@@ -343,7 +378,17 @@ mod tests {
     #[test]
     fn one_tool_per_subcommand_except_mcp() {
         let names: Vec<Value> = tools().into_iter().map(|t| t["name"].clone()).collect();
-        assert_eq!(names, ["kb_sync", "kb_remember", "kb_check", "kb_search"]);
+        assert_eq!(
+            names,
+            [
+                "kb_sync",
+                "kb_remember",
+                "kb_check",
+                "kb_search",
+                "kb_topics",
+                "kb_read"
+            ]
+        );
     }
 
     #[test]
@@ -396,6 +441,45 @@ mod tests {
         assert_eq!(limit["default"], 5);
         assert_eq!(search["properties"]["min_score"]["default"], json!(0.0));
         assert!(search["properties"]["min_score"].get("minimum").is_none());
+
+        let topics = schema("kb_topics");
+        assert_eq!(topics["required"], json!(["task"]));
+        assert_eq!(topics["properties"]["limit"]["default"], DEFAULT_TOPICS);
+
+        let read = schema("kb_read");
+        assert_eq!(read["required"], json!(["ids"]));
+        let ids = &read["properties"]["ids"];
+        assert_eq!(ids["type"], "array");
+        assert_eq!(ids["items"], json!({"type": "string"}));
+        assert_eq!(ids["minItems"], 1);
+    }
+
+    #[test]
+    fn a_list_keeps_the_order_given() {
+        let ids = ["Food.md:3-6", "Car.md:1-2", "-dash.md:1-1"];
+        assert_eq!(
+            call("kb_read", json!({"ids": ids})).unwrap(),
+            Tool::Read {
+                ids: ids.iter().map(|id| id.to_string()).collect()
+            }
+        );
+        assert_eq!(
+            call("kb_topics", json!({"task": "cook dinner", "limit": 3})).unwrap(),
+            Tool::Topics {
+                task: "cook dinner".into(),
+                limit: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn a_list_holds_strings_only_and_at_least_one() {
+        let e = rejection("kb_read", json!({"ids": ["Food.md:3-6", 7]}));
+        assert!(e.contains("`ids`") && e.contains("strings"), "{e}");
+        let e = rejection("kb_read", json!({"ids": []}));
+        assert!(e.contains("required"), "{e}");
+        let e = rejection("kb_check", json!({"query": ["tea"]}));
+        assert!(e.contains("`query` must be a string"), "{e}");
     }
 
     #[test]

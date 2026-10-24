@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Agents and MCP · chaos-kb</title>
-<meta name="description" content="How chaos-kb serves its four tools to agents over MCP on stdio, with names, schemas and the README reference generated from one command-line definition.">
+<meta name="description" content="How chaos-kb serves its six tools to agents over MCP on stdio, with names, schemas and the README reference generated from one command-line definition.">
 <script>try{var t=localStorage.getItem("tengu-tutorial-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -27,9 +27,9 @@
 <header class="hero">
   <div class="eyebrow"><span class="stamp" aria-hidden="true">繋</span> Agents · one definition</div>
   <h1>Agents and MCP</h1>
-  <p class="lede"><b>MCP</b>, the Model Context Protocol, is how an agent calls tools. <code>chaos-kb mcp</code> serves the four tools over stdio. Their names, descriptions, schemas and the README reference all come from the command-line definition.</p>
+  <p class="lede"><b>MCP</b>, the Model Context Protocol, is how an agent calls tools. <code>chaos-kb mcp</code> serves the six tools over stdio. Their names, descriptions, schemas and the README reference all come from the command-line definition.</p>
   <ul class="facts">
-    <li><b>4</b> tools: kb_sync, kb_remember, kb_check, kb_search</li>
+    <li><b>6</b> tools: kb_sync, kb_remember, kb_check, kb_search, kb_topics, kb_read</li>
     <li><b>4</b> methods: initialize, ping, tools/list, tools/call</li>
     <li><b>3</b> protocol revisions, newest <b>2025-11-25</b></li>
     <li><b>0</b> files opened before the first call</li>
@@ -143,7 +143,7 @@
     </div>
     <div class="tabpanel" id="tab-init"><pre class="wrapjson"><span class="c">→ {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"example","version":"1"}}}</span>
 ← {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"tools":{"listChanged":false}},
-   "instructions":<span class="s">"Personal knowledge base for agents: Markdown notes in, instant \"is this known?\" checks and similarity search out.\n\nBefore asking the user something, check whether the knowledge base already knows it, then search to read the passages. When the user tells you a new fact, remember it, one fact per call. After editing notes in the vault, sync."</span>,
+   "instructions":<span class="s">"Personal knowledge base for agents: Markdown notes in, instant \"is this known?\" checks and similarity search out.\n\nBefore a task, list the topics the knowledge base holds near it, then read only the passages that would change how you do it (search returns the nearest passages' text in one step instead). Before asking the user something, check whether the knowledge base already knows it. When the user tells you a new fact, remember it, one fact per call. After editing notes in the vault, sync."</span>,
    "protocolVersion":<span class="s">"2025-06-18"</span>,"serverInfo":{"name":"chaos-kb","version":"2.0.0"}}}</pre></div>
     <div class="tabpanel" id="tab-list" hidden><pre class="wrapjson"><span class="c">→ {"jsonrpc":"2.0","id":2,"method":"tools/list"}</span>
 ← {"id":2,"jsonrpc":"2.0","result":{"tools":[ <span class="c">… kb_sync, kb_remember, then:</span>
@@ -154,7 +154,13 @@
         "query":{"description":"A fact, topic or question","type":"string"}},
       "required":["query"],"type":"object"},
     "name":<span class="s">"kb_check"</span>},
-   <span class="c">… kb_search ]}}</span></pre></div>
+   <span class="c">… kb_search, kb_topics, then:</span>
+   {"description":<span class="s">"The passages behind ids from `topics`, with their text, in the order given. Embeds nothing. Ids the index no longer holds come back as `missing` (the note changed: list the topics again)"</span>,
+    "inputSchema":{"additionalProperties":false,
+      "properties":{
+        "ids":{"description":"Passage ids from `topics` (`note:first-last`, like `Car.md:8-8`)","items":{"type":"string"},"minItems":<span class="n">1</span>,"type":"array"}},
+      "required":["ids"],"type":"object"},
+    "name":<span class="s">"kb_read"</span>} ]}}</pre></div>
     <div class="tabpanel" id="tab-call" hidden><pre class="wrapjson"><span class="c">→ {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"kb_check","arguments":{"query":"how often do I change the oil?"}}}</span>
 ← {"id":3,"jsonrpc":"2.0","result":{"content":[{"text":
    <span class="s">"{\"known\":true,\"matches\":[{\"lines\":[8,8],\"note\":\"Car.md\",\"score\":0.583015501499176,\"section\":\"Maintenance &gt; Oil\"}],\"presence\":\"similar\",\"root\":\"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992\",\"score\":0.583015501499176}"</span>,"type":"text"}],
@@ -200,6 +206,7 @@
           <tr><td>a flag, such as <code>--dry-run</code></td><td><code>boolean</code></td></tr>
           <tr><td>an unsigned integer, such as <code>--limit</code></td><td><code>integer</code>, <code>minimum</code> 0</td></tr>
           <tr><td>a float, such as <code>--min-score</code></td><td><code>number</code></td></tr>
+          <tr><td>a list, such as <code>ids</code></td><td><code>array</code> of <code>string</code>, <code>minItems</code> 1 when required</td></tr>
           <tr><td>anything else, such as <code>query</code></td><td><code>string</code></td></tr>
           <tr><td>a default value</td><td><code>default</code></td></tr>
           <tr><td>a required positional</td><td>listed in <code>required</code></td></tr>
@@ -215,12 +222,14 @@
           <tr><td><code>kb_check {"query": "oil", "min_score": 0.5}</code></td><td><code>check --min-score=0.5 -- oil</code></td></tr>
           <tr><td><code>kb_remember {"text": "…", "note": "Health/Allergies"}</code></td><td><code>remember --note=Health/Allergies -- …</code></td></tr>
           <tr><td><code>kb_search {"query": "oil", "limit": null}</code></td><td><code>search -- oil</code>, so the default 5 applies</td></tr>
+          <tr><td><code>kb_read {"ids": ["Health/Allergies.md:3-3", "Car.md:8-8"]}</code></td><td><code>read -- Health/Allergies.md:3-3 Car.md:8-8</code>, in that order</td></tr>
+          <tr><td><code>kb_read {"ids": ["Car.md:8-8", 7]}</code></td><td>refused: <code>`ids` must be a list of strings</code></td></tr>
           <tr><td><code>{"vault": "/tmp"}</code></td><td>refused: not an argument of the tool</td></tr>
         </tbody>
       </table>
     </div>
   </div>
-  <p class="note">Positionals go after <code>--</code>, so a query that starts with <code>-</code> is still text. The same definition writes the tool reference in README.md, and <code>cargo test</code> fails when that block drifts.</p>
+  <p class="note">Positionals go after <code>--</code>, so a query that starts with <code>-</code> is still text. A list's items stay in the order given. The same definition writes the tool reference in README.md, and <code>cargo test</code> fails when that block drifts.</p>
 </section>
 
 <section class="sec" aria-labelledby="s-out">
@@ -267,6 +276,8 @@
 <span class="ln o">{"id":7,"jsonrpc":"2.0","result":{}}</span>
 <span class="ln cmd"><span class="p">$ </span>echo '{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"kb_search","arguments":{"query":"winter tyres","limit":1}}}' | chaos-kb mcp</span>
 <span class="ln o">{"id":10,"jsonrpc":"2.0","result":{"content":[{"text":"{\"hits\":[{\"lines\":[12,12],\"note\":\"Car.md\",\"score\":0.5618284940719604,\"section\":\"Maintenance &gt; Tyres\",\"text\":\"Winter tyres go on in November.\"}],\"root\":\"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992\"}","type":"text"}],"isError":false}}</span>
+<span class="ln cmd"><span class="p">$ </span>echo '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"kb_read","arguments":{"ids":["Health/Allergies.md:3-3","Car.md:8-8"]}}}' | chaos-kb mcp</span>
+<span class="ln o">{"id":11,"jsonrpc":"2.0","result":{"content":[{"text":"{\"missing\":[],\"passages\":[{\"id\":\"Health/Allergies.md:3-3\",\"section\":\"Allergies\",\"text\":\"Allergic to penicillin.\"},{\"id\":\"Car.md:8-8\",\"section\":\"Maintenance &gt; Oil\",\"text\":\"I change the engine oil every 10 000 km.\"}],\"root\":\"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992\"}","type":"text"}],"isError":false}}</span>
 <span class="ln cmd"><span class="p">$ </span>echo '{nope' | chaos-kb mcp</span>
 <span class="ln o">{"error":{"code":-32700,"message":"parse error: key must be a string at line 1 column 2"},"id":null,"jsonrpc":"2.0"}</span></pre>
   </div>
@@ -283,7 +294,7 @@
       <thead><tr><th>File</th><th>Owns</th></tr></thead>
       <tbody>
         <tr><td><code>src/entry/mcp.rs</code></td><td>the stdio loop, the four methods, the supported revisions, silence for notifications and responses, error codes</td></tr>
-        <tr><td><code>src/entry/tools.rs</code></td><td>the tool roster, schemas from clap, calls back into argv, the README block and the instructions</td></tr>
+        <tr><td><code>src/entry/tools.rs</code></td><td>the tool roster, schemas from clap (lists included), calls back into argv, the README block and the instructions</td></tr>
         <tr><td><code>src/entry/cli.rs</code></td><td>the clap definition of every tool and setting, and running one command</td></tr>
         <tr><td><code>README.md</code></td><td>the generated tool reference, between its markers</td></tr>
       </tbody>

@@ -82,6 +82,27 @@ const UNRELATED: &[&str] = &[
     "what is my favourite pizza topping?",
 ];
 
+/// Tasks an agent does for the user (not questions), with the note that
+/// should change how it does them.
+const TASKS: &[(&str, &str)] = &[
+    (
+        "Prescribe an antibiotic for my sore throat.",
+        "Health/Treatment.md",
+    ),
+    (
+        "Book the car in at the garage for its next service.",
+        "Car/Maintenance.md",
+    ),
+    (
+        "Explain to me how a database index works.",
+        "Communication.md",
+    ),
+    (
+        "Fill in my job application: list my qualifications.",
+        "Education.md",
+    ),
+];
+
 fn ollama_up() -> bool {
     let up = std::net::TcpStream::connect("127.0.0.1:11434").is_ok();
     if !up {
@@ -186,6 +207,48 @@ fn personal_vault_answers_from_the_index() {
     assert_eq!(again.embedded, 0);
     assert_eq!(again.root, first.root);
     assert_eq!(again.changes, Changes::default());
+}
+
+#[test]
+fn tasks_list_their_topics_and_read_them() {
+    if !ollama_up() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    write_vault(dir.path());
+    let parts = Parts::new(dir.path());
+    let kb = parts.kb();
+    kb.sync(false).unwrap();
+
+    for (task, note) in TASKS {
+        let topics = kb.topics(task, 8).unwrap().topics;
+        let listed: Vec<String> = topics
+            .iter()
+            .map(|t| format!("{:.3} {}", t.score, t.id))
+            .collect();
+        eprintln!("{task}\n  {}", listed.join("\n  "));
+        let rank = topics
+            .iter()
+            .position(|t| t.id.starts_with(&format!("{note}:")));
+        assert!(
+            rank.is_some_and(|r| r < 3),
+            "{task}: {note} not in the top 3"
+        );
+        // The id reads back as the passage, without an embedding.
+        let id = topics[rank.unwrap()].id.clone();
+        let read = kb.read(std::slice::from_ref(&id)).unwrap();
+        assert!(read.missing.is_empty());
+        assert_eq!(read.passages[0].id, id);
+        let gist = topics[rank.unwrap()].gist.trim_end_matches('…');
+        assert!(
+            read.passages[0]
+                .text
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .starts_with(gist)
+        );
+    }
 }
 
 #[test]
@@ -331,7 +394,17 @@ fn binary_serves_cli_and_mcp() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["kb_sync", "kb_remember", "kb_check", "kb_search"]);
+    assert_eq!(
+        names,
+        [
+            "kb_sync",
+            "kb_remember",
+            "kb_check",
+            "kb_search",
+            "kb_topics",
+            "kb_read"
+        ]
+    );
 
     let check = send(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
         "params": {"name": "kb_check", "arguments": {"query": "do I have a driving licence?"}}}))
@@ -341,6 +414,42 @@ fn binary_serves_cli_and_mcp() {
         serde_json::from_str(check["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(body["known"], true, "{body}");
     assert_eq!(body["matches"][0]["note"], "Licences.md");
+
+    // topics, then read the ids it listed, given as a JSON array.
+    let body = |reply: &Value| -> Value {
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+        serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+    };
+    let topics = body(&send(json!({"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+        "params": {"name": "kb_topics", "arguments": {"task": "Prescribe an antibiotic for me.", "limit": 3}}}))
+    .unwrap());
+    let ids: Vec<Value> = topics["topics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].clone())
+        .collect();
+    assert_eq!(ids.len(), 3, "{topics}");
+    assert!(
+        topics["topics"][0].get("text").is_none(),
+        "topics carry no text"
+    );
+    let read = body(
+        &send(json!({"jsonrpc": "2.0", "id": 6, "method": "tools/call",
+        "params": {"name": "kb_read", "arguments": {"ids": ids}}}))
+        .unwrap(),
+    );
+    let read_ids: Vec<Value> = read["passages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].clone())
+        .collect();
+    assert_eq!(read_ids, ids, "in the order asked: {read}");
+    assert!(
+        read["passages"].to_string().contains("penicillin"),
+        "{read}"
+    );
 
     let bad = send(json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
         "params": {"name": "kb_search", "arguments": {"query": "x", "limit": "many"}}}))

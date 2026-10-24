@@ -59,6 +59,8 @@ pub struct Update {
     pub base: Option<Snapshot>,
     pub embedder: String,
     pub tree: Tree,
+    /// Each note's chunks in reading order (the pieces of a cut block share
+    /// a location; this order is the only one that says which comes first).
     pub chunks: Vec<Chunk>,
     /// Fingerprint of every non-blank block, with where it sits.
     pub blocks: Vec<(Digest, Location)>,
@@ -106,4 +108,9 @@ pub trait Index {
 
     /// The `k` chunks most similar to the unit vector `query`, best first.
     fn nearest(&self, query: &[f32], k: usize) -> Result<Vec<Hit>>;
+
+    /// Every stored chunk, in reading order: by note, then first line, and
+    /// chunks at one location in the order [`Update::chunks`] gave them. Empty
+    /// before the first sync.
+    fn chunks(&self) -> Result<Vec<Chunk>>;
 }

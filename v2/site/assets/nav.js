@@ -8,7 +8,7 @@ window.TUTORIAL = {
     { id: "start", kanji: "始", name: "Start here", blurb: "What chaos-kb is, and how a folder of notes becomes quick answers." },
     { id: "answer", kanji: "答", name: "Answers", blurb: "Same words by fingerprint, same meaning by cosine, and the line between known and not known." },
     { id: "store", kanji: "蔵", name: "Storage", blurb: "Your notes are the knowledge; the index file is derived from them and safe to delete." },
-    { id: "agents", kanji: "繋", name: "Agents", blurb: "The four tools over MCP, generated from one command-line definition." }
+    { id: "agents", kanji: "繋", name: "Agents", blurb: "The six tools over MCP, generated from one command-line definition." }
   ],
   pages: [
     { slug: "chaos-kb", chapter: "start", title: "Install and run", blurb: "Build one binary, pull one local model, point it at your notes and connect it to Claude Code or Codex." },
@@ -17,6 +17,7 @@ window.TUTORIAL = {
     { slug: "merkle", chapter: "answer", title: "Merkle tree and exact check", blurb: "Fingerprints roll up to one root hash: the same words are found in one lookup, and one hash says nothing changed." },
     { slug: "search", chapter: "answer", title: "Chunks, embeddings and search", blurb: "Passages of at most 1200 characters, embedded once, ranked by an exact cosine scan." },
     { slug: "check", chapter: "answer", title: "How check decides", blurb: "Exact words first; otherwise the best of three passages against a line of 0.38." },
+    { slug: "topics", chapter: "answer", title: "Topics and read", blurb: "Short ranked lines for a task, a searcher that keeps what matters, and only those passages read back." },
 
     { slug: "vault", chapter: "store", title: "The vault", blurb: "Obsidian notes parsed into blocks; remember appends one fact and never changes what is there." },
     { slug: "index-file", chapter: "store", title: "The index file", blurb: "One redb file, replaced in one transaction, shared by the CLI and the MCP server." },

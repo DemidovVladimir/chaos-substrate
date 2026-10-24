@@ -3,13 +3,17 @@
 A personal knowledge base for agents. You write down what you know, such as your education,
 licences, certificates, how you maintain your car, how you like to communicate, or your medical
 treatment, as ordinary Markdown notes in one folder. chaos-kb indexes that folder so an agent can
-ask two questions quickly:
+ask three questions quickly:
 
 1. **Is this already known?** (`check`). If the same words are stored, chaos-kb answers by
    looking up their fingerprint, without calling the embedding model. Otherwise it compares
    meaning: the cosine similarity of embeddings.
 2. **What do my notes say about it?** (`search`). It returns the closest passages, each with its
    note, section, line range and text.
+3. **Which of my notes matter for this task?** (`topics`, then `read`). `topics` lists the
+   closest passages as one short line each, without their text; the agent keeps the ones that
+   would change how it does the task and fetches only those with `read`. See
+   [How `topics` and `read` work together](#how-topics-and-read-work-together).
 
 When the answer is "not known", the agent asks you and stores your answer with `remember`. That
 asking behaviour belongs to your agent. chaos-kb is only the memory and the quick lookups.
@@ -60,6 +64,9 @@ at the repository root, which indexes code repositories into Postgres.
   its text, its note's title or its headings change. The vectors of deleted text are dropped.
 - **Search**: the question is embedded and compared with every stored vector. The scan is exact,
   with no approximation, because a personal vault is small enough for that.
+- **Passage id**: `note:first-last`, such as `Car.md:8-8`, names one chunk by its note and line
+  range. `topics` lists ids and `read` takes them back. A long block cut into several chunks
+  gives each piece the same id, and `read` returns all of them in reading order.
 
 ## Install
 
@@ -77,6 +84,8 @@ export CHAOS_KB_VAULT=~/Knowledge     # any folder of .md files; open it in Obsi
 chaos-kb sync                         # run after you edit notes
 chaos-kb check "how often do I change the oil?"
 chaos-kb search "how should things be explained to me?"
+chaos-kb topics "book the car in for its next service"
+chaos-kb read Car.md:8-8
 chaos-kb remember "Blood type: A positive." --note Health --heading Blood
 ```
 
@@ -125,6 +134,35 @@ by its fingerprint. Nothing is embedded, so there is no score:
 so the agent can read the answer without opening the note. `search` always returns the best
 passages it has, even weak ones; raise `--min-score` to drop them.
 
+`topics` returns one line per passage, best first: its `id`, `section`, `score` and `gist`, the
+passage's first words (at most 100 characters). There is no text, so the list stays short.
+`chaos-kb topics "book the car in for its next service" --limit 3`:
+
+```json
+{
+  "root": "86a0327e7604fd6dd90baf53f1eb7f46fd39de883bcdb5157f62d71687ad9e5d",
+  "topics": [
+    { "gist": "--- car: Toyota Corolla 2018 ---", "id": "Car.md:1-3", "score": 0.2798360586166382, "section": "" },
+    { "gist": "I change the engine oil every 10 000 km.", "id": "Car.md:8-8", "score": 0.2677106559276581, "section": "Maintenance > Oil" },
+    { "gist": "Driving licence category B since 2015.", "id": "Licences.md:3-3", "score": 0.13712896406650543, "section": "Licences" }
+  ]
+}
+```
+
+`read` returns the `passages` behind the ids, in the order asked for, with their full `text`. It
+embeds nothing. Ids the index no longer holds come back under `missing`: the note changed since
+`topics` listed them, so list the topics again. `chaos-kb read Car.md:8-8 Gone.md:1-1`:
+
+```json
+{
+  "missing": ["Gone.md:1-1"],
+  "passages": [
+    { "id": "Car.md:8-8", "section": "Maintenance > Oil", "text": "I change the engine oil every 10 000 km." }
+  ],
+  "root": "86a0327e7604fd6dd90baf53f1eb7f46fd39de883bcdb5157f62d71687ad9e5d"
+}
+```
+
 `sync` reports the notes it `added`, `changed` and `removed`, how many chunks the index holds, how
 many it `embedded`, and the new `root`. `remember` reports whether it `stored` the fact, or where
 the same words already sit (`known_at`).
@@ -136,7 +174,7 @@ the next `sync` rebuilds it. That re-embeds every note.
 
 ### From an agent (MCP)
 
-`chaos-kb mcp` serves the same four tools over MCP (stdio, newline-delimited JSON-RPC 2.0). For
+`chaos-kb mcp` serves the same six tools over MCP (stdio, newline-delimited JSON-RPC 2.0). For
 Claude Code:
 
 ```sh
@@ -144,7 +182,7 @@ claude mcp add chaos-kb -- chaos-kb --vault ~/Knowledge mcp
 ```
 
 Other clients take the same command and arguments in their MCP config. When it starts, the
-server also tells the agent how to use the four tools together.
+server also tells the agent how to use the six tools together.
 
 ## Tools
 
@@ -189,6 +227,23 @@ Passages most similar to a question, best first, with note, section, line range 
 | `limit` | integer ≥ 0 | `5` | Maximum passages returned |
 | `min_score` | number | `0.0` | Drop passages below this similarity |
 
+### `kb_topics` · `chaos-kb topics`
+
+What the knowledge base holds near a task, as a short list: one line per passage (id, section, similarity, first words), best first, without the text. Keep the ids that would change how the task is done and fetch them with `read`; when none would, the knowledge base has nothing for this task
+
+| arg | type | default | description |
+|---|---|---|---|
+| `task` (required) | string |  | The task or request, in the user's words |
+| `limit` | integer ≥ 0 | `8` | Maximum passages listed |
+
+### `kb_read` · `chaos-kb read`
+
+The passages behind ids from `topics`, with their text, in the order given. Embeds nothing. Ids the index no longer holds come back as `missing` (the note changed: list the topics again)
+
+| arg | type | default | description |
+|---|---|---|---|
+| `ids` (required) | list of strings |  | Passage ids from `topics` (`note:first-last`, like `Car.md:8-8`) |
+
 ### Settings
 
 | flag | env var | default | description |
@@ -223,6 +278,28 @@ The gap between answered questions and near misses is narrow, so treat `similar`
 known, read it", and treat `absent` with a score close to the line as "search before you ask".
 A different embedding model needs its own `--min-score`.
 
+## How `topics` and `read` work together
+
+An agent about to do a task for you should know what your notes say that changes the result,
+and nothing else: every unneeded passage costs tokens and can mislead. Asking "is there anything
+relevant?" with a score cut-off does not work. In the end-to-end test (`tests/e2e.rs`) the right
+note came first for each of four tasks, yet every relevant passage scored between 0.15 and 0.36,
+below `check`'s 0.38 line, and for "Explain to me how a database index works." the right note
+(*"I want a concrete example first"*) scored 0.151 against 0.094 for the next, unrelated one.
+Requests phrased as tasks score lower than questions, so no fixed number separates what matters
+from what does not.
+
+So the work is split in two steps:
+
+1. `topics` ranks the passages near the task and returns one line each (id, section, score,
+   first words). The ranking is good; the judgment is left to the caller.
+2. The caller, usually a small, fast model acting as a searcher, keeps the ids that would change
+   how the task is done, possibly none, and fetches only those with `read`.
+
+What reaches the main agent is then the few passages that matter, as plain text it can put in
+front of the task. `read` looks the ids up in the index, so it embeds nothing and works even
+while the embedding model is down.
+
 ## Speed
 
 These timings were measured with the release build on an Apple M4, using Ollama 0.24 and
@@ -236,6 +313,8 @@ These timings were measured with the release build on an Apple M4, using Ollama 
 | `check`, same words (no embedding) | 0.04 s |
 | `check`, by meaning (one embedding call) | 0.14 s |
 | `search` | 0.09 s |
+| `topics` (one embedding call) | 0.10 s |
+| `read` (no embedding) | 0.03 s |
 
 A fresh index file for that vault is 8.4 MB. The file does not shrink when text is deleted:
 redb reuses the freed space for later writes instead.
@@ -249,7 +328,7 @@ either way.
 ## Your data
 
 - **The notes are the only copy of your knowledge.** chaos-kb writes to your notes only when you
-  call `remember`. `sync`, `check` and `search` only read them.
+  call `remember`. `sync`, `check`, `search`, `topics` and `read` only read them.
 - **How `remember` writes**: with a heading, the fact goes right under that heading's own text,
   before any subheading, so it reads under exactly that heading. Headings are compared like
   fingerprints, so `--heading oil` finds `## Oil:`. A missing heading is added at
@@ -272,8 +351,9 @@ either way.
   `CHAOS_KB_EMBED_API_KEY` and is never printed. Proxy settings from the environment
   (`ALL_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`) are used for remote embedders only, never for `localhost`.
 - **Changing the embedding model** re-embeds everything on the next `sync`, because vectors from
-  different models cannot be compared. Until then, `check` still answers `exact` matches, and
-  `check` by meaning and `search` ask you to run `sync`.
+  different models cannot be compared. Until then, `check` still answers `exact` matches and
+  `read` still returns passages, while `check` by meaning, `search` and `topics` ask you to run
+  `sync`.
 
 ## Development
 

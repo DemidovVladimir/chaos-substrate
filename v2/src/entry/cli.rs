@@ -8,6 +8,7 @@ use crate::adapters::obsidian::ObsidianVault;
 use crate::adapters::redb_index::RedbIndex;
 use crate::application::Kb;
 use crate::application::remember::INBOX;
+use crate::application::topics::DEFAULT_TOPICS;
 use crate::domain::path::NotePath;
 use crate::domain::presence::DEFAULT_MIN_SCORE;
 use anyhow::{Context, Result};
@@ -20,10 +21,12 @@ use std::process::ExitCode;
 /// Personal knowledge base for agents: Markdown notes in, instant "is this
 /// known?" checks and similarity search out.
 ///
-/// Before asking the user something, check whether the knowledge base
-/// already knows it, then search to read the passages. When the user tells
-/// you a new fact, remember it, one fact per call. After editing notes in the
-/// vault, sync.
+/// Before a task, list the topics the knowledge base holds near it, then read
+/// only the passages that would change how you do it (search returns the
+/// nearest passages' text in one step instead). Before asking the user
+/// something, check whether the knowledge base already knows it. When the
+/// user tells you a new fact, remember it, one fact per call. After editing
+/// notes in the vault, sync.
 #[derive(Debug, Parser)]
 #[command(name = "chaos-kb", version, after_help = api_key_note())]
 pub struct Cli {
@@ -129,6 +132,26 @@ pub enum Tool {
         #[arg(long, default_value_t = 0.0)]
         min_score: f32,
     },
+    /// What the knowledge base holds near a task, as a short list: one line
+    /// per passage (id, section, similarity, first words), best first,
+    /// without the text. Keep the ids that would change how the task is done
+    /// and fetch them with `read`; when none would, the knowledge base has
+    /// nothing for this task.
+    Topics {
+        /// The task or request, in the user's words.
+        task: String,
+        /// Maximum passages listed.
+        #[arg(long, default_value_t = DEFAULT_TOPICS)]
+        limit: usize,
+    },
+    /// The passages behind ids from `topics`, with their text, in the order
+    /// given. Embeds nothing. Ids the index no longer holds come back as
+    /// `missing` (the note changed: list the topics again).
+    Read {
+        /// Passage ids from `topics` (`note:first-last`, like `Car.md:8-8`).
+        #[arg(required = true)]
+        ids: Vec<String>,
+    },
 }
 
 /// Run one tool against the configured knowledge base.
@@ -159,6 +182,8 @@ pub fn execute(settings: &Settings, tool: &Tool) -> Result<Value> {
             limit,
             min_score,
         } => json(kb.search(query, *limit, *min_score)),
+        Tool::Topics { task, limit } => json(kb.topics(task, *limit)),
+        Tool::Read { ids } => json(kb.read(ids)),
     }
 }
 
@@ -219,7 +244,7 @@ mod tests {
     fn about_is_the_agent_workflow() {
         let about = Cli::command().get_long_about().map(|a| a.to_string());
         let about = about.expect("a workflow paragraph after the summary");
-        for step in ["check", "search", "remember", "sync"] {
+        for step in ["topics", "read", "check", "search", "remember", "sync"] {
             assert!(about.contains(step), "{step}: {about}");
         }
     }

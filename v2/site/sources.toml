@@ -74,6 +74,19 @@ sources = [
   "README.md",
 ]
 
+[pages.topics]
+sources = [
+  "src/application/topics.rs",
+  "src/application/read.rs",
+  "src/domain/note.rs",
+  "src/domain/text.rs",
+  "src/adapters/redb_index.rs",
+  "src/entry/cli.rs",
+  "src/entry/tools.rs",
+  "tests/e2e.rs",
+  "README.md",
+]
+
 # ── Storage ───────────────────────────────────────────────────────────────
 
 [pages.vault]

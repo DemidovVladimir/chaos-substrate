@@ -34,7 +34,7 @@
   <ul class="facts">
     <li><b>5</b> tables in <b>1</b> file</li>
     <li><b>1</b> write transaction per sync</li>
-    <li>layout mark <b>format = "1"</b> in <code>meta</code></li>
+    <li>layout mark <b>format = "2"</b> in <code>meta</code></li>
     <li>up to <b>3</b> attempts when another writer wins</li>
   </ul>
   <ul class="legend" aria-label="Colour key">
@@ -131,7 +131,7 @@
         <li>One write transaction begins. Everything below is saved together at the commit, or not at all.</li>
         <li>The index must still hold the snapshot this sync started from. If another writer changed it meanwhile, nothing is written and the sync starts over.</li>
         <li>Every chunk needs a vector, new or already stored. When one has none, the write stops with an error and the index stays as it was.</li>
-        <li>The <code>meta</code>, <code>tree</code>, <code>chunks</code> and <code>blocks</code> tables are emptied and filled from the update. <code>meta</code> records the layout, format 1, and the embedder id.</li>
+        <li>The <code>meta</code>, <code>tree</code>, <code>chunks</code> and <code>blocks</code> tables are emptied and filled from the update. <code>meta</code> records the layout, format 2, and the embedder id. Each chunk row also records its position in the update, so chunks that share their lines, the pieces of a cut block, read back in order.</li>
         <li>New vectors are added. A stored vector stays when some chunk still uses its key; every other vector is dropped.</li>
         <li>The transaction commits, the database is closed and the lock is released, so the next command, or a running MCP server, can open it.</li>
       </ol>
@@ -149,9 +149,9 @@
     <table>
       <thead><tr><th>Table</th><th>Key → value</th><th>Example row</th></tr></thead>
       <tbody>
-        <tr><td><code>meta</code></td><td><code>"format"</code> → table layout; <code>"embedder"</code> → embedder id</td><td class="wrap"><code>"format"</code> → <code>1</code>; <code>"embedder"</code> → <code>embeddinggemma|gemma-retrieval-v1</code></td></tr>
+        <tr><td><code>meta</code></td><td><code>"format"</code> → table layout; <code>"embedder"</code> → embedder id</td><td class="wrap"><code>"format"</code> → <code>2</code>; <code>"embedder"</code> → <code>embeddinggemma|gemma-retrieval-v1</code></td></tr>
         <tr><td><code>tree</code></td><td>note path → 32-byte note hash</td><td class="wrap"><code>Car.md</code> → <code>885f1a568822853399253402e042d3556fe7739ae3014df2be91bbee1614cf8f</code></td></tr>
-        <tr><td><code>chunks</code></td><td>content key → every chunk with that content: note, section, first and last line, context, text</td><td class="wrap"><code>0b998bf4fbf675ad07f1b434a4d4032ea87cce39446a259fe9c07d9b748d7f5e</code> → <code>Car.md</code>, <code>Maintenance &gt; Oil</code>, 8, 8, <code>Car &gt; Maintenance &gt; Oil</code>, <code>I change the engine oil every 10 000 km.</code></td></tr>
+        <tr><td><code>chunks</code></td><td>content key → every chunk with that content: note, section, first and last line, position in the sync, context, text</td><td class="wrap"><code>0b998bf4fbf675ad07f1b434a4d4032ea87cce39446a259fe9c07d9b748d7f5e</code> → <code>Car.md</code>, <code>Maintenance &gt; Oil</code>, 8, 8, 1, <code>Car &gt; Maintenance &gt; Oil</code>, <code>I change the engine oil every 10 000 km.</code></td></tr>
         <tr><td><code>vectors</code></td><td>content key → unit vector as bytes</td><td class="wrap">the same key → 768 numbers of 4 bytes each with embeddinggemma, the length its live test expects</td></tr>
         <tr><td><code>blocks</code></td><td>fingerprint → every place it occurs</td><td class="wrap"><code>973c899aeacc8e7035e6746bbb7e0c0e471bc5b5af45d289e125bc722244774e</code> → <code>Health/Allergies.md</code>, <code>Allergies</code>, 3, 3</td></tr>
       </tbody>
@@ -181,7 +181,7 @@
   <ul class="states">
     <li><span class="chip data">none</span><span><b>no file yet</b>Reads find nothing and create nothing; check and search say to run sync.</span></li>
     <li><span class="chip data">none</span><span><b>an empty file</b>Read as no file, until a sync fills it.</span></li>
-    <li><span class="chip data">none</span><span><b>another layout</b>A file without <code>format</code> <code>1</code> in <code>meta</code>, from an older or newer build, reads as empty. The next sync clears it and rebuilds it.</span></li>
+    <li><span class="chip data">none</span><span><b>another layout</b>A file without <code>format</code> <code>2</code> in <code>meta</code>, from an older or newer build, reads as empty. The next sync clears it and rebuilds it.</span></li>
     <li><span class="chip guard">wait</span><span><b>held by another process</b>Every operation waits for <code>&lt;index&gt;.lock</code>, as long as it takes.</span></li>
     <li><span class="chip guard">again</span><span><b>another writer got in first</b>The write is refused and the sync starts over: at most 3 attempts, then <code>the index changed while this sync ran</code>.</span></li>
     <li><span class="chip guard">refuse</span><span><b>a chunk without a vector</b>The write stops and the index is unchanged.</span></li>
@@ -245,7 +245,7 @@
     <table>
       <thead><tr><th>File</th><th>Owns</th></tr></thead>
       <tbody>
-        <tr><td><code>src/adapters/redb_index.rs</code></td><td><code>RedbIndex</code>: the tables, <code>FORMAT</code>, the lock file, the base check, the write, the row checks, the nearest scan</td></tr>
+        <tr><td><code>src/adapters/redb_index.rs</code></td><td><code>RedbIndex</code>: the tables, <code>FORMAT</code>, the lock file, the base check, the write, the row checks, the nearest scan, and <code>chunks</code> in reading order for <a href="topics.html">read</a></td></tr>
         <tr><td><code>src/ports/mod.rs</code></td><td>the <code>Index</code> trait, <code>Snapshot</code>, <code>Update</code> with its <code>base</code>, <code>Stale</code> and <code>Hit</code></td></tr>
         <tr><td><code>src/application/sync.rs</code></td><td><code>SYNC_ATTEMPTS</code>: starting over when another writer got in first</td></tr>
         <tr><td><code>src/entry/cli.rs</code></td><td><code>--index</code> and its default under the vault</td></tr>

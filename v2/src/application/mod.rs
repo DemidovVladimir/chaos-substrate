@@ -1,12 +1,14 @@
-//! The four use-cases — `sync`, `remember`, `check`, `search` — written
-//! against the ports only.
+//! The six use-cases — `sync`, `remember`, `check`, `search`, `topics`,
+//! `read` — written against the ports only.
 
 pub mod check;
+pub mod read;
 pub mod remember;
 pub mod search;
 pub mod sync;
 #[cfg(test)]
 mod testing;
+pub mod topics;
 
 use crate::domain::note::Location;
 use crate::domain::{text, vector};
