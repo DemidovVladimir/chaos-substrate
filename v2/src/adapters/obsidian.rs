@@ -959,10 +959,10 @@ mod tests {
     }
 
     #[test]
-    fn place_at_the_end_of_a_section_before_the_next_heading_of_its_level() {
+    fn place_at_the_end_of_the_heading_own_text_before_any_next_heading() {
         assert_eq!(
             place(CAR, Some("Oil"), "Check monthly."),
-            "# Car\n\n## Oil\n\nChange every 10k.\n\n### Brand\n\nCastrol.\n\nCheck monthly.\n\n\
+            "# Car\n\n## Oil\n\nChange every 10k.\n\nCheck monthly.\n\n### Brand\n\nCastrol.\n\n\
              ## Tyres\n\nWinter set.\n"
         );
         assert_eq!(
@@ -974,7 +974,11 @@ mod tests {
             place(CAR, Some("Tyres"), "Summer set."),
             format!("{CAR}\nSummer set.\n")
         );
-        assert_eq!(place(CAR, Some("car"), "Sold."), format!("{CAR}\nSold.\n"));
+        assert_eq!(
+            place(CAR, Some("car"), "Sold."),
+            "# Car\n\nSold.\n\n## Oil\n\nChange every 10k.\n\n### Brand\n\nCastrol.\n\n\
+             ## Tyres\n\nWinter set.\n"
+        );
         assert_eq!(
             place("## A\ntext\n## B\nb\n", Some("A"), "new"),
             "## A\ntext\n\nnew\n\n## B\nb\n"
@@ -987,6 +991,21 @@ mod tests {
             place("## Oil ##\nx\n", Some("oil"), "y"),
             "## Oil ##\nx\n\ny\n"
         );
+    }
+
+    #[test]
+    fn placed_text_is_read_under_exactly_the_named_heading() {
+        for (heading, path) in [
+            ("Car", "Car"),
+            ("Oil", "Car > Oil"),
+            ("Brand", "Car > Oil > Brand"),
+            ("Tyres", "Car > Tyres"),
+            ("New", "Car > New"),
+        ] {
+            let note = doc(&place(CAR, Some(heading), "Fact."));
+            let fact = note.blocks.iter().find(|b| b.text == "Fact.").unwrap();
+            assert_eq!(section(&fact.headings), path, "--heading {heading}");
+        }
     }
 
     #[test]
@@ -1062,8 +1081,8 @@ mod tests {
         );
         assert_eq!(
             place("Oil\n===\n\nx\n\nBrand\n-----\n\ny\n", Some("oil"), "new"),
-            "Oil\n===\n\nx\n\nBrand\n-----\n\ny\n\nnew\n",
-            "a `-----` heading is level 2, inside the `===` section"
+            "Oil\n===\n\nx\n\nnew\n\nBrand\n-----\n\ny\n",
+            "a `-----` heading is a subheading of a `===` one"
         );
     }
 
