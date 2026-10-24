@@ -43,9 +43,11 @@ pub struct Settings {
     #[arg(long, env = "CHAOS_KB_INDEX", global = true)]
     pub index: Option<PathBuf>,
     /// OpenAI-compatible embeddings base URL (Ollama, OpenRouter, OpenAI).
+    // The URL may carry credentials, so `--help` never prints its env value.
     #[arg(
         long,
         env = "CHAOS_KB_EMBED_URL",
+        hide_env_values = true,
         default_value = "http://localhost:11434/v1",
         global = true
     )]
@@ -68,7 +70,9 @@ pub const API_KEY_ENV: &str = "CHAOS_KB_EMBED_API_KEY";
 pub fn api_key_note() -> String {
     format!(
         "The embeddings API key, when the endpoint needs one, is read only from the \
-         `{API_KEY_ENV}` environment variable, never from a flag."
+         `{API_KEY_ENV}` environment variable, never from a flag. It is sent only over \
+         `https://`, or over plain `http://` to this machine (`localhost`, `127.0.0.0/8`, \
+         `::1`)."
     )
 }
 
@@ -218,6 +222,17 @@ mod tests {
         for step in ["check", "search", "remember", "sync"] {
             assert!(about.contains(step), "{step}: {about}");
         }
+    }
+
+    #[test]
+    fn help_never_prints_the_embed_url_from_the_environment() {
+        // Tests cannot set variables (no `unsafe`), so `PATH`, which is
+        // always set, stands in for `CHAOS_KB_EMBED_URL`.
+        let path = std::env::var("PATH").unwrap();
+        let mut cli = Cli::command().mut_arg("embed_url", |a| a.env("PATH"));
+        let help = cli.render_long_help().to_string();
+        assert!(help.contains("[env: PATH]"), "{help}");
+        assert!(!help.contains(&path), "{help}");
     }
 
     #[test]

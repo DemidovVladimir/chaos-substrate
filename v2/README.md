@@ -164,7 +164,7 @@ Passages most similar to a question, best first, with note, section, line range 
 | `--embed-url` | `CHAOS_KB_EMBED_URL` | `http://localhost:11434/v1` | OpenAI-compatible embeddings base URL (Ollama, OpenRouter, OpenAI) |
 | `--embed-model` | `CHAOS_KB_EMBED_MODEL` | `embeddinggemma` | Embedding model |
 
-The embeddings API key, when the endpoint needs one, is read only from the `CHAOS_KB_EMBED_API_KEY` environment variable, never from a flag.
+The embeddings API key, when the endpoint needs one, is read only from the `CHAOS_KB_EMBED_API_KEY` environment variable, never from a flag. It is sent only over `https://`, or over plain `http://` to this machine (`localhost`, `127.0.0.0/8`, `::1`).
 <!-- tools:end -->
 
 ## How `check` decides

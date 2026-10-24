@@ -6,8 +6,10 @@
 use crate::ports::Embedder;
 use anyhow::{Context, Result, anyhow, ensure};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
+use std::net::IpAddr;
 use std::time::Duration;
+use ureq::http::Uri;
 
 /// End-to-end budget for one request; generous because the first call may
 /// have to load the model.
@@ -71,8 +73,35 @@ fn endpoint(base_url: &str) -> String {
     format!("{}/embeddings", base_url.trim_end_matches('/'))
 }
 
-fn request_body(model: &str, inputs: &[String]) -> Value {
-    json!({"model": model, "input": inputs})
+/// The API key travels only where nobody else can read it: over `https://`,
+/// or over plain `http://` to this machine (`localhost`, `127.0.0.0/8`,
+/// `::1`). The URL is parsed as ureq parses it; the error names the host,
+/// never the key.
+fn check_key_transport(url: &str) -> Result<()> {
+    let uri: Uri = url
+        .parse()
+        .context("the embeddings URL is not a valid URL")?;
+    let host = uri.host().unwrap_or_default();
+    let private = match uri.scheme_str() {
+        Some("https") => true,
+        Some("http") => is_loopback(host),
+        _ => false,
+    };
+    ensure!(
+        private,
+        "refusing to send the embeddings API key to {host} without TLS: use an https:// URL \
+         (plain http:// is allowed only to localhost, 127.0.0.0/8 and ::1)"
+    );
+    Ok(())
+}
+
+/// `localhost` or a loopback address; IPv6 hosts may come in brackets.
+fn is_loopback(host: &str) -> bool {
+    let ip = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    host.eq_ignore_ascii_case("localhost") || ip.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 #[derive(Deserialize)]
@@ -139,8 +168,9 @@ pub struct HttpEmbedder {
 
 impl HttpEmbedder {
     /// `base_url` like `http://localhost:11434/v1`; `api_key` is sent as a
-    /// bearer token when present (an empty key counts as none). Nothing is
-    /// contacted until the first embed.
+    /// bearer token when present (an empty key counts as none), and only
+    /// where [`check_key_transport`] allows. Nothing is contacted until the
+    /// first embed.
     pub fn new(base_url: &str, model: &str, api_key: Option<String>) -> HttpEmbedder {
         let format = Format::for_model(model);
         let agent = ureq::Agent::config_builder()
@@ -163,10 +193,11 @@ impl HttpEmbedder {
     fn embed(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>> {
         let mut request = self.agent.post(&self.url);
         if let Some(key) = &self.api_key {
+            check_key_transport(&self.url)?;
             request = request.header("Authorization", format!("Bearer {key}"));
         }
         let mut response = request
-            .send_json(request_body(&self.model, inputs))
+            .send_json(json!({"model": self.model, "input": inputs}))
             .with_context(|| format!("embeddings request to {} failed", self.url))?;
         let body = response
             .body_mut()
@@ -211,7 +242,7 @@ impl Embedder for HttpEmbedder {
 mod tests {
     use super::*;
     use crate::domain::vector::{dot, unit};
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::thread::{self, JoinHandle};
@@ -220,15 +251,6 @@ mod tests {
     const GEMMA: Format = Format::GemmaRetrieval;
     const PLAIN: Format = Format::Plain;
     const KEY: &str = "sk-test-0123456789abcdef";
-
-    #[test]
-    fn request_body_is_model_and_input_array() {
-        let inputs = ["first".to_string(), "second one".to_string()];
-        assert_eq!(
-            request_body("embeddinggemma", &inputs),
-            json!({"model": "embeddinggemma", "input": ["first", "second one"]})
-        );
-    }
 
     #[test]
     fn endpoint_joins_without_double_slash() {
@@ -429,6 +451,59 @@ mod tests {
         );
         assert!(err.contains("401"), "{err}");
         assert!(!err.contains(KEY), "{err}");
+    }
+
+    #[test]
+    fn the_key_goes_only_over_tls_or_to_this_machine() {
+        for url in [
+            "https://openrouter.ai/api/v1/embeddings",
+            "HTTPS://api.openai.com/v1/embeddings",
+            "http://localhost:11434/v1/embeddings",
+            "http://LocalHost/v1/embeddings",
+            "http://127.0.0.1:11434/v1/embeddings",
+            "http://127.200.3.4/v1/embeddings",
+            "http://[::1]:11434/v1/embeddings",
+        ] {
+            assert!(check_key_transport(url).is_ok(), "{url}");
+        }
+        for url in [
+            "http://openrouter.ai/api/v1/embeddings",
+            "http://192.168.1.20:11434/v1/embeddings",
+            "http://0.0.0.0:11434/v1/embeddings",
+            "http://128.0.0.1/v1/embeddings",
+            "http://[::2]/v1/embeddings",
+            "http://localhost.example.com/v1/embeddings",
+            "http://127.0.0.1.example.com/v1/embeddings",
+            "http://localhost@example.com/v1/embeddings",
+            "ftp://localhost/v1/embeddings",
+        ] {
+            let err = check_key_transport(url).unwrap_err().to_string();
+            assert!(err.contains("https://"), "{url}: {err}");
+        }
+        assert!(check_key_transport("not a url").is_err());
+    }
+
+    #[test]
+    fn refuses_to_send_the_key_without_tls() {
+        // 0.0.0.0 reaches this machine but is no loopback address; nobody
+        // listens on the port, so an attempted request fails to connect.
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let base = format!("http://0.0.0.0:{port}/v1");
+        let embedder = HttpEmbedder::new(&base, "text-embedding-3-small", Some(KEY.into()));
+        let err = format!("{:#}", embedder.embed_query("oil").unwrap_err());
+        assert!(
+            err.contains("refusing") && err.contains("https://"),
+            "{err}"
+        );
+        assert!(!err.contains(KEY) && !err.contains("sk-test"), "{err}");
+        // Without a key the request is attempted.
+        let embedder = HttpEmbedder::new(&base, "text-embedding-3-small", None);
+        let err = format!("{:#}", embedder.embed_query("oil").unwrap_err());
+        assert!(!err.contains("refusing"), "{err}");
     }
 
     #[test]
