@@ -6,8 +6,13 @@ use super::cli::{Command, Settings};
 use anyhow::Result;
 use serde_json::Value;
 
-/// Newest MCP protocol revision this server speaks.
-pub const PROTOCOL_VERSION: &str = "2025-06-18";
+/// Newest MCP protocol revision this server speaks: the last one with the
+/// `initialize` handshake (2026-07-28 and later are stateless and use
+/// `server/discover` instead).
+pub const PROTOCOL_VERSION: &str = "2025-11-25";
+
+/// Revisions accepted in `initialize`, newest first.
+pub const SUPPORTED: &[&str] = &[PROTOCOL_VERSION, "2025-06-18", "2025-03-26", "2024-11-05"];
 
 /// Answer one JSON-RPC message; `None` for notifications. `run` executes a
 /// parsed tool command (the real knowledge base in production).
@@ -20,4 +25,207 @@ pub fn handle(message: &Value, run: &dyn Fn(&Command) -> Result<Value>) -> Optio
 pub fn serve(settings: &Settings) -> Result<()> {
     let _ = settings;
     todo!()
+}
+
+/// The reply line to one stdin line: `None` for blank lines and notifications,
+/// a parse error for anything that is not JSON.
+fn answer(line: &[u8], run: &dyn Fn(&Command) -> Result<Value>) -> Option<String> {
+    let _ = (line, run);
+    todo!()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entry::cli::Cli;
+    use crate::entry::tools;
+    use anyhow::anyhow;
+    use clap::CommandFactory;
+    use serde_json::json;
+
+    type Run = dyn Fn(&Command) -> Result<Value>;
+
+    /// A stand-in knowledge base that reports the command it was given.
+    fn echo(command: &Command) -> Result<Value> {
+        Ok(json!({ "ran": format!("{command:?}") }))
+    }
+
+    fn broken(_: &Command) -> Result<Value> {
+        Err(anyhow!("index is locked").context("search failed"))
+    }
+
+    fn untouched(command: &Command) -> Result<Value> {
+        panic!("must not run {command:?}")
+    }
+
+    fn request(method: &str, params: Value) -> Value {
+        json!({"jsonrpc": "2.0", "id": 7, "method": method, "params": params})
+    }
+
+    fn reply(message: Value, run: &Run) -> Value {
+        let reply = handle(&message, run).expect("a reply");
+        assert_eq!(reply["jsonrpc"], "2.0");
+        assert_eq!(reply["id"], message["id"]);
+        reply
+    }
+
+    fn result(message: Value, run: &Run) -> Value {
+        let reply = reply(message, run);
+        assert!(reply.get("error").is_none(), "{reply}");
+        reply["result"].clone()
+    }
+
+    fn error_code(message: Value) -> i64 {
+        reply(message, &untouched)["error"]["code"]
+            .as_i64()
+            .unwrap()
+    }
+
+    fn negotiated(requested: Option<&str>) -> Value {
+        let params = requested.map_or(json!({}), |v| json!({"protocolVersion": v}));
+        result(request("initialize", params), &untouched)["protocolVersion"].clone()
+    }
+
+    fn call(name: &str, arguments: Value, run: &Run) -> Value {
+        let params = json!({"name": name, "arguments": arguments});
+        result(request("tools/call", params), run)
+    }
+
+    #[test]
+    fn initialize_describes_the_server() {
+        let params = json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": {"name": "test", "version": "0"}
+        });
+        let init = result(request("initialize", params), &untouched);
+        assert_eq!(init["protocolVersion"], PROTOCOL_VERSION);
+        assert_eq!(
+            init["capabilities"],
+            json!({"tools": {"listChanged": false}})
+        );
+        assert_eq!(
+            init["serverInfo"],
+            json!({"name": "chaos-kb", "version": env!("CARGO_PKG_VERSION")})
+        );
+        let about = Cli::command().get_long_about().unwrap().to_string();
+        assert_eq!(init["instructions"], about);
+    }
+
+    #[test]
+    fn negotiates_the_protocol_version() {
+        assert_eq!(SUPPORTED[0], PROTOCOL_VERSION);
+        for v in SUPPORTED {
+            assert_eq!(negotiated(Some(v)), *v);
+        }
+        for v in [Some("2026-07-28"), Some("1999-01-01"), None] {
+            assert_eq!(negotiated(v), PROTOCOL_VERSION, "{v:?}");
+        }
+    }
+
+    #[test]
+    fn notifications_get_no_reply() {
+        let initialized = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
+        assert_eq!(handle(&initialized, &untouched), None);
+        let call = json!({"jsonrpc": "2.0", "method": "tools/call",
+            "params": {"name": "kb_sync", "arguments": {}}});
+        assert_eq!(handle(&call, &untouched), None);
+    }
+
+    #[test]
+    fn ping_answers_empty() {
+        let ping = json!({"jsonrpc": "2.0", "id": "p", "method": "ping"});
+        assert_eq!(result(ping, &untouched), json!({}));
+    }
+
+    #[test]
+    fn lists_the_tools() {
+        let listed = result(request("tools/list", json!({})), &untouched);
+        let expected: Vec<Value> = tools::tools()
+            .into_iter()
+            .map(|t| json!({"name": t.name, "description": t.description, "inputSchema": t.input_schema}))
+            .collect();
+        assert_eq!(listed, json!({ "tools": expected }));
+    }
+
+    #[test]
+    fn unknown_methods_are_not_found() {
+        assert_eq!(error_code(request("resources/list", json!({}))), -32601);
+        assert_eq!(error_code(request("server/discover", json!({}))), -32601);
+    }
+
+    #[test]
+    fn unknown_tools_are_invalid_params() {
+        let unknown = request("tools/call", json!({"name": "kb_nope", "arguments": {}}));
+        assert_eq!(error_code(unknown), -32602);
+        assert_eq!(
+            error_code(request("tools/call", json!({"name": "kb_mcp"}))),
+            -32602
+        );
+        assert_eq!(error_code(request("tools/call", json!({}))), -32602);
+    }
+
+    #[test]
+    fn non_objects_are_invalid_requests() {
+        let batch = json!([{"jsonrpc": "2.0", "id": 1, "method": "ping"}]);
+        let reply = handle(&batch, &untouched).expect("a reply");
+        assert_eq!(reply["error"]["code"], -32600);
+        assert_eq!(reply["id"], Value::Null);
+    }
+
+    #[test]
+    fn calls_run_the_parsed_command() {
+        let done = call("kb_search", json!({"query": "tea", "limit": 2}), &echo);
+        assert_eq!(done["isError"], false);
+        let search = Command::Search {
+            query: "tea".into(),
+            limit: 2,
+            min_score: 0.0,
+        };
+        let text = echo(&search).unwrap().to_string();
+        assert_eq!(done["content"], json!([{"type": "text", "text": text}]));
+    }
+
+    #[test]
+    fn missing_arguments_mean_none() {
+        let params = json!({"name": "kb_sync"});
+        let done = result(request("tools/call", params), &echo);
+        let text = echo(&Command::Sync { dry_run: false }).unwrap().to_string();
+        assert_eq!(done["content"][0]["text"], text);
+    }
+
+    #[test]
+    fn bad_arguments_are_a_tool_error_the_model_can_read() {
+        let done = call("kb_check", json!({}), &untouched);
+        assert_eq!(done["isError"], true);
+        let text = done["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("required"), "{text}");
+    }
+
+    #[test]
+    fn failures_are_a_tool_error_with_their_causes() {
+        let done = call("kb_check", json!({"query": "tea"}), &broken);
+        assert_eq!(done["isError"], true);
+        let text = "search failed: index is locked";
+        assert_eq!(done["content"], json!([{"type": "text", "text": text}]));
+    }
+
+    #[test]
+    fn lines_are_answered_one_to_one() {
+        assert_eq!(answer(b"", &untouched), None);
+        assert_eq!(answer(b"  \r", &untouched), None);
+        let initialized = br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+        assert_eq!(answer(initialized, &untouched), None);
+
+        let bad: Value = serde_json::from_str(&answer(b"{nope", &untouched).unwrap()).unwrap();
+        assert_eq!(bad["error"]["code"], -32700);
+        assert_eq!(bad["id"], Value::Null);
+
+        let line = br#"{"jsonrpc":"2.0","id":"a","method":"tools/call","params":{"name":"kb_check","arguments":{"query":"line\nbreak"}}}"#;
+        let pong = answer(line, &echo).unwrap();
+        assert!(!pong.contains('\n'), "{pong}");
+        let pong: Value = serde_json::from_str(&pong).unwrap();
+        assert_eq!(pong["id"], "a");
+        assert_eq!(pong["result"]["isError"], false);
+    }
 }

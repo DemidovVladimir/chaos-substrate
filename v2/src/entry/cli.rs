@@ -103,6 +103,113 @@ pub fn execute(settings: &Settings, command: &Command) -> Result<Value> {
     todo!()
 }
 
+/// `--index`, or `<vault>/.chaos-kb/index.redb`.
+fn index_path(settings: &Settings, vault: &std::path::Path) -> PathBuf {
+    let _ = (settings, vault);
+    todo!()
+}
+
 pub fn main() -> ExitCode {
     todo!()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+    use std::path::Path;
+
+    fn parse(argv: &[&str]) -> Command {
+        Cli::try_parse_from(argv).unwrap().command
+    }
+
+    fn settings(vault: Option<&str>, index: Option<&str>) -> Settings {
+        Settings {
+            vault: vault.map(PathBuf::from),
+            index: index.map(PathBuf::from),
+            embed_url: "http://localhost:11434/v1".into(),
+            embed_model: "embeddinggemma".into(),
+        }
+    }
+
+    #[test]
+    fn the_definition_is_valid() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn defaults() {
+        assert_eq!(
+            parse(&["chaos-kb", "sync"]),
+            Command::Sync { dry_run: false }
+        );
+        assert_eq!(
+            parse(&["chaos-kb", "remember", "tea"]),
+            Command::Remember {
+                text: "tea".into(),
+                note: INBOX.into(),
+                heading: None,
+            }
+        );
+        assert_eq!(
+            parse(&["chaos-kb", "check", "tea"]),
+            Command::Check {
+                query: "tea".into(),
+                min_score: DEFAULT_MIN_SCORE,
+            }
+        );
+        assert_eq!(
+            parse(&["chaos-kb", "search", "tea"]),
+            Command::Search {
+                query: "tea".into(),
+                limit: 5,
+                min_score: 0.0,
+            }
+        );
+    }
+
+    #[test]
+    fn check_with_min_score() {
+        assert_eq!(
+            parse(&["chaos-kb", "check", "x", "--min-score", "0.7"]),
+            Command::Check {
+                query: "x".into(),
+                min_score: 0.7,
+            }
+        );
+    }
+
+    #[test]
+    fn about_is_the_agent_workflow() {
+        let about = Cli::command().get_long_about().map(|a| a.to_string());
+        let about = about.expect("a workflow paragraph after the summary");
+        for step in ["check", "search", "remember", "sync"] {
+            assert!(about.contains(step), "{step}: {about}");
+        }
+    }
+
+    #[test]
+    fn index_defaults_into_the_vault() {
+        let vault = Path::new("/notes");
+        assert_eq!(
+            index_path(&settings(None, None), vault),
+            Path::new("/notes/.chaos-kb/index.redb")
+        );
+        assert_eq!(
+            index_path(&settings(None, Some("/tmp/kb.redb")), vault),
+            Path::new("/tmp/kb.redb")
+        );
+    }
+
+    #[test]
+    fn execute_needs_a_vault() {
+        let e = execute(&settings(None, None), &Command::Sync { dry_run: true }).unwrap_err();
+        assert_eq!(e.to_string(), "set --vault or CHAOS_KB_VAULT");
+    }
+
+    #[test]
+    fn mcp_is_not_a_tool() {
+        let e = execute(&settings(Some("/notes"), None), &Command::Mcp).unwrap_err();
+        assert!(e.to_string().contains("mcp"), "{e}");
+    }
 }
