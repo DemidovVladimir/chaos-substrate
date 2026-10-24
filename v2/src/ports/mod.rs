@@ -8,6 +8,7 @@ use crate::domain::note::{Location, Note};
 use crate::domain::path::NotePath;
 use anyhow::Result;
 use std::collections::HashSet;
+use std::fmt;
 
 /// The knowledge source: a folder of Markdown notes (an Obsidian vault). It is
 /// the only copy of the knowledge; everything else is derived from it.
@@ -50,6 +51,9 @@ pub struct Snapshot {
 /// The complete derived state written by one sync.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Update {
+    /// The snapshot this update was computed from. [`Index::replace`] writes
+    /// only while the index still holds it.
+    pub base: Option<Snapshot>,
     pub embedder: String,
     pub tree: Tree,
     pub chunks: Vec<Chunk>,
@@ -58,6 +62,18 @@ pub struct Update {
     /// Unit vectors for chunk keys that have none stored yet.
     pub vectors: Vec<(Digest, Vec<f32>)>,
 }
+
+/// Another writer changed the index after this update's base was read.
+#[derive(Debug)]
+pub struct Stale;
+
+impl fmt::Display for Stale {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("the index changed while this sync ran")
+    }
+}
+
+impl std::error::Error for Stale {}
 
 /// A chunk returned by a similarity search.
 #[derive(Debug, Clone, PartialEq)]
@@ -78,7 +94,8 @@ pub trait Index {
     /// Atomically make the index equal to `update`: tree, chunks and blocks
     /// are replaced; vectors are added from `update.vectors` (overwriting the
     /// same key) and dropped when no chunk uses them. Fails, changing nothing,
-    /// when a chunk would be left without a vector.
+    /// when a chunk would be left without a vector, and with [`Stale`] when
+    /// the stored snapshot is no longer `update.base`.
     fn replace(&self, update: Update) -> Result<()>;
 
     /// Where blocks with this fingerprint sit, sorted.

@@ -1,6 +1,7 @@
 //! `sync`: make the index match the vault. The Merkle tree is rebuilt from the
 //! notes; only chunks whose content key has no stored vector are embedded;
-//! vectors, chunks and fingerprints of deleted text are dropped.
+//! vectors, chunks and fingerprints of deleted text are dropped. The write
+//! goes through only if the index is still the one this sync read.
 
 use super::Kb;
 use crate::domain::chunk::{self, Chunk, MAX_CHUNK_CHARS};
@@ -8,13 +9,16 @@ use crate::domain::hash::Digest;
 use crate::domain::merkle::{Changes, Tree};
 use crate::domain::note::{Location, Note, section};
 use crate::domain::{text, vector};
-use crate::ports::Update;
+use crate::ports::{Stale, Update};
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use std::collections::HashSet;
 
 /// Passages sent to the embedder per request.
 pub const EMBED_BATCH: usize = 32;
+
+/// How often a sync starts over when another writer changed the index first.
+pub const SYNC_ATTEMPTS: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SyncReport {
@@ -31,7 +35,19 @@ pub struct SyncReport {
 }
 
 impl Kb<'_> {
+    /// Sync, starting over (up to [`SYNC_ATTEMPTS`] times) when another
+    /// writer changed the index while this one was embedding.
     pub fn sync(&self, dry_run: bool) -> Result<SyncReport> {
+        let mut attempt = 1;
+        loop {
+            match self.sync_once(dry_run) {
+                Err(e) if e.is::<Stale>() && attempt < SYNC_ATTEMPTS => attempt += 1,
+                outcome => return outcome,
+            }
+        }
+    }
+
+    fn sync_once(&self, dry_run: bool) -> Result<SyncReport> {
         let notes = self.vault.notes()?;
         let tree = Tree::build(&notes);
         let previous = self.index.snapshot()?;
@@ -66,6 +82,7 @@ impl Kb<'_> {
         }
         let vectors = self.embed(&missing)?;
         self.index.replace(Update {
+            base: previous,
             embedder: self.embedder.id().to_string(),
             tree,
             blocks: fingerprints(&notes),
@@ -232,6 +249,28 @@ mod tests {
         let world = World::new(notes);
         world.kb().sync(false).unwrap();
         assert_eq!(*world.embedder.batches.borrow(), [EMBED_BATCH, 5]);
+    }
+
+    #[test]
+    fn a_sync_beaten_by_another_writer_starts_over() {
+        let world = World::new(sample_notes());
+        world.index.beaten.set(SYNC_ATTEMPTS - 1);
+        let report = world.kb().sync(false).unwrap();
+        assert_eq!(report.notes, 3);
+        assert_eq!(world.index.writes.get(), 1);
+        assert_eq!(
+            world.index.snapshot().unwrap().unwrap().tree.root(),
+            report.root
+        );
+    }
+
+    #[test]
+    fn a_sync_beaten_every_time_gives_up_with_stale() {
+        let world = World::new(sample_notes());
+        world.index.beaten.set(SYNC_ATTEMPTS);
+        let err = world.kb().sync(false).unwrap_err();
+        assert!(err.is::<Stale>(), "{err:#}");
+        assert_eq!(world.index.writes.get(), 0);
     }
 
     #[test]

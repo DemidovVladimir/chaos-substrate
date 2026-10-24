@@ -7,7 +7,7 @@ use crate::domain::hash::Digest;
 use crate::domain::note::{Block, Location, Note};
 use crate::domain::path::NotePath;
 use crate::domain::vector;
-use crate::ports::{Embedder, Hit, Index, Snapshot, Update, Vault};
+use crate::ports::{Embedder, Hit, Index, Snapshot, Stale, Update, Vault};
 use anyhow::{Result, bail};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -105,6 +105,8 @@ pub struct MemIndex {
     state: RefCell<Option<Update>>,
     vectors: RefCell<HashMap<Digest, Vec<f32>>>,
     pub writes: Cell<usize>,
+    /// How many coming writes another writer beats (refused as [`Stale`]).
+    pub beaten: Cell<usize>,
 }
 
 impl MemIndex {
@@ -126,6 +128,10 @@ impl Index for MemIndex {
     }
 
     fn replace(&self, mut update: Update) -> Result<()> {
+        if self.beaten.get() > 0 || self.snapshot()? != update.base {
+            self.beaten.set(self.beaten.get().saturating_sub(1));
+            return Err(Stale.into());
+        }
         let mut vectors = self.vectors.borrow_mut();
         let supplied: HashSet<Digest> = update.vectors.iter().map(|(k, _)| *k).collect();
         if let Some(c) = update
