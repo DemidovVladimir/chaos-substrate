@@ -6,7 +6,7 @@ use crate::domain::note::{Block, Note};
 use crate::domain::path::NotePath;
 use crate::ports::Vault;
 use anyhow::{Context, Result, anyhow, ensure};
-use pulldown_cmark::{Event, Options, Parser, Tag};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::ops::Range;
@@ -139,6 +139,9 @@ struct Open {
     /// Nesting depth of its start tag; the end tag at this depth closes it.
     depth: usize,
     text: String,
+    /// The link being read: where its label starts in `text`, and where it
+    /// points.
+    link: Option<(usize, String)>,
 }
 
 /// Turns pulldown-cmark events into blocks.
@@ -178,8 +181,11 @@ impl<'a> Blocks<'a> {
                 self.start(&tag, range.start);
                 self.depth += 1;
             }
-            Event::End(_) => {
+            Event::End(tag) => {
                 self.depth -= 1;
+                if tag == TagEnd::Link {
+                    self.end_link();
+                }
                 if self.open.as_ref().is_some_and(|o| o.depth == self.depth) {
                     self.close(range.end);
                 }
@@ -207,6 +213,7 @@ impl<'a> Blocks<'a> {
                 start: offset,
                 depth: self.depth,
                 text: String::new(),
+                link: None,
             });
             return;
         };
@@ -222,8 +229,29 @@ impl<'a> Blocks<'a> {
             Tag::TableCell if !open.text.is_empty() && !open.text.ends_with('\n') => {
                 open.text.push_str(" | ")
             }
+            // A heading keeps link labels only: it names a section.
+            Tag::Link { dest_url, .. } if !matches!(open.kind, Kind::Heading(_)) => {
+                open.link = Some((open.text.len(), dest_url.to_string()))
+            }
             _ => {}
         }
+    }
+
+    /// After a link's label, where it points, so a new target is new text;
+    /// said once when the label already says it (`<https://x.org>`,
+    /// `[[Car service]]`).
+    fn end_link(&mut self) {
+        let Some(open) = &mut self.open else { return };
+        let Some((label, target)) = open.link.take() else {
+            return;
+        };
+        if target.is_empty() || open.text[label..] == target {
+            return;
+        }
+        if open.text.len() > label {
+            open.text.push(' ');
+        }
+        open.text.push_str(&target);
     }
 
     fn push(&mut self, text: &str) {
