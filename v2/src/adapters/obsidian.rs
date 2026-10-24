@@ -162,10 +162,13 @@ struct Blocks<'a> {
 
 impl<'a> Blocks<'a> {
     fn new(markdown: &'a str) -> Blocks<'a> {
-        let newlines = markdown.match_indices('\n').map(|(i, _)| i + 1);
+        // A line ends at `\n`, at `\r\n`, or at a lone `\r`, as in CommonMark.
+        let ends = markdown
+            .match_indices(['\n', '\r'])
+            .filter(|&(i, end)| end == "\n" || !markdown[i + 1..].starts_with('\n'));
         Blocks {
             markdown,
-            line_starts: std::iter::once(0).chain(newlines).collect(),
+            line_starts: std::iter::once(0).chain(ends.map(|(i, _)| i + 1)).collect(),
             headings: Vec::new(),
             outline: Vec::new(),
             open: None,
