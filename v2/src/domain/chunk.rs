@@ -50,7 +50,8 @@ impl Chunk {
 /// - a single block longer than `max_chars` is cut at whitespace (at a hard
 ///   character boundary when a piece has no whitespace) into pieces of at most
 ///   `max_chars` characters, each its own chunk carrying the block's lines;
-/// - `context` is the note title, plus ` > ` and the section when there is one;
+/// - `context` is the note title, then ` > ` and each heading of the section
+///   (a first heading that only repeats the title is left out);
 /// - `at.lines` spans the first to the last block of the chunk.
 pub fn chunks(note: &Note, max_chars: usize) -> Vec<Chunk> {
     assert!(max_chars > 0, "max_chars must be at least 1");
@@ -93,11 +94,14 @@ fn packed(note: &Note, pack: &[&Block]) -> Option<Chunk> {
 fn chunk(note: &Note, first: &Block, last: &Block, text: String) -> Chunk {
     let section = section(&first.headings);
     let title = note.path.title();
-    let context = if section.is_empty() {
-        title.to_string()
-    } else {
-        format!("{title} > {section}")
+    // A first heading that repeats the title adds nothing for the embedder.
+    let headings = match first.headings.split_first() {
+        Some((top, rest)) if text::normalize(top) == text::normalize(title) => rest,
+        _ => &first.headings[..],
     };
+    let mut context = vec![title];
+    context.extend(headings.iter().map(String::as_str));
+    let context = context.join(" > ");
     let at = Location {
         note: note.path.clone(),
         section,
@@ -377,5 +381,22 @@ mod tests {
         assert_ne!(base, key("Other.md", "A", "rest"), "title");
         assert_ne!(base, key("Plan.md", "B", "rest"), "section");
         assert_ne!(base, key("Plan.md", "A", "rest more"), "text");
+    }
+
+    #[test]
+    fn a_first_heading_that_repeats_the_title_is_not_repeated_in_the_context() {
+        let note = Note {
+            path: NotePath::parse("Health/Allergies.md").unwrap(),
+            blocks: vec![
+                block(&["Allergies"], "Penicillin.", [3, 3]),
+                block(&["**allergies**", "Food"], "Peanuts.", [7, 7]),
+                block(&["Allergy plan"], "Carry the pen.", [11, 11]),
+            ],
+        };
+        let contexts: Vec<String> = chunks(&note, 100).into_iter().map(|c| c.context).collect();
+        assert_eq!(
+            contexts,
+            ["Allergies", "Allergies > Food", "Allergies > Allergy plan"]
+        );
     }
 }

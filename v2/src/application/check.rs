@@ -37,7 +37,8 @@ pub struct Match {
 impl Kb<'_> {
     pub fn check(&self, query: &str, min_score: f32) -> Result<CheckReport> {
         let query = nonblank(query, "query")?;
-        let root = self.ready()?.tree.root();
+        // The same words need no vectors, so no matching embedder either.
+        let root = self.indexed()?.tree.root();
         if let Some(exact) = self.stored(query)? {
             return Ok(CheckReport {
                 known: true,
@@ -50,6 +51,7 @@ impl Kb<'_> {
                 root,
             });
         }
+        self.ready()?;
         let hits = self.similar(query, CHECK_K)?;
         let best = hits.first().map(|h| h.score);
         let presence = presence::judge(best, min_score);
@@ -110,6 +112,22 @@ mod tests {
         let half = "Allergy: penicillin.\n\nMy dog is called Rex.";
         let report = world.kb().check(half, DEFAULT_MIN_SCORE).unwrap();
         assert_ne!(report.presence, Presence::Exact);
+    }
+
+    #[test]
+    fn the_same_words_need_no_matching_embedder() {
+        let mut world = World::synced();
+        world.embedder.id = "other|v1".into();
+        let report = world
+            .kb()
+            .check("Allergy: penicillin.", DEFAULT_MIN_SCORE)
+            .unwrap();
+        assert_eq!(report.presence, Presence::Exact);
+        let err = world
+            .kb()
+            .check("engine oil", DEFAULT_MIN_SCORE)
+            .unwrap_err();
+        assert!(err.to_string().contains("sync"), "{err}");
     }
 
     #[test]

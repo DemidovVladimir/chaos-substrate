@@ -22,13 +22,19 @@ pub struct Kb<'a> {
 }
 
 impl Kb<'_> {
-    /// The stored snapshot, when it was built by this embedder. Fails with an
-    /// actionable message before the first sync or after a model change.
-    fn ready(&self) -> Result<Snapshot> {
-        let snapshot = self
-            .index
+    /// The stored snapshot. Fails with an actionable message before the first
+    /// sync.
+    fn indexed(&self) -> Result<Snapshot> {
+        self.index
             .snapshot()?
-            .context("the index is empty: run `chaos-kb sync` first")?;
+            .context("the index is empty: run `chaos-kb sync` first")
+    }
+
+    /// The stored snapshot, when it was built by this embedder: needed before
+    /// comparing vectors. Fails with an actionable message after a model
+    /// change.
+    fn ready(&self) -> Result<Snapshot> {
+        let snapshot = self.indexed()?;
         ensure!(
             snapshot.embedder == self.embedder.id(),
             "the index was built with embedder `{}` but `{}` is configured: run `chaos-kb sync` to re-embed",
