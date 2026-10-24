@@ -21,9 +21,12 @@ pub trait Vault {
     fn texts(&self, markdown: &str) -> Vec<String>;
 
     /// Append `text` to `note`, creating the note when missing. With a
-    /// `heading`, the text goes at the end of that section (the heading is
-    /// added at the end of the note when the note has no such heading);
-    /// without one, at the end of the note. Existing text is never changed.
+    /// `heading`, the text goes right after that heading's own text, before
+    /// its first subheading, so it reads under exactly that heading (the
+    /// heading is added at the end of the note when the note has no such
+    /// heading); without one, at the end of the note. Existing text is never
+    /// changed: an append that would change how existing text reads is
+    /// refused.
     fn append(&self, note: &NotePath, heading: Option<&str>, text: &str) -> Result<()>;
 }
 

@@ -15,12 +15,13 @@ pub struct Note {
 
 /// The smallest unit of knowledge: a paragraph, one list item (without its
 /// nested items, which are blocks of their own), a code block, a table, a
-/// quote, or the front matter.
+/// quote, an HTML block, or the front matter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
     /// Heading texts above this block, outermost first (`["Car", "Oil"]`).
     pub headings: Vec<String>,
-    /// Plain text: Markdown syntax removed, wikilinks reduced to their label.
+    /// Plain text: Markdown syntax removed; a link reads as its label then its
+    /// destination (once when they are the same); images keep their alt text.
     pub text: String,
     /// The block's Markdown source, exactly as written in the file.
     pub source: String,
