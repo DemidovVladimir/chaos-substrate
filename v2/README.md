@@ -240,6 +240,12 @@ These timings were measured with the release build on an Apple M4, using Ollama 
 A fresh index file for that vault is 8.4 MB. The file does not shrink when text is deleted:
 redb reuses the freed space for later writes instead.
 
+There is no Bloom filter, because it would save nothing. A Bloom filter quickly answers "these
+words are certainly not stored", which only speeds up the lookup. Here the lookup is not the slow
+part: a same-words `check` takes 0.04 s on a one-note vault and on the 503-note vault alike. And
+"not stored word for word" still has to be checked by meaning, which needs the embedding call
+either way.
+
 ## Your data
 
 - **The notes are the only copy of your knowledge.** chaos-kb writes to your notes only when you
