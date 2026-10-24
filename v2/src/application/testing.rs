@@ -71,6 +71,16 @@ impl Vault for MemVault {
         Ok(notes)
     }
 
+    /// Blocks are separated by blank lines; text is taken as written.
+    fn texts(&self, markdown: &str) -> Vec<String> {
+        markdown
+            .split("\n\n")
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
     fn append(&self, path: &NotePath, heading: Option<&str>, text: &str) -> Result<()> {
         let mut note = self.note(path.as_str()).unwrap_or(Note {
             path: path.clone(),

@@ -95,7 +95,7 @@ fn read_lossy(file: &Path) -> Result<String> {
 }
 
 /// Parse one note's Markdown into blocks (pure; no file access).
-pub fn parse(path: NotePath, markdown: &str) -> Note {
+pub fn blocks(markdown: &str) -> Vec<Block> {
     // A byte order mark hides front matter from pulldown-cmark. It holds no
     // newline, so line numbers are the same without it.
     let markdown = markdown.strip_prefix('\u{feff}').unwrap_or(markdown);
@@ -108,10 +108,7 @@ pub fn parse(path: NotePath, markdown: &str) -> Note {
     for (event, range) in Parser::new_ext(markdown, options).into_offset_iter() {
         blocks.event(event, range);
     }
-    Note {
-        path,
-        blocks: blocks.done,
-    }
+    blocks.done
 }
 
 /// How the text of an open block is gathered.
@@ -418,8 +415,15 @@ impl Vault for ObsidianVault {
         files.sort_by(|a, b| a.0.cmp(&b.0));
         files
             .into_iter()
-            .map(|(path, file)| Ok(parse(path, &read_lossy(&file)?)))
+            .map(|(path, file)| {
+                let blocks = blocks(&read_lossy(&file)?);
+                Ok(Note { path, blocks })
+            })
             .collect()
+    }
+
+    fn texts(&self, markdown: &str) -> Vec<String> {
+        blocks(markdown).into_iter().map(|b| b.text).collect()
     }
 
     fn append(&self, note: &NotePath, heading: Option<&str>, text: &str) -> Result<()> {
@@ -462,7 +466,10 @@ mod tests {
     use tempfile::tempdir;
 
     fn doc(markdown: &str) -> Note {
-        parse(NotePath::parse("test.md").unwrap(), markdown)
+        Note {
+            path: NotePath::parse("test.md").unwrap(),
+            blocks: blocks(markdown),
+        }
     }
 
     fn texts(note: &Note) -> Vec<&str> {
@@ -711,6 +718,13 @@ mod tests {
     fn code_keeps_its_indentation_and_blank_lines() {
         let note = doc("```rust\nfn a() {\n    x();\n\n}\n```\n");
         assert_eq!(texts(&note), ["fn a() {\n    x();\n\n}"]);
+    }
+
+    #[test]
+    fn a_snippet_reads_like_a_note() {
+        let dir = tempdir().unwrap();
+        let texts = open(dir.path()).texts("- **Allergic** to *penicillin*.\n\n1. Vitamin D\n");
+        assert_eq!(texts, ["Allergic to penicillin.", "Vitamin D"]);
     }
 
     #[test]

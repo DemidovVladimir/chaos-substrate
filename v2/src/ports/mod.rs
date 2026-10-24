@@ -15,6 +15,10 @@ pub trait Vault {
     /// Every note, parsed, sorted by path.
     fn notes(&self) -> Result<Vec<Note>>;
 
+    /// The plain text of each block of a Markdown snippet (a fact or a query),
+    /// read exactly as notes are read, so it fingerprints like stored text.
+    fn texts(&self, markdown: &str) -> Vec<String>;
+
     /// Append `text` to `note`, creating the note when missing. With a
     /// `heading`, the text goes at the end of that section (the heading is
     /// added at the end of the note when the note has no such heading);
