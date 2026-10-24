@@ -4,7 +4,7 @@
 //! arguments. Calls are turned back into argv and parsed by the same clap
 //! definition, so defaults and validation live in exactly one place.
 
-use super::cli::{Cli, Command};
+use super::cli::{Cli, Command, api_key_note};
 use anyhow::{Context, Result, anyhow, bail};
 use clap::builder::StyledStr;
 use clap::{Arg, ArgAction, CommandFactory, Parser, Subcommand};
@@ -328,6 +328,7 @@ fn settings(cli: &clap::Command) -> String {
             default.join(", ")
         ));
     }
+    out.push_str(&format!("\n{}\n", api_key_note()));
     out
 }
 
@@ -588,6 +589,16 @@ mod tests {
             !md.contains("<vault>"),
             "angle brackets would render as HTML"
         );
+    }
+
+    #[test]
+    fn the_api_key_variable_is_documented_but_is_no_flag() {
+        let help = Cli::command().render_long_help().to_string();
+        let md = markdown();
+        for text in [&help, &md] {
+            assert!(text.contains("`CHAOS_KB_EMBED_API_KEY`"), "{text}");
+        }
+        assert!(!help.contains("--embed-api-key") && !help.contains("--api-key"));
     }
 
     #[test]

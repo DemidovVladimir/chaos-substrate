@@ -25,7 +25,7 @@ use std::process::ExitCode;
 /// you a new fact, remember it, one fact per call. After editing notes in the
 /// vault, sync.
 #[derive(Debug, Parser)]
-#[command(name = "chaos-kb", version)]
+#[command(name = "chaos-kb", version, after_help = api_key_note())]
 pub struct Cli {
     #[command(flatten)]
     pub settings: Settings,
@@ -33,8 +33,7 @@ pub struct Cli {
     pub command: Command,
 }
 
-/// Where the knowledge lives and which embedder reads it. The embeddings API
-/// key, when one is needed, comes only from `CHAOS_KB_EMBED_API_KEY`.
+/// Where the knowledge lives and which embedder reads it.
 #[derive(Debug, Clone, Args)]
 pub struct Settings {
     /// Folder of Markdown notes (an Obsidian vault).
@@ -59,6 +58,18 @@ pub struct Settings {
         global = true
     )]
     pub embed_model: String,
+}
+
+/// The only source of the embeddings API key: never a flag, so it stays out of
+/// shell history and process lists.
+pub const API_KEY_ENV: &str = "CHAOS_KB_EMBED_API_KEY";
+
+/// Shown after `--help` and under the README settings.
+pub fn api_key_note() -> String {
+    format!(
+        "The embeddings API key, when the endpoint needs one, is read only from the \
+         `{API_KEY_ENV}` environment variable, never from a flag."
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Subcommand)]
@@ -121,7 +132,7 @@ pub fn execute(settings: &Settings, command: &Command) -> Result<Value> {
         .context("set --vault or CHAOS_KB_VAULT")?;
     let vault = ObsidianVault::new(root)?;
     let index = RedbIndex::new(&index_path(settings, root));
-    let api_key = std::env::var("CHAOS_KB_EMBED_API_KEY").ok();
+    let api_key = std::env::var(API_KEY_ENV).ok();
     let embedder = HttpEmbedder::new(&settings.embed_url, &settings.embed_model, api_key);
     let kb = Kb {
         vault: &vault,

@@ -3,8 +3,13 @@
 use serde::Serialize;
 
 /// Cosine similarity from which a passage counts as covering a query.
-/// Calibrated for `embeddinggemma` on the sample vault in `tests/e2e.rs`.
-pub const DEFAULT_MIN_SCORE: f32 = 0.5;
+///
+/// Calibrated for `embeddinggemma` on the sample vault in `tests/e2e.rs`: the
+/// weakest answerable question there scores 0.42, the strongest near miss
+/// ("do I have a pilot licence?" against the driving licences) 0.35, and
+/// unrelated questions 0.09 to 0.24. This is the midpoint of that gap. Another
+/// embedding model needs its own value.
+pub const DEFAULT_MIN_SCORE: f32 = 0.38;
 
 /// How a query relates to what is stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
