@@ -66,16 +66,20 @@ const KNOWN: &[(&str, &str)] = &[
     ("во сколько я ложусь спать?", "Здоровье/Сон.md"),
 ];
 
-/// Questions the vault does not answer: unrelated ones, and near misses on the
-/// same topics (the car, health, licences).
-const UNKNOWN: &[&str] = &[
-    "what is the name of my dog?",
-    "which football team do I support?",
-    "what is my favourite pizza topping?",
+/// Questions the vault does not answer, on the topics it covers (car, health,
+/// licences, education): the hardest to tell apart.
+const NEAR_MISS: &[&str] = &[
     "which company insures my car?",
     "what is my blood pressure?",
     "do I have a pilot licence?",
     "which languages do I speak?",
+];
+
+/// Questions about things the vault never mentions.
+const UNRELATED: &[&str] = &[
+    "what is the name of my dog?",
+    "which football team do I support?",
+    "what is my favourite pizza topping?",
 ];
 
 fn ollama_up() -> bool {
@@ -158,21 +162,22 @@ fn personal_vault_answers_from_the_index() {
             (question, note, check, top)
         })
         .collect();
-    let unknown: Vec<_> = UNKNOWN
-        .iter()
-        .map(|question| (question, kb.check(question, DEFAULT_MIN_SCORE).unwrap()))
+    let unknown: Vec<_> = [("near miss", NEAR_MISS), ("unrelated", UNRELATED)]
+        .into_iter()
+        .flat_map(|(kind, questions)| questions.iter().map(move |q| (kind, q)))
+        .map(|(kind, q)| (kind, q, kb.check(q, DEFAULT_MIN_SCORE).unwrap()))
         .collect();
     for (question, _, _, top) in &known {
-        eprintln!("known   {:.3} {question} → {}", top.score, top.at.note);
+        eprintln!("known     {:.3} {question} → {}", top.score, top.at.note);
     }
-    for (question, check) in &unknown {
-        eprintln!("unknown {:.3} {question}", check.score.unwrap());
+    for (kind, question, check) in &unknown {
+        eprintln!("{kind:<9} {:.3} {question}", check.score.unwrap());
     }
     for (question, note, check, top) in &known {
         assert!(check.known, "{question}: {check:?}");
         assert_eq!(top.at.note.as_str(), **note, "{question}");
     }
-    for (question, check) in &unknown {
+    for (_, question, check) in &unknown {
         assert_eq!(check.presence, Presence::Absent, "{question}: {check:?}");
     }
 
@@ -217,6 +222,19 @@ fn remember_edit_and_delete_round_trip() {
         std::fs::read_to_string(dir.path().join("Inbox.md")).unwrap(),
         markdown
     );
+
+    // A correction differs by one symbol: it is a new fact, not a repeat.
+    let plus = kb.remember("Rhesus factor: A+", &inbox, None).unwrap();
+    let minus = kb.remember("Rhesus factor: A-", &inbox, None).unwrap();
+    assert!(plus.stored && minus.stored, "{minus:?}");
+    assert_ne!(plus.root, minus.root);
+
+    // Markdown is read like a note: a list item with a link is stored once.
+    let fact = "- My GP is [Dr. Smith](https://clinic.example/smith).";
+    assert!(kb.remember(fact, &inbox, None).unwrap().stored);
+    let again = kb.remember(fact, &inbox, None).unwrap();
+    assert!(!again.stored, "{again:?}");
+    let markdown = std::fs::read_to_string(dir.path().join("Inbox.md")).unwrap();
 
     // Formatting-only edit: same knowledge, same root.
     let licences = dir.path().join("Licences.md");
