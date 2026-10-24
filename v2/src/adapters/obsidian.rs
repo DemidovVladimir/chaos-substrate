@@ -755,6 +755,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn lone_carriage_returns_end_lines() {
+        let note = doc("first\r\rsecond\r\rthird\r");
+        assert_eq!(
+            spans(&note),
+            [("first", [1, 1]), ("second", [3, 3]), ("third", [5, 5])]
+        );
+        let note = doc("one\rtwo\r\r- item\r");
+        assert_eq!(texts(&note), ["one two", "item"]);
+        assert_eq!(spans(&note), [("one\rtwo", [1, 2]), ("- item", [4, 4])]);
+    }
+
     // ---- notes() ---------------------------------------------------------
 
     fn write(root: &Path, rel: &str, content: impl AsRef<[u8]>) {
