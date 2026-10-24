@@ -1143,6 +1143,56 @@ mod tests {
         assert_eq!(written.matches("## Facts").count(), 1, "{written}");
     }
 
+    /// The error of appending `text` under `heading` to a note holding
+    /// `before`, which must be left as it was.
+    fn refused(before: &str, heading: Option<&str>, text: &str) -> String {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "n.md", before);
+        let result = open(dir.path()).append(&note("n"), heading, text);
+        let after = fs::read_to_string(dir.path().join("n.md")).unwrap();
+        let Err(error) = result else {
+            panic!("{text:?} was appended; the note became:\n{after}");
+        };
+        assert_eq!(after, before, "a refused append must change nothing");
+        assert_eq!(dot_entries(dir.path()), Vec::<PathBuf>::new());
+        format!("{error:#}")
+    }
+
+    const SECTIONS: &str = "## A\n\na\n\n## B\n\nb\n";
+
+    #[test]
+    fn append_refuses_an_unclosed_comment_that_would_hide_later_sections() {
+        let error = refused(SECTIONS, Some("A"), "<!-- draft");
+        assert!(error.contains("from line 5"), "{error}");
+        assert!(error.contains("nothing was written"), "{error}");
+    }
+
+    #[test]
+    fn append_refuses_an_unclosed_code_fence() {
+        let error = refused(SECTIONS, Some("A"), "```\ncode");
+        assert!(error.contains("from line 5"), "{error}");
+        let error = refused("## A\n\na\n\n## B\n", Some("A"), "~~~");
+        assert!(error.contains("from line 5"), "a heading alone counts: {error}");
+    }
+
+    #[test]
+    fn append_refuses_a_heading_that_would_re_nest_later_sections() {
+        let error = refused(SECTIONS, Some("A"), "# Top");
+        assert!(error.contains("from line 7"), "{error}");
+    }
+
+    #[test]
+    fn append_accepts_a_lower_heading_inside_the_section() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "n.md", SECTIONS);
+        let vault = open(dir.path());
+        vault.append(&note("n"), Some("A"), "### Sub\n\nx").unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("n.md")).unwrap(),
+            "## A\n\na\n\n### Sub\n\nx\n\n## B\n\nb\n"
+        );
+    }
+
     #[test]
     fn append_rejects_empty_text_and_multiline_headings() {
         let dir = tempdir().unwrap();
