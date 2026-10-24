@@ -13,8 +13,9 @@ use std::io::{BufRead, Write};
 /// `server/discover` instead).
 pub const PROTOCOL_VERSION: &str = "2025-11-25";
 
-/// Revisions accepted in `initialize`, newest first.
-pub const SUPPORTED: &[&str] = &[PROTOCOL_VERSION, "2025-06-18", "2025-03-26", "2024-11-05"];
+/// Revisions accepted in `initialize`, newest first. 2025-03-26 is left out:
+/// it requires accepting JSON-RPC batches, which this server rejects.
+pub const SUPPORTED: &[&str] = &[PROTOCOL_VERSION, "2025-06-18", "2024-11-05"];
 
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
@@ -24,14 +25,20 @@ const INVALID_PARAMS: i64 = -32602;
 /// A JSON-RPC error: code and message.
 type Failure = (i64, String);
 
-/// Answer one JSON-RPC message; `None` for notifications. `run` executes a
-/// parsed tool (the real knowledge base in production).
+/// Answer one JSON-RPC message; `None` for notifications and responses. `run`
+/// executes a parsed tool (the real knowledge base in production).
 pub fn handle(message: &Value, run: &dyn Fn(&Tool) -> Result<Value>) -> Option<Value> {
     let Some(request) = message.as_object() else {
         let failure = (INVALID_REQUEST, "expected one JSON-RPC object".into());
         return Some(error(&Value::Null, failure));
     };
     let id = request.get("id")?;
+    // A response answers a request of ours; replying to it would be an error.
+    let is_response = !request.contains_key("method")
+        && (request.contains_key("result") || request.contains_key("error"));
+    if is_response {
+        return None;
+    }
     let params = request.get("params").unwrap_or(&Value::Null);
     let outcome = match request.get("method").and_then(Value::as_str) {
         Some("initialize") => Ok(initialize(params)),
@@ -60,8 +67,8 @@ pub fn serve(settings: &Settings) -> Result<()> {
     Ok(())
 }
 
-/// The reply line to one stdin line: `None` for blank lines and notifications,
-/// a parse error for anything that is not JSON.
+/// The reply line to one stdin line: `None` for blank lines, notifications and
+/// responses, a parse error for anything that is not JSON.
 fn answer(line: &[u8], run: &dyn Fn(&Tool) -> Result<Value>) -> Option<String> {
     if line.trim_ascii().is_empty() {
         return None;
@@ -194,9 +201,27 @@ mod tests {
         for v in SUPPORTED {
             assert_eq!(negotiated(Some(v)), *v);
         }
-        for v in [Some("2026-07-28"), Some("1999-01-01"), None] {
+        // 2025-03-26 requires accepting JSON-RPC batches, which this server rejects.
+        for v in [
+            Some("2025-03-26"),
+            Some("2026-07-28"),
+            Some("1999-01-01"),
+            None,
+        ] {
             assert_eq!(negotiated(v), PROTOCOL_VERSION, "{v:?}");
         }
+    }
+
+    #[test]
+    fn responses_get_no_reply() {
+        let done = json!({"jsonrpc": "2.0", "id": 1, "result": {}});
+        let failed = json!({"jsonrpc": "2.0", "id": 1,
+            "error": {"code": -32601, "message": "method not found"}});
+        for response in [done, failed] {
+            assert_eq!(handle(&response, &untouched), None, "{response}");
+        }
+        let neither = json!({"jsonrpc": "2.0", "id": 1});
+        assert_eq!(error_code(neither), -32600);
     }
 
     #[test]
