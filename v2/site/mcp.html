@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Agents and MCP · chaos-kb</title>
+<meta name="description" content="How chaos-kb serves its four tools to agents over MCP on stdio, with names, schemas and the README reference generated from one command-line definition.">
+<script>try{var t=localStorage.getItem("tengu-tutorial-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Shippori+Mincho+B1:wght@700;800&display=swap">
+<link rel="stylesheet" href="assets/site.css">
+<script src="assets/nav.js" defer></script>
+<script src="assets/site.js" defer></script>
+<style>
+  /* page-only: wrapped JSON lines */
+  .tabpanel pre.wrapjson { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .stack { display: grid; gap: 14px; }
+</style>
+</head>
+<body>
+<div class="shell">
+<aside class="rail" id="rail"><noscript><a href="index.html">All features</a></noscript></aside>
+<main id="main">
+<article class="page">
+
+<header class="hero">
+  <div class="eyebrow"><span class="stamp" aria-hidden="true">繋</span> Agents · one definition</div>
+  <h1>Agents and MCP</h1>
+  <p class="lede"><b>MCP</b>, the Model Context Protocol, is how an agent calls tools. <code>chaos-kb mcp</code> serves the four tools over stdio. Their names, descriptions, schemas and the README reference all come from the command-line definition.</p>
+  <ul class="facts">
+    <li><b>4</b> tools: kb_sync, kb_remember, kb_check, kb_search</li>
+    <li><b>4</b> methods: initialize, ping, tools/list, tools/call</li>
+    <li>newest protocol revision <b>2025-11-25</b></li>
+    <li><b>0</b> files opened before the first call</li>
+  </ul>
+  <ul class="legend" aria-label="Colour key">
+    <li><span class="chip hands"><span class="k">手</span> tools</span> the server and its replies</li>
+    <li><span class="chip jev"><span class="k">印</span> hash</span> the generated roster and argv</li>
+    <li><span class="chip guard"><span class="k">守</span> guard</span> argument checks</li>
+    <li><span class="chip data">data</span> the knowledge base</li>
+  </ul>
+</header>
+
+<section class="sec" aria-labelledby="s-flow">
+  <div class="sec-head">
+    <span class="kicker">One session, step by step</span>
+    <h2 id="s-flow">From a tool call to a report</h2>
+    <p><b>stdio</b> means the agent starts the server as a child process and talks through its standard input and output. Messages are <b>JSON-RPC 2.0</b>: one JSON object per line.</p>
+  </div>
+  <figure class="stage" data-stage data-interval="3600">
+    <div class="stage-canvas">
+      <svg viewBox="0 0 860 400" role="img" aria-labelledby="flow-t">
+        <title id="flow-t">An MCP client starts chaos-kb mcp. The server answers initialize and tools/list from the clap definition. A tool call becomes a command line, is parsed by clap, runs against the knowledge base, and the report comes back as text.</title>
+        <path class="e flow" id="m-agent-srv" d="M170 75 L248 75" data-at="1"/>
+        <path class="e" id="m-srv-roster" d="M420 75 L498 75" data-at="2-3"/>
+        <path class="e" id="m-roster-argv" d="M580 110 L580 178" data-at="4"/>
+        <path class="e" id="m-argv-clap" d="M660 212 L698 212" data-at="4"/>
+        <path class="e" id="m-clap-kb" d="M770 244 L770 298" data-at="5"/>
+        <path class="e" id="m-kb-res" d="M700 335 L422 335" data-at="6"/>
+        <path class="e" id="m-res-agent" d="M250 335 C120 335 95 250 95 112" data-at="6"/>
+
+        <g class="n" data-at="1,6">
+          <rect x="20" y="40" width="150" height="70" rx="8"/>
+          <text x="95" y="68" text-anchor="middle" class="t-title">MCP client</text>
+          <text x="95" y="88" text-anchor="middle" class="t-small">an agent's harness</text>
+        </g>
+        <g class="n hands" data-at="1-2">
+          <rect x="250" y="40" width="170" height="70" rx="8"/>
+          <text x="335" y="62" text-anchor="middle" class="t-kanji k">手</text>
+          <text x="335" y="82" text-anchor="middle" class="t-title t-mono">chaos-kb mcp</text>
+          <text x="335" y="99" text-anchor="middle" class="t-small">one line in, one out</text>
+        </g>
+        <g class="n jev" data-at="2-4">
+          <rect x="500" y="40" width="160" height="70" rx="8"/>
+          <text x="580" y="68" text-anchor="middle" class="t-title">Tool roster</text>
+          <text x="580" y="88" text-anchor="middle" class="t-small">from the clap definition</text>
+        </g>
+        <g class="n jev" data-at="4">
+          <rect x="500" y="180" width="160" height="64" rx="8"/>
+          <text x="580" y="206" text-anchor="middle" class="t-title">Arguments → argv</text>
+          <text x="580" y="225" text-anchor="middle" class="t-small">a command line</text>
+        </g>
+        <g class="n guard" data-at="4-5">
+          <rect x="700" y="180" width="140" height="64" rx="8"/>
+          <text x="770" y="206" text-anchor="middle" class="t-title">clap parse</text>
+          <text x="770" y="225" text-anchor="middle" class="t-small">same rules as the CLI</text>
+        </g>
+        <g class="n data" data-at="5-6">
+          <rect x="700" y="300" width="140" height="70" rx="10"/>
+          <text x="770" y="328" text-anchor="middle" class="t-title">Knowledge base</text>
+          <text x="770" y="347" text-anchor="middle" class="t-small">opened per call</text>
+        </g>
+        <g class="n hands" data-at="6">
+          <rect x="250" y="300" width="170" height="70" rx="8"/>
+          <text x="335" y="328" text-anchor="middle" class="t-title">Result</text>
+          <text x="335" y="347" text-anchor="middle" class="t-small">text · isError</text>
+        </g>
+
+        <g class="pop badge" data-at="1"><rect x="10" y="124" width="170" height="22" rx="11"/><text x="95" y="139" text-anchor="middle">nothing opened yet</text></g>
+        <g class="pop badge" data-at="2"><rect x="250" y="124" width="170" height="22" rx="11"/><text x="335" y="139" text-anchor="middle">revision echoed</text></g>
+        <g class="pop badge" data-at="3"><rect x="500" y="124" width="160" height="22" rx="11"/><text x="580" y="139" text-anchor="middle">kb_ + subcommand</text></g>
+        <g class="pop badge" data-at="4"><rect x="470" y="258" width="190" height="22" rx="11"/><text x="565" y="273" text-anchor="middle">--min-score=0.5 -- text</text></g>
+        <g class="pop badge" data-at="5"><rect x="530" y="300" width="160" height="22" rx="11"/><text x="610" y="315" text-anchor="middle">server's own settings</text></g>
+        <g class="pop badge" data-at="6"><rect x="440" y="350" width="240" height="22" rx="11"/><text x="560" y="365" text-anchor="middle">errors come back as text</text></g>
+
+        <circle class="tok" r="6" data-path="m-agent-srv" data-at="1"/>
+        <circle class="tok jev" r="6" data-path="m-srv-roster" data-at="3"/>
+        <circle class="tok jev" r="6" data-path="m-roster-argv" data-at="4"/>
+        <circle class="tok jev" r="6" data-path="m-argv-clap" data-at="4" data-delay="500"/>
+        <circle class="tok" r="6" data-path="m-clap-kb" data-at="5"/>
+        <circle class="tok hands" r="6" data-path="m-kb-res" data-at="6"/>
+        <circle class="tok hands" r="6" data-path="m-res-agent" data-at="6" data-delay="600"/>
+      </svg>
+    </div>
+    <div class="stage-side">
+      <ol class="captions">
+        <li>The agent's harness starts <code>chaos-kb mcp</code>. The server opens no file and contacts no model until a tool is called, so the handshake is instant.</li>
+        <li><code>initialize</code>: a revision the server speaks is echoed back; otherwise it offers its newest. The reply carries the workflow instructions for the agent.</li>
+        <li><code>tools/list</code>: one tool per subcommand, named <code>kb_</code> plus its name. Descriptions and argument schemas are read from the clap definition.</li>
+        <li><code>tools/call</code>: the arguments become a command line, such as <code>check --min-score=0.5 -- "oil"</code>, parsed by the same clap definition as the CLI.</li>
+        <li>The call runs like the command. Vault, index and model come from the server's own flags and environment, and are opened for this call only.</li>
+        <li>The JSON report comes back as text. A bad argument or a failure is a result with <code>isError</code> true, so the model can read it and try again.</li>
+      </ol>
+    </div>
+  </figure>
+</section>
+
+<section class="sec" aria-labelledby="s-session">
+  <div class="sec-head">
+    <span class="kicker">A real session</span>
+    <h2 id="s-session">The messages</h2>
+    <p>Replies from <code>chaos-kb mcp</code> on the example vault, keys in the order it prints them. Lines are wrapped, and long parts are left out where marked, never inside a hash.</p>
+  </div>
+  <div class="tabs">
+    <div class="tablist">
+      <button type="button" aria-controls="tab-init" aria-selected="true">initialize</button>
+      <button type="button" aria-controls="tab-list">tools/list</button>
+      <button type="button" aria-controls="tab-call">tools/call</button>
+      <button type="button" aria-controls="tab-bad">a bad argument</button>
+    </div>
+    <div class="tabpanel" id="tab-init"><pre class="wrapjson"><span class="c">→ {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"example","version":"1"}}}</span>
+← {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"tools":{"listChanged":false}},
+   "instructions":<span class="s">"Personal knowledge base for agents: Markdown notes in, instant \"is this known?\" checks and similarity search out.\n\nBefore asking the user something, check whether the knowledge base already knows it, then search to read the passages. When the user tells you a new fact, remember it, one fact per call. After editing notes in the vault, sync."</span>,
+   "protocolVersion":<span class="s">"2025-06-18"</span>,"serverInfo":{"name":"chaos-kb","version":"2.0.0"}}}</pre></div>
+    <div class="tabpanel" id="tab-list" hidden><pre class="wrapjson"><span class="c">→ {"jsonrpc":"2.0","id":2,"method":"tools/list"}</span>
+← {"id":2,"jsonrpc":"2.0","result":{"tools":[ <span class="c">… kb_sync, kb_remember, then:</span>
+   {"description":<span class="s">"Is this already in the knowledge base? Exact words are answered from the Merkle leaves without embedding; otherwise the nearest passages by cosine similarity decide. Returns where the knowledge sits"</span>,
+    "inputSchema":{"additionalProperties":false,
+      "properties":{
+        "min_score":{"default":<span class="n">0.38</span>,"description":"Similarity from which a passage counts as covering the query","type":"number"},
+        "query":{"description":"A fact, topic or question","type":"string"}},
+      "required":["query"],"type":"object"},
+    "name":<span class="s">"kb_check"</span>},
+   <span class="c">… kb_search ]}}</span></pre></div>
+    <div class="tabpanel" id="tab-call" hidden><pre class="wrapjson"><span class="c">→ {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"kb_check","arguments":{"query":"how often do I change the oil?"}}}</span>
+← {"id":3,"jsonrpc":"2.0","result":{"content":[{"text":
+   <span class="s">"{\"known\":true,\"matches\":[{\"lines\":[8,8],\"note\":\"Car.md\",\"score\":0.583015501499176,\"section\":\"Maintenance &gt; Oil\"}],\"presence\":\"similar\",\"root\":\"92af70b580a0c600e6288015eb6f54d27e5face2c7201cad7933cf1e2650dcf9\",\"score\":0.583015501499176}"</span>,"type":"text"}],
+   "isError":<span class="n">false</span>}}</pre></div>
+    <div class="tabpanel" id="tab-bad" hidden><pre class="wrapjson"><span class="c">→ {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"kb_search","arguments":{"query":"winter tyres","limit":"many"}}}</span>
+← {"id":4,"jsonrpc":"2.0","result":{"content":[{"text":
+   <span class="s">"error: invalid value 'many' for '--limit &lt;LIMIT&gt;': invalid digit found in string\n\nFor more information, try '--help'."</span>,"type":"text"}],
+   "isError":<span class="n">true</span>}}
+
+<span class="c">→ … "arguments":{"query":"winter tyres","limit":1,"vault":"/tmp"}</span>
+← … <span class="s">"kb_search has no argument `vault`; it takes `query`, `limit`, `min_score`"</span> … "isError":<span class="n">true</span></pre></div>
+  </div>
+</section>
+
+<section class="sec" aria-labelledby="s-schema">
+  <div class="sec-head">
+    <span class="kicker">One source per fact</span>
+    <h2 id="s-schema">From clap to a JSON schema, and back</h2>
+    <p>Each argument's JSON type is read from how clap parses it. A call is turned back into a command line, so defaults and checks live in one place.</p>
+  </div>
+  <div class="stack">
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>clap argument</th><th>JSON schema</th></tr></thead>
+        <tbody>
+          <tr><td>a flag, such as <code>--dry-run</code></td><td><code>boolean</code></td></tr>
+          <tr><td>an unsigned integer, such as <code>--limit</code></td><td><code>integer</code>, <code>minimum</code> 0</td></tr>
+          <tr><td>a float, such as <code>--min-score</code></td><td><code>number</code></td></tr>
+          <tr><td>anything else, such as <code>query</code></td><td><code>string</code></td></tr>
+          <tr><td>a default value</td><td><code>default</code></td></tr>
+          <tr><td>a required positional</td><td>listed in <code>required</code></td></tr>
+          <tr><td>every tool</td><td><code>additionalProperties</code> false</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Call arguments</th><th>Parsed as</th></tr></thead>
+        <tbody>
+          <tr><td><code>kb_sync {"dry_run": true}</code></td><td><code>sync --dry-run</code></td></tr>
+          <tr><td><code>kb_check {"query": "oil", "min_score": 0.5}</code></td><td><code>check --min-score=0.5 -- oil</code></td></tr>
+          <tr><td><code>kb_remember {"text": "…", "note": "Health/Allergies"}</code></td><td><code>remember --note=Health/Allergies -- …</code></td></tr>
+          <tr><td><code>kb_search {"query": "oil", "limit": null}</code></td><td><code>search -- oil</code>, so the default 5 applies</td></tr>
+          <tr><td><code>{"vault": "/tmp"}</code></td><td>refused: not an argument of the tool</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <p class="note">Positionals go after <code>--</code>, so a query that starts with <code>-</code> is still text. The same definition writes the tool reference in README.md, and <code>cargo test</code> fails when that block drifts.</p>
+</section>
+
+<section class="sec" aria-labelledby="s-out">
+  <div class="sec-head">
+    <span class="kicker">Replies</span>
+    <h2 id="s-out">What comes back</h2>
+  </div>
+  <ul class="states">
+    <li><span class="chip hands">result</span><span><b>a request</b>One reply line, with the same <code>id</code>.</span></li>
+    <li><span class="chip hands">isError</span><span><b>a bad argument or a failed tool</b>A normal result whose text is the error, so the model can fix the call.</span></li>
+    <li><span class="chip data">silent</span><span><b>a notification or a blank line</b>No reply. A message without an <code>id</code> is a notification.</span></li>
+    <li><span class="chip guard">-32602</span><span><b>unknown tool, or no tool name</b><code>unknown tool: kb_nope</code></span></li>
+    <li><span class="chip guard">-32601</span><span><b>unknown method</b><code>method not found: resources/list</code></span></li>
+    <li><span class="chip guard">-32600</span><span><b>not one JSON object, or no method</b>For example a JSON array.</span></li>
+    <li><span class="chip guard">-32700</span><span><b>not JSON at all</b><code>parse error: …</code>, with <code>id</code> null.</span></li>
+  </ul>
+</section>
+
+<section class="sec" aria-labelledby="s-rules">
+  <div class="sec-head">
+    <span class="kicker">Enforced in code</span>
+    <h2 id="s-rules">Guarantees</h2>
+  </div>
+  <ul class="checks">
+    <li><span><b>Instant handshake.</b> Nothing is opened or contacted before a tool is called.</span></li>
+    <li><span><b>One definition.</b> Tool names, descriptions, schemas and defaults come from <code>src/entry/cli.rs</code>; the README block is tested against it.</span></li>
+    <li><span><b>A call cannot move the server.</b> Vault, index, embeddings URL and model are not tool arguments.</span></li>
+    <li><span><b>Unknown keys are refused.</b> The error names the arguments the tool takes.</span></li>
+    <li><span><b>stdout carries replies only.</b> Each reply is one line, flushed at once.</span></li>
+    <li><span><b>The API key stays in the environment.</b> It is read only from <code>CHAOS_KB_EMBED_API_KEY</code>, never from a flag or an argument.</span></li>
+  </ul>
+</section>
+
+<section class="sec" aria-labelledby="s-try">
+  <div class="sec-head">
+    <span class="kicker">Try it</span>
+    <h2 id="s-try">Connect an agent</h2>
+    <p>The first command registers the server with Claude Code (from README.md). The others talk to it by hand on the example vault.</p>
+  </div>
+  <div class="term-wrap">
+<pre class="term" data-type><span class="ln cmd"><span class="p">$ </span>claude mcp add chaos-kb -- chaos-kb --vault ~/Knowledge mcp</span>
+<span class="ln cmd"><span class="p">$ </span>echo '{"jsonrpc":"2.0","id":7,"method":"ping"}' | chaos-kb mcp</span>
+<span class="ln o">{"id":7,"jsonrpc":"2.0","result":{}}</span>
+<span class="ln cmd"><span class="p">$ </span>echo '{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"kb_search","arguments":{"query":"winter tyres","limit":1}}}' | chaos-kb mcp</span>
+<span class="ln o">{"id":10,"jsonrpc":"2.0","result":{"content":[{"text":"{\"hits\":[{\"lines\":[12,12],\"note\":\"Car.md\",\"score\":0.5618284940719604,\"section\":\"Maintenance &gt; Tyres\",\"text\":\"Winter tyres go on in November.\"}],\"root\":\"92af70b580a0c600e6288015eb6f54d27e5face2c7201cad7933cf1e2650dcf9\"}","type":"text"}],"isError":false}}</span>
+<span class="ln cmd"><span class="p">$ </span>echo '{nope' | chaos-kb mcp</span>
+<span class="ln o">{"error":{"code":-32700,"message":"parse error: key must be a string at line 1 column 2"},"id":null,"jsonrpc":"2.0"}</span></pre>
+  </div>
+  <p class="note">These commands assume <code>CHAOS_KB_VAULT</code> points at the vault. Every tool also works as a plain command: <code>chaos-kb check "…"</code> prints the same report.</p>
+</section>
+
+<section class="sec" aria-labelledby="s-where">
+  <div class="sec-head">
+    <span class="kicker">Source</span>
+    <h2 id="s-where">Where it lives</h2>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>File</th><th>Owns</th></tr></thead>
+      <tbody>
+        <tr><td><code>src/entry/mcp.rs</code></td><td>the stdio loop, the four methods, revision choice, error codes</td></tr>
+        <tr><td><code>src/entry/tools.rs</code></td><td>the tool roster, schemas from clap, calls back into argv, the README block and the instructions</td></tr>
+        <tr><td><code>src/entry/cli.rs</code></td><td>the clap definition of every tool and setting, and running one command</td></tr>
+        <tr><td><code>README.md</code></td><td>the generated tool reference, between its markers</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<nav class="pager" id="pager" aria-label="Previous and next page"></nav>
+<p class="stamp-foot">Checked against the code on 2026-10-24.</p>
+</article>
+</main>
+</div>
+</body>
+</html>

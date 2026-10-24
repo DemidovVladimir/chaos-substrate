@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Chunks, embeddings and search · chaos-kb</title>
+<meta name="description" content="How chaos-kb packs notes into chunks of at most 1200 characters, embeds each chunk once, and ranks every stored vector against a question.">
+<script>try{var t=localStorage.getItem("tengu-tutorial-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Shippori+Mincho+B1:wght@700;800&display=swap">
+<link rel="stylesheet" href="assets/site.css">
+<script src="assets/nav.js" defer></script>
+<script src="assets/site.js" defer></script>
+<style>
+  /* page-only: chunk packer */
+  .blocks-in { display: grid; gap: 8px; }
+  .blocks-in label { display: grid; grid-template-columns: minmax(0, 10rem) minmax(0, 1fr) 5.5rem; align-items: center; gap: 10px; width: 100%; }
+  .blocks-in .sec-tag { font-family: var(--font-mono); font-size: 0.78rem; color: var(--faint); }
+  .blocks-in input[type="range"] { width: 100%; }
+  .packed { display: grid; gap: 6px; }
+  .packed .row { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: 10px; align-items: center; font-size: 0.85rem; }
+  .packed .lane { position: relative; height: 26px; border-radius: 6px; background: var(--sunk); border: 1px solid var(--line); overflow: hidden; }
+  .packed .fill { position: absolute; inset: 0 auto 0 0; background: var(--heart-soft); border-right: 2px solid var(--heart); }
+  .packed .lane span.t { position: absolute; left: 8px; top: 3px; font-family: var(--font-mono); font-size: 0.76rem; color: var(--ink); white-space: nowrap; }
+  .packed .name { font-family: var(--font-mono); font-size: 0.8rem; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="shell">
+<aside class="rail" id="rail"><noscript><a href="index.html">All features</a></noscript></aside>
+<main id="main">
+<article class="page">
+
+<header class="hero">
+  <div class="eyebrow"><span class="stamp" aria-hidden="true">答</span> Answers · same meaning</div>
+  <h1>Chunks, embeddings and search</h1>
+  <p class="lede">A <b>chunk</b> is a passage of one section, at most 1200 characters. Each chunk is <b>embedded</b> once: the model turns it into a <b>vector</b>, a list of numbers that points at its meaning. Search ranks every vector against the question.</p>
+  <ul class="facts">
+    <li>chunks of at most <b>1200</b> characters</li>
+    <li><b>32</b> passages per embedding request</li>
+    <li><b>120 s</b> budget per request</li>
+    <li><b>5</b> hits by default, every vector scanned</li>
+  </ul>
+  <ul class="legend" aria-label="Colour key">
+    <li><span class="chip heart"><span class="k">心</span> model</span> the embedding model and its vectors</li>
+    <li><span class="chip data">data</span> the index file</li>
+    <li><span class="chip jev"><span class="k">印</span> hash</span> ranking and content keys</li>
+    <li><span class="chip hands"><span class="k">手</span> tools</span> what the agent gets back</li>
+    <li><span class="chip guard"><span class="k">守</span> guard</span> refusals</li>
+  </ul>
+</header>
+
+<section class="sec" aria-labelledby="s-flow">
+  <div class="sec-head">
+    <span class="kicker">One search, step by step</span>
+    <h2 id="s-flow">From a question to passages</h2>
+    <p><b>Cosine similarity</b> measures how closely two vectors point the same way: 1 is the same direction, 0 is unrelated. Scores here are cosine similarities.</p>
+  </div>
+  <figure class="stage" data-stage data-interval="3600">
+    <div class="stage-canvas">
+      <svg viewBox="0 0 860 400" role="img" aria-labelledby="flow-t">
+        <title id="flow-t">A question passes the guards, is embedded by the model and scaled to unit length, compared with every stored vector, the best k are kept, their chunk rows are read, and hits come back.</title>
+        <path class="e" id="p-q-g" d="M95 104 L95 168" data-at="2"/>
+        <path class="e" id="p-g-m" d="M170 202 C200 202 200 78 228 78" data-at="3"/>
+        <path class="e" id="p-m-u" d="M315 116 L315 188" data-at="4"/>
+        <path class="e" id="p-u-s" d="M400 222 C430 222 430 148 458 148" data-at="5"/>
+        <path class="e" id="p-s-k" d="M630 130 C660 130 660 72 688 72" data-at="6"/>
+        <path class="e" id="p-k-c" d="M765 104 L765 168" data-at="7"/>
+        <path class="e flow" id="p-c-h" d="M765 234 L765 298" data-at="8"/>
+
+        <g class="n" data-at="1">
+          <rect x="20" y="40" width="150" height="64" rx="8"/>
+          <text x="95" y="66" text-anchor="middle" class="t-title">Your question</text>
+          <text x="95" y="85" text-anchor="middle" class="t-small">from search or check</text>
+        </g>
+        <g class="n guard" data-at="1-2">
+          <rect x="20" y="170" width="150" height="64" rx="8"/>
+          <text x="95" y="196" text-anchor="middle" class="t-title">Guards</text>
+          <text x="95" y="215" text-anchor="middle" class="t-small">not blank · same model</text>
+        </g>
+        <g class="n heart" data-at="3-4">
+          <rect x="230" y="40" width="170" height="76" rx="8"/>
+          <text x="315" y="62" text-anchor="middle" class="t-kanji k">心</text>
+          <text x="315" y="82" text-anchor="middle" class="t-title">Embedding model</text>
+          <text x="315" y="100" text-anchor="middle" class="t-small">one request</text>
+        </g>
+        <g class="n heart" data-at="4-5">
+          <rect x="230" y="190" width="170" height="64" rx="8"/>
+          <text x="315" y="216" text-anchor="middle" class="t-title">Query vector</text>
+          <text x="315" y="235" text-anchor="middle" class="t-small">scaled to length 1</text>
+        </g>
+        <g class="n data" data-at="5-6">
+          <rect x="460" y="100" width="170" height="96" rx="10"/>
+          <text x="545" y="124" text-anchor="middle" class="zone-label">index file</text>
+          <text x="545" y="148" text-anchor="middle" class="t-title">Every vector</text>
+          <text x="545" y="168" text-anchor="middle" class="t-small">dot product = cosine</text>
+          <text x="545" y="184" text-anchor="middle" class="t-small">no shortcut, no sampling</text>
+        </g>
+        <g class="n jev" data-at="6-7">
+          <rect x="690" y="40" width="150" height="64" rx="8"/>
+          <text x="765" y="66" text-anchor="middle" class="t-title">Best k</text>
+          <text x="765" y="85" text-anchor="middle" class="t-small">ties: earlier first</text>
+        </g>
+        <g class="n data" data-at="7-8">
+          <rect x="690" y="170" width="150" height="64" rx="8"/>
+          <text x="765" y="196" text-anchor="middle" class="t-title">Chunk rows</text>
+          <text x="765" y="215" text-anchor="middle" class="t-small">checked against key</text>
+        </g>
+        <g class="n hands" data-at="8">
+          <rect x="690" y="300" width="150" height="76" rx="8"/>
+          <text x="765" y="322" text-anchor="middle" class="t-kanji k">手</text>
+          <text x="765" y="342" text-anchor="middle" class="t-title">Hits</text>
+          <text x="765" y="360" text-anchor="middle" class="t-small">best first, with root</text>
+        </g>
+
+        <g class="pop badge" data-at="1"><rect x="10" y="118" width="170" height="22" rx="11"/><text x="95" y="133" text-anchor="middle">no letter: refused</text></g>
+        <g class="pop badge" data-at="2"><rect x="10" y="248" width="170" height="22" rx="11"/><text x="95" y="263" text-anchor="middle">else: run sync</text></g>
+        <g class="pop badge" data-at="3"><rect x="220" y="130" width="190" height="22" rx="11"/><text x="315" y="145" text-anchor="middle">task: search result</text></g>
+        <g class="pop badge" data-at="4"><rect x="230" y="268" width="170" height="22" rx="11"/><text x="315" y="283" text-anchor="middle">zero vector: error</text></g>
+        <g class="pop badge" data-at="5"><rect x="455" y="210" width="180" height="22" rx="11"/><text x="545" y="225" text-anchor="middle">other length: refused</text></g>
+        <g class="pop badge" data-at="6"><rect x="530" y="20" width="150" height="22" rx="11"/><text x="605" y="35" text-anchor="middle">k = 5 or 3</text></g>
+        <g class="pop badge" data-at="7"><rect x="520" y="250" width="160" height="22" rx="11"/><text x="600" y="265" text-anchor="middle">bad row: error</text></g>
+        <g class="pop badge" data-at="8"><rect x="510" y="330" width="170" height="22" rx="11"/><text x="595" y="345" text-anchor="middle">score ≥ min_score</text></g>
+
+        <circle class="tok" r="6" data-path="p-q-g" data-at="2"/>
+        <circle class="tok" r="6" data-path="p-g-m" data-at="3"/>
+        <circle class="tok heart" r="6" data-path="p-m-u" data-at="4"/>
+        <circle class="tok heart" r="6" data-path="p-u-s" data-at="5"/>
+        <circle class="tok jev" r="6" data-path="p-s-k" data-at="6"/>
+        <circle class="tok jev" r="6" data-path="p-k-c" data-at="7"/>
+        <circle class="tok hands" r="6" data-path="p-c-h" data-at="8"/>
+      </svg>
+    </div>
+    <div class="stage-side">
+      <ol class="captions">
+        <li>A question arrives from <code>search</code> or <code>check</code>. A query with no letter or digit is refused before anything else runs.</li>
+        <li>The index must exist and must have been built by this embedder: same model, same prompt format. Otherwise the error says to run <code>chaos-kb sync</code>.</li>
+        <li>The question is worded for the model, <code>task: search result | query: …</code> for embeddinggemma, and sent to the embeddings API in one request.</li>
+        <li>The vector that comes back is scaled to length 1. A zero vector, or one holding a non-finite number, is an error.</li>
+        <li>Every stored vector is compared with the question by a dot product, which equals cosine similarity for vectors of length 1. A vector of another length is refused.</li>
+        <li>The best <b>k</b> are kept, best first: 5 for search by default, 3 for check. Equal scores keep the earlier passage first.</li>
+        <li>The chunk row of each winner is read. Its location, context and text must hash to its key, or the read fails.</li>
+        <li><code>search</code> drops hits below <code>min_score</code> (0.0 by default) and returns note, section, lines, score and text, with the root hash.</li>
+      </ol>
+    </div>
+  </figure>
+</section>
+
+<section class="sec" aria-labelledby="s-pack">
+  <div class="sec-head">
+    <span class="kicker">Try it: pack a section</span>
+    <h2 id="s-pack">How blocks become chunks</h2>
+    <p>Consecutive blocks under the same headings are packed while the result fits in 1200 characters, joined by a blank line (2 characters). A longer block is cut at whitespace into pieces of at most 1200 characters. Move the sliders; the block sizes are examples.</p>
+  </div>
+  <div class="widget">
+    <div class="blocks-in" id="blocks-in"></div>
+    <div class="packed" id="packed" aria-live="polite"></div>
+    <p class="note">Sizes count the block's Markdown source, the text that is stored and embedded. A block with no letter or digit is skipped. A chunk's lines run from its first block to its last. A cut block gives about one piece per 1200 characters, because each cut falls at the last whitespace before the limit.</p>
+  </div>
+</section>
+
+<section class="sec" aria-labelledby="s-prompt">
+  <div class="sec-head">
+    <span class="kicker">What the model sees</span>
+    <h2 id="s-prompt">Prompt formats and the embedder id</h2>
+    <p>Each chunk is sent with a <b>context line</b>: the note title, then its headings. The wording shapes the vectors, so the format is part of the <b>embedder id</b>, the name of the vector space. The examples are the oil chunk of the example vault.</p>
+  </div>
+  <div class="tabs">
+    <div class="tablist">
+      <button type="button" aria-controls="tab-gemma" aria-selected="true">embeddinggemma</button>
+      <button type="button" aria-controls="tab-plain">any other model</button>
+      <button type="button" aria-controls="tab-http">the request</button>
+    </div>
+    <div class="tabpanel" id="tab-gemma"><pre><span class="c"># a model whose name contains "embeddinggemma" (lowercase), e.g. the default</span>
+embedder id  <span class="s">embeddinggemma|gemma-retrieval-v1</span>
+passage      <span class="s">title: Car &gt; Maintenance &gt; Oil | text: I change the engine oil every 10 000 km.</span>
+query        <span class="s">task: search result | query: how often do I change the oil?</span>
+<span class="c"># a blank context line is sent as "title: none"</span></pre></div>
+    <div class="tabpanel" id="tab-plain" hidden><pre><span class="c"># --embed-model nomic-embed-text (example): text as it is</span>
+embedder id  <span class="s">nomic-embed-text|plain-v1</span>
+passage      <span class="s">Car &gt; Maintenance &gt; Oil</span>
+             <span class="s"></span>
+             <span class="s">I change the engine oil every 10 000 km.</span>
+query        <span class="s">how often do I change the oil?</span></pre></div>
+    <div class="tabpanel" id="tab-http" hidden><pre><span class="c"># one request per batch of at most 32 passages, or per query</span>
+POST <span class="s">http://localhost:11434/v1/embeddings</span>
+Authorization: Bearer <span class="c">&lt;CHAOS_KB_EMBED_API_KEY, only when it is set&gt;</span>
+
+{ <span class="k">"model"</span>: <span class="s">"embeddinggemma"</span>, <span class="k">"input"</span>: [ <span class="s">"title: Car &gt; Maintenance &gt; Oil | text: …"</span>, … ] }
+
+<span class="c"># the reply must hold one non-empty vector per input, indexes 0..n, all one length</span>
+{ <span class="k">"data"</span>: [ { <span class="k">"index"</span>: <span class="n">0</span>, <span class="k">"embedding"</span>: [ … ] }, … ] }</pre></div>
+  </div>
+</section>
+
+<section class="sec" aria-labelledby="s-out">
+  <div class="sec-head">
+    <span class="kicker">What sync embeds</span>
+    <h2 id="s-out">Reused or embedded again</h2>
+    <p>Each chunk has a <b>content key</b>: a hash of its context line and its text. A stored vector is reused when its key is unchanged and the index was built by the same embedder id.</p>
+  </div>
+  <ul class="states">
+    <li><span class="chip data">reuse</span><span><b>nothing changed</b>Same context, same text: the stored vector is kept.</span></li>
+    <li><span class="chip heart">embed</span><span><b>a word or a format changed</b>The chunk text is the Markdown source, so even bold or punctuation gives a new key.</span></li>
+    <li><span class="chip heart">embed</span><span><b>a note renamed or a heading changed</b>The context line changes, so the key changes.</span></li>
+    <li><span class="chip jev">once</span><span><b>two equal chunks in one sync</b>Equal keys are sent to the model once.</span></li>
+    <li><span class="chip heart">all</span><span><b>another model or format</b>The embedder id differs, so no stored vector is reused.</span></li>
+    <li><span class="chip guard">drop</span><span><b>a chunk deleted</b>Its vector is removed in the same write.</span></li>
+  </ul>
+</section>
+
+<section class="sec" aria-labelledby="s-rules">
+  <div class="sec-head">
+    <span class="kicker">Enforced in code</span>
+    <h2 id="s-rules">Guarantees</h2>
+  </div>
+  <ul class="checks">
+    <li><span><b>Exact ranking.</b> Every stored vector is compared; nothing is approximated or sampled.</span></li>
+    <li><span><b>Deterministic order.</b> Best score first; equal scores keep the earlier passage first.</span></li>
+    <li><span><b>One vector space.</b> A stored vector of another length is refused, and so is an index built by another embedder id.</span></li>
+    <li><span><b>The reply is checked.</b> One vector per input, indexes <code>0</code> to <code>n-1</code>, none empty, all one length; anything else fails the sync.</span></li>
+    <li><span><b>No empty requests.</b> When nothing needs embedding, the model is not called.</span></li>
+    <li><span><b>The key stays out of errors.</b> A failed reply is quoted to at most 200 characters, with the API key replaced by <code>[redacted]</code>.</span></li>
+    <li><span><b>Chunk rows are verified.</b> A stored chunk that does not hash to its key is an error, not a result.</span></li>
+  </ul>
+</section>
+
+<section class="sec" aria-labelledby="s-try">
+  <div class="sec-head">
+    <span class="kicker">Try it</span>
+    <h2 id="s-try">Search the example vault</h2>
+    <p>Scores were measured with embeddinggemma on an Apple M4. JSON is shown condensed. A search took 0.10 s on a vault of 502 notes, measured on an Apple M4 (README § Speed).</p>
+  </div>
+  <div class="term-wrap">
+<pre class="term" data-type><span class="ln cmd"><span class="p">$ </span>chaos-kb search "how should things be explained to me?" --limit 2</span>
+<span class="ln o">{ "hits": [</span>
+<span class="ln o">  { "note": "Communication.md", "section": "How I communicate", "lines": [3, 3], "score": <span class="hl">0.5738853812217712</span>,</span>
+<span class="ln o">    "text": "When someone explains something to me, I want a concrete example first and the general rule after." },</span>
+<span class="ln o">  { "note": "Car.md", "section": "", "lines": [1, 3], "score": <span class="hl">0.12208836525678635</span>, "text": "---\ncar: Toyota Corolla 2018\n---" } ],</span>
+<span class="ln o">  "root": "92af70b580a0c600e6288015eb6f54d27e5face2c7201cad7933cf1e2650dcf9" }</span>
+<span class="ln cmd"><span class="p">$ </span>chaos-kb search "winter tyres" --limit 1</span>
+<span class="ln o">{ "hits": [ { "note": "Car.md", "section": "Maintenance &gt; Tyres", "lines": [12, 12], "score": <span class="hl">0.5618284940719604</span>, "text": "Winter tyres go on in November." } ], ... }</span>
+<span class="ln cmd"><span class="p">$ </span>chaos-kb search "engine oil" --limit 1 --min-score 0.5</span>
+<span class="ln o">{ "hits": [], "root": "92af70b580a0c600e6288015eb6f54d27e5face2c7201cad7933cf1e2650dcf9" }</span>
+<span class="ln cmd"><span class="p">$ </span>chaos-kb search "  ---  "</span>
+<span class="ln o"><span class="er">error: the query is empty (no letters or digits)</span></span></pre>
+  </div>
+  <p class="note">The second hit of the first search is the front matter, with a low score. <code>search</code> returns the best passages even when they are weak; raise <code>--min-score</code> to drop them.</p>
+</section>
+
+<section class="sec" aria-labelledby="s-where">
+  <div class="sec-head">
+    <span class="kicker">Source</span>
+    <h2 id="s-where">Where it lives</h2>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>File</th><th>Owns</th></tr></thead>
+      <tbody>
+        <tr><td><code>src/domain/chunk.rs</code></td><td><code>MAX_CHUNK_CHARS</code>, packing and cutting, the context line, the content key</td></tr>
+        <tr><td><code>src/domain/vector.rs</code></td><td><code>unit</code>, <code>dot</code> and the exact <code>top_k</code> ranking</td></tr>
+        <tr><td><code>src/adapters/embedder.rs</code></td><td><code>HttpEmbedder</code>: prompt formats, embedder id, request, reply checks, error quoting</td></tr>
+        <tr><td><code>src/application/mod.rs</code></td><td>the readiness check and <code>similar</code>: embed the query, scale it, ask for the nearest</td></tr>
+        <tr><td><code>src/application/search.rs</code></td><td>the search use-case and its report</td></tr>
+        <tr><td><code>src/application/sync.rs</code></td><td><code>EMBED_BATCH</code>, which chunks to embed, vector reuse by key</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<nav class="pager" id="pager" aria-label="Previous and next page"></nav>
+<p class="stamp-foot">Checked against the code on 2026-10-24.</p>
+</article>
+</main>
+</div>
+
+<script>
+/* page-only: chunk packer, the rule of chunks() in src/domain/chunk.rs */
+(function () {
+  var MAX = 1200, SEP = 2;
+  var BLOCKS = [
+    { name: "A", section: "Car > Oil", chars: 420 },
+    { name: "B", section: "Car > Oil", chars: 560 },
+    { name: "C", section: "Car > Oil", chars: 380 },
+    { name: "D", section: "Car > Tyres", chars: 300 },
+    { name: "E", section: "Car > Tyres", chars: 1500 }
+  ];
+  var host = document.getElementById("blocks-in"), out = document.getElementById("packed");
+  BLOCKS.forEach(function (b, i) {
+    var label = document.createElement("label");
+    var id = "blk-" + i;
+    label.setAttribute("for", id);
+    label.innerHTML = '<span><b>Block ' + b.name + '</b> <span class="sec-tag">' + b.section.replace(/>/g, "&gt;") + '</span></span>' +
+      '<input type="range" id="' + id + '" min="50" max="3000" step="10" value="' + b.chars + '">' +
+      '<span class="readout" id="' + id + '-v"></span>';
+    host.appendChild(label);
+    label.querySelector("input").addEventListener("input", function (e) { b.chars = +e.target.value; draw(); });
+  });
+  function pack() {
+    var chunks = [], run = [], runChars = 0;
+    function flush() {
+      if (run.length) chunks.push({ names: run.map(function (b) { return b.name; }), section: run[0].section, chars: runChars });
+      run = []; runChars = 0;
+    }
+    BLOCKS.forEach(function (b) {
+      var joined = runChars + SEP + b.chars;
+      var last = run[run.length - 1];
+      if (last && last.section === b.section && joined <= MAX) { run.push(b); runChars = joined; return; }
+      flush();
+      if (b.chars <= MAX) { run = [b]; runChars = b.chars; return; }
+      for (var left = b.chars, k = 1; left > 0; left -= MAX, k++) {
+        chunks.push({ names: [b.name + " part " + k], section: b.section, chars: Math.min(left, MAX), cut: true });
+      }
+    });
+    flush();
+    return chunks;
+  }
+  function draw() {
+    BLOCKS.forEach(function (b, i) { document.getElementById("blk-" + i + "-v").textContent = b.chars + " ch"; });
+    out.innerHTML = "";
+    pack().forEach(function (c, i) {
+      var row = document.createElement("div");
+      row.className = "row";
+      var pct = Math.min(100, c.chars / MAX * 100).toFixed(1);
+      var size = c.cut ? "at most 1200 ch" : c.chars + " ch";
+      row.innerHTML = '<span class="name">chunk ' + (i + 1) + '</span><span class="lane"><span class="fill" style="width:' + pct + '%"></span><span class="t">' +
+        c.names.join(" + ") + " · " + c.section.replace(/>/g, "&gt;") + " · " + size + '</span></span>';
+      out.appendChild(row);
+    });
+  }
+  draw();
+})();
+</script>
+</body>
+</html>

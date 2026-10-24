@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>chaos-kb Field Manual</title>
+<meta name="description" content="A visual tutorial of chaos-kb, a personal knowledge base for agents: Markdown notes in, instant is-this-known checks and similarity search out. One page per feature, every page drawn from the code.">
+<script>try{var t=localStorage.getItem("tengu-tutorial-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Shippori+Mincho+B1:wght@700;800&display=swap">
+<link rel="stylesheet" href="assets/site.css">
+<script src="assets/nav.js" defer></script>
+<script src="assets/site.js" defer></script>
+<style>
+  .home-hero h1 { font-size: clamp(2.6rem, 1.8rem + 3.4vw, 4.2rem); }
+  .doctrine { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); }
+  .doctrine .card { grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 4px 12px; }
+  .doctrine .big { grid-row: span 2; font-family: var(--font-display); font-weight: 800; font-size: 2.4rem; line-height: 1; }
+  .doctrine .jev .big { color: var(--jev); } .doctrine .heart .big { color: var(--heart); } .doctrine .hands .big { color: var(--hands); }
+  .doctrine b { font-size: 1rem; }
+  .doctrine p { font-size: 0.88rem; }
+</style>
+</head>
+<body>
+<div class="shell">
+<aside class="rail" id="rail"><noscript><a href="index.html">All features</a></noscript></aside>
+<main id="main">
+<article class="page">
+
+<header class="hero home-hero">
+  <div class="eyebrow"><span class="stamp" aria-hidden="true">知</span> chaos-kb · visual tutorial</div>
+  <h1>chaos-kb field manual</h1>
+  <p class="lede">A personal knowledge base for agents. Your Markdown notes go in; instant "is this known?" checks and similarity search come out. One page per feature, every page drawn from the code.</p>
+  <ul class="facts">
+    <li><b>4</b> tools, as commands and over MCP</li>
+    <li><b>1</b> index file, rebuilt from your notes</li>
+    <li>embeddings from <b>Ollama</b> on localhost by default</li>
+    <li>Rust only, <b>unsafe</b> forbidden</li>
+  </ul>
+</header>
+
+<section class="sec" aria-labelledby="s-doctrine">
+  <div class="sec-head">
+    <span class="kicker">The doctrine</span>
+    <h2 id="s-doctrine">Same words, same meaning, four tools</h2>
+    <p>Every diagram in this manual uses these colours for these jobs.</p>
+  </div>
+  <div class="doctrine">
+    <div class="card jev"><span class="big" aria-hidden="true">印</span><b>Same words = a hash</b><p>A fingerprint of each block's words. A match needs one lookup and no model.</p></div>
+    <div class="card heart"><span class="big" aria-hidden="true">心</span><b>Same meaning = the model</b><p>The embedding model turns passages into vectors; check and search compare them.</p></div>
+    <div class="card hands"><span class="big" aria-hidden="true">手</span><b>Four tools</b><p>sync and remember write the index; check and search read it.</p></div>
+  </div>
+  <figure class="stage" data-stage data-interval="3000">
+    <div class="stage-canvas">
+      <svg viewBox="0 0 860 300" role="img" aria-labelledby="home-t">
+        <title id="home-t">Your notes are synced into one index file. An agent checks and searches the index, and remembers new facts into the notes, which the next sync indexes.</title>
+        <path class="e" id="h-notes-sync" d="M160 150 L238 150" data-at="2"/>
+        <path class="e" id="h-sync-idx" d="M378 150 L456 150" data-at="2"/>
+        <path class="e" id="h-idx-agent" d="M608 130 C640 130 650 70 682 70" data-at="3"/>
+        <path class="e" id="h-agent-rem" d="M764 104 L764 194" data-at="4"/>
+        <path class="e flow" id="h-rem-notes" d="M684 230 C500 290 120 290 85 188" data-at="5"/>
+        <g class="n brain" data-at="1,5">
+          <rect x="10" y="114" width="150" height="72" rx="10"/>
+          <text x="85" y="140" text-anchor="middle" class="t-kanji k">脳</text>
+          <text x="85" y="160" text-anchor="middle" class="t-title">Your notes</text>
+          <text x="85" y="177" text-anchor="middle" class="t-small">a Markdown vault</text>
+        </g>
+        <g class="n hands" data-at="2">
+          <rect x="240" y="104" width="138" height="92" rx="10"/>
+          <text x="309" y="134" text-anchor="middle" class="t-kanji k">手</text>
+          <text x="309" y="156" text-anchor="middle" class="t-title">sync</text>
+          <text x="309" y="175" text-anchor="middle" class="t-small">hash · chunk · embed</text>
+        </g>
+        <g class="n data" data-at="2-3">
+          <rect x="458" y="104" width="150" height="92" rx="10"/>
+          <text x="533" y="134" text-anchor="middle" class="zone-label">one file</text>
+          <text x="533" y="156" text-anchor="middle" class="t-title">Index</text>
+          <text x="533" y="175" text-anchor="middle" class="t-small">tree · chunks · vectors</text>
+        </g>
+        <g class="n" data-at="3-4">
+          <rect x="684" y="36" width="160" height="68" rx="10"/>
+          <text x="764" y="64" text-anchor="middle" class="t-title">Agent</text>
+          <text x="764" y="84" text-anchor="middle" class="t-small">check · search</text>
+        </g>
+        <g class="n hands" data-at="4-5">
+          <rect x="684" y="196" width="160" height="68" rx="10"/>
+          <text x="764" y="224" text-anchor="middle" class="t-title">remember</text>
+          <text x="764" y="244" text-anchor="middle" class="t-small">one fact in</text>
+        </g>
+        <g class="pop badge" data-at="2"><rect x="380" y="70" width="156" height="22" rx="11"/><text x="458" y="85" text-anchor="middle">new chunks only</text></g>
+        <g class="pop badge" data-at="3"><rect x="460" y="40" width="200" height="22" rx="11"/><text x="560" y="55" text-anchor="middle">exact · similar · absent</text></g>
+        <g class="pop badge" data-at="4"><rect x="606" y="200" width="150" height="22" rx="11"/><text x="681" y="215" text-anchor="middle">skipped when known</text></g>
+        <circle class="tok brain" r="7" data-path="h-notes-sync" data-at="2"/>
+        <circle class="tok hands" r="7" data-path="h-sync-idx" data-at="2" data-delay="500"/>
+        <circle class="tok" r="7" data-path="h-idx-agent" data-at="3" data-reverse/>
+        <circle class="tok hands" r="7" data-path="h-agent-rem" data-at="4"/>
+        <circle class="tok brain" r="7" data-path="h-rem-notes" data-at="5"/>
+      </svg>
+    </div>
+    <div class="stage-side">
+      <ol class="captions">
+        <li>You keep what you know as Markdown notes in one folder, the vault. The notes are the only copy of the knowledge.</li>
+        <li><code>sync</code> fingerprints every block, packs passages and embeds only the new ones, all into one index file.</li>
+        <li>An agent asks <code>check</code> ("is this known?") or <code>search</code> ("what do my notes say?"). The index answers; the notes are not read.</li>
+        <li>When you tell the agent something new, it calls <code>remember</code>: one fact, added to a note, unless the same words are already stored.</li>
+        <li>remember syncs again, so the next check knows the fact. <a href="big-picture.html">Follow one sync in detail</a>.</li>
+      </ol>
+    </div>
+  </figure>
+</section>
+
+<section class="sec" aria-labelledby="s-all">
+  <div class="sec-head">
+    <span class="kicker">Every feature, by chapter</span>
+    <h2 id="s-all">All features</h2>
+    <p>Start here for the whole path from notes to answers. Answers explains the two ways a question is matched; Storage covers the notes and the index file; Agents covers the MCP server.</p>
+  </div>
+  <div class="chapters" id="chapters">
+    <noscript><p>The feature list needs JavaScript. Start with <a href="big-picture.html">From notes to answers</a>.</p></noscript>
+  </div>
+</section>
+
+<nav class="pager" id="pager" aria-label="Start reading"></nav>
+<p class="stamp-foot">Checked against the code on 2026-10-24. Every page lists its source files in <code>site/sources.toml</code>, and <code>cargo test --test site</code> keeps the two in step.</p>
+</article>
+</main>
+</div>
+</body>
+</html>

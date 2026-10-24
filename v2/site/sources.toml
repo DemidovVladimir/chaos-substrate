@@ -1,0 +1,93 @@
+# Site sync map: each feature page → the paths it explains, relative to v2/.
+# A path ending in `/` covers every file below it.
+#
+# After a code change, update every page whose `sources` lists the changed
+# file or one of its parent folders, and bump its footer date
+# (`Checked against the code on YYYY-MM-DD.`) in the same commit.
+# `cargo test --test site` fails when a src/ file is in no page and not in
+# [glue], when a path here no longer exists, or when assets/nav.js, this file
+# and the .html files disagree on the page list.
+#
+# Format: full-line comments, [glue] / [pages.<slug>] headers, one
+# `sources = [ "path", ... ]` list each (read by tests/site.rs, not a TOML crate).
+
+# Files that only declare modules: no behaviour of their own.
+[glue]
+sources = [
+  "src/adapters/mod.rs",
+  "src/domain/mod.rs",
+  "src/entry/mod.rs",
+]
+
+# ── Start here ────────────────────────────────────────────────────────────
+
+[pages.big-picture]
+sources = [
+  "src/lib.rs",
+  "src/main.rs",
+  "src/ports/mod.rs",
+  "src/application/mod.rs",
+  "src/application/sync.rs",
+  "src/application/testing.rs",
+  "src/domain/note.rs",
+  "src/entry/cli.rs",
+  "README.md",
+]
+
+# ── Answers ───────────────────────────────────────────────────────────────
+
+[pages.merkle]
+sources = [
+  "src/domain/text.rs",
+  "src/domain/hash.rs",
+  "src/domain/merkle.rs",
+  "src/application/sync.rs",
+]
+
+[pages.search]
+sources = [
+  "src/domain/chunk.rs",
+  "src/domain/vector.rs",
+  "src/adapters/embedder.rs",
+  "src/application/mod.rs",
+  "src/application/sync.rs",
+  "src/application/search.rs",
+]
+
+[pages.check]
+sources = [
+  "src/application/check.rs",
+  "src/application/mod.rs",
+  "src/domain/presence.rs",
+  "src/entry/cli.rs",
+  "tests/e2e.rs",
+  "README.md",
+]
+
+# ── Storage ───────────────────────────────────────────────────────────────
+
+[pages.vault]
+sources = [
+  "src/adapters/obsidian.rs",
+  "src/domain/path.rs",
+  "src/domain/note.rs",
+  "src/application/remember.rs",
+]
+
+[pages.index-file]
+sources = [
+  "src/adapters/redb_index.rs",
+  "src/ports/mod.rs",
+  "src/entry/cli.rs",
+  "README.md",
+]
+
+# ── Agents ────────────────────────────────────────────────────────────────
+
+[pages.mcp]
+sources = [
+  "src/entry/mcp.rs",
+  "src/entry/tools.rs",
+  "src/entry/cli.rs",
+  "README.md",
+]

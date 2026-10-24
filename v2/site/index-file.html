@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>The index file · chaos-kb</title>
+<meta name="description" content="How chaos-kb keeps its index in one redb file: five tables, one write transaction per sync, a short wait when another process holds the file, and nothing trusted on read.">
+<script>try{var t=localStorage.getItem("tengu-tutorial-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Shippori+Mincho+B1:wght@700;800&display=swap">
+<link rel="stylesheet" href="assets/site.css">
+<script src="assets/nav.js" defer></script>
+<script src="assets/site.js" defer></script>
+<style>
+  /* page-only: lock wait timeline */
+  .timeline { position: relative; height: 54px; margin: 6px 4px 0; }
+  .timeline .axis { position: absolute; left: 0; right: 0; top: 22px; height: 2px; background: var(--line); }
+  .timeline .held { position: absolute; left: 0; top: 18px; height: 10px; border-radius: 5px; background: var(--guard-soft); border: 1px solid var(--guard); }
+  .timeline .try { position: absolute; top: 15px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: var(--panel); border: 2px solid var(--faint); }
+  .timeline .try.ok { background: var(--hands); border-color: var(--hands); }
+  .timeline .try.miss { border-color: var(--guard); }
+  .timeline .tick { position: absolute; top: 34px; font-family: var(--font-mono); font-size: 0.68rem; color: var(--faint); transform: translateX(-50%); white-space: nowrap; }
+</style>
+</head>
+<body>
+<div class="shell">
+<aside class="rail" id="rail"><noscript><a href="index.html">All features</a></noscript></aside>
+<main id="main">
+<article class="page">
+
+<header class="hero">
+  <div class="eyebrow"><span class="stamp" aria-hidden="true">蔵</span> Storage · derived data</div>
+  <h1>The index file</h1>
+  <p class="lede">The <b>index</b> is one redb file, by default <code>&lt;vault&gt;/.chaos-kb/index.redb</code>. It holds the Merkle tree, the chunks, their vectors and the block fingerprints. A sync rewrites it in one transaction. Delete it, and the next sync rebuilds it.</p>
+  <ul class="facts">
+    <li><b>5</b> tables in <b>1</b> file</li>
+    <li><b>1</b> write transaction per sync</li>
+    <li>waits up to <b>3 s</b> for a held file, first pause <b>10 ms</b></li>
+    <li>vectors as <b>4</b>-byte little-endian floats</li>
+  </ul>
+  <ul class="legend" aria-label="Colour key">
+    <li><span class="chip data">data</span> the index file and its tables</li>
+    <li><span class="chip hands"><span class="k">手</span> tools</span> sync, which writes it</li>
+    <li><span class="chip heart"><span class="k">心</span> model</span> the vectors</li>
+    <li><span class="chip guard"><span class="k">守</span> guard</span> waits and refusals</li>
+  </ul>
+</header>
+
+<section class="sec" aria-labelledby="s-flow">
+  <div class="sec-head">
+    <span class="kicker">One write, step by step</span>
+    <h2 id="s-flow">How a sync replaces the index</h2>
+    <p><b>redb</b> is an embedded database written in Rust: one file, no server. A <b>transaction</b> is a group of changes that is saved all at once or not at all.</p>
+  </div>
+  <figure class="stage" data-stage data-interval="3600">
+    <div class="stage-canvas">
+      <svg viewBox="0 0 860 330" role="img" aria-labelledby="flow-t">
+        <title id="flow-t">sync hands over an update. The file is opened, waiting while another process holds it. One write transaction checks that every chunk has a vector, replaces the tables, keeps the vectors in use, and commits.</title>
+        <path class="e" id="i-u-o" d="M170 82 L228 82" data-at="2"/>
+        <path class="e" id="i-o-t" d="M390 82 L448 82" data-at="3"/>
+        <path class="e" id="i-t-c" d="M620 82 L678 82" data-at="4"/>
+        <path class="e bad" id="i-c-f" d="M760 114 L760 208" data-at="4"/>
+        <path class="e" id="i-c-tab" d="M700 114 C700 170 650 242 622 242" data-at="5"/>
+        <path class="e" id="i-tab-v" d="M450 242 L392 242" data-at="6"/>
+        <path class="e flow" id="i-v-commit" d="M230 242 L172 242" data-at="7"/>
+
+        <g class="n hands" data-at="1">
+          <rect x="20" y="50" width="150" height="64" rx="8"/>
+          <text x="95" y="76" text-anchor="middle" class="t-title">Update</text>
+          <text x="95" y="95" text-anchor="middle" class="t-small">from sync, in memory</text>
+        </g>
+        <g class="n guard" data-at="2">
+          <rect x="230" y="50" width="160" height="64" rx="8"/>
+          <text x="310" y="76" text-anchor="middle" class="t-title">Open the file</text>
+          <text x="310" y="95" text-anchor="middle" class="t-small">held? wait up to 3 s</text>
+        </g>
+        <g class="n data" data-at="3-6">
+          <rect x="450" y="50" width="170" height="64" rx="10"/>
+          <text x="535" y="76" text-anchor="middle" class="t-title">Write transaction</text>
+          <text x="535" y="95" text-anchor="middle" class="t-small">all or nothing</text>
+        </g>
+        <g class="n guard" data-at="4">
+          <rect x="680" y="50" width="160" height="64" rx="8"/>
+          <text x="760" y="76" text-anchor="middle" class="t-title">Vector check</text>
+          <text x="760" y="95" text-anchor="middle" class="t-small">every chunk has one</text>
+        </g>
+        <g class="n guard" data-at="4">
+          <rect x="680" y="210" width="160" height="64" rx="8"/>
+          <text x="760" y="236" text-anchor="middle" class="t-title">Refused</text>
+          <text x="760" y="255" text-anchor="middle" class="t-small">index unchanged</text>
+        </g>
+        <g class="n data" data-at="5">
+          <rect x="450" y="210" width="170" height="64" rx="10"/>
+          <text x="535" y="236" text-anchor="middle" class="t-title">Four tables</text>
+          <text x="535" y="255" text-anchor="middle" class="t-small t-mono">meta tree chunks blocks</text>
+        </g>
+        <g class="n heart" data-at="6">
+          <rect x="230" y="210" width="160" height="64" rx="8"/>
+          <text x="310" y="236" text-anchor="middle" class="t-title">Vectors</text>
+          <text x="310" y="255" text-anchor="middle" class="t-small">add new, drop unused</text>
+        </g>
+        <g class="n data" data-at="7">
+          <rect x="20" y="210" width="150" height="64" rx="10"/>
+          <text x="95" y="236" text-anchor="middle" class="t-title">Commit</text>
+          <text x="95" y="255" text-anchor="middle" class="t-small">file closed again</text>
+        </g>
+
+        <g class="pop badge" data-at="1"><rect x="20" y="128" width="150" height="22" rx="11"/><text x="95" y="143" text-anchor="middle">tree · chunks · vectors</text></g>
+        <g class="pop badge" data-at="2"><rect x="230" y="128" width="160" height="22" rx="11"/><text x="310" y="143" text-anchor="middle">pauses double</text></g>
+        <g class="pop badge" data-at="3"><rect x="450" y="128" width="170" height="22" rx="11"/><text x="535" y="143" text-anchor="middle">one per sync</text></g>
+        <g class="pop badge" data-at="4"><rect x="690" y="288" width="140" height="22" rx="11"/><text x="760" y="303" text-anchor="middle">checked first</text></g>
+        <g class="pop badge" data-at="5"><rect x="450" y="288" width="170" height="22" rx="11"/><text x="535" y="303" text-anchor="middle">emptied, then filled</text></g>
+        <g class="pop badge" data-at="6"><rect x="230" y="288" width="160" height="22" rx="11"/><text x="310" y="303" text-anchor="middle">reused by content key</text></g>
+        <g class="pop badge" data-at="7"><rect x="20" y="288" width="150" height="22" rx="11"/><text x="95" y="303" text-anchor="middle">old or new, never half</text></g>
+
+        <circle class="tok hands" r="6" data-path="i-u-o" data-at="2"/>
+        <circle class="tok" r="6" data-path="i-o-t" data-at="3"/>
+        <circle class="tok" r="6" data-path="i-t-c" data-at="4"/>
+        <circle class="tok" r="6" data-path="i-c-tab" data-at="5"/>
+        <circle class="tok heart" r="6" data-path="i-tab-v" data-at="6"/>
+        <circle class="tok" r="6" data-path="i-v-commit" data-at="7"/>
+      </svg>
+    </div>
+    <div class="stage-side">
+      <ol class="captions">
+        <li>sync builds an <b>update</b> in memory: the embedder id, the new tree, every chunk, every block fingerprint, and the vectors it just embedded.</li>
+        <li>The file is opened, its folder created when missing. When another process holds the file, the open is retried with doubling pauses for up to 3 s.</li>
+        <li>One write transaction begins. Everything below is saved together at the commit, or not at all.</li>
+        <li>Every chunk needs a vector, new or already stored. When one has none, the write stops with an error and the index stays as it was.</li>
+        <li>The <code>meta</code>, <code>tree</code>, <code>chunks</code> and <code>blocks</code> tables are emptied and filled from the update.</li>
+        <li>New vectors are added. A stored vector stays when some chunk still uses its key; every other vector is dropped.</li>
+        <li>The transaction commits and the file is closed, so the next command, or a running MCP server, can open it.</li>
+      </ol>
+    </div>
+  </figure>
+</section>
+
+<section class="sec" aria-labelledby="s-tables">
+  <div class="sec-head">
+    <span class="kicker">What is inside</span>
+    <h2 id="s-tables">Five tables</h2>
+    <p>One row of each table, from the example vault.</p>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Table</th><th>Key → value</th><th>Example row</th></tr></thead>
+      <tbody>
+        <tr><td><code>meta</code></td><td><code>"embedder"</code> → embedder id</td><td class="wrap"><code>embeddinggemma|gemma-retrieval-v1</code></td></tr>
+        <tr><td><code>tree</code></td><td>tree key → 32-byte hash</td><td class="wrap"><code>""</code> → <code>92af70b580a0c600e6288015eb6f54d27e5face2c7201cad7933cf1e2650dcf9</code></td></tr>
+        <tr><td><code>chunks</code></td><td>content key → note, section, first and last line, context, text</td><td class="wrap"><code>0b998bf4fbf675ad07f1b434a4d4032ea87cce39446a259fe9c07d9b748d7f5e</code> → <code>Car.md</code>, <code>Maintenance &gt; Oil</code>, 8, 8, <code>Car &gt; Maintenance &gt; Oil</code>, <code>I change the engine oil every 10 000 km.</code></td></tr>
+        <tr><td><code>vectors</code></td><td>content key → unit vector as bytes</td><td class="wrap">the same key → 768 numbers of 4 bytes each with embeddinggemma, the length its live test expects</td></tr>
+        <tr><td><code>blocks</code></td><td>fingerprint → every place it occurs</td><td class="wrap"><code>973c899aeacc8e7035e6746bbb7e0c0e471bc5b5af45d289e125bc722244774e</code> → <code>Health/Allergies.md</code>, <code>Allergies</code>, 3, 3</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note">A chunk's key comes from its context line and text only. Two notes with the same title, section and words, such as <code>x/Plan.md</code> and <code>y/Plan.md</code>, share one <code>chunks</code> row. A search then names one of the two notes, while a same-words check lists both.</p>
+</section>
+
+<section class="sec" aria-labelledby="s-wait">
+  <div class="sec-head">
+    <span class="kicker">Try it: hold the file</span>
+    <h2 id="s-wait">Sharing the file</h2>
+    <p>redb lets one handle open the file at a time, so every operation opens it and closes it right after. Say another process holds the file: move the slider to when it lets go.</p>
+  </div>
+  <div class="widget">
+    <div class="widget-row">
+      <label for="held">held for <input type="range" id="held" min="0" max="3500" step="5" value="100"></label>
+      <span class="readout" id="held-v">100 ms</span>
+      <span class="verdict ok" id="held-verdict" aria-live="polite"></span>
+    </div>
+    <div class="timeline" id="timeline" aria-hidden="true"><span class="axis"></span><span class="held" id="held-bar"></span></div>
+    <p class="note">Tries start at 0, 10, 30, 70, 150, 310, 630, 1270 and 2550 ms: each pause doubles, from 10 ms. The last try is at 3000 ms; after it the command fails with <code>index &lt;path&gt; is held open by another process; gave up after 3s</code>, naming the file. Times leave out the open itself.</p>
+  </div>
+</section>
+
+<section class="sec" aria-labelledby="s-out">
+  <div class="sec-head">
+    <span class="kicker">Outcomes</span>
+    <h2 id="s-out">What the file can be</h2>
+  </div>
+  <ul class="states">
+    <li><span class="chip data">none</span><span><b>no file yet</b>Reads find nothing and create nothing; check and search say to run sync.</span></li>
+    <li><span class="chip data">none</span><span><b>an empty file</b>Read as no file, until a sync fills it.</span></li>
+    <li><span class="chip guard">wait</span><span><b>held by another process</b>Retried for up to 3 s, then an error that names the file.</span></li>
+    <li><span class="chip guard">refuse</span><span><b>a chunk without a vector</b>The write stops and the index is unchanged.</span></li>
+    <li><span class="chip guard">refuse</span><span><b>a query of another length</b>The stored vector's length is named, with a hint about the embedder.</span></li>
+    <li><span class="chip guard">error</span><span><b>a row that does not decode</b>An error, never a crash or a wrong answer.</span></li>
+  </ul>
+</section>
+
+<section class="sec" aria-labelledby="s-rules">
+  <div class="sec-head">
+    <span class="kicker">Enforced in code</span>
+    <h2 id="s-rules">Guarantees</h2>
+  </div>
+  <ul class="checks">
+    <li><span><b>Derived and disposable.</b> The notes are the knowledge. Delete the file and the next sync rebuilds it with the same root.</span></li>
+    <li><span><b>All or nothing.</b> A sync writes in one transaction, so the file holds the old index or the new one.</span></li>
+    <li><span><b>No orphans.</b> A vector that no chunk uses is dropped in the same write.</span></li>
+    <li><span><b>Nothing trusted on read.</b> A stored note path must be valid, a chunk row must hash to its key, and a vector must be whole 4-byte numbers.</span></li>
+    <li><span><b>One vector space per file.</b> <code>meta</code> records the embedder id, and reads with another id are refused.</span></li>
+    <li><span><b>Shared, one at a time.</b> The CLI and a running MCP server open the file only for the length of one operation.</span></li>
+  </ul>
+</section>
+
+<section class="sec" aria-labelledby="s-try">
+  <div class="sec-head">
+    <span class="kicker">Try it</span>
+    <h2 id="s-try">Delete it, rebuild it</h2>
+    <p>On a copy of the example vault after its edits. JSON is shown condensed. The file size is an example; for a vault of 502 notes the index was 8.4 MB (README § Speed).</p>
+  </div>
+  <div class="term-wrap">
+<pre class="term" data-type><span class="ln cmd"><span class="p">$ </span>wc -c .chaos-kb/index.redb</span>
+<span class="ln o">  118784 .chaos-kb/index.redb</span>
+<span class="ln cmd"><span class="p">$ </span>rm -r .chaos-kb &amp;&amp; chaos-kb sync</span>
+<span class="ln o">{ "added": ["Car.md", "Talking.md"], "notes": 2, "chunks": 4, "embedded": <span class="hl">4</span>,</span>
+<span class="ln o">  "root": "e4fca44df7c874f52891a89552a6b14ba6e0aceb06e631a21ea0576459b97301" }</span>
+<span class="ln o"># the same root as before the delete: the notes did not change</span>
+<span class="ln cmd"><span class="p">$ </span>chaos-kb check "x" --index ./none.redb</span>
+<span class="ln o"><span class="er">error: the index is empty: run `chaos-kb sync` first</span></span></pre>
+  </div>
+  <p class="note">Use <code>--index</code> or <code>CHAOS_KB_INDEX</code> to keep the file somewhere else. A missing file is not created by a read.</p>
+</section>
+
+<section class="sec" aria-labelledby="s-where">
+  <div class="sec-head">
+    <span class="kicker">Source</span>
+    <h2 id="s-where">Where it lives</h2>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>File</th><th>Owns</th></tr></thead>
+      <tbody>
+        <tr><td><code>src/adapters/redb_index.rs</code></td><td><code>RedbIndex</code>: the tables, the wait for a held file, the write, the row checks, the nearest scan</td></tr>
+        <tr><td><code>src/ports/mod.rs</code></td><td>the <code>Index</code> trait, <code>Snapshot</code>, <code>Update</code> and <code>Hit</code></td></tr>
+        <tr><td><code>src/entry/cli.rs</code></td><td><code>--index</code> and its default under the vault</td></tr>
+        <tr><td><code>README.md</code></td><td>§ Speed and § Your data, for users</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<nav class="pager" id="pager" aria-label="Previous and next page"></nav>
+<p class="stamp-foot">Checked against the code on 2026-10-24.</p>
+</article>
+</main>
+</div>
+
+<script>
+/* page-only: when does the open succeed? LOCK_PATIENCE and FIRST_PAUSE of src/adapters/redb_index.rs */
+(function () {
+  var PATIENCE = 3000, FIRST = 10, SPAN = 3500;
+  var tries = [], t = 0, pause = FIRST;
+  for (;;) {
+    tries.push(t);
+    var left = PATIENCE - t;
+    if (left <= 0) break;
+    t += Math.min(pause, left);
+    pause *= 2;
+  }
+  var line = document.getElementById("timeline"), bar = document.getElementById("held-bar");
+  var dots = tries.map(function (at) {
+    var d = document.createElement("span");
+    d.className = "try";
+    d.style.left = (at / SPAN * 100) + "%";
+    line.appendChild(d);
+    return d;
+  });
+  [0, 1000, 2000, 3000].forEach(function (ms) {
+    var k = document.createElement("span");
+    k.className = "tick"; k.style.left = (ms / SPAN * 100) + "%"; k.textContent = ms + " ms";
+    line.appendChild(k);
+  });
+  var slider = document.getElementById("held"), out = document.getElementById("held-v"), verdict = document.getElementById("held-verdict");
+  function draw() {
+    var held = +slider.value;
+    out.textContent = held + " ms";
+    bar.style.width = (Math.min(held, SPAN) / SPAN * 100) + "%";
+    var won = -1;
+    tries.forEach(function (at, i) {
+      var free = at >= held;
+      if (free && won < 0) won = i;
+      dots[i].className = "try " + (won === i ? "ok" : (at < held ? "miss" : ""));
+    });
+    if (won >= 0) {
+      verdict.className = "verdict ok";
+      verdict.textContent = "opened on try " + (won + 1) + ", after waiting " + tries[won] + " ms";
+    } else {
+      verdict.className = "verdict bad";
+      verdict.textContent = "gave up after " + tries.length + " tries and 3 s";
+    }
+  }
+  slider.addEventListener("input", draw);
+  draw();
+})();
+</script>
+</body>
+</html>

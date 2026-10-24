@@ -220,7 +220,7 @@ The index file for that vault is 8.4 MB.
 
 ## Development
 
-Rules for changing the code are in [AGENTS.md](AGENTS.md). To validate:
+Rules for changing the code are in [AGENTS.md](AGENTS.md). A visual tutorial, one page per feature, is in [site/](site/index.html); `cargo test --test site` fails when it falls out of step with the code. To validate:
 
 ```sh
 cd v2
