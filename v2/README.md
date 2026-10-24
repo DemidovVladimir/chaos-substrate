@@ -210,8 +210,8 @@ The index file for that vault is 8.4 MB.
 - **The notes are the only copy of your knowledge.** chaos-kb writes to the vault only when you
   call `remember`. It appends to one note through a temporary file and a rename, so the note is
   never half-written. It refuses to write outside the vault or through symlinked folders.
-- **Skipped**: hidden files and folders (such as `.obsidian`), symlinks, files that are not
-  Markdown, and notes larger than 4 MiB.
+- **Skipped**: hidden files and folders (such as `.obsidian`), symlinks, and files that are not
+  Markdown. Every note is read whole, whatever its size.
 - **Embeddings are local by default** (Ollama on `localhost`). If you point `--embed-url` at a
   cloud API, your note text is sent there to be embedded. The API key is read only from
   `CHAOS_KB_EMBED_API_KEY` and is never printed.

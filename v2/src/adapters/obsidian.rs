@@ -13,9 +13,6 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Notes larger than this are skipped (a knowledge note is never this big).
-pub const MAX_NOTE_BYTES: u64 = 4 * 1024 * 1024;
-
 /// The Markdown dialect: Obsidian's tables, tasks, front matter and wikilinks.
 const OPTIONS: Options = Options::ENABLE_TABLES
     .union(Options::ENABLE_STRIKETHROUGH)
@@ -102,7 +99,6 @@ fn walk(dir: &Path, prefix: &str, found: &mut Vec<(NotePath, PathBuf)>) -> Resul
         if kind.is_dir() {
             walk(&entry.path(), &rel, found)?;
         } else if kind.is_file()
-            && entry.metadata()?.len() <= MAX_NOTE_BYTES
             && let Ok(path) = NotePath::parse(&rel)
             && path.as_str() == rel
         {
