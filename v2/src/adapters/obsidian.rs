@@ -6,7 +6,7 @@ use crate::domain::note::{Block, Note};
 use crate::domain::path::NotePath;
 use crate::ports::Vault;
 use anyhow::{Context, Result, anyhow, ensure};
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, Options, Parser, Tag};
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::ops::Range;
@@ -59,7 +59,8 @@ impl ObsidianVault {
 
 /// The visible Markdown files under `dir`, whose vault-relative path is
 /// `prefix`. Hidden names and symlinks are skipped, as are names
-/// [`NotePath::parse`] rejects or would change.
+/// [`NotePath::parse`] rejects or would change (`notes.txt` would become
+/// `notes.txt.md`, so it is no note).
 fn walk(dir: &Path, prefix: &str, found: &mut Vec<(NotePath, PathBuf)>) -> Result<()> {
     for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let entry = entry?;
@@ -76,7 +77,6 @@ fn walk(dir: &Path, prefix: &str, found: &mut Vec<(NotePath, PathBuf)>) -> Resul
         if kind.is_dir() {
             walk(&entry.path(), &rel, found)?;
         } else if kind.is_file()
-            && is_markdown(name)
             && entry.metadata()?.len() <= MAX_NOTE_BYTES
             && let Ok(path) = NotePath::parse(&rel)
             && path.as_str() == rel
@@ -85,12 +85,6 @@ fn walk(dir: &Path, prefix: &str, found: &mut Vec<(NotePath, PathBuf)>) -> Resul
         }
     }
     Ok(())
-}
-
-fn is_markdown(name: &str) -> bool {
-    Path::new(name)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
 }
 
 /// The file's text; invalid UTF-8 is replaced, never fatal.
@@ -176,13 +170,10 @@ impl<'a> Blocks<'a> {
                 self.start(&tag, range.start);
                 self.depth += 1;
             }
-            Event::End(end) => {
+            Event::End(_) => {
                 self.depth -= 1;
                 if self.open.as_ref().is_some_and(|o| o.depth == self.depth) {
                     self.close(range.end);
-                }
-                if end == TagEnd::HtmlBlock {
-                    self.in_tag = false;
                 }
             }
             Event::Text(text) | Event::Code(text) => self.push(&text),
@@ -712,6 +703,17 @@ mod tests {
     }
 
     #[test]
+    fn html_text_keeps_a_greater_than_sign() {
+        assert_eq!(texts(&doc("<div>5 > 3</div>\n")), ["5 > 3"]);
+    }
+
+    #[test]
+    fn code_keeps_its_indentation_and_blank_lines() {
+        let note = doc("```rust\nfn a() {\n    x();\n\n}\n```\n");
+        assert_eq!(texts(&note), ["fn a() {\n    x();\n\n}"]);
+    }
+
+    #[test]
     fn empty_blocks_and_rules_are_not_blocks() {
         let note = doc("- \n- real\n\n---\n\n![](x.png)\n\nend\n");
         assert_eq!(texts(&note), ["real", "end"]);
@@ -923,6 +925,29 @@ mod tests {
     }
 
     #[test]
+    fn place_closes_a_fence_only_with_a_bare_marker_of_its_kind_and_length() {
+        // In each note the first `## A` sits inside a fence, so the fact goes
+        // into the real `## A` section, before `## B`.
+        for fence in [
+            "````\n```\n## A\n````\n",    // a shorter marker does not close
+            "```\n~~~\n## A\n```\n",      // another character does not close
+            "```\n``` rust\n## A\n```\n", // a marker with text does not close
+            "~~~ a`b\n## A\n~~~\n",       // a tilde fence may name backticks
+        ] {
+            let markdown = format!("{fence}## A\nreal\n## B\nend\n");
+            let placed = place(&markdown, Some("A"), "new");
+            let expected = format!("{fence}## A\nreal\n\nnew\n\n## B\nend\n");
+            assert_eq!(placed, expected, "{fence:?}");
+        }
+        // Two marks are no fence, so the heading after them is found.
+        let markdown = "~~x\n## A\nreal\n## B\n";
+        assert_eq!(
+            place(markdown, Some("A"), "new"),
+            "~~x\n## A\nreal\n\nnew\n\n## B\n"
+        );
+    }
+
+    #[test]
     fn place_keeps_existing_bytes() {
         let existing = "# Здоровье  \r\n\r\n## Лекарства\t\r\n\r\n- Аспирин\r\n\r\n\r\n\
                         ## Врачи\r\nТерапевт   ";
@@ -1037,6 +1062,20 @@ mod tests {
         assert_eq!(target, "original");
         let link = fs::symlink_metadata(dir.path().join("link.md")).unwrap();
         assert!(link.file_type().is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn append_refuses_a_note_it_cannot_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("locked.md");
+        write(dir.path(), "locked.md", "keep\n");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o200)).unwrap();
+        let result = open(dir.path()).append(&note("locked"), None, "x");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "keep\n");
     }
 
     #[cfg(unix)]

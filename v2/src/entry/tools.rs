@@ -574,6 +574,11 @@ mod tests {
     }
 
     #[test]
+    fn prose_escapes_angle_brackets_only_outside_code() {
+        assert_eq!(prose("a <b> `<c>` <d>"), "a &lt;b> `<c>` &lt;d>");
+    }
+
+    #[test]
     fn markdown_has_one_section_per_tool_and_the_settings() {
         let md = markdown();
         for t in tools() {
