@@ -335,10 +335,11 @@ fn prose(text: &str) -> String {
     lines.join("\n")
 }
 
-/// `existing` with `text` placed as [`Vault::append`] describes (pure): at the
-/// end of the section under the first heading titled `heading` (any case, the
-/// heading read as [`blocks`] reads it), under a new `## heading` at the end
-/// when there is no such heading, or at the end of the note. One blank line
+/// `existing` with `text` placed as [`Vault::append`] describes (pure): after
+/// the text right under the first heading titled `heading` (any case, the
+/// heading read as [`blocks`] reads it) and before its first subheading, so
+/// it reads under exactly that heading; under a new `## heading` at the end
+/// when there is no such heading; or at the end of the note. One blank line
 /// separates the text from its neighbours; the existing bytes are kept as
 /// they are.
 fn place(existing: &str, heading: Option<&str>, text: &str) -> String {
@@ -346,7 +347,7 @@ fn place(existing: &str, heading: Option<&str>, text: &str) -> String {
     let Some(heading) = heading.map(str::trim).filter(|h| !h.is_empty()) else {
         return format!("{existing}{}{text}\n", gap(existing));
     };
-    match section_end(existing, heading) {
+    match own_text_end(existing, heading) {
         Some(end) => {
             let (before, after) = existing.split_at(end);
             let blank = if after.is_empty() { "" } else { "\n" };
@@ -370,15 +371,14 @@ fn gap(before: &str) -> &'static str {
     }
 }
 
-/// Where the section under the first heading titled `title` ends: where the
-/// line of the next heading of the same or a higher level starts, or at the
-/// end of the note.
-fn section_end(markdown: &str, title: &str) -> Option<usize> {
+/// Where the text right under the first heading titled `title` ends: where
+/// the line of the next heading starts, whatever its level (a subheading
+/// too), or at the end of the note.
+fn own_text_end(markdown: &str, title: &str) -> Option<usize> {
     let title = title.to_lowercase();
     let outline = parse(markdown).outline;
     let at = outline.iter().position(|h| h.2.to_lowercase() == title)?;
-    let level = outline[at].1;
-    let Some(&(next, ..)) = outline[at + 1..].iter().find(|h| h.1 <= level) else {
+    let Some(&(next, ..)) = outline.get(at + 1) else {
         return Some(markdown.len());
     };
     // An indented heading starts after its indentation.
@@ -508,7 +508,8 @@ impl Vault for ObsidianVault {
             bail!(
                 "refusing to append to {note}: the new text would change how the note reads \
                  from line {line} on, so nothing was written. An unclosed code fence or HTML \
-                 comment does that, and so does a heading with fewer `#` than its section's own"
+                 comment does that, and so does a heading in the text that would take in the \
+                 sections after it"
             );
         }
         write_atomic(&file, placed.as_bytes(), permissions.as_ref())
