@@ -95,6 +95,17 @@ fn check_key_transport(url: &str) -> Result<()> {
     Ok(())
 }
 
+/// The proxy for requests to `url`: none for this machine, so note text sent
+/// to a local embedder never leaves it through an `HTTP_PROXY` setting.
+fn proxy_for(url: &str, from_env: Option<ureq::Proxy>) -> Option<ureq::Proxy> {
+    let local = url
+        .parse::<Uri>()
+        .ok()
+        .and_then(|uri| uri.host().map(is_loopback))
+        .unwrap_or(false);
+    from_env.filter(|_| !local)
+}
+
 /// `localhost` or a loopback address; IPv6 hosts may come in brackets.
 fn is_loopback(host: &str) -> bool {
     let ip = host
@@ -177,6 +188,7 @@ impl HttpEmbedder {
             .timeout_global(Some(TIMEOUT))
             // Non-2xx comes back as a response, so its body can be quoted.
             .http_status_as_error(false)
+            .proxy(proxy_for(base_url, ureq::Proxy::try_from_env()))
             .build()
             .into();
         HttpEmbedder {
@@ -247,6 +259,20 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
     use std::thread::{self, JoinHandle};
     use std::time::Duration;
+
+    #[test]
+    fn requests_to_this_machine_never_use_a_proxy() {
+        let proxy = || Some(ureq::Proxy::new("http://proxy.example:3128").unwrap());
+        for local in [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:8080",
+            "http://[::1]/v1",
+        ] {
+            assert!(proxy_for(local, proxy()).is_none(), "{local}");
+        }
+        assert!(proxy_for("https://openrouter.ai/api/v1", proxy()).is_some());
+        assert!(proxy_for("https://openrouter.ai/api/v1", None).is_none());
+    }
 
     const GEMMA: Format = Format::GemmaRetrieval;
     const PLAIN: Format = Format::Plain;
