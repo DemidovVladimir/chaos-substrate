@@ -2,9 +2,11 @@
 //! `ping`, `tools/list` and `tools/call`. Nothing is opened or contacted
 //! before a tool is called, so the handshake is always instant.
 
-use super::cli::{Command, Settings};
+use super::cli::{self, Command, Settings};
+use super::tools;
 use anyhow::Result;
-use serde_json::Value;
+use serde_json::{Value, json};
+use std::io::{BufRead, Write};
 
 /// Newest MCP protocol revision this server speaks: the last one with the
 /// `initialize` handshake (2026-07-28 and later are stateless and use
@@ -14,24 +16,108 @@ pub const PROTOCOL_VERSION: &str = "2025-11-25";
 /// Revisions accepted in `initialize`, newest first.
 pub const SUPPORTED: &[&str] = &[PROTOCOL_VERSION, "2025-06-18", "2025-03-26", "2024-11-05"];
 
+const PARSE_ERROR: i64 = -32700;
+const INVALID_REQUEST: i64 = -32600;
+const METHOD_NOT_FOUND: i64 = -32601;
+const INVALID_PARAMS: i64 = -32602;
+
+/// A JSON-RPC error: code and message.
+type Failure = (i64, String);
+
 /// Answer one JSON-RPC message; `None` for notifications. `run` executes a
 /// parsed tool command (the real knowledge base in production).
 pub fn handle(message: &Value, run: &dyn Fn(&Command) -> Result<Value>) -> Option<Value> {
-    let _ = (message, run);
-    todo!()
+    let Some(request) = message.as_object() else {
+        let failure = (INVALID_REQUEST, "expected one JSON-RPC object".into());
+        return Some(error(&Value::Null, failure));
+    };
+    let id = request.get("id")?;
+    let params = request.get("params").unwrap_or(&Value::Null);
+    let outcome = match request.get("method").and_then(Value::as_str) {
+        Some("initialize") => Ok(initialize(params)),
+        Some("ping") => Ok(json!({})),
+        Some("tools/list") => Ok(list()),
+        Some("tools/call") => call(params, run),
+        Some(method) => Err((METHOD_NOT_FOUND, format!("method not found: {method}"))),
+        None => Err((INVALID_REQUEST, "a request needs a method".into())),
+    };
+    Some(match outcome {
+        Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+        Err(failure) => error(id, failure),
+    })
 }
 
 /// Serve until stdin closes.
 pub fn serve(settings: &Settings) -> Result<()> {
-    let _ = settings;
-    todo!()
+    let run = |command: &Command| cli::execute(settings, command);
+    let mut stdout = std::io::stdout();
+    for line in std::io::stdin().lock().split(b'\n') {
+        if let Some(reply) = answer(&line?, &run) {
+            writeln!(stdout, "{reply}")?;
+            stdout.flush()?;
+        }
+    }
+    Ok(())
 }
 
 /// The reply line to one stdin line: `None` for blank lines and notifications,
 /// a parse error for anything that is not JSON.
 fn answer(line: &[u8], run: &dyn Fn(&Command) -> Result<Value>) -> Option<String> {
-    let _ = (line, run);
-    todo!()
+    if line.trim_ascii().is_empty() {
+        return None;
+    }
+    let reply = match serde_json::from_slice::<Value>(line) {
+        Ok(message) => handle(&message, run)?,
+        Err(e) => error(&Value::Null, (PARSE_ERROR, format!("parse error: {e}"))),
+    };
+    Some(reply.to_string())
+}
+
+fn error(id: &Value, (code, message): Failure) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
+}
+
+/// Echo the client's revision when we speak it, else offer our newest.
+fn initialize(params: &Value) -> Value {
+    let requested = params["protocolVersion"].as_str();
+    let version = requested
+        .filter(|v| SUPPORTED.contains(v))
+        .unwrap_or(PROTOCOL_VERSION);
+    json!({
+        "protocolVersion": version,
+        "capabilities": {"tools": {"listChanged": false}},
+        "serverInfo": {"name": env!("CARGO_PKG_NAME"), "version": env!("CARGO_PKG_VERSION")},
+        "instructions": tools::instructions(),
+    })
+}
+
+fn list() -> Value {
+    let tools: Vec<Value> = tools::tools()
+        .into_iter()
+        .map(|t| json!({"name": t.name, "description": t.description, "inputSchema": t.input_schema}))
+        .collect();
+    json!({ "tools": tools })
+}
+
+/// An unknown tool is a protocol error; invalid arguments and failures are
+/// tool results with `isError`, so the model can read them and correct itself.
+fn call(params: &Value, run: &dyn Fn(&Command) -> Result<Value>) -> Result<Value, Failure> {
+    let name = params["name"]
+        .as_str()
+        .ok_or((INVALID_PARAMS, "tools/call needs a tool `name`".into()))?;
+    if !tools::tools().iter().any(|t| t.name == name) {
+        return Err((INVALID_PARAMS, format!("unknown tool: {name}")));
+    }
+    let none = json!({});
+    let arguments = match &params["arguments"] {
+        Value::Null => &none,
+        given => given,
+    };
+    let (text, is_error) = match tools::command(name, arguments).and_then(|c| run(&c)) {
+        Ok(report) => (report.to_string(), false),
+        Err(e) => (format!("{e:#}"), true),
+    };
+    Ok(json!({"content": [{"type": "text", "text": text}], "isError": is_error}))
 }
 
 #[cfg(test)]

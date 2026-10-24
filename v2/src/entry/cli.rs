@@ -2,16 +2,28 @@
 //! doc comment and argument docs are also its MCP description and schema
 //! (`entry::tools`), so the two surfaces cannot drift.
 
+use super::mcp;
+use crate::adapters::embedder::HttpEmbedder;
+use crate::adapters::obsidian::ObsidianVault;
+use crate::adapters::redb_index::RedbIndex;
+use crate::application::Kb;
 use crate::application::remember::INBOX;
+use crate::domain::path::NotePath;
 use crate::domain::presence::DEFAULT_MIN_SCORE;
-use anyhow::Result;
+use anyhow::{Context, Result, ensure};
 use clap::{Args, Parser, Subcommand};
+use serde::Serialize;
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 /// Personal knowledge base for agents: Markdown notes in, instant "is this
 /// known?" checks and similarity search out.
+///
+/// Before asking the user something, check whether the knowledge base
+/// already knows it, then search to read the passages. When the user tells
+/// you a new fact, remember it, one fact per call. After editing notes in the
+/// vault, sync.
 #[derive(Debug, Parser)]
 #[command(name = "chaos-kb", version)]
 pub struct Cli {
@@ -99,18 +111,71 @@ pub enum Command {
 
 /// Run one tool command against the configured knowledge base.
 pub fn execute(settings: &Settings, command: &Command) -> Result<Value> {
-    let _ = (settings, command);
-    todo!()
+    ensure!(
+        *command != Command::Mcp,
+        "`mcp` serves the tools; it is not one of them"
+    );
+    let root = settings
+        .vault
+        .as_deref()
+        .context("set --vault or CHAOS_KB_VAULT")?;
+    let vault = ObsidianVault::new(root)?;
+    let index = RedbIndex::new(&index_path(settings, root));
+    let api_key = std::env::var("CHAOS_KB_EMBED_API_KEY").ok();
+    let embedder = HttpEmbedder::new(&settings.embed_url, &settings.embed_model, api_key);
+    let kb = Kb {
+        vault: &vault,
+        index: &index,
+        embedder: &embedder,
+    };
+    match command {
+        Command::Sync { dry_run } => json(kb.sync(*dry_run)),
+        Command::Remember {
+            text,
+            note,
+            heading,
+        } => json(kb.remember(text, &NotePath::parse(note)?, heading.as_deref())),
+        Command::Check { query, min_score } => json(kb.check(query, *min_score)),
+        Command::Search {
+            query,
+            limit,
+            min_score,
+        } => json(kb.search(query, *limit, *min_score)),
+        Command::Mcp => unreachable!("rejected above"),
+    }
+}
+
+/// A use-case report as JSON.
+fn json(report: Result<impl Serialize>) -> Result<Value> {
+    Ok(serde_json::to_value(report?)?)
 }
 
 /// `--index`, or `<vault>/.chaos-kb/index.redb`.
-fn index_path(settings: &Settings, vault: &std::path::Path) -> PathBuf {
-    let _ = (settings, vault);
-    todo!()
+fn index_path(settings: &Settings, vault: &Path) -> PathBuf {
+    settings
+        .index
+        .clone()
+        .unwrap_or_else(|| vault.join(".chaos-kb").join("index.redb"))
 }
 
+/// Parse the command line; `mcp` serves, every other command prints its
+/// report as pretty JSON on stdout.
 pub fn main() -> ExitCode {
-    todo!()
+    let Cli { settings, command } = Cli::parse();
+    let outcome = match command {
+        Command::Mcp => mcp::serve(&settings),
+        tool => execute(&settings, &tool).and_then(|report| {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(())
+        }),
+    };
+    match outcome {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 #[cfg(test)]

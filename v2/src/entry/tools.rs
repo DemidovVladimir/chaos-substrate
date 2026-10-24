@@ -4,12 +4,18 @@
 //! arguments. Calls are turned back into argv and parsed by the same clap
 //! definition, so defaults and validation live in exactly one place.
 
-use super::cli::Command;
-use anyhow::Result;
-use serde_json::Value;
+use super::cli::{Cli, Command};
+use anyhow::{Context, Result, anyhow, bail};
+use clap::builder::StyledStr;
+use clap::{Arg, ArgAction, CommandFactory, Parser, Subcommand};
+use serde_json::{Map, Value, json};
+use std::any::TypeId;
 
 /// Prefix of every MCP tool name.
 pub const PREFIX: &str = "kb_";
+
+/// The subcommand that serves the tools rather than being one.
+const SERVER: &str = "mcp";
 
 /// One MCP tool.
 #[derive(Debug, Clone, PartialEq)]
@@ -23,26 +29,324 @@ pub struct Tool {
 
 /// Every tool, in subcommand order.
 pub fn tools() -> Vec<Tool> {
-    todo!()
+    subcommands(&cli()).map(tool).collect()
 }
 
 /// Parse an MCP call (`kb_check`, `{"query": "…"}`) into a [`Command`] through
 /// clap, exactly as the CLI would. Unknown tools and invalid arguments fail
 /// with clap's message.
 pub fn command(name: &str, arguments: &Value) -> Result<Command> {
-    let _ = (name, arguments);
-    todo!()
+    let cli = cli();
+    let sub = subcommand(&cli, name)?;
+    let given = arguments
+        .as_object()
+        .with_context(|| format!("{name} arguments must be a JSON object"))?;
+    let mut argv = vec![cli.get_name().to_string(), sub.get_name().to_string()];
+    let mut positionals = Vec::new();
+    for (key, value) in given {
+        let arg = own_args(sub)
+            .find(|a| a.get_id() == key.as_str())
+            .ok_or_else(|| unknown_key(sub, name, key))?;
+        match (Kind::of(arg), value) {
+            (_, Value::Null) => {}
+            (Kind::Boolean, Value::Bool(set)) => {
+                if *set {
+                    argv.push(format!("--{}", long(arg)?));
+                }
+            }
+            (Kind::Boolean, _) => bail!("`{key}` must be true or false"),
+            (_, Value::String(_) | Value::Number(_)) => {
+                let text = value
+                    .as_str()
+                    .map_or_else(|| value.to_string(), str::to_string);
+                match arg.get_index() {
+                    Some(index) => positionals.push((index, text)),
+                    None => argv.push(format!("--{}={text}", long(arg)?)),
+                }
+            }
+            (kind, _) => bail!("`{key}` must be a {}", kind.name()),
+        }
+    }
+    if !positionals.is_empty() {
+        positionals.sort();
+        argv.push("--".into());
+        argv.extend(positionals.into_iter().map(|(_, text)| text));
+    }
+    Call::try_parse_from(argv)
+        .map(|call| call.command)
+        .map_err(|e| anyhow!("{}", e.to_string().trim_end()))
 }
 
 /// The agent workflow guide: the CLI's about text.
 pub fn instructions() -> String {
-    todo!()
+    let cli = Cli::command();
+    help(cli.get_long_about(), cli.get_about())
 }
 
 /// The Markdown tool reference embedded in README.md between the
 /// `<!-- tools:start -->` and `<!-- tools:end -->` markers.
 pub fn markdown() -> String {
-    todo!()
+    let cli = cli();
+    let mut sections: Vec<String> = tools().iter().map(|t| section(&cli, t)).collect();
+    sections.push(settings(&cli));
+    sections.join("\n")
+}
+
+/// The tool subcommands without the CLI's settings: what one MCP call may set.
+#[derive(Parser)]
+struct Call {
+    #[command(subcommand)]
+    command: Command,
+}
+
+/// The JSON type of an argument, read from its clap action and value parser.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Kind {
+    Boolean,
+    Integer { unsigned: bool },
+    Number,
+    String,
+}
+
+impl Kind {
+    fn of(arg: &Arg) -> Kind {
+        if matches!(arg.get_action(), ArgAction::SetTrue) {
+            return Kind::Boolean;
+        }
+        // clap reports the parsed value's type; `AnyValueId` compares with `TypeId`.
+        let parsed = arg.get_value_parser().type_id();
+        let is_any = |types: &[TypeId]| types.iter().any(|t| parsed == *t);
+        let unsigned = [
+            TypeId::of::<u8>(),
+            TypeId::of::<u16>(),
+            TypeId::of::<u32>(),
+            TypeId::of::<u64>(),
+            TypeId::of::<usize>(),
+        ];
+        let signed = [
+            TypeId::of::<i8>(),
+            TypeId::of::<i16>(),
+            TypeId::of::<i32>(),
+            TypeId::of::<i64>(),
+            TypeId::of::<isize>(),
+        ];
+        if is_any(&unsigned) {
+            Kind::Integer { unsigned: true }
+        } else if is_any(&signed) {
+            Kind::Integer { unsigned: false }
+        } else if is_any(&[TypeId::of::<f32>(), TypeId::of::<f64>()]) {
+            Kind::Number
+        } else {
+            Kind::String
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Kind::Boolean => "boolean",
+            Kind::Integer { .. } => "integer",
+            Kind::Number => "number",
+            Kind::String => "string",
+        }
+    }
+
+    /// A clap value (a default) as JSON of this type.
+    fn json(self, raw: &str) -> Value {
+        let typed = match self {
+            Kind::Boolean => raw.parse::<bool>().ok().map(Value::from),
+            Kind::Integer { .. } => raw.parse::<i64>().ok().map(Value::from),
+            Kind::Number => raw.parse::<f64>().ok().map(Value::from),
+            Kind::String => None,
+        };
+        typed.unwrap_or_else(|| Value::from(raw))
+    }
+}
+
+/// The clap definition, built: help flags added, settings propagated to every
+/// subcommand, implied defaults (`false` for flags) filled in.
+fn cli() -> clap::Command {
+    let mut cli = Cli::command();
+    cli.build();
+    cli
+}
+
+/// The subcommands that are tools: those of [`Command`] except the server
+/// (clap's generated `help` subcommand is not one of them).
+fn subcommands(cli: &clap::Command) -> impl Iterator<Item = &clap::Command> {
+    cli.get_subcommands()
+        .filter(|s| Command::has_subcommand(s.get_name()) && s.get_name() != SERVER)
+}
+
+/// The subcommand behind an MCP tool name.
+fn subcommand<'a>(cli: &'a clap::Command, tool: &str) -> Result<&'a clap::Command> {
+    let name = tool.strip_prefix(PREFIX);
+    subcommands(cli)
+        .find(|s| Some(s.get_name()) == name)
+        .ok_or_else(|| {
+            let known: Vec<String> = subcommands(cli)
+                .map(|s| format!("{PREFIX}{}", s.get_name()))
+                .collect();
+            anyhow!("unknown tool `{tool}`; the tools are {}", known.join(", "))
+        })
+}
+
+/// A subcommand's own arguments: no help flag, no global settings.
+fn own_args(sub: &clap::Command) -> impl Iterator<Item = &Arg> {
+    sub.get_arguments().filter(|a| {
+        let generated = matches!(
+            a.get_action(),
+            ArgAction::Help | ArgAction::HelpShort | ArgAction::HelpLong | ArgAction::Version
+        );
+        !generated && !a.is_global_set()
+    })
+}
+
+fn unknown_key(sub: &clap::Command, tool: &str, key: &str) -> anyhow::Error {
+    let known: Vec<String> = own_args(sub).map(|a| format!("`{}`", a.get_id())).collect();
+    anyhow!(
+        "{tool} has no argument `{key}`; it takes {}",
+        known.join(", ")
+    )
+}
+
+fn long(arg: &Arg) -> Result<&str> {
+    arg.get_long()
+        .with_context(|| format!("`{}` has no --long flag", arg.get_id()))
+}
+
+/// What `--help` shows: the long text when there is one, else the short one.
+fn help(long: Option<&StyledStr>, short: Option<&StyledStr>) -> String {
+    long.or(short).map(ToString::to_string).unwrap_or_default()
+}
+
+fn tool(sub: &clap::Command) -> Tool {
+    let mut properties = Map::new();
+    let mut required = Vec::new();
+    for arg in own_args(sub) {
+        let id = arg.get_id().to_string();
+        if arg.is_required_set() {
+            required.push(Value::from(id.as_str()));
+        }
+        properties.insert(id, property(arg));
+    }
+    let mut input_schema = json!({
+        "type": "object",
+        "properties": properties,
+        "additionalProperties": false,
+    });
+    if !required.is_empty() {
+        input_schema["required"] = Value::Array(required);
+    }
+    Tool {
+        name: format!("{PREFIX}{}", sub.get_name()),
+        description: help(sub.get_long_about(), sub.get_about()),
+        input_schema,
+    }
+}
+
+fn property(arg: &Arg) -> Value {
+    let kind = Kind::of(arg);
+    let mut property = json!({
+        "type": kind.name(),
+        "description": help(arg.get_long_help(), arg.get_help()),
+    });
+    if kind == (Kind::Integer { unsigned: true }) {
+        property["minimum"] = json!(0);
+    }
+    if let [default] = arg.get_default_values() {
+        property["default"] = kind.json(&default.to_string_lossy());
+    }
+    property
+}
+
+/// One tool: heading, description, and an args table (required args first).
+fn section(cli: &clap::Command, tool: &Tool) -> String {
+    let sub = &tool.name[PREFIX.len()..];
+    let mut out = format!(
+        "### `{}` · `{} {sub}`\n\n{}\n",
+        tool.name,
+        cli.get_name(),
+        prose(&tool.description)
+    );
+    let schema = &tool.input_schema;
+    let required = |name: &str| {
+        schema["required"]
+            .as_array()
+            .is_some_and(|r| r.iter().any(|v| v == name))
+    };
+    let mut rows: Vec<_> = schema["properties"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .collect();
+    if rows.is_empty() {
+        return out;
+    }
+    rows.sort_by_key(|(name, _)| !required(name));
+    out.push_str("\n| arg | type | default | description |\n|---|---|---|---|\n");
+    for (name, property) in rows {
+        let mark = if required(name) { " (required)" } else { "" };
+        let mut kind = property["type"].as_str().unwrap_or_default().to_string();
+        if let Some(minimum) = property.get("minimum") {
+            kind = format!("{kind} ≥ {minimum}");
+        }
+        let default = match property.get("default") {
+            Some(Value::String(s)) => format!("`{s}`"),
+            Some(v) => format!("`{v}`"),
+            None => String::new(),
+        };
+        let description = cell(property["description"].as_str().unwrap_or_default());
+        out.push_str(&format!(
+            "| `{name}`{mark} | {kind} | {default} | {description} |\n"
+        ));
+    }
+    out
+}
+
+/// The global settings every command takes, with their environment variables.
+fn settings(cli: &clap::Command) -> String {
+    let mut out = String::from(
+        "### Settings\n\n| flag | env var | default | description |\n|---|---|---|---|\n",
+    );
+    for arg in cli.get_arguments().filter(|a| a.is_global_set()) {
+        let flag = arg
+            .get_long()
+            .map(|l| format!("`--{l}`"))
+            .unwrap_or_default();
+        let env = arg
+            .get_env()
+            .map(|e| format!("`{}`", e.to_string_lossy()))
+            .unwrap_or_default();
+        let default: Vec<String> = arg
+            .get_default_values()
+            .iter()
+            .map(|d| format!("`{}`", d.to_string_lossy()))
+            .collect();
+        let description = cell(&help(arg.get_long_help(), arg.get_help()));
+        out.push_str(&format!(
+            "| {flag} | {env} | {} | {description} |\n",
+            default.join(", ")
+        ));
+    }
+    out
+}
+
+/// Markdown prose: `<` outside code spans escaped, so `<vault>` is not HTML.
+fn prose(text: &str) -> String {
+    let parts: Vec<String> = text
+        .split('`')
+        .enumerate()
+        .map(|(i, part)| match i % 2 {
+            0 => part.replace('<', "&lt;"),
+            _ => part.to_string(),
+        })
+        .collect();
+    parts.join("`")
+}
+
+/// One table cell: prose on a single line, pipes escaped.
+fn cell(text: &str) -> String {
+    prose(text).replace('|', "\\|").replace('\n', " ")
 }
 
 #[cfg(test)]
