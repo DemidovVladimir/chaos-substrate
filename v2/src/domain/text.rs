@@ -110,6 +110,8 @@ mod tests {
         assert_eq!(normalize("Ratio 1:5, at 10:30."), "ratio 1 : 5 at 10 : 30");
         assert_eq!(normalize("Dose: 5"), "dose 5");
         assert_eq!(normalize("Room 4:B"), "room 4 b");
+        assert_eq!(normalize("Dose:5"), "dose 5");
+        assert_eq!(normalize(":5"), "5");
         // A decimal comma reads like a decimal point.
         assert_eq!(fingerprint("1,5 mg"), fingerprint("1.5 mg"));
     }
