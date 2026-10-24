@@ -5,9 +5,12 @@ pub mod check;
 pub mod remember;
 pub mod search;
 pub mod sync;
+#[cfg(test)]
+mod testing;
 
+use crate::domain::{text, vector};
 use crate::ports::{Embedder, Hit, Index, Snapshot, Vault};
-use anyhow::Result;
+use anyhow::{Context, Result, bail, ensure};
 
 /// The knowledge base: one vault, its index, one embedder.
 #[derive(Clone, Copy)]
@@ -21,12 +24,31 @@ impl Kb<'_> {
     /// The stored snapshot, when it was built by this embedder. Fails with an
     /// actionable message before the first sync or after a model change.
     fn ready(&self) -> Result<Snapshot> {
-        todo!()
+        let snapshot = self
+            .index
+            .snapshot()?
+            .context("the index is empty: run `chaos-kb sync` first")?;
+        ensure!(
+            snapshot.embedder == self.embedder.id(),
+            "the index was built with embedder `{}` but `{}` is configured: run `chaos-kb sync` to re-embed",
+            snapshot.embedder,
+            self.embedder.id()
+        );
+        Ok(snapshot)
     }
 
     /// The `k` chunks nearest to `query` (embedded as a query, unit length).
     fn similar(&self, query: &str, k: usize) -> Result<Vec<Hit>> {
-        let _ = (query, k);
-        todo!()
+        let v = vector::unit(self.embedder.embed_query(query)?)
+            .context("the embedder returned a zero vector for the query")?;
+        self.index.nearest(&v, k)
     }
+}
+
+/// `input` trimmed, or an error when it holds no letter or digit.
+fn nonblank<'t>(input: &'t str, what: &str) -> Result<&'t str> {
+    if text::is_blank(input) {
+        bail!("the {what} is empty (no letters or digits)");
+    }
+    Ok(input.trim())
 }
