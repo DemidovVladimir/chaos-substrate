@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Merkle tree and exact check · chaos-kb</title>
-<meta name="description" content="How chaos-kb fingerprints the words of each block, rolls the fingerprints up into one root hash, and uses them for exact lookups and change detection.">
+<meta name="description" content="How chaos-kb fingerprints the words of each block, rolls the fingerprints up into one hash per note and one root hash, and uses them for exact lookups and change detection.">
 <script>try{var t=localStorage.getItem("tengu-tutorial-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -26,12 +26,12 @@
 <header class="hero">
   <div class="eyebrow"><span class="stamp" aria-hidden="true">答</span> Answers · same words</div>
   <h1>Merkle tree and exact check</h1>
-  <p class="lede">A <b>fingerprint</b> is a hash of the words in one block. Fingerprints roll up, note by note, into one <b>root hash</b> for the whole vault. The same words take one lookup, and an unchanged root means nothing changed.</p>
+  <p class="lede">A <b>fingerprint</b> is a hash of one block's words. Fingerprints roll up into one hash per note, and those into one <b>root hash</b> for the vault. The same words take one lookup; an unchanged root means nothing changed.</p>
   <ul class="facts">
     <li>hash: <b>BLAKE3</b>, 32 bytes, 64 hex characters</li>
     <li>leaf tag <b>0x00</b>, node tag <b>0x01</b></li>
+    <li><b>3</b> levels: root, notes, block fingerprints</li>
     <li><b>0</b> model calls on the exact path</li>
-    <li><b>1</b> root hash per vault</li>
   </ul>
   <ul class="legend" aria-label="Colour key">
     <li><span class="chip brain"><span class="k">脳</span> notes</span> the blocks the words come from</li>
@@ -50,7 +50,7 @@
   <figure class="stage" data-stage data-interval="3600">
     <div class="stage-canvas">
       <svg viewBox="0 0 860 380" role="img" aria-labelledby="tree-t">
-        <title id="tree-t">Blocks are normalized and fingerprinted. Fingerprints roll up into note hashes and one root. The fingerprints are also stored in the index, where check and remember look up the same words. Comparing the new root with the stored one shows what changed.</title>
+        <title id="tree-t">Blocks are normalized and fingerprinted. Fingerprints roll up into note hashes, and note hashes into one root. The fingerprints are also stored in the index, where check and remember look up the same words. Comparing the new tree with the stored one shows what changed.</title>
         <path class="e" id="t-blk-fp" d="M170 92 L228 92" data-at="2-3"/>
         <path class="e" id="t-fp-note" d="M400 92 L458 92" data-at="4"/>
         <path class="e" id="t-note-root" d="M630 92 L688 92" data-at="5"/>
@@ -103,9 +103,9 @@
         <g class="pop badge" data-at="2"><rect x="150" y="20" width="170" height="22" rx="11"/><text x="235" y="35" text-anchor="middle">normalize the words</text></g>
         <g class="pop badge" data-at="3"><rect x="230" y="142" width="170" height="22" rx="11"/><text x="315" y="157" text-anchor="middle">BLAKE3(0x00 ‖ words)</text></g>
         <g class="pop badge" data-at="4"><rect x="460" y="142" width="170" height="22" rx="11"/><text x="545" y="157" text-anchor="middle">labelled by heading</text></g>
-        <g class="pop badge" data-at="5"><rect x="660" y="20" width="190" height="22" rx="11"/><text x="755" y="35" text-anchor="middle">BLAKE3(0x01 ‖ children)</text></g>
+        <g class="pop badge" data-at="5"><rect x="660" y="20" width="190" height="22" rx="11"/><text x="755" y="35" text-anchor="middle">labelled by note path</text></g>
         <g class="pop badge" data-at="6"><rect x="40" y="190" width="170" height="22" rx="11"/><text x="125" y="205" text-anchor="middle">note, section, lines</text></g>
-        <g class="pop badge" data-at="7"><rect x="460" y="324" width="170" height="22" rx="11"/><text x="545" y="339" text-anchor="middle">one lookup, no model</text></g>
+        <g class="pop badge" data-at="7"><rect x="460" y="324" width="170" height="22" rx="11"/><text x="545" y="339" text-anchor="middle">every block, no model</text></g>
         <g class="pop badge" data-at="8"><rect x="660" y="324" width="190" height="22" rx="11"/><text x="755" y="339" text-anchor="middle">added · changed · removed</text></g>
 
         <circle class="tok brain" r="6" data-path="t-blk-fp" data-at="3"/>
@@ -118,13 +118,13 @@
     </div>
     <div class="stage-side">
       <ol class="captions">
-        <li><code>sync</code> reads each note and splits it into <b>blocks</b>: a paragraph, one list item, a table, a quote, a code block or the front matter. Headings label the blocks below them.</li>
-        <li>Each block's words are <b>normalized</b>: compatibility forms are unified, and case, spacing, punctuation and Markdown emphasis are dropped. Letters and digits of every script stay.</li>
-        <li>The <b>fingerprint</b> is BLAKE3 of the byte <code>0x00</code> and the normalized words. A block with no letter or digit has nothing to fingerprint and is skipped.</li>
-        <li>A <b>note's hash</b> covers its fingerprints in order, each labelled with its heading path. Lines and Markdown symbols never reach a hash; only words and headings do.</li>
-        <li>Note hashes roll up into the <b>root</b>. In the current code each folder hashes its direct children by name, and the root hashes the top level.</li>
+        <li><code>sync</code> splits each note into <b>blocks</b>: a paragraph, one list item, a table, a quote, a code or HTML block, or the front matter. Headings label the blocks below.</li>
+        <li>Each block's words are <b>normalized</b>: compatibility forms unified, lowercase, and spacing, sentence punctuation, quotes, brackets and emphasis marks dropped. Every other symbol stays, as a word of its own.</li>
+        <li>The <b>fingerprint</b> is BLAKE3 of the byte <code>0x00</code> and the normalized words. A block with no letter or digit, such as <code>---</code>, has none and is skipped.</li>
+        <li>A <b>note's hash</b> covers its fingerprints in order, each labelled with its heading path. Line numbers and Markdown syntax never reach a hash.</li>
+        <li>The <b>root</b> covers every note hash, labelled by the note's path. There are no folder hashes: the tree is the root, the notes and their fingerprints.</li>
         <li>sync also stores every fingerprint with its note, section and lines. That is the <b>exact index</b>, kept in the index file.</li>
-        <li><code>check</code> and <code>remember</code> look up the words they are given there. A match is one lookup and needs no model call.</li>
+        <li><code>check</code> and <code>remember</code> read their input the way notes are read, then look up the fingerprint of every block there. A match needs no model call.</li>
         <li>Comparing the new tree with the stored one lists the notes <b>added</b>, <b>changed</b> and <b>removed</b>. Equal roots mean equal knowledge: nothing changed.</li>
       </ol>
     </div>
@@ -135,65 +135,73 @@
   <div class="sec-head">
     <span class="kicker">Same words, same fingerprint</span>
     <h2 id="s-same">What counts as the same words</h2>
-    <p>Pairs from the unit tests in <code>src/domain/text.rs</code>, and one real check on the example vault.</p>
+    <p>Pairs from the unit tests in <code>src/domain/text.rs</code> and the README, read as note lines. Markdown syntax is removed first; then only the words and the symbols that carry meaning count.</p>
   </div>
   <div class="table-wrap">
     <table>
       <thead><tr><th>Text A</th><th>Text B</th><th>Fingerprints</th><th>Why</th></tr></thead>
       <tbody>
-        <tr><td><code>Allergic to penicillin.</code></td><td><code>allergic to PENICILLIN</code></td><td><span class="chip ok">same</span></td><td>case and the full stop do not count</td></tr>
-        <tr><td><code>Hello,  WORLD!!</code></td><td><code>hello world</code></td><td><span class="chip ok">same</span></td><td>spacing and punctuation do not count</td></tr>
+        <tr><td><code>Allergic to penicillin.</code></td><td><code>- **allergic** to PENICILLIN</code></td><td><span class="chip ok">same</span></td><td>the list marker and bold are Markdown; case and the full stop do not count</td></tr>
+        <tr><td><code>Driving licence: B (2015)</code></td><td><code>driving   LICENCE — b, 2015.</code></td><td><span class="chip ok">same</span></td><td>spacing, the colon, the brackets, the dash <code>—</code> and the comma do not count</td></tr>
         <tr><td><code>ﬁle</code></td><td><code>FILE</code></td><td><span class="chip ok">same</span></td><td>the ligature <code>ﬁ</code> is a compatibility form of <code>fi</code></td></tr>
+        <tr><td><code>Blood type: A+</code></td><td><code>Blood type: A-</code></td><td><span class="chip bad">differ</span></td><td><code>+</code> and <code>-</code> are words of their own</td></tr>
+        <tr><td><code>≤ 140</code></td><td><code>≥ 140</code></td><td><span class="chip bad">differ</span></td><td>every symbol outside the ignored set counts</td></tr>
+        <tr><td><code>1.5 mg</code></td><td><code>1-5 mg</code></td><td><span class="chip bad">differ</span></td><td>the full stop is ignored, the hyphen is not</td></tr>
         <tr><td><code>ab c</code></td><td><code>a bc</code></td><td><span class="chip bad">differ</span></td><td>word boundaries count</td></tr>
-        <tr><td><code>Driving licence: B (2015)</code></td><td><code>Driving licence: C (2015)</code></td><td><span class="chip bad">differ</span></td><td>one changed word or digit is a new fingerprint</td></tr>
         <tr><td><code>ёлка</code></td><td><code>елка</code></td><td><span class="chip bad">differ</span></td><td><code>ё</code> and <code>е</code> are different letters</td></tr>
       </tbody>
     </table>
   </div>
-  <p class="note">The first pair has the fingerprint <code>973c899aeacc8e7035e6746bbb7e0c0e471bc5b5af45d289e125bc722244774e</code>, computed by chaos-kb.</p>
+  <p class="note">The ignored characters are <code>. , ; : ! ? " ' ( ) [ ] { } * _ ` ~ |</code>, curly quotes, guillemets and the dash <code>—</code>. The first pair has the fingerprint <code>973c899aeacc8e7035e6746bbb7e0c0e471bc5b5af45d289e125bc722244774e</code>, computed by chaos-kb.</p>
 </section>
 
 <section class="sec" aria-labelledby="s-rules-tabs">
   <div class="sec-head">
     <span class="kicker">The rules and real values</span>
     <h2 id="s-rules-tabs">Hashes of the example vault</h2>
-    <p>The example vault holds <code>Car.md</code>, <code>Communication.md</code> and <code>Health/Allergies.md</code>.</p>
+    <p>The example vault holds <code>Car.md</code>, <code>Communication.md</code> and <code>Health/Allergies.md</code>. Every value below was printed by chaos-kb.</p>
   </div>
   <div class="tabs">
     <div class="tablist">
       <button type="button" aria-controls="tab-rules" aria-selected="true">Hash rules</button>
       <button type="button" aria-controls="tab-keys">Example hashes</button>
-      <button type="button" aria-controls="tab-empty">Two fixed values</button>
+      <button type="button" aria-controls="tab-norm">Normalized words</button>
     </div>
     <div class="tabpanel" id="tab-rules"><pre class="formula"><span class="c"># src/domain/hash.rs: a leaf can never pass for a node</span>
 leaf(data)          = BLAKE3(<span class="n">0x00</span> ‖ data)
 node([(label, h)…]) = BLAKE3(<span class="n">0x01</span> ‖ for each child: len(label) as 8 bytes LE ‖ label ‖ h)
 
 <span class="c"># src/domain/text.rs and src/domain/merkle.rs</span>
-fingerprint(text)   = leaf(normalize(text))
-note hash           = node([(heading path, fingerprint) for each non-blank block, in order])
-root                = node over the note hashes, labelled by name; an empty vault's root is node([])</pre></div>
+fingerprint(text)   = leaf(normalize(text)), or none when text has no letter or digit
+heading label       = each heading normalized, joined by a newline
+note hash           = node([(heading label, fingerprint) for each block that has one, in order])
+root                = node([(note path, note hash) for each note, sorted by path])</pre></div>
     <div class="tabpanel" id="tab-keys" hidden>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Tree key</th><th>Hash</th></tr></thead>
-          <tbody>
-            <tr><td><code>""</code> (the root)</td><td class="wrap"><code>92af70b580a0c600e6288015eb6f54d27e5face2c7201cad7933cf1e2650dcf9</code></td></tr>
-            <tr><td><code>Car.md</code></td><td class="wrap"><code>539cd1ab33d0dc89274f0e50cd4daaf3aa5d1152e37a7c556c61ecce98fe2466</code></td></tr>
-            <tr><td><code>Communication.md</code></td><td class="wrap"><code>90466391792901f0505db3b38253060fa9a7a6f2960d20ec5e420aef32a4154d</code></td></tr>
-            <tr><td><code>Health/Allergies.md</code></td><td class="wrap"><code>925a5cf7c02346d4a3a2fdf84f4a2129e6b22ac0349eb7dc7a5f94be25c6243b</code></td></tr>
-          </tbody>
-        </table>
-      </div>
-      <p class="note">The root's key is the empty string, and a note's key is its path. The current tree also stores one hash per folder.</p>
-    </div>
-    <div class="tabpanel" id="tab-empty" hidden>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Value</th><th>Hash</th></tr></thead>
           <tbody>
-            <tr><td>root of an empty vault: <code>node([])</code>, BLAKE3 of the byte <code>0x01</code></td><td class="wrap"><code>48fc721fbbc172e0925fa27af1671de225ba927134802998b10a1568a188652b</code></td></tr>
-            <tr><td>fingerprint of blank text: <code>leaf("")</code>, never stored and never looked up</td><td class="wrap"><code>2d3adedff11b61f14c886e35afa036736dcd87a74d27b5c1510225d0f592e213</code></td></tr>
+            <tr><td>the root</td><td class="wrap"><code>6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992</code></td></tr>
+            <tr><td><code>Car.md</code></td><td class="wrap"><code>885f1a568822853399253402e042d3556fe7739ae3014df2be91bbee1614cf8f</code></td></tr>
+            <tr><td><code>Communication.md</code></td><td class="wrap"><code>90466391792901f0505db3b38253060fa9a7a6f2960d20ec5e420aef32a4154d</code></td></tr>
+            <tr><td><code>Health/Allergies.md</code></td><td class="wrap"><code>925a5cf7c02346d4a3a2fdf84f4a2129e6b22ac0349eb7dc7a5f94be25c6243b</code></td></tr>
+            <tr><td>the root of an empty vault: <code>node([])</code>, BLAKE3 of the byte <code>0x01</code></td><td class="wrap"><code>48fc721fbbc172e0925fa27af1671de225ba927134802998b10a1568a188652b</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note">The index stores one row per note: its path and its hash. The root is computed from those rows, so it is never stored on its own.</p>
+    </div>
+    <div class="tabpanel" id="tab-norm" hidden>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Text</th><th>Normalized</th><th>Fingerprint</th></tr></thead>
+          <tbody>
+            <tr><td><code>Driving licence: B+ (2015).</code></td><td><code>driving licence b + 2015</code></td><td class="wrap"><code>1472e98acb8185ed2bb20ea5b501bda241f5309dee8a13ba5e5f99e5f2714dcf</code></td></tr>
+            <tr><td><code>Blood type: A+</code></td><td><code>blood type a +</code></td><td class="wrap"><code>70078ac2b0cb82db77e92f9f98802b82a74dca0ad046c175832b9a1661f8f6b9</code></td></tr>
+            <tr><td><code>Blood type: A-</code></td><td><code>blood type a -</code></td><td class="wrap"><code>2afc0c8042b515bb65c992c91754eeaca8f85659c75bf49686920ac5bdaf9d15</code></td></tr>
+            <tr><td><code>snake_case-and/slashes</code></td><td><code>snake case - and / slashes</code></td><td class="wrap"><code>78e58d77c820233971d6db7559082e58c1141c6fc58578cd9e7252090fc8ee94</code></td></tr>
+            <tr><td><code>ПРАВА: «B»</code></td><td><code>права b</code></td><td class="wrap"><code>1bb42efbc6b851e8986db49fe3364bc9602a6bb99c4285e5faab2388b16a1e77</code></td></tr>
+            <tr><td><code>---</code></td><td><code>- - -</code></td><td>none: no letter or digit, never stored and never looked up</td></tr>
           </tbody>
         </table>
       </div>
@@ -209,10 +217,10 @@ root                = node over the note hashes, labelled by name; an empty vaul
   </div>
   <ul class="states">
     <li><span class="chip data">same</span><span><b>formatting only</b>Bold, a list marker, extra spaces: every hash stays. The chunk text changed, so that chunk is embedded again.</span></li>
-    <li><span class="chip jev">changed</span><span><b>words edited</b>The note's hash and the root change. Every other note keeps its hash.</span></li>
+    <li><span class="chip jev">changed</span><span><b>a word or a symbol edited</b>The note's hash and the root change. Every other note keeps its hash.</span></li>
     <li><span class="chip jev">changed</span><span><b>a fact moved under another heading</b>Its label changes, so the note changes.</span></li>
     <li><span class="chip jev">changed</span><span><b>two facts swapped</b>Order is part of a note, so the note changes.</span></li>
-    <li><span class="chip hands">added</span><span><b>a note renamed</b>The new name is added, the old one removed, and the root changes.</span></li>
+    <li><span class="chip hands">added</span><span><b>a note renamed</b>The new path is added and the old one removed. The note hash stays; the root changes.</span></li>
     <li><span class="chip guard">removed</span><span><b>a note deleted</b>The root changes and its fingerprints leave the exact index.</span></li>
   </ul>
 </section>
@@ -223,9 +231,10 @@ root                = node over the note hashes, labelled by name; an empty vaul
     <h2 id="s-rules">Guarantees</h2>
   </div>
   <ul class="checks">
-    <li><span><b>Formatting never moves a hash.</b> Blocks are hashed as plain words, so Markdown marks, case and spacing do not count.</span></li>
-    <li><span><b>Words, order, headings and names count.</b> Change any of them and the note's hash and the root change.</span></li>
-    <li><span><b>No mix-ups by construction.</b> Leaves and nodes start with different tag bytes, and every label carries its length.</span></li>
+    <li><span><b>Formatting never moves a hash.</b> Blocks are hashed as plain words, so Markdown syntax, case, spacing and sentence punctuation do not count.</span></li>
+    <li><span><b>Symbols that carry meaning count.</b> <code>A+</code> and <code>A-</code>, <code>≤</code> and <code>≥</code>, <code>C++</code> and <code>C#</code> stay different facts.</span></li>
+    <li><span><b>Words, order, headings and paths count.</b> Change any of them and the note's hash, or the root, changes.</span></li>
+    <li><span><b>No mix-ups by construction.</b> Leaves and nodes start with different tag bytes, every label carries its length, and one heading named <code>Car &gt; Oil</code> is not two nested headings.</span></li>
     <li><span><b>Blank blocks are not knowledge.</b> A rule or an empty item never enters the tree or the exact index.</span></li>
     <li><span><b>The exact path is free.</b> It reads the stored fingerprints and never calls the embedding model.</span></li>
     <li><span><b>Hashes are always whole.</b> They print as 64 lowercase hex characters, and nothing shorter is accepted.</span></li>
@@ -236,25 +245,34 @@ root                = node over the note hashes, labelled by name; an empty vaul
   <div class="sec-head">
     <span class="kicker">Try it</span>
     <h2 id="s-try">Watch the root</h2>
-    <p>On the example vault. The edits were made between the commands. JSON is shown condensed.</p>
+    <p>On copies of the example vault. The edits were made between the commands. JSON is shown condensed.</p>
   </div>
   <div class="term-wrap">
 <pre class="term" data-type><span class="ln cmd"><span class="p">$ </span>chaos-kb sync</span>
-<span class="ln o">{ "added": ["Car.md", "Communication.md", "Health/Allergies.md"], "embedded": 5, "root": <span class="hl">"92af70b580a0c600e6288015eb6f54d27e5face2c7201cad7933cf1e2650dcf9"</span> ... }</span>
+<span class="ln o">{ "added": ["Car.md", "Communication.md", "Health/Allergies.md"], "embedded": 5, "root": <span class="hl">"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992"</span> ... }</span>
 <span class="ln o"># Car.md line 8 becomes: **I change** the engine oil every 10 000 km!</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb sync</span>
-<span class="ln o">{ "changed": [], "embedded": 1, "root": <span class="hl">"92af70b580a0c600e6288015eb6f54d27e5face2c7201cad7933cf1e2650dcf9"</span> ... }</span>
+<span class="ln o">{ "changed": [], "embedded": 1, "root": <span class="hl">"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992"</span> ... }</span>
 <span class="ln o"># now: **I change** the engine oil every 15 000 km!</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb sync</span>
-<span class="ln o">{ "changed": ["Car.md"], "embedded": 1, "root": <span class="hl">"55eeb01d0e5e949bb5c1c90011b86c8b78513f9150431524e427043539658fc5"</span> ... }</span>
+<span class="ln o">{ "changed": ["Car.md"], "embedded": 1, "root": <span class="hl">"311bac0e2293898661e4e4dfc09897f3e3040d34b3a7d51970a01e6909c0b779"</span> ... }</span>
 <span class="ln cmd"><span class="p">$ </span>mv Communication.md Talking.md &amp;&amp; chaos-kb sync</span>
-<span class="ln o">{ "added": ["Talking.md"], "removed": ["Communication.md"], "embedded": 1, "root": <span class="hl">"18e1e005e80d6340a00a49169001bfee3da626d80e512d5b4b5ed64773d613bc"</span> ... }</span>
+<span class="ln o">{ "added": ["Talking.md"], "removed": ["Communication.md"], "embedded": 1, "root": <span class="hl">"38bde6ad7d8043306b72ab4cd8b35ed316e5f459fef810126c2e392da9af0a06"</span> ... }</span>
 <span class="ln cmd"><span class="p">$ </span>rm Health/Allergies.md &amp;&amp; chaos-kb sync</span>
-<span class="ln o">{ "removed": ["Health/Allergies.md"], "notes": 2, "chunks": 4, "embedded": 0, "root": <span class="hl">"e4fca44df7c874f52891a89552a6b14ba6e0aceb06e631a21ea0576459b97301"</span> ... }</span>
+<span class="ln o">{ "removed": ["Health/Allergies.md"], "notes": 2, "chunks": 4, "embedded": 0, "root": <span class="hl">"4471d8e59fc2d50b613338f7b204aa37d2fa955ceaed849347079fd0e28254a0"</span> ... }</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb check "allergic to penicillin"</span>
-<span class="ln o">{ "known": false, "presence": "absent", "matches": [], "score": 0.008867578580975533, ... }</span></pre>
+<span class="ln o">{ "known": false, "presence": "absent", "matches": [], "score": 0.008867578580975533, ... }</span>
+<span class="ln o"># a fresh copy of the example vault</span>
+<span class="ln cmd"><span class="p">$ </span>chaos-kb remember "Rhesus factor: A+" --note Health/Allergies --heading Blood</span>
+<span class="ln o">{ "stored": true, "embedded": 1, "root": "476aa8d8f303f35030bc9d46bc7bd3ccdddcf1087a480bf8ee6e553783d9f8ca" ... }</span>
+<span class="ln cmd"><span class="p">$ </span>chaos-kb check "rhesus factor: A+"</span>
+<span class="ln o">{ "known": true, "presence": <span class="hl">"exact"</span>, "matches": [ { "note": "Health/Allergies.md", "section": "Allergies &gt; Blood", "lines": [7, 7] } ], ... }</span>
+<span class="ln cmd"><span class="p">$ </span>chaos-kb check "Rhesus factor: A-"</span>
+<span class="ln o">{ "known": true, "presence": <span class="hl">"similar"</span>, "score": 0.5398281812667847, "matches": [ { "note": "Health/Allergies.md", "lines": [7, 7], ... } ], ... }</span>
+<span class="ln cmd"><span class="p">$ </span>chaos-kb remember "Rhesus factor: A-" --note Health/Allergies --heading Blood</span>
+<span class="ln o">{ "stored": <span class="hl">true</span>, "embedded": 1, "root": "f106d6f96ce1282ac1e32468c0a862ce9ecc63db1fe2dac34ab8406be0b22add" ... }</span></pre>
   </div>
-  <p class="note">The rename embedded one chunk because a chunk's context line starts with the note title (see <a href="search.html">Chunks, embeddings and search</a>). Its words, and so its fingerprints, did not change.</p>
+  <p class="note">The rename embedded one chunk because a chunk's context line starts with the note title (see <a href="search.html">Chunks, embeddings and search</a>). Its words, and so its note hash, did not change. By meaning, <code>A-</code> reads close to the stored <code>A+</code>, so <code>similar</code> means "read the match". The fingerprints differ, so the exact path never confuses them and <code>remember</code> stores <code>A-</code> as a new fact.</p>
 </section>
 
 <section class="sec" aria-labelledby="s-where">
@@ -266,10 +284,11 @@ root                = node over the note hashes, labelled by name; an empty vaul
     <table>
       <thead><tr><th>File</th><th>Owns</th></tr></thead>
       <tbody>
-        <tr><td><code>src/domain/text.rs</code></td><td><code>normalize</code>, <code>fingerprint</code>, <code>is_blank</code></td></tr>
+        <tr><td><code>src/domain/text.rs</code></td><td><code>normalize</code>, <code>fingerprint</code>, <code>is_blank</code> and the ignored characters</td></tr>
         <tr><td><code>src/domain/hash.rs</code></td><td><code>Digest</code>, <code>leaf</code> and <code>node</code> with their tag bytes, the hex form</td></tr>
         <tr><td><code>src/domain/merkle.rs</code></td><td><code>Tree</code>: build, root, diff; note hashes and their heading labels</td></tr>
         <tr><td><code>src/application/sync.rs</code></td><td>the fingerprint and place of every non-blank block, stored for exact lookups</td></tr>
+        <tr><td><code>src/application/mod.rs</code></td><td><code>stored</code>: the places of every block of an input, by fingerprint</td></tr>
       </tbody>
     </table>
   </div>

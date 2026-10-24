@@ -31,7 +31,7 @@
   <ul class="facts">
     <li><b>4</b> tools: kb_sync, kb_remember, kb_check, kb_search</li>
     <li><b>4</b> methods: initialize, ping, tools/list, tools/call</li>
-    <li>newest protocol revision <b>2025-11-25</b></li>
+    <li><b>3</b> protocol revisions, newest <b>2025-11-25</b></li>
     <li><b>0</b> files opened before the first call</li>
   </ul>
   <ul class="legend" aria-label="Colour key">
@@ -116,7 +116,7 @@
     <div class="stage-side">
       <ol class="captions">
         <li>The agent's harness starts <code>chaos-kb mcp</code>. The server opens no file and contacts no model until a tool is called, so the handshake is instant.</li>
-        <li><code>initialize</code>: a revision the server speaks is echoed back; otherwise it offers its newest. The reply carries the workflow instructions for the agent.</li>
+        <li><code>initialize</code>: a revision the server speaks (2025-11-25, 2025-06-18 or 2024-11-05) is echoed back; otherwise it offers its newest. The reply carries the workflow instructions.</li>
         <li><code>tools/list</code>: one tool per subcommand, named <code>kb_</code> plus its name. Descriptions and argument schemas are read from the clap definition.</li>
         <li><code>tools/call</code>: the arguments become a command line, such as <code>check --min-score=0.5 -- "oil"</code>, parsed by the same clap definition as the CLI.</li>
         <li>The call runs like the command. Vault, index and model come from the server's own flags and environment, and are opened for this call only.</li>
@@ -138,6 +138,8 @@
       <button type="button" aria-controls="tab-list">tools/list</button>
       <button type="button" aria-controls="tab-call">tools/call</button>
       <button type="button" aria-controls="tab-bad">a bad argument</button>
+      <button type="button" aria-controls="tab-rev">other revisions</button>
+      <button type="button" aria-controls="tab-quiet">no reply, or an error</button>
     </div>
     <div class="tabpanel" id="tab-init"><pre class="wrapjson"><span class="c">→ {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"example","version":"1"}}}</span>
 ← {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"tools":{"listChanged":false}},
@@ -155,7 +157,7 @@
    <span class="c">… kb_search ]}}</span></pre></div>
     <div class="tabpanel" id="tab-call" hidden><pre class="wrapjson"><span class="c">→ {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"kb_check","arguments":{"query":"how often do I change the oil?"}}}</span>
 ← {"id":3,"jsonrpc":"2.0","result":{"content":[{"text":
-   <span class="s">"{\"known\":true,\"matches\":[{\"lines\":[8,8],\"note\":\"Car.md\",\"score\":0.583015501499176,\"section\":\"Maintenance &gt; Oil\"}],\"presence\":\"similar\",\"root\":\"92af70b580a0c600e6288015eb6f54d27e5face2c7201cad7933cf1e2650dcf9\",\"score\":0.583015501499176}"</span>,"type":"text"}],
+   <span class="s">"{\"known\":true,\"matches\":[{\"lines\":[8,8],\"note\":\"Car.md\",\"score\":0.583015501499176,\"section\":\"Maintenance &gt; Oil\"}],\"presence\":\"similar\",\"root\":\"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992\",\"score\":0.583015501499176}"</span>,"type":"text"}],
    "isError":<span class="n">false</span>}}</pre></div>
     <div class="tabpanel" id="tab-bad" hidden><pre class="wrapjson"><span class="c">→ {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"kb_search","arguments":{"query":"winter tyres","limit":"many"}}}</span>
 ← {"id":4,"jsonrpc":"2.0","result":{"content":[{"text":
@@ -164,6 +166,23 @@
 
 <span class="c">→ … "arguments":{"query":"winter tyres","limit":1,"vault":"/tmp"}</span>
 ← … <span class="s">"kb_search has no argument `vault`; it takes `query`, `limit`, `min_score`"</span> … "isError":<span class="n">true</span></pre></div>
+    <div class="tabpanel" id="tab-rev" hidden><pre class="wrapjson"><span class="c">→ {"jsonrpc":"2.0","id":8,"method":"initialize","params":{"protocolVersion":"2099-01-01"}}</span>
+← {"id":8,"jsonrpc":"2.0","result":{ … "protocolVersion":<span class="s">"2025-11-25"</span>,"serverInfo":{"name":"chaos-kb","version":"2.0.0"}}}
+
+<span class="c">→ {"jsonrpc":"2.0","id":11,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}</span>
+← {"id":11,"jsonrpc":"2.0","result":{ … "protocolVersion":<span class="s">"2025-11-25"</span>,"serverInfo":{"name":"chaos-kb","version":"2.0.0"}}}</pre>
+      <p class="note">2025-03-26 is not on the list: that revision requires accepting a JSON array of requests (a batch), and this server refuses batches.</p></div>
+    <div class="tabpanel" id="tab-quiet" hidden><pre class="wrapjson"><span class="c">→ {"jsonrpc":"2.0","method":"notifications/initialized"}</span>
+<span class="c">→ {"jsonrpc":"2.0","id":"r1","result":{}}</span>
+<span class="c">→ {"jsonrpc":"2.0","id":"r2","error":{"code":-32601,"message":"method not found"}}</span>
+  <span class="c">(no reply to any of the three)</span>
+
+<span class="c">→ {"jsonrpc":"2.0","id":12}</span>
+← {"error":{"code":<span class="n">-32600</span>,"message":<span class="s">"a request needs a method"</span>},"id":12,"jsonrpc":"2.0"}
+
+<span class="c">→ [{"jsonrpc":"2.0","id":14,"method":"ping"}]</span>
+← {"error":{"code":<span class="n">-32600</span>,"message":<span class="s">"expected one JSON-RPC object"</span>},"id":null,"jsonrpc":"2.0"}</pre>
+      <p class="note">The whole session was 18 lines in and 15 replies out: the notification and the two responses got none.</p></div>
   </div>
 </section>
 
@@ -213,9 +232,10 @@
     <li><span class="chip hands">result</span><span><b>a request</b>One reply line, with the same <code>id</code>.</span></li>
     <li><span class="chip hands">isError</span><span><b>a bad argument or a failed tool</b>A normal result whose text is the error, so the model can fix the call.</span></li>
     <li><span class="chip data">silent</span><span><b>a notification or a blank line</b>No reply. A message without an <code>id</code> is a notification.</span></li>
+    <li><span class="chip data">silent</span><span><b>a response</b>No reply. A message with <code>result</code> or <code>error</code> and no <code>method</code> answers a request; replying to it would be an error.</span></li>
     <li><span class="chip guard">-32602</span><span><b>unknown tool, or no tool name</b><code>unknown tool: kb_nope</code></span></li>
     <li><span class="chip guard">-32601</span><span><b>unknown method</b><code>method not found: resources/list</code></span></li>
-    <li><span class="chip guard">-32600</span><span><b>not one JSON object, or no method</b>For example a JSON array.</span></li>
+    <li><span class="chip guard">-32600</span><span><b>not one JSON object, or no method</b>A JSON array gives <code>expected one JSON-RPC object</code>; an <code>id</code> alone gives <code>a request needs a method</code>.</span></li>
     <li><span class="chip guard">-32700</span><span><b>not JSON at all</b><code>parse error: …</code>, with <code>id</code> null.</span></li>
   </ul>
 </section>
@@ -227,7 +247,7 @@
   </div>
   <ul class="checks">
     <li><span><b>Instant handshake.</b> Nothing is opened or contacted before a tool is called.</span></li>
-    <li><span><b>One definition.</b> Tool names, descriptions, schemas and defaults come from <code>src/entry/cli.rs</code>; the README block is tested against it.</span></li>
+    <li><span><b>One definition.</b> Tool names, descriptions, schemas and defaults come from the clap definition in <code>src/entry/cli.rs</code>. One argument list in <code>src/entry/tools.rs</code> writes both the MCP schema and the README block, and the README is tested against it.</span></li>
     <li><span><b>A call cannot move the server.</b> Vault, index, embeddings URL and model are not tool arguments.</span></li>
     <li><span><b>Unknown keys are refused.</b> The error names the arguments the tool takes.</span></li>
     <li><span><b>stdout carries replies only.</b> Each reply is one line, flushed at once.</span></li>
@@ -246,7 +266,7 @@
 <span class="ln cmd"><span class="p">$ </span>echo '{"jsonrpc":"2.0","id":7,"method":"ping"}' | chaos-kb mcp</span>
 <span class="ln o">{"id":7,"jsonrpc":"2.0","result":{}}</span>
 <span class="ln cmd"><span class="p">$ </span>echo '{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"kb_search","arguments":{"query":"winter tyres","limit":1}}}' | chaos-kb mcp</span>
-<span class="ln o">{"id":10,"jsonrpc":"2.0","result":{"content":[{"text":"{\"hits\":[{\"lines\":[12,12],\"note\":\"Car.md\",\"score\":0.5618284940719604,\"section\":\"Maintenance &gt; Tyres\",\"text\":\"Winter tyres go on in November.\"}],\"root\":\"92af70b580a0c600e6288015eb6f54d27e5face2c7201cad7933cf1e2650dcf9\"}","type":"text"}],"isError":false}}</span>
+<span class="ln o">{"id":10,"jsonrpc":"2.0","result":{"content":[{"text":"{\"hits\":[{\"lines\":[12,12],\"note\":\"Car.md\",\"score\":0.5618284940719604,\"section\":\"Maintenance &gt; Tyres\",\"text\":\"Winter tyres go on in November.\"}],\"root\":\"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992\"}","type":"text"}],"isError":false}}</span>
 <span class="ln cmd"><span class="p">$ </span>echo '{nope' | chaos-kb mcp</span>
 <span class="ln o">{"error":{"code":-32700,"message":"parse error: key must be a string at line 1 column 2"},"id":null,"jsonrpc":"2.0"}</span></pre>
   </div>
@@ -262,7 +282,7 @@
     <table>
       <thead><tr><th>File</th><th>Owns</th></tr></thead>
       <tbody>
-        <tr><td><code>src/entry/mcp.rs</code></td><td>the stdio loop, the four methods, revision choice, error codes</td></tr>
+        <tr><td><code>src/entry/mcp.rs</code></td><td>the stdio loop, the four methods, the supported revisions, silence for notifications and responses, error codes</td></tr>
         <tr><td><code>src/entry/tools.rs</code></td><td>the tool roster, schemas from clap, calls back into argv, the README block and the instructions</td></tr>
         <tr><td><code>src/entry/cli.rs</code></td><td>the clap definition of every tool and setting, and running one command</td></tr>
         <tr><td><code>README.md</code></td><td>the generated tool reference, between its markers</td></tr>

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>How check decides · chaos-kb</title>
-<meta name="description" content="How chaos-kb check answers exact, similar or absent: the same words first, then the best of three passages against a line of 0.38.">
+<meta name="description" content="How chaos-kb check answers exact, similar or absent: every block stored word for word first, then the best of three passages against a line of 0.38.">
 <script>try{var t=localStorage.getItem("tengu-tutorial-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -35,7 +35,7 @@
 <header class="hero">
   <div class="eyebrow"><span class="stamp" aria-hidden="true">答</span> Answers · known or not</div>
   <h1>How check decides</h1>
-  <p class="lede"><code>check</code> answers one question: is this already known? When the same words are stored, the answer is <b>exact</b>, with no model call. Otherwise the best of the three nearest passages must score at least 0.38.</p>
+  <p class="lede"><code>check</code> answers one question: is this already known? When every block of it is stored word for word, the answer is <b>exact</b>, with no model call. Otherwise the best of the three nearest passages must score at least 0.38.</p>
   <ul class="facts">
     <li><b>3</b> answers: exact, similar, absent</li>
     <li><b>3</b> nearest passages compared</li>
@@ -60,7 +60,7 @@
   <figure class="stage" data-stage data-interval="3600">
     <div class="stage-canvas">
       <svg viewBox="0 0 860 400" role="img" aria-labelledby="flow-t">
-        <title id="flow-t">A query passes the guards and is looked up in the exact index. A match is exact. Otherwise the model embeds it, the three nearest passages are scored, and the best score against min_score gives similar or absent.</title>
+        <title id="flow-t">A query passes the guards and every block of it is looked up in the exact index. When all are found, the answer is exact. Otherwise the index must match the configured embedder, the model embeds the query, the three nearest passages are scored, and the best score against min_score gives similar or absent.</title>
         <path class="e" id="c-q-g" d="M150 192 L178 192" data-at="2"/>
         <path class="e" id="c-g-x" d="M320 192 L348 192" data-at="3"/>
         <path class="e" id="c-x-hit" d="M500 176 C530 176 530 65 558 65" data-at="4"/>
@@ -78,12 +78,12 @@
         <g class="n guard" data-at="1-2">
           <rect x="180" y="160" width="140" height="64" rx="8"/>
           <text x="250" y="186" text-anchor="middle" class="t-title">Guards</text>
-          <text x="250" y="205" text-anchor="middle" class="t-small">not blank · ready</text>
+          <text x="250" y="205" text-anchor="middle" class="t-small">not blank · indexed</text>
         </g>
         <g class="n data" data-at="3-5">
           <rect x="350" y="160" width="150" height="64" rx="10"/>
           <text x="425" y="186" text-anchor="middle" class="t-title">Exact index</text>
-          <text x="425" y="205" text-anchor="middle" class="t-small">same words stored?</text>
+          <text x="425" y="205" text-anchor="middle" class="t-small">every block stored?</text>
         </g>
         <g class="n hands" data-at="4">
           <rect x="560" y="30" width="140" height="70" rx="8"/>
@@ -117,10 +117,10 @@
         </g>
 
         <g class="pop badge" data-at="1"><rect x="10" y="238" width="150" height="22" rx="11"/><text x="85" y="253" text-anchor="middle">no letter: refused</text></g>
-        <g class="pop badge" data-at="2"><rect x="170" y="238" width="160" height="22" rx="11"/><text x="250" y="253" text-anchor="middle">same embedder id</text></g>
-        <g class="pop badge" data-at="3"><rect x="350" y="238" width="150" height="22" rx="11"/><text x="425" y="253" text-anchor="middle">one lookup</text></g>
+        <g class="pop badge" data-at="2"><rect x="170" y="238" width="160" height="22" rx="11"/><text x="250" y="253" text-anchor="middle">no index: run sync</text></g>
+        <g class="pop badge" data-at="3"><rect x="345" y="238" width="160" height="22" rx="11"/><text x="425" y="253" text-anchor="middle">one lookup per block</text></g>
         <g class="pop badge" data-at="4"><rect x="380" y="40" width="160" height="22" rx="11"/><text x="460" y="55" text-anchor="middle">known: true</text></g>
-        <g class="pop badge" data-at="5"><rect x="380" y="290" width="160" height="22" rx="11"/><text x="460" y="305" text-anchor="middle">one embedding call</text></g>
+        <g class="pop badge" data-at="5"><rect x="370" y="290" width="180" height="22" rx="11"/><text x="460" y="305" text-anchor="middle">same embedder, one call</text></g>
         <g class="pop badge" data-at="6"><rect x="560" y="368" width="160" height="22" rx="11"/><text x="640" y="383" text-anchor="middle">equal counts as similar</text></g>
         <g class="pop badge" data-at="7"><rect x="560" y="120" width="160" height="22" rx="11"/><text x="640" y="135" text-anchor="middle">matches ≥ line only</text></g>
 
@@ -136,10 +136,10 @@
     <div class="stage-side">
       <ol class="captions">
         <li>A query arrives: a fact, a topic or a question. When it holds no letter or digit, it is refused with an error.</li>
-        <li>The index must exist and must have been built by the configured embedder, even for a same-words answer. Otherwise the error says to run <code>chaos-kb sync</code>.</li>
-        <li>Same words? The query is fingerprinted the way sync fingerprints blocks and looked up in the exact index. See <a href="merkle.html">Merkle tree and exact check</a>.</li>
-        <li>Found: the answer is <b>exact</b> and known. <code>matches</code> lists every place that holds those words, with no score. No model was called.</li>
-        <li>Not found: the query is embedded, and the 3 nearest passages are scored against it.</li>
+        <li>The index must exist; before the first sync the error says to run <code>chaos-kb sync</code>. The same-words path needs nothing more, not even the configured model.</li>
+        <li>Same words? The query is read like a note and split into blocks; each block's fingerprint is looked up in the exact index. See <a href="merkle.html">Merkle tree and exact check</a>.</li>
+        <li>Every block found: the answer is <b>exact</b> and known. <code>matches</code> lists every place that holds them, with no score. No model was called.</li>
+        <li>Otherwise the index must have been built by the configured embedder, or the error asks for a sync. Then the query is embedded and the 3 nearest passages scored.</li>
         <li>The best score decides. At least <code>min_score</code> means <b>similar</b>; lower means <b>absent</b>. A score equal to the line counts as similar.</li>
         <li><code>matches</code> keeps only passages at or above the line. The best score is reported even when the answer is absent, together with the root hash.</li>
       </ol>
@@ -151,7 +151,7 @@
   <div class="sec-head">
     <span class="kicker">Try it: move the line</span>
     <h2 id="s-line">Where 0.38 comes from</h2>
-    <p>The questions of <code>tests/e2e.rs</code>, eight that the vault answers and seven that it does not. Scores measured on an Apple M4 with Ollama 0.24.0 and embeddinggemma, by <code>cargo test --release --test e2e</code> on 2026-10-24.</p>
+    <p>The questions of <code>tests/e2e.rs</code>, eight that the vault answers and seven that it does not. Scores as printed by <code>cargo test --release --test e2e</code> on 2026-10-24, measured on an Apple M4 with Ollama 0.24.0 and embeddinggemma.</p>
   </div>
   <div class="widget">
     <div class="widget-row">
@@ -160,7 +160,7 @@
       <span class="verdict ok" id="line-verdict" aria-live="polite"></span>
     </div>
     <div class="scores" id="scores"></div>
-    <p class="note">The default sits in the gap between the weakest answered question and the strongest near miss, <em>do I have a pilot licence?</em>. The gap is narrow, so treat <code>similar</code> as "probably known: read it". Some paraphrases fall below the line: <em>can I drive a car legally?</em> scored 0.32 on the same vault. Another embedding model needs its own <code>--min-score</code>.</p>
+    <p class="note">The default sits in the gap between the weakest answered question, 0.419, and the strongest near miss, <em>do I have a pilot licence?</em> at 0.345. The gap is narrow, so treat <code>similar</code> as "probably known: read it". Some paraphrases fall below the line: <em>can I drive a car legally?</em> scored <code>0.314816415309906</code> on the same vault. Another embedding model needs its own <code>--min-score</code>.</p>
   </div>
 </section>
 
@@ -175,25 +175,43 @@
       <button type="button" aria-controls="tab-exact" aria-selected="true">exact</button>
       <button type="button" aria-controls="tab-similar">similar</button>
       <button type="button" aria-controls="tab-absent">absent</button>
+      <button type="button" aria-controls="tab-two">two facts</button>
     </div>
     <div class="tabpanel" id="tab-exact"><pre><span class="c">$ chaos-kb check "allergic to PENICILLIN"</span>
 { <span class="k">"known"</span>: <span class="n">true</span>,
   <span class="k">"matches"</span>: [ { <span class="k">"lines"</span>: [<span class="n">3</span>, <span class="n">3</span>], <span class="k">"note"</span>: <span class="s">"Health/Allergies.md"</span>, <span class="k">"section"</span>: <span class="s">"Allergies"</span> } ],
   <span class="k">"presence"</span>: <span class="s">"exact"</span>,
-  <span class="k">"root"</span>: <span class="s">"92af70b580a0c600e6288015eb6f54d27e5face2c7201cad7933cf1e2650dcf9"</span> }
+  <span class="k">"root"</span>: <span class="s">"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992"</span> }
 <span class="c"># no "score": nothing was embedded</span></pre></div>
     <div class="tabpanel" id="tab-similar" hidden><pre><span class="c">$ chaos-kb check "how often do I change the oil?"</span>
 { <span class="k">"known"</span>: <span class="n">true</span>,
   <span class="k">"matches"</span>: [ { <span class="k">"lines"</span>: [<span class="n">8</span>, <span class="n">8</span>], <span class="k">"note"</span>: <span class="s">"Car.md"</span>, <span class="k">"score"</span>: <span class="n">0.583015501499176</span>, <span class="k">"section"</span>: <span class="s">"Maintenance &gt; Oil"</span> } ],
   <span class="k">"presence"</span>: <span class="s">"similar"</span>,
-  <span class="k">"root"</span>: <span class="s">"92af70b580a0c600e6288015eb6f54d27e5face2c7201cad7933cf1e2650dcf9"</span>,
+  <span class="k">"root"</span>: <span class="s">"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992"</span>,
   <span class="k">"score"</span>: <span class="n">0.583015501499176</span> }</pre></div>
     <div class="tabpanel" id="tab-absent" hidden><pre><span class="c">$ chaos-kb check "what is the name of my dog?"</span>
 { <span class="k">"known"</span>: <span class="n">false</span>,
   <span class="k">"matches"</span>: [],
   <span class="k">"presence"</span>: <span class="s">"absent"</span>,
-  <span class="k">"root"</span>: <span class="s">"92af70b580a0c600e6288015eb6f54d27e5face2c7201cad7933cf1e2650dcf9"</span>,
+  <span class="k">"root"</span>: <span class="s">"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992"</span>,
   <span class="k">"score"</span>: <span class="n">0.20223255455493927</span> }</pre></div>
+    <div class="tabpanel" id="tab-two" hidden><pre><span class="c">$ chaos-kb check "Allergic to penicillin.
+
+Winter tyres go on in November."</span>
+{ <span class="k">"known"</span>: <span class="n">true</span>,
+  <span class="k">"matches"</span>: [ { <span class="k">"lines"</span>: [<span class="n">12</span>, <span class="n">12</span>], <span class="k">"note"</span>: <span class="s">"Car.md"</span>, <span class="k">"section"</span>: <span class="s">"Maintenance &gt; Tyres"</span> },
+               { <span class="k">"lines"</span>: [<span class="n">3</span>, <span class="n">3</span>], <span class="k">"note"</span>: <span class="s">"Health/Allergies.md"</span>, <span class="k">"section"</span>: <span class="s">"Allergies"</span> } ],
+  <span class="k">"presence"</span>: <span class="s">"exact"</span>,
+  <span class="k">"root"</span>: <span class="s">"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992"</span> }
+<span class="c">$ chaos-kb check "Allergic to penicillin.
+
+My dog is called Rex."</span>
+{ <span class="k">"known"</span>: <span class="n">true</span>,
+  <span class="k">"matches"</span>: [ { <span class="k">"lines"</span>: [<span class="n">3</span>, <span class="n">3</span>], <span class="k">"note"</span>: <span class="s">"Health/Allergies.md"</span>, <span class="k">"score"</span>: <span class="n">0.5817030072212219</span>, <span class="k">"section"</span>: <span class="s">"Allergies"</span> } ],
+  <span class="k">"presence"</span>: <span class="s">"similar"</span>,
+  <span class="k">"root"</span>: <span class="s">"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992"</span>,
+  <span class="k">"score"</span>: <span class="n">0.5817030072212219</span> }
+<span class="c"># one block is not stored, so the whole query is judged by meaning</span></pre></div>
   </div>
 </section>
 
@@ -203,12 +221,12 @@
     <h2 id="s-out">Answers and refusals</h2>
   </div>
   <ul class="states">
-    <li><span class="chip hands">exact</span><span><b>the same words are stored</b>Known. Every place is listed; no score.</span></li>
+    <li><span class="chip hands">exact</span><span><b>every block is stored</b>Known. Every place is listed; no score.</span></li>
     <li><span class="chip hands">similar</span><span><b>best score at or above the line</b>Known. Read the matches before you rely on them.</span></li>
     <li><span class="chip guard">absent</span><span><b>best score below the line</b>Not known. The score shows how close it came.</span></li>
     <li><span class="chip guard">error</span><span><b>blank query</b><code>the query is empty (no letters or digits)</code></span></li>
     <li><span class="chip guard">error</span><span><b>no index yet</b><code>the index is empty: run `chaos-kb sync` first</code></span></li>
-    <li><span class="chip guard">error</span><span><b>another model configured</b>The index names its embedder id and asks for a sync.</span></li>
+    <li><span class="chip guard">error</span><span><b>another model, by meaning</b>Same words still answer exact. A check by meaning names the index's embedder id and asks for a sync.</span></li>
   </ul>
 </section>
 
@@ -219,6 +237,8 @@
   </div>
   <ul class="checks">
     <li><span><b>An exact match wins.</b> Whatever any score would say, the same words mean exact.</span></li>
+    <li><span><b>Exact means every block.</b> A query of two facts is exact only when both are stored; otherwise the whole query is judged by meaning.</span></li>
+    <li><span><b>The same words need no model.</b> The exact path works before Ollama runs and after a model change.</span></li>
     <li><span><b>The line is inclusive.</b> A score equal to <code>min_score</code> is similar.</span></li>
     <li><span><b>Nothing is not a match.</b> No passage, or a score that is not a number, is absent.</span></li>
     <li><span><b>Matches are never weaker than the line.</b> Passages below <code>min_score</code> are left out of <code>matches</code>.</span></li>
@@ -231,7 +251,7 @@
   <div class="sec-head">
     <span class="kicker">Try it</span>
     <h2 id="s-try">Check the example vault</h2>
-    <p>JSON is shown condensed. A check by meaning took 0.15 s and a check by the same words 0.04 s on a vault of 502 notes, measured on an Apple M4 (README § Speed).</p>
+    <p>JSON is shown condensed. A check by meaning took 0.14 s and a check by the same words 0.04 s on a vault of 503 notes, measured on an Apple M4 (README § Speed).</p>
   </div>
   <div class="term-wrap">
 <pre class="term" data-type><span class="ln cmd"><span class="p">$ </span>chaos-kb check "allergic to PENICILLIN"</span>
@@ -244,9 +264,12 @@
 <span class="ln o">{ "known": false, "presence": <span class="hl">"absent"</span>, "score": 0.20223255455493927, "matches": [], ... }</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb check "  ---  "</span>
 <span class="ln o"><span class="er">error: the query is empty (no letters or digits)</span></span>
-<span class="ln cmd"><span class="p">$ </span>chaos-kb check "allergic to penicillin" --embed-model nomic-embed-text</span>
+<span class="ln cmd"><span class="p">$ </span>chaos-kb check "allergic to PENICILLIN" --embed-model nomic-embed-text</span>
+<span class="ln o">{ "known": true, "presence": <span class="hl">"exact"</span>, "matches": [ { "note": "Health/Allergies.md", "section": "Allergies", "lines": [3, 3] } ], ... }</span>
+<span class="ln cmd"><span class="p">$ </span>chaos-kb check "how often do I change the oil?" --embed-model nomic-embed-text</span>
 <span class="ln o"><span class="er">error: the index was built with embedder `embeddinggemma|gemma-retrieval-v1` but `nomic-embed-text|plain-v1` is configured: run `chaos-kb sync` to re-embed</span></span></pre>
   </div>
+  <p class="note">A query that starts with <code>-</code> needs <code>--</code> before it on the command line: <code>chaos-kb check -- "- **Allergic** to *penicillin*!"</code> answers exact. Over MCP the query is always passed as text.</p>
 </section>
 
 <section class="sec" aria-labelledby="s-where">
@@ -260,7 +283,7 @@
       <tbody>
         <tr><td><code>src/application/check.rs</code></td><td>the check use-case, <code>CHECK_K</code>, the report and its matches</td></tr>
         <tr><td><code>src/domain/presence.rs</code></td><td><code>DEFAULT_MIN_SCORE</code>, <code>Presence</code> and <code>judge</code></td></tr>
-        <tr><td><code>src/application/mod.rs</code></td><td>the readiness check and the blank-input refusal</td></tr>
+        <tr><td><code>src/application/mod.rs</code></td><td><code>indexed</code>, <code>ready</code>, <code>stored</code> and the blank-input refusal</td></tr>
         <tr><td><code>src/entry/cli.rs</code></td><td>the <code>--min-score</code> flag and its default</td></tr>
         <tr><td><code>tests/e2e.rs</code></td><td>the questions that calibrate the default, run against local Ollama</td></tr>
         <tr><td><code>README.md</code></td><td>§ How <code>check</code> decides, for users</td></tr>
@@ -276,17 +299,17 @@
 </div>
 
 <script>
-/* page-only: the line explorer; scores measured with tests/e2e.rs (see the section intro) */
+/* page-only: the line explorer; scores printed by tests/e2e.rs (see the section intro) */
 (function () {
   var KNOWN = [
-    ["how often do I change the oil in my car?", 0.527],
+    ["how often do I change the oil in my car?", 0.530],
     ["when do I put the winter tyres on?", 0.622],
-    ["what university degree do I have?", 0.416],
-    ["which certifications have I passed?", 0.511],
-    ["do I have a driving licence?", 0.453],
+    ["what university degree do I have?", 0.419],
+    ["which certifications have I passed?", 0.507],
+    ["do I have a driving licence?", 0.442],
     ["how should things be explained to me?", 0.497],
-    ["what am I allergic to?", 0.445],
-    ["во сколько я ложусь спать?", 0.623]
+    ["what am I allergic to?", 0.441],
+    ["во сколько я ложусь спать?", 0.624]
   ];
   var UNKNOWN = [
     ["what is the name of my dog?", 0.176],
@@ -294,7 +317,7 @@
     ["what is my favourite pizza topping?", 0.135],
     ["which company insures my car?", 0.239],
     ["what is my blood pressure?", 0.094],
-    ["do I have a pilot licence?", 0.353],
+    ["do I have a pilot licence?", 0.345],
     ["which languages do I speak?", 0.216]
   ];
   var MAX = 0.7;

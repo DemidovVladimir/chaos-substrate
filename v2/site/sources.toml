@@ -41,6 +41,7 @@ sources = [
   "src/domain/text.rs",
   "src/domain/hash.rs",
   "src/domain/merkle.rs",
+  "src/application/mod.rs",
   "src/application/sync.rs",
 ]
 
@@ -72,12 +73,14 @@ sources = [
   "src/domain/path.rs",
   "src/domain/note.rs",
   "src/application/remember.rs",
+  "src/application/mod.rs",
 ]
 
 [pages.index-file]
 sources = [
   "src/adapters/redb_index.rs",
   "src/ports/mod.rs",
+  "src/application/sync.rs",
   "src/entry/cli.rs",
   "README.md",
 ]

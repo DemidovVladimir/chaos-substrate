@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>The vault · chaos-kb</title>
-<meta name="description" content="How chaos-kb reads an Obsidian vault into blocks, and how remember adds one fact to a note without changing what is there.">
+<meta name="description" content="How chaos-kb reads an Obsidian vault into blocks, and how remember adds one fact right under its heading, one writer at a time, without changing how the rest of the note reads.">
 <script>try{var t=localStorage.getItem("tengu-tutorial-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -30,10 +30,10 @@
 <header class="hero">
   <div class="eyebrow"><span class="stamp" aria-hidden="true">蔵</span> Storage · your notes</div>
   <h1>The vault</h1>
-  <p class="lede">The <b>vault</b> is a folder of Markdown notes, as Obsidian keeps them. chaos-kb reads every visible note and splits it into blocks. It writes only when you call <code>remember</code>, and then it only adds text.</p>
+  <p class="lede">The <b>vault</b> is a folder of Markdown notes, as Obsidian keeps them. chaos-kb reads every visible note, whole, and splits it into blocks. It writes only when you call <code>remember</code>, and then it only adds text.</p>
   <ul class="facts">
     <li>facts go to <b>Inbox.md</b> unless you name a note</li>
-    <li><b>.md</b> is added when a path has none</li>
+    <li><b>1</b> writer at a time, by <b>.chaos-kb/append.lock</b></li>
     <li><b>1</b> temporary file and <b>1</b> rename per write</li>
     <li><b>0</b> existing bytes changed</li>
   </ul>
@@ -49,20 +49,21 @@
   <div class="sec-head">
     <span class="kicker">One remember, step by step</span>
     <h2 id="s-flow">A fact goes into a note</h2>
-    <p>A <b>section</b> is a heading and everything below it, up to the next heading of the same or a higher level.</p>
+    <p>A heading's <b>own text</b> is what sits right under it, before the next heading of any level. That is where <code>remember</code> puts a fact, so it reads under exactly that heading.</p>
   </div>
   <figure class="stage" data-stage data-interval="3600">
     <div class="stage-canvas">
-      <svg viewBox="0 0 860 380" role="img" aria-labelledby="flow-t">
-        <title id="flow-t">A fact passes the guards. remember syncs, then looks for the same words. If they are stored, nothing is written. Otherwise the text is placed in its section, written atomically, and synced again.</title>
+      <svg viewBox="0 0 860 400" role="img" aria-labelledby="flow-t">
+        <title id="flow-t">A fact passes the guards. remember syncs, then looks for the same words. If every block is stored, nothing is written. Otherwise it takes the append lock, places the text under its heading, checks that the rest of the note reads the same, writes atomically, and syncs again.</title>
         <path class="e" id="r-fact-g" d="M95 104 L95 168" data-at="2"/>
         <path class="e" id="r-g-sync" d="M170 202 C200 202 200 72 228 72" data-at="3"/>
         <path class="e" id="r-sync-x" d="M310 104 L310 168" data-at="4"/>
         <path class="e" id="r-x-known" d="M310 234 L310 298" data-at="4"/>
-        <path class="e" id="r-x-place" d="M390 202 L448 202" data-at="5"/>
-        <path class="e" id="r-place-write" d="M535 170 L535 106" data-at="6"/>
-        <path class="e" id="r-write-sync" d="M620 72 L678 72" data-at="7"/>
-        <path class="e flow" id="r-sync-done" d="M760 104 L760 168" data-at="7"/>
+        <path class="e" id="r-x-lock" d="M390 202 L448 202" data-at="5"/>
+        <path class="e" id="r-lock-place" d="M535 170 L535 106" data-at="6"/>
+        <path class="e" id="r-place-same" d="M620 72 L678 72" data-at="7"/>
+        <path class="e" id="r-same-write" d="M760 104 L760 168" data-at="8"/>
+        <path class="e flow" id="r-write-sync" d="M760 234 L760 298" data-at="9"/>
 
         <g class="n" data-at="1">
           <rect x="20" y="40" width="150" height="64" rx="8"/>
@@ -82,49 +83,58 @@
         <g class="n data" data-at="4">
           <rect x="230" y="170" width="160" height="64" rx="10"/>
           <text x="310" y="196" text-anchor="middle" class="t-title">Same words?</text>
-          <text x="310" y="215" text-anchor="middle" class="t-small">the exact index</text>
+          <text x="310" y="215" text-anchor="middle" class="t-small">every block stored</text>
         </g>
         <g class="n guard" data-at="4">
           <rect x="230" y="300" width="160" height="60" rx="8"/>
           <text x="310" y="325" text-anchor="middle" class="t-title">stored: false</text>
           <text x="310" y="343" text-anchor="middle" class="t-small">known_at: the places</text>
         </g>
-        <g class="n brain" data-at="5">
+        <g class="n guard" data-at="5">
           <rect x="450" y="170" width="170" height="64" rx="8"/>
-          <text x="535" y="196" text-anchor="middle" class="t-title">Place the text</text>
-          <text x="535" y="215" text-anchor="middle" class="t-small">end of its section</text>
+          <text x="535" y="196" text-anchor="middle" class="t-title">Lock and read</text>
+          <text x="535" y="215" text-anchor="middle" class="t-small">one writer at a time</text>
         </g>
         <g class="n brain" data-at="6">
           <rect x="450" y="40" width="170" height="64" rx="8"/>
-          <text x="535" y="66" text-anchor="middle" class="t-title">Atomic write</text>
-          <text x="535" y="85" text-anchor="middle" class="t-small">temp file → rename</text>
+          <text x="535" y="66" text-anchor="middle" class="t-title">Place the text</text>
+          <text x="535" y="85" text-anchor="middle" class="t-small">under its heading</text>
         </g>
-        <g class="n hands" data-at="7">
+        <g class="n guard" data-at="7">
           <rect x="680" y="40" width="160" height="64" rx="8"/>
-          <text x="760" y="66" text-anchor="middle" class="t-title">sync again</text>
-          <text x="760" y="85" text-anchor="middle" class="t-small">the fact is indexed</text>
+          <text x="760" y="66" text-anchor="middle" class="t-title">Reads the same?</text>
+          <text x="760" y="85" text-anchor="middle" class="t-small">old note plus fact</text>
         </g>
-        <g class="n hands" data-at="7">
+        <g class="n brain" data-at="8">
           <rect x="680" y="170" width="160" height="64" rx="8"/>
-          <text x="760" y="196" text-anchor="middle" class="t-title">stored: true</text>
-          <text x="760" y="215" text-anchor="middle" class="t-small">root · embedded</text>
+          <text x="760" y="196" text-anchor="middle" class="t-title">Atomic write</text>
+          <text x="760" y="215" text-anchor="middle" class="t-small">temp file → rename</text>
+        </g>
+        <g class="n hands" data-at="9">
+          <rect x="680" y="300" width="160" height="64" rx="8"/>
+          <text x="760" y="326" text-anchor="middle" class="t-title">sync again</text>
+          <text x="760" y="345" text-anchor="middle" class="t-small">stored: true · root</text>
         </g>
 
         <g class="pop badge" data-at="1"><rect x="10" y="118" width="170" height="22" rx="11"/><text x="95" y="133" text-anchor="middle">default Inbox.md</text></g>
         <g class="pop badge" data-at="2"><rect x="10" y="248" width="170" height="22" rx="11"/><text x="95" y="263" text-anchor="middle">bad path: error</text></g>
         <g class="pop badge" data-at="3"><rect x="235" y="12" width="150" height="22" rx="11"/><text x="310" y="27" text-anchor="middle">no fact lost</text></g>
         <g class="pop badge" data-at="4"><rect x="400" y="300" width="150" height="22" rx="11"/><text x="475" y="315" text-anchor="middle">nothing written</text></g>
-        <g class="pop badge" data-at="5"><rect x="450" y="248" width="170" height="22" rx="11"/><text x="535" y="263" text-anchor="middle">or a new ## heading</text></g>
-        <g class="pop badge" data-at="6"><rect x="450" y="118" width="170" height="22" rx="11"/><text x="535" y="133" text-anchor="middle">never half a note</text></g>
-        <g class="pop badge" data-at="7"><rect x="680" y="248" width="160" height="22" rx="11"/><text x="760" y="263" text-anchor="middle">both syncs counted</text></g>
+        <g class="pop badge" data-at="5"><rect x="450" y="248" width="170" height="22" rx="11"/><text x="535" y="263" text-anchor="middle">read-only: refused</text></g>
+        <g class="pop badge" data-at="6"><rect x="450" y="118" width="170" height="22" rx="11"/><text x="535" y="133" text-anchor="middle">before subheadings</text></g>
+        <g class="pop badge" data-at="7"><rect x="680" y="12" width="160" height="22" rx="11"/><text x="760" y="27" text-anchor="middle">else: refused</text></g>
+        <g class="pop badge" data-at="8"><rect x="530" y="270" width="140" height="22" rx="11"/><text x="600" y="285" text-anchor="middle">never half a note</text></g>
+        <g class="pop badge" data-at="9"><rect x="530" y="370" width="140" height="22" rx="11"/><text x="600" y="385" text-anchor="middle">both syncs counted</text></g>
 
         <circle class="tok" r="6" data-path="r-fact-g" data-at="2"/>
         <circle class="tok hands" r="6" data-path="r-g-sync" data-at="3"/>
         <circle class="tok" r="6" data-path="r-sync-x" data-at="4"/>
         <circle class="tok guard" r="6" data-path="r-x-known" data-at="4" data-delay="500"/>
-        <circle class="tok brain" r="6" data-path="r-x-place" data-at="5"/>
-        <circle class="tok brain" r="6" data-path="r-place-write" data-at="6"/>
-        <circle class="tok hands" r="6" data-path="r-write-sync" data-at="7"/>
+        <circle class="tok" r="6" data-path="r-x-lock" data-at="5"/>
+        <circle class="tok brain" r="6" data-path="r-lock-place" data-at="6"/>
+        <circle class="tok brain" r="6" data-path="r-place-same" data-at="7"/>
+        <circle class="tok brain" r="6" data-path="r-same-write" data-at="8"/>
+        <circle class="tok hands" r="6" data-path="r-write-sync" data-at="9"/>
       </svg>
     </div>
     <div class="stage-side">
@@ -132,9 +142,11 @@
         <li><code>remember</code> takes one fact, a note (<code>Inbox.md</code> by default) and, if you like, a heading. The note path is checked before anything else.</li>
         <li>A fact with no letter or digit is refused, before anything is read or written.</li>
         <li>remember <b>syncs first</b>, so facts you typed into the vault since the last sync count as known.</li>
-        <li>When the same words are already stored anywhere in the vault, nothing is written. <code>stored</code> is false and <code>known_at</code> lists where they are.</li>
-        <li>Otherwise the text goes to the end of its heading's section, under a new <code>## heading</code>, or at the end of the note. A multi-line heading is refused.</li>
-        <li>The note is written to a hidden temporary file, flushed to disk and renamed over the note. A reader sees the old note or the new one, never half of one.</li>
+        <li>When every block of the fact is already stored word for word, nothing is written. <code>stored</code> is false and <code>known_at</code> lists where those words are.</li>
+        <li>Otherwise it takes the append lock, <code>.chaos-kb/append.lock</code>, so writers take turns. Read-only, symlinked and non-UTF-8 notes are refused, and so is a two-line heading.</li>
+        <li>The text goes right under its heading's own text, before any subheading. A missing heading is added at the end; without a heading, the text ends the note.</li>
+        <li>The result must read like the old note plus the fact: every heading and block kept, in order. Otherwise nothing is written and the error names the line.</li>
+        <li>The note goes to a hidden temporary file with its permissions, is flushed to disk and renamed over the note. Readers see the old note or the new one.</li>
         <li>A second sync indexes the fact. <code>embedded</code> counts the chunks both syncs embedded, and <code>root</code> is the vault's new root hash.</li>
       </ol>
     </div>
@@ -193,12 +205,12 @@
             <tr><td>10</td><td>Medications &gt; Daily</td><td><code>Magnesium before sleep</code></td><td>task item; the <code>[x]</code> carries no text</td></tr>
             <tr><td>12–14</td><td>Medications &gt; Daily</td><td><code>Name | Dose</code> / <code>Aspirin | 100 mg</code></td><td>table: one block, one line per row</td></tr>
             <tr><td>18</td><td>Medications &gt; Daily</td><td><code>pill.png</code></td><td>an embed keeps its name as text</td></tr>
-            <tr><td>22–23</td><td>Medications &gt; Notes</td><td><code>Ask the doctor before changing a dose.</code></td><td>quote; a wikilink keeps its label</td></tr>
+            <tr><td>22–23</td><td>Medications &gt; Notes</td><td><code>Ask the doctor Doctor before changing a dose.</code></td><td>quote; a link reads as its label, then where it points</td></tr>
             <tr><td>25–28</td><td>Medications &gt; Notes</td><td><code># not a heading</code> / <code>remind --daily 08:00</code></td><td>code, kept as written</td></tr>
           </tbody>
         </table>
       </div>
-      <p class="note">The rule <code>---</code> on line 16 has no text, so it is no block. Headings are not blocks: they become the section of the blocks below them.</p>
+      <p class="note">The rule <code>---</code> on line 16 has no text, so it is no block. Headings are not blocks: they become the section of the blocks below them. A link's destination is part of the text, so pointing a link somewhere else is a new fact; a link whose label is its destination, such as <code>[[Doctor]]</code>, reads once. An HTML block is a block too, read without its tags.</p>
     </div>
     <div class="tabpanel" id="tab-chunks" hidden>
       <div class="table-wrap">
@@ -206,12 +218,12 @@
           <thead><tr><th>Lines</th><th>Context line</th><th>Holds</th></tr></thead>
           <tbody>
             <tr><td>1–3</td><td><code>Medications</code></td><td>the front matter</td></tr>
-            <tr><td>8–18</td><td><code>Medications &gt; Medications &gt; Daily</code></td><td>the five blocks of Daily, joined by blank lines</td></tr>
-            <tr><td>22–28</td><td><code>Medications &gt; Medications &gt; Notes</code></td><td>the quote and the code block</td></tr>
+            <tr><td>8–18</td><td><code>Medications &gt; Daily</code></td><td>the five blocks of Daily, joined by blank lines</td></tr>
+            <tr><td>22–28</td><td><code>Medications &gt; Notes</code></td><td>the quote and the code block</td></tr>
           </tbody>
         </table>
       </div>
-      <p class="note">The context line is the note title (the file name) and then the section. Here the first heading repeats the title.</p>
+      <p class="note">The context line is the note title (the file name) and then the section. A first heading that only repeats the title, like <code># Medications</code> here, is left out.</p>
     </div>
   </div>
 </section>
@@ -220,7 +232,7 @@
   <div class="sec-head">
     <span class="kicker">Try it: pick a heading</span>
     <h2 id="s-place">Where remember puts a fact</h2>
-    <p>The note and the outcomes come from the tests in <code>src/adapters/obsidian.rs</code>; the last one follows the same rule. Headings match in any case. The added text is marked.</p>
+    <p>The note and every outcome come from the tests in <code>src/adapters/obsidian.rs</code>. Headings match in any case. The added text is marked.</p>
   </div>
   <div class="widget">
     <div class="presets" id="headings" role="group" aria-label="Heading"></div>
@@ -252,8 +264,8 @@
     <li><span class="chip guard">skip</span><span><b>hidden names</b>Files and folders whose names start with <code>.</code>, such as <code>.obsidian</code> and <code>.chaos-kb</code>.</span></li>
     <li><span class="chip guard">skip</span><span><b>symlinks</b>A linked file or folder is never followed.</span></li>
     <li><span class="chip guard">skip</span><span><b>other files</b>Only names ending in <code>.md</code>, in any case, are notes.</span></li>
-    <li><span class="chip guard">skip</span><span><b>names the path rules refuse</b>For example a name holding <code>:</code>.</span></li>
-    <li><span class="chip guard">skip</span><span><b>very large notes</b>In the current code, a note over 4 MiB.</span></li>
+    <li><span class="chip guard">skip</span><span><b>names the path rules refuse or would change</b>A name holding <code>:</code> or <code>\</code>, one starting with a space, or one that is not valid UTF-8.</span></li>
+    <li><span class="chip brain">read</span><span><b>any size</b>Every note is read whole, however long it is.</span></li>
     <li><span class="chip brain">read</span><span><b>broken text</b>Bytes that are not valid UTF-8 are read as replacement characters.</span></li>
   </ul>
 </section>
@@ -266,40 +278,49 @@
   <ul class="checks">
     <li><span><b>Only remember writes notes.</b> sync, check and search never change a note.</span></li>
     <li><span><b>Existing text stays byte for byte.</b> remember inserts its text and one blank line around it; nothing else moves.</span></li>
-    <li><span><b>Never half a note.</b> A write goes through a temporary file, a flush to disk and a rename, and keeps the note's permissions.</span></li>
+    <li><span><b>The rest of the note reads the same.</b> Text that would hide or re-nest what follows, such as an unclosed code fence or HTML comment, or a heading that takes in later sections, is refused.</span></li>
+    <li><span><b>Writers take turns.</b> Every append holds <code>.chaos-kb/append.lock</code>, so two agents writing at once keep both facts.</span></li>
+    <li><span><b>Never half a note.</b> A write goes through a temporary file that has the note's permissions from the start, a flush to disk and a rename.</span></li>
     <li><span><b>Nothing outside the vault.</b> Paths are relative with visible segments; a symlinked folder or note, or a folder resolving outside the vault, is refused.</span></li>
-    <li><span><b>No damage to odd files.</b> A note that is not valid UTF-8 is refused, not rewritten.</span></li>
-    <li><span><b>Code is not a heading.</b> A <code>#</code> line inside a code fence never counts as a section.</span></li>
-    <li><span><b>Missing pieces are created.</b> A missing note, its folders and its heading are added.</span></li>
+    <li><span><b>No damage to odd files.</b> A read-only note, or one that is not valid UTF-8, is refused, not rewritten.</span></li>
+    <li><span><b>Code is not a heading.</b> A <code>#</code> line inside a code fence or the front matter never counts as a heading.</span></li>
   </ul>
 </section>
 
 <section class="sec" aria-labelledby="s-try">
   <div class="sec-head">
     <span class="kicker">Try it</span>
-    <h2 id="s-try">Remember a fact twice</h2>
-    <p>On a copy of the example vault. JSON is shown condensed.</p>
+    <h2 id="s-try">Remember, place, refuse</h2>
+    <p>On a copy of the example vault, after one sync. JSON is shown condensed.</p>
   </div>
   <div class="term-wrap">
 <pre class="term" data-type><span class="ln cmd"><span class="p">$ </span>chaos-kb remember "Blood type: A positive." --note Health/Allergies --heading Blood</span>
 <span class="ln o">{ "stored": <span class="hl">true</span>, "note": "Health/Allergies.md", "embedded": 1,</span>
-<span class="ln o">  "root": "48eb6958611660b6333bd1ebc2beefdb8a925a7606e888e3f6df10ed33308f28" }</span>
+<span class="ln o">  "root": "5cfa5a3cecd2d2dcc655c04fabd092e8714dd3b47e334cf094f7f83e714fc815" }</span>
+<span class="ln cmd"><span class="p">$ </span>chaos-kb remember "Also allergic to latex." --note Health/Allergies --heading allergies</span>
+<span class="ln o">{ "stored": <span class="hl">true</span>, "note": "Health/Allergies.md", "embedded": 1,</span>
+<span class="ln o">  "root": "67ac2b69b1e1727a673fd196d482bffb7b602e832705844579157737247044ac" }</span>
 <span class="ln cmd"><span class="p">$ </span>cat Health/Allergies.md</span>
 <span class="ln o"># Allergies</span>
 <span class="ln o"></span>
 <span class="ln o">Allergic to penicillin.</span>
+<span class="ln o"></span>
+<span class="ln o">Also allergic to latex.</span>
 <span class="ln o"></span>
 <span class="ln o">## Blood</span>
 <span class="ln o"></span>
 <span class="ln o">Blood type: A positive.</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb remember "blood type a positive"</span>
 <span class="ln o">{ "stored": <span class="hl">false</span>, "note": "Inbox.md", "embedded": 0,</span>
-<span class="ln o">  "known_at": [ { "note": "Health/Allergies.md", "section": "Allergies &gt; Blood", "lines": [7, 7] } ], ... }</span>
+<span class="ln o">  "known_at": [ { "note": "Health/Allergies.md", "section": "Allergies &gt; Blood", "lines": [9, 9] } ], ... }</span>
+<span class="ln cmd"><span class="p">$ </span>chaos-kb remember $'```sh\nremind --daily' --note Health/Allergies --heading Allergies</span>
+<span class="ln o"><span class="er">error: refusing to append to Health/Allergies.md: the new text would change how the note reads from line 7 on, so nothing was written. An unclosed code fence or HTML comment does that, and so does a heading in the text that would take in the sections after it</span></span>
+<span class="ln cmd"><span class="p">$ </span>chmod 444 Communication.md &amp;&amp; chaos-kb remember "Short answers please." --note Communication</span>
+<span class="ln o"><span class="er">error: refusing to write Communication.md: it is read-only</span></span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb remember "Fact." --note ../outside</span>
-<span class="ln o"><span class="er">error: note path segment ".." is not allowed (empty, `.`/`..`, hidden, or has `\`, `:` or a control character)</span></span>
-<span class="ln cmd"><span class="p">$ </span>chaos-kb remember "Fact." --note .obsidian/x</span>
-<span class="ln o"><span class="er">error: note path segment ".obsidian" is not allowed (empty, `.`/`..`, hidden, or has `\`, `:` or a control character)</span></span></pre>
+<span class="ln o"><span class="er">error: note path segment ".." is not allowed (empty, `.`/`..`, hidden, or has `\`, `:` or a control character)</span></span></pre>
   </div>
+  <p class="note">The latex fact went under <code># Allergies</code>, before its subheading <code>## Blood</code>, so it reads under Allergies alone. The unclosed fence would have turned <code>## Blood</code> on line 7 into code. In another run, four <code>remember</code> processes appended to one note at the same moment and all four facts were kept, under a single <code>## Facts</code>.</p>
 </section>
 
 <section class="sec" aria-labelledby="s-where">
@@ -311,10 +332,11 @@
     <table>
       <thead><tr><th>File</th><th>Owns</th></tr></thead>
       <tbody>
-        <tr><td><code>src/adapters/obsidian.rs</code></td><td><code>ObsidianVault</code>: the walk, the parser, placing text in a section, the atomic write</td></tr>
+        <tr><td><code>src/adapters/obsidian.rs</code></td><td><code>ObsidianVault</code>: the walk, the parser, the append lock, placing text under a heading, the reads-the-same check, the atomic write</td></tr>
         <tr><td><code>src/domain/path.rs</code></td><td><code>NotePath</code>: the path rules, the title and the folders</td></tr>
         <tr><td><code>src/domain/note.rs</code></td><td><code>Note</code>, <code>Block</code>, <code>Location</code> and the section text</td></tr>
         <tr><td><code>src/application/remember.rs</code></td><td>the remember use-case, <code>INBOX</code> and its report</td></tr>
+        <tr><td><code>src/application/mod.rs</code></td><td><code>stored</code>: is every block of the fact already in the index, read through <code>Vault::texts</code>; <code>nonblank</code></td></tr>
       </tbody>
     </table>
   </div>
@@ -327,23 +349,23 @@
 </div>
 
 <script>
-/* page-only: placement explorer (outcomes from src/adapters/obsidian.rs tests)
+/* page-only: placement explorer (outcomes from the place() tests in src/adapters/obsidian.rs)
    and the path rules of NotePath::parse (src/domain/path.rs) */
 (function () {
   var CAR = "# Car\n\n## Oil\n\nChange every 10k.\n\n### Brand\n\nCastrol.\n\n## Tyres\n\nWinter set.\n";
   var CASES = [
     { label: "no heading", text: "new", before: CAR + "\n", after: "\n", section: "Car > Tyres",
       note: "With no heading, the text goes at the end of the note, after one blank line." },
-    { label: "Oil", text: "Check monthly.", before: "# Car\n\n## Oil\n\nChange every 10k.\n\n### Brand\n\nCastrol.\n\n", after: "\n\n## Tyres\n\nWinter set.\n", section: "Car > Oil > Brand",
-      note: "The Oil section ends at the next heading of its level, ## Tyres, so the text lands after the Brand subsection." },
+    { label: "Oil", text: "Check monthly.", before: "# Car\n\n## Oil\n\nChange every 10k.\n\n", after: "\n\n### Brand\n\nCastrol.\n\n## Tyres\n\nWinter set.\n", section: "Car > Oil",
+      note: "The text goes right under the Oil heading's own text, before its subheading ### Brand." },
     { label: "  bRaNd ", text: "Or Mobil.", before: "# Car\n\n## Oil\n\nChange every 10k.\n\n### Brand\n\nCastrol.\n\n", after: "\n\n## Tyres\n\nWinter set.\n", section: "Car > Oil > Brand",
       note: "The heading is trimmed and matched in any case: it finds ### Brand." },
     { label: "Tyres", text: "Summer set.", before: CAR + "\n", after: "\n", section: "Car > Tyres",
-      note: "Tyres is the last section, so its end is the end of the note." },
-    { label: "car", text: "Sold.", before: CAR + "\n", after: "\n", section: "Car > Tyres",
-      note: "# Car holds the whole note, so the text goes at the very end, below ## Tyres." },
-    { label: "Fuel", text: "Fact.", before: CAR + "\n## Fuel\n\n", after: "\n", section: "Car > Fuel", added: "## Fuel",
-      note: "No heading is called Fuel, so ## Fuel is added at the end with the text below it." }
+      note: "Tyres is the last heading, so its own text runs to the end of the note." },
+    { label: "car", text: "Sold.", before: "# Car\n\n", after: "\n\n## Oil\n\nChange every 10k.\n\n### Brand\n\nCastrol.\n\n## Tyres\n\nWinter set.\n", section: "Car",
+      note: "# Car has no text of its own yet, so the fact goes right under it, before ## Oil." },
+    { label: "New", text: "Fact.", before: CAR + "\n## New\n\n", after: "\n", section: "Car > New", added: "## New",
+      note: "No heading is called New, so ## New is added at the end with the text below it." }
   ];
   var host = document.getElementById("headings"), out = document.getElementById("placed"), note = document.getElementById("placed-note");
   function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }

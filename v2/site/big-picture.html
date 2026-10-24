@@ -134,12 +134,12 @@
     <div class="stage-side">
       <ol class="captions">
         <li>Your notes are Markdown files in one folder, an Obsidian <b>vault</b>. They are the only copy of the knowledge. Everything else is derived from them.</li>
-        <li><code>sync</code> reads every visible <code>.md</code> file and splits it into <b>blocks</b>: a paragraph, one list item, a table, a quote, a code block or the front matter.</li>
-        <li>Each block gets a <b>fingerprint</b>: a BLAKE3 hash of its words. Case, spacing, punctuation and Markdown emphasis do not change it.</li>
-        <li>Fingerprints roll up, note by note, into one <b>root hash</b> for the whole vault. This is the Merkle tree.</li>
+        <li><code>sync</code> reads every visible <code>.md</code> file, whole, and splits it into <b>blocks</b>: a paragraph, one list item, a table, a quote, a code or HTML block, or the front matter.</li>
+        <li>Each block gets a <b>fingerprint</b>: a BLAKE3 hash of its words. Case, spacing, sentence punctuation and Markdown emphasis do not change it; a symbol such as <code>+</code> does.</li>
+        <li>Fingerprints, each labelled by its headings, roll up into one hash per note, and the note hashes into one <b>root hash</b> for the whole vault. This is the Merkle tree.</li>
         <li>Consecutive blocks under the same heading are packed into <b>chunks</b> of at most 1200 characters. Each chunk has a context line such as <code>Car &gt; Maintenance &gt; Oil</code>.</li>
         <li>Only chunks whose content has no stored vector go to the embedding model, at most 32 per request. Unchanged text is never embedded again.</li>
-        <li>One write transaction makes the index file match the vault: the tree, the chunks and the fingerprints are replaced, and vectors nobody uses are dropped.</li>
+        <li>One write transaction makes the index file match the vault, if no other process wrote since this sync read it: the tree, chunks and fingerprints are replaced, unused vectors dropped.</li>
         <li><code>check</code> and <code>search</code> answer from the index alone. Every answer carries the root hash of the index that gave it.</li>
       </ol>
     </div>
@@ -189,9 +189,9 @@
     <table>
       <thead><tr><th>Port</th><th>What it does</th><th>Real adapter</th></tr></thead>
       <tbody>
-        <tr><td><code>Vault</code></td><td><code>notes()</code>: every note, parsed and sorted by path. <code>append()</code>: add text to a note, never change existing text.</td><td><code>ObsidianVault</code></td></tr>
+        <tr><td><code>Vault</code></td><td><code>notes()</code>: every note, parsed and sorted by path. <code>texts()</code>: read a snippet the way notes are read. <code>append()</code>: add text under a heading, never change how existing text reads.</td><td><code>ObsidianVault</code></td></tr>
         <tr><td><code>Embedder</code></td><td><code>id()</code> names the vector space. <code>embed_documents()</code> for passages, <code>embed_query()</code> for questions.</td><td><code>HttpEmbedder</code></td></tr>
-        <tr><td><code>Index</code></td><td><code>snapshot()</code>, <code>vector_keys()</code>, <code>replace()</code>, <code>exact()</code> by fingerprint, <code>nearest()</code> by vector.</td><td><code>RedbIndex</code></td></tr>
+        <tr><td><code>Index</code></td><td><code>snapshot()</code>, <code>vector_keys()</code>, <code>replace()</code> (refused with <code>Stale</code> when another writer got in first), <code>exact()</code> by fingerprint, <code>nearest()</code> by vector.</td><td><code>RedbIndex</code></td></tr>
       </tbody>
     </table>
   </div>
@@ -200,7 +200,7 @@
 <section class="sec" aria-labelledby="s-out">
   <div class="sec-head">
     <span class="kicker">What a sync reports</span>
-    <h2 id="s-out">Six situations</h2>
+    <h2 id="s-out">Seven situations</h2>
     <p>A sync report holds the new <code>root</code>, the counts <code>notes</code>, <code>chunks</code> and <code>embedded</code>, the notes <code>added</code>, <code>changed</code> and <code>removed</code>, and <code>dry_run</code>.</p>
   </div>
   <ul class="states">
@@ -210,6 +210,7 @@
     <li><span class="chip guard">gone</span><span><b>a note deleted</b><code>removed</code> lists it; its vectors, chunks and fingerprints are dropped.</span></li>
     <li><span class="chip heart">model</span><span><b>another model</b>Old vectors are never reused, so every chunk is embedded again.</span></li>
     <li><span class="chip data">look</span><span><b>dry run</b>The counts only. Nothing is embedded or written.</span></li>
+    <li><span class="chip guard">again</span><span><b>another writer got in first</b>The sync starts over from the index as it is then, at most 3 attempts in all.</span></li>
   </ul>
 </section>
 
@@ -223,7 +224,8 @@
     <li><span><b>No fake vectors at run time.</b> The test doubles (an in-memory vault and index, a keyword embedder) live in <code>src/application/testing.rs</code>, compiled only for tests.</span></li>
     <li><span><b>A failed embedding writes nothing.</b> When the model fails, returns the wrong number of vectors or a zero vector, sync stops before the index changes.</span></li>
     <li><span><b>One vector space at a time.</b> Stored vectors are reused only when the index was built by the same embedder id: model plus prompt format.</span></li>
-    <li><span><b>Reads need a matching index.</b> <code>check</code> and <code>search</code> refuse an empty index, or one built by another embedder, and say to run <code>chaos-kb sync</code>.</span></li>
+    <li><span><b>Reads need an index.</b> <code>check</code> and <code>search</code> refuse an empty one and say to run <code>chaos-kb sync</code>. Comparing vectors also needs the configured embedder's index; the same words answer without it.</span></li>
+    <li><span><b>Processes take turns.</b> Index operations hold <code>&lt;index&gt;.lock</code> and appends hold <code>.chaos-kb/append.lock</code>, so a CLI command and a running MCP server can share one vault.</span></li>
     <li><span><b>Blank input is refused.</b> A query or fact with no letter or digit is an error, not a lookup.</span></li>
     <li><span><b>Layers stay apart.</b> The <code>layering</code> test keeps the domain pure and keeps adapters out of the use-cases.</span></li>
   </ul>
@@ -233,16 +235,17 @@
   <div class="sec-head">
     <span class="kicker">Measured, not promised</span>
     <h2 id="s-speed">How fast it is</h2>
-    <p>Measured on an Apple M4 with the release build, Ollama 0.24 and <code>embeddinggemma</code>, on a vault of 502 notes (1003 chunks). Each time covers the whole process run (README § Speed). The first <code>sync</code>, which embeds all 1003 chunks, took 13.2 s. The index file was 8.4 MB.</p>
+    <p>Measured on an Apple M4 with the release build, Ollama 0.24 and <code>embeddinggemma</code>, on a vault of 503 notes (1004 chunks). Each time covers the whole process run (README § Speed). The first <code>sync</code>, which embeds all 1004 chunks, took 12.6 s. The index file was 8.4 MB.</p>
   </div>
   <div class="widget">
     <div class="bars speed" aria-label="Measured run times in seconds">
-      <div class="bar"><span class="lbl">check, by meaning</span><span class="track"><span class="fill" style="--w:100%"></span></span><span class="val">0.15 s</span></div>
-      <div class="bar"><span class="lbl">sync, unchanged</span><span class="track"><span class="fill" style="--w:67%"></span></span><span class="val">0.10 s</span></div>
-      <div class="bar"><span class="lbl">search</span><span class="track"><span class="fill" style="--w:67%"></span></span><span class="val">0.10 s</span></div>
-      <div class="bar"><span class="lbl">check, same words</span><span class="track"><span class="fill" style="--w:27%"></span></span><span class="val">0.04 s</span></div>
+      <div class="bar"><span class="lbl">check, by meaning</span><span class="track"><span class="fill" style="--w:100%"></span></span><span class="val">0.14 s</span></div>
+      <div class="bar"><span class="lbl">sync, one edit</span><span class="track"><span class="fill" style="--w:100%"></span></span><span class="val">0.14 s</span></div>
+      <div class="bar"><span class="lbl">sync, unchanged</span><span class="track"><span class="fill" style="--w:64%"></span></span><span class="val">0.09 s</span></div>
+      <div class="bar"><span class="lbl">search</span><span class="track"><span class="fill" style="--w:64%"></span></span><span class="val">0.09 s</span></div>
+      <div class="bar"><span class="lbl">check, same words</span><span class="track"><span class="fill" style="--w:29%"></span></span><span class="val">0.04 s</span></div>
     </div>
-    <p class="note">The check by meaning makes one embedding call. The check by the same words makes none.</p>
+    <p class="note">The check by meaning and the sync after editing one note each make one embedding call. The check by the same words makes none.</p>
   </div>
 </section>
 
@@ -259,14 +262,17 @@
 <span class="ln cmd"><span class="p">$ </span>chaos-kb sync --dry-run</span>
 <span class="ln o">{ "added": ["Car.md", "Communication.md", "Health/Allergies.md"], "changed": [], "removed": [],</span>
 <span class="ln o">  "notes": 3, "chunks": 5, "embedded": 5, "dry_run": true,</span>
-<span class="ln o">  "root": <span class="hl">"92af70b580a0c600e6288015eb6f54d27e5face2c7201cad7933cf1e2650dcf9"</span> }</span>
+<span class="ln o">  "root": <span class="hl">"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992"</span> }</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb sync</span>
-<span class="ln o">{ ... "notes": 3, "chunks": 5, "embedded": 5, "dry_run": false, "root": <span class="hl">"92af70b580a0c600e6288015eb6f54d27e5face2c7201cad7933cf1e2650dcf9"</span> }</span>
+<span class="ln o">{ "added": ["Car.md", "Communication.md", "Health/Allergies.md"], "changed": [], "removed": [],</span>
+<span class="ln o">  "notes": 3, "chunks": 5, "embedded": 5, "dry_run": false,</span>
+<span class="ln o">  "root": <span class="hl">"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992"</span> }</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb sync</span>
 <span class="ln o">{ "added": [], "changed": [], "removed": [], "notes": 3, "chunks": 5, "embedded": 0, "dry_run": false,</span>
-<span class="ln o">  "root": <span class="hl">"92af70b580a0c600e6288015eb6f54d27e5face2c7201cad7933cf1e2650dcf9"</span> }</span>
+<span class="ln o">  "root": <span class="hl">"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992"</span> }</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb check "allergic to PENICILLIN"</span>
-<span class="ln o">{ "known": true, "presence": "exact", "matches": [ { "note": "Health/Allergies.md", "section": "Allergies", "lines": [3, 3] } ], "root": ... }</span>
+<span class="ln o">{ "known": true, "presence": "exact", "matches": [ { "note": "Health/Allergies.md", "section": "Allergies", "lines": [3, 3] } ],</span>
+<span class="ln o">  "root": <span class="hl">"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992"</span> }</span>
 <span class="ln o"># without a vault: error: set --vault or CHAOS_KB_VAULT</span></pre>
   </div>
 </section>
@@ -282,9 +288,9 @@
       <tbody>
         <tr><td><code>src/main.rs</code></td><td>the binary: calls <code>entry::cli::main</code></td></tr>
         <tr><td><code>src/lib.rs</code></td><td>the five modules and the <code>layering</code> test</td></tr>
-        <tr><td><code>src/ports/mod.rs</code></td><td>the <code>Vault</code>, <code>Embedder</code> and <code>Index</code> traits; <code>Snapshot</code>, <code>Update</code>, <code>Hit</code></td></tr>
-        <tr><td><code>src/application/mod.rs</code></td><td><code>Kb</code>: the readiness check and the nearest-passages helper</td></tr>
-        <tr><td><code>src/application/sync.rs</code></td><td>the sync use-case, its report and the embedding batches</td></tr>
+        <tr><td><code>src/ports/mod.rs</code></td><td>the <code>Vault</code>, <code>Embedder</code> and <code>Index</code> traits; <code>Snapshot</code>, <code>Update</code>, <code>Stale</code>, <code>Hit</code></td></tr>
+        <tr><td><code>src/application/mod.rs</code></td><td><code>Kb</code>: <code>indexed</code>, <code>ready</code>, <code>stored</code> and the nearest-passages helper</td></tr>
+        <tr><td><code>src/application/sync.rs</code></td><td>the sync use-case, its report, the embedding batches and the attempts</td></tr>
         <tr><td><code>src/application/testing.rs</code></td><td>in-memory test doubles of the three ports (tests only)</td></tr>
         <tr><td><code>src/domain/note.rs</code></td><td><code>Note</code>, <code>Block</code>, <code>Location</code></td></tr>
         <tr><td><code>src/entry/cli.rs</code></td><td>the command line, its settings and the index path default</td></tr>
