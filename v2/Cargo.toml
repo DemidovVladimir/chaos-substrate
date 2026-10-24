@@ -9,19 +9,23 @@ description = "Personal knowledge base for agents: Markdown notes, local embeddi
 # Standalone crate inside the 1.0 repository; never a member of a parent workspace.
 [workspace]
 
-[[bin]]
-name = "chaos-kb"
-path = "src/main.rs"
-
 [dependencies]
 anyhow = "1"
 blake3 = "1"
-clap = { version = "4", features = ["derive", "env"] }
+# clap's defaults without `color`.
+clap = { version = "4", default-features = false, features = [
+    "std",
+    "help",
+    "usage",
+    "error-context",
+    "suggestions",
+    "derive",
+    "env",
+] }
 pulldown-cmark = { version = "0.13", default-features = false }
 redb = "4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-thiserror = "2"
 unicode-normalization = "0.1"
 # No gzip: ureq's 10 MB body cap counts compressed bytes, so a small gzip
 # response could inflate past it.

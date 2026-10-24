@@ -2,6 +2,7 @@
 //! from an agent — is parsed here first, so nothing can name a file outside
 //! the vault or inside a hidden folder (`.obsidian`, `.chaos-kb`, `.git`).
 
+use anyhow::{Result, ensure};
 use serde::Serialize;
 use std::fmt;
 
@@ -11,38 +12,27 @@ use std::fmt;
 #[serde(transparent)]
 pub struct NotePath(String);
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum PathError {
-    #[error("note path is empty")]
-    Empty,
-    #[error("note path must be relative to the vault: {0}")]
-    Absolute(String),
-    #[error(
-        "note path segment {0:?} is not allowed (empty, `.`/`..`, hidden, or has `\\`, `:` or a control character)"
-    )]
-    Segment(String),
-}
-
 impl NotePath {
     /// Parse a relative path; `.md` is appended when the last segment has no
     /// `.md` extension (`Health/Meds` → `Health/Meds.md`).
-    pub fn parse(raw: &str) -> Result<NotePath, PathError> {
+    pub fn parse(raw: &str) -> Result<NotePath> {
         let raw = raw.trim();
-        if raw.is_empty() {
-            return Err(PathError::Empty);
-        }
-        if raw.starts_with('/') {
-            return Err(PathError::Absolute(raw.to_string()));
-        }
+        ensure!(!raw.is_empty(), "note path is empty");
+        ensure!(
+            !raw.starts_with('/'),
+            "note path must be relative to the vault: {raw}"
+        );
         for segment in raw.split('/') {
             let bad = segment.is_empty()
                 || segment.starts_with('.')
                 || segment
                     .chars()
                     .any(|c| c == '\\' || c == ':' || c.is_control());
-            if bad {
-                return Err(PathError::Segment(segment.to_string()));
-            }
+            ensure!(
+                !bad,
+                "note path segment {segment:?} is not allowed (empty, `.`/`..`, hidden, or has \
+                 `\\`, `:` or a control character)"
+            );
         }
         let has_md = raw
             .rsplit_once('.')
@@ -87,6 +77,10 @@ mod tests {
         NotePath::parse(raw).unwrap().as_str().to_string()
     }
 
+    fn rejection(raw: &str) -> String {
+        NotePath::parse(raw).unwrap_err().to_string()
+    }
+
     #[test]
     fn accepts_relative_markdown_paths() {
         assert_eq!(ok("Health/Medications.md"), "Health/Medications.md");
@@ -104,12 +98,12 @@ mod tests {
 
     #[test]
     fn rejects_escapes_and_hidden_segments() {
-        assert_eq!(NotePath::parse(""), Err(PathError::Empty));
-        assert_eq!(NotePath::parse("   "), Err(PathError::Empty));
-        assert!(matches!(
-            NotePath::parse("/etc/passwd"),
-            Err(PathError::Absolute(_))
-        ));
+        assert_eq!(rejection(""), "note path is empty");
+        assert_eq!(rejection("   "), "note path is empty");
+        assert_eq!(
+            rejection("/etc/passwd"),
+            "note path must be relative to the vault: /etc/passwd"
+        );
         for bad in [
             "../x.md",
             "a/../../x.md",
@@ -124,11 +118,15 @@ mod tests {
             "a/\u{0}b.md",
             "a/b\n.md",
         ] {
-            assert!(
-                matches!(NotePath::parse(bad), Err(PathError::Segment(_))),
-                "{bad:?} must be rejected"
-            );
+            let e = rejection(bad);
+            assert!(e.starts_with("note path segment "), "{bad:?}: {e}");
+            assert!(e.contains("is not allowed"), "{bad:?}: {e}");
         }
+        assert_eq!(
+            rejection("a/../x.md"),
+            "note path segment \"..\" is not allowed (empty, `.`/`..`, hidden, \
+             or has `\\`, `:` or a control character)"
+        );
     }
 
     #[test]
