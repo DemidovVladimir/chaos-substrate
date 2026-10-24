@@ -37,7 +37,10 @@ impl Kb<'_> {
         let heading = heading.map(str::trim).filter(|h| !h.is_empty());
         // Sync first so facts typed into the vault since the last sync count.
         let before = self.sync(false)?;
-        let known_at = self.index.exact(&fingerprint(text))?;
+        let known_at = match fingerprint(text) {
+            Some(fp) => self.index.exact(&fp)?,
+            None => Vec::new(),
+        };
         if !known_at.is_empty() {
             return Ok(RememberReport {
                 stored: false,
@@ -89,7 +92,7 @@ mod tests {
             written.blocks[0].text,
             "Driving licence category B since 2015."
         );
-        let fp = text::fingerprint("driving licence category b since 2015");
+        let fp = text::fingerprint("driving licence category b since 2015").unwrap();
         assert_eq!(world.index.exact(&fp).unwrap().len(), 1);
     }
 

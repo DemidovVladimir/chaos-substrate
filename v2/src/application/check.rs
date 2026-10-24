@@ -39,7 +39,10 @@ impl Kb<'_> {
     pub fn check(&self, query: &str, min_score: f32) -> Result<CheckReport> {
         let query = nonblank(query, "query")?;
         let root = self.ready()?.tree.root();
-        let exact = self.index.exact(&fingerprint(query))?;
+        let exact = match fingerprint(query) {
+            Some(fp) => self.index.exact(&fp)?,
+            None => Vec::new(),
+        };
         if !exact.is_empty() {
             return Ok(CheckReport {
                 known: true,

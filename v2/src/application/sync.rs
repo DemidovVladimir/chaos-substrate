@@ -106,17 +106,14 @@ fn fingerprints(notes: &[Note]) -> Vec<(Digest, Location)> {
     notes
         .iter()
         .flat_map(|n| {
-            n.blocks
-                .iter()
-                .filter(|b| !text::is_blank(&b.text))
-                .map(|b| {
-                    let at = Location {
-                        note: n.path.clone(),
-                        section: section(&b.headings),
-                        lines: b.lines,
-                    };
-                    (text::fingerprint(&b.text), at)
-                })
+            n.blocks.iter().filter_map(|b| {
+                let at = Location {
+                    note: n.path.clone(),
+                    section: section(&b.headings),
+                    lines: b.lines,
+                };
+                Some((text::fingerprint(&b.text)?, at))
+            })
         })
         .collect()
 }
@@ -178,7 +175,7 @@ mod tests {
     #[test]
     fn a_deleted_note_is_purged() {
         let world = World::synced();
-        let fact = text::fingerprint("Allergy: penicillin.");
+        let fact = text::fingerprint("Allergy: penicillin.").unwrap();
         assert_eq!(world.index.exact(&fact).unwrap().len(), 1);
         world.vault.remove("Health/Allergies.md");
         let report = world.kb().sync(false).unwrap();

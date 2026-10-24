@@ -34,7 +34,7 @@ type ChunkRow<'a> = (LocRow<'a>, &'a str, &'a str);
 
 /// `"embedder"` → the embedder id of the stored vectors.
 const META: TableDefinition<&str, &str> = TableDefinition::new("meta");
-/// Merkle tree: vault path → hash.
+/// Merkle tree: note path → note hash.
 const TREE: TableDefinition<&str, &[u8; 32]> = TableDefinition::new("tree");
 /// Chunk key → chunk.
 const CHUNKS: TableDefinition<&[u8; 32], ChunkRow<'static>> = TableDefinition::new("chunks");
@@ -142,7 +142,7 @@ fn write(txn: &WriteTransaction, update: &Update) -> Result<()> {
 
     fresh(txn, META)?.insert(EMBEDDER_KEY, update.embedder.as_str())?;
     let mut tree = fresh(txn, TREE)?;
-    for (path, hash) in update.tree.nodes() {
+    for (path, hash) in update.tree.notes() {
         tree.insert(path, &hash.0)?;
     }
     let mut chunks = fresh(txn, CHUNKS)?;
@@ -241,7 +241,7 @@ impl Index for RedbIndex {
                 .collect::<Result<Vec<_>>>()?;
             Ok(Some(Snapshot {
                 embedder: embedder.value().to_string(),
-                tree: Tree::from_nodes(nodes),
+                tree: Tree::from_notes(nodes),
             }))
         })
     }
@@ -372,7 +372,7 @@ mod tests {
     }
 
     fn tree(paths: &[&str]) -> Tree {
-        Tree::from_nodes(
+        Tree::from_notes(
             paths
                 .iter()
                 .map(|p| (p.to_string(), hash::leaf(p.as_bytes()))),

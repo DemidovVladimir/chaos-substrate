@@ -1,32 +1,51 @@
-//! Text fingerprints for exact "is this already known?" checks. Two texts get
-//! the same fingerprint when they say the same words: case, punctuation,
-//! Markdown symbols, Unicode compatibility forms and spacing are ignored.
+//! Text fingerprints for exact "is this already known?" checks. Two block
+//! texts get the same fingerprint when they say the same thing: case,
+//! spacing, sentence punctuation, quotes, brackets, leftover emphasis marks
+//! and Unicode compatibility forms are ignored. Every other symbol counts, so
+//! `A+` and `A-`, or `≤ 140` and `≥ 140`, stay different facts.
 
 use super::hash::{self, Digest};
 use unicode_normalization::UnicodeNormalization;
+use unicode_normalization::char::is_combining_mark;
 
-/// Canonical form of `text`: Unicode NFKC, lowercase, every run of
-/// non-alphanumeric characters (punctuation, Markdown marks, whitespace)
-/// collapsed to one space, trimmed. Letters and digits of every script stay.
-/// `"- **Driving licence:** B (2015)."` → `"driving licence b 2015"`.
+/// Characters that never change what a fact says (after NFKC, which turns
+/// full-width forms and `…` into these).
+const IGNORED: &str = ".,;:!?\"'()[]{}*_`~|“”„‘’‚«»‹›—";
+
+/// Canonical form of plain text (Markdown syntax already removed by the vault
+/// reader): Unicode NFKC, lowercase, then words of letters, digits and their
+/// combining marks, and every other non-ignored symbol as a word of its own,
+/// joined by single spaces.
+/// `"Driving licence: B+ (2015)."` → `"driving licence b + 2015"`.
 pub fn normalize(text: &str) -> String {
     let lower = text.nfkc().collect::<String>().to_lowercase();
-    let words: Vec<&str> = lower
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|word| !word.is_empty())
-        .collect();
-    words.join(" ")
+    let mut out = String::new();
+    let mut in_word = false;
+    for c in lower.chars() {
+        let letter = c.is_alphanumeric() || (in_word && is_combining_mark(c));
+        if letter && in_word {
+            out.push(c);
+            continue;
+        }
+        in_word = letter;
+        if letter || !(c.is_whitespace() || IGNORED.contains(c) || is_combining_mark(c)) {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push(c);
+        }
+    }
+    out
 }
 
-/// Leaf hash of the normalized text. Empty when the text has no letters or
-/// digits — such text never matches anything (see [`is_blank`]).
-pub fn fingerprint(text: &str) -> Digest {
-    hash::leaf(normalize(text).as_bytes())
+/// Leaf hash of the normalized text; `None` when the text holds no letter or
+/// digit (see [`is_blank`]), which is never stored and never matches.
+pub fn fingerprint(text: &str) -> Option<Digest> {
+    (!is_blank(text)).then(|| hash::leaf(normalize(text).as_bytes()))
 }
 
-/// True when `text` holds no letter or digit (nothing to fingerprint). Same
-/// answer as `normalize(text).is_empty()` without building the string:
-/// lowercasing never turns a letter into a non-letter or the reverse.
+/// True when `text` holds no letter or digit: nothing worth storing or
+/// looking up, even if symbols remain (`---`, `→ ★`).
 pub fn is_blank(text: &str) -> bool {
     !text.nfkc().any(char::is_alphanumeric)
 }
@@ -35,22 +54,56 @@ pub fn is_blank(text: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn same(a: &str, b: &str) -> bool {
+        fingerprint(a).unwrap() == fingerprint(b).unwrap()
+    }
+
     #[test]
-    fn normalize_lowercases_and_collapses_symbols() {
+    fn normalize_lowercases_and_drops_punctuation() {
         assert_eq!(
-            normalize("- **Driving licence:** B (2015)."),
-            "driving licence b 2015"
+            normalize("Driving licence: B+ (2015)."),
+            "driving licence b + 2015"
         );
         assert_eq!(normalize("  Hello,\n\tWORLD!!  "), "hello world");
         assert_eq!(
-            normalize("snake_case-and/slashes"),
-            "snake case and slashes"
+            normalize("“Quoted” — [bracketed], *starred*; done…"),
+            "quoted bracketed starred done"
         );
         assert_eq!(
-            normalize("[[Oil change|oil]] #car ==hi=="),
-            "oil change oil car hi"
+            normalize("snake_case-and/slashes"),
+            "snake case - and / slashes"
         );
         assert_eq!(normalize("x"), "x");
+    }
+
+    #[test]
+    fn symbols_that_carry_meaning_are_words_of_their_own() {
+        for (a, b) in [
+            ("Blood type: A+", "Blood type: A-"),
+            ("-2.5 dioptres", "+2.5 dioptres"),
+            ("blood pressure ≤ 140", "blood pressure ≥ 140"),
+            ("I write C++", "I write C#"),
+            ("I write C#", "I write C"),
+            ("1.5 mg", "1-5 mg"),
+            ("1.5 mg", "15 mg"),
+            ("x < 3", "x > 3"),
+            ("50% off", "50 off"),
+        ] {
+            assert_ne!(fingerprint(a), fingerprint(b), "{a:?} vs {b:?}");
+        }
+        assert_eq!(normalize("Blood type: A+"), "blood type a +");
+        assert_eq!(normalize("C++ and C#"), "c + + and c #");
+        assert_eq!(normalize("-2.5"), "- 2 5");
+        assert_eq!(normalize("24/7, 100%"), "24 / 7 100 %");
+    }
+
+    #[test]
+    fn combining_marks_stay_inside_their_word() {
+        // The virama joins the Devanagari word; it is no word break.
+        assert_ne!(fingerprint("हिन्दी"), fingerprint("हिन दी"));
+        assert_eq!(normalize("हिन्दी"), "हिन्दी");
+        // A mark with no letter before it is nothing.
+        assert_eq!(normalize("\u{301} x"), "x");
     }
 
     #[test]
@@ -61,7 +114,7 @@ mod tests {
         );
         assert_eq!(normalize("ÄRZTIN Müller"), "ärztin müller");
         assert_eq!(normalize("東京タワー!"), "東京タワー");
-        assert_eq!(normalize("٣ arabic-indic"), "٣ arabic indic");
+        assert_eq!(normalize("٣ arabic"), "٣ arabic");
     }
 
     #[test]
@@ -71,46 +124,46 @@ mod tests {
         assert_eq!(normalize("５㎏"), "5kg");
         assert_eq!(normalize("x²"), "x2");
         assert_eq!(normalize("x\u{a0}y"), "x y", "no-break space is a space");
+        assert_eq!(normalize("wait…"), "wait", "… becomes ...");
         // A decomposed `é` composes; without NFKC the accent would split the word.
         assert_eq!(normalize("cafe\u{301} crème"), "café crème");
     }
 
     #[test]
-    fn fingerprint_ignores_case_punctuation_markdown_and_spacing() {
-        let a = fingerprint("Driving licence: B (2015)");
-        assert_eq!(a, fingerprint("- **driving   LICENCE** — b, 2015."));
-        assert_eq!(a, fingerprint("> _Driving_ `licence`\nB 2015"));
-        assert_eq!(a, fingerprint("  driving licence b 2015  "));
-        assert_ne!(a, fingerprint("Driving licence: C (2015)"));
-        assert_ne!(a, fingerprint("Driving licence: B (2016)"));
-        assert_ne!(
-            fingerprint("ab c"),
-            fingerprint("a bc"),
-            "word boundaries count"
-        );
+    fn fingerprint_ignores_case_punctuation_and_spacing() {
+        assert!(same("Allergic to penicillin.", "allergic to PENICILLIN"));
+        assert!(same(
+            "Driving licence: B (2015)",
+            "driving   LICENCE — b, 2015."
+        ));
+        assert!(same("Driving licence B 2015", "  driving licence b 2015  "));
+        assert!(!same(
+            "Driving licence: B (2015)",
+            "Driving licence: C (2015)"
+        ));
+        assert!(!same(
+            "Driving licence: B (2015)",
+            "Driving licence: B (2016)"
+        ));
+        assert!(!same("ab c", "a bc"), "word boundaries count");
     }
 
     #[test]
     fn fingerprint_unifies_unicode_forms_and_case() {
-        assert_eq!(fingerprint("ﬁle"), fingerprint("FILE"));
-        assert_eq!(fingerprint("Ａ１"), fingerprint("a1"));
-        assert_eq!(fingerprint("ПРАВА: «B»"), fingerprint("права b"));
-        assert_ne!(
-            fingerprint("ёлка"),
-            fingerprint("елка"),
-            "ё and е are different letters"
-        );
+        assert!(same("ﬁle", "FILE"));
+        assert!(same("Ａ１", "a1"));
+        assert!(same("ПРАВА: «B»", "права b"));
+        assert!(!same("ёлка", "елка"), "ё and е are different letters");
     }
 
     #[test]
     fn fingerprint_is_the_leaf_of_the_normalized_text() {
-        assert_eq!(fingerprint("Hi, there!"), hash::leaf(b"hi there"));
-        assert_eq!(fingerprint("**"), hash::leaf(b""));
-        assert_eq!(fingerprint(""), fingerprint("  --- "));
+        assert_eq!(fingerprint("Hi, there!"), Some(hash::leaf(b"hi there")));
+        assert_eq!(fingerprint("A+"), Some(hash::leaf(b"a +")));
     }
 
     #[test]
-    fn is_blank_means_no_letter_or_digit() {
+    fn blank_text_has_no_fingerprint() {
         for blank in [
             "",
             "   ",
@@ -122,36 +175,12 @@ mod tests {
             "\u{301}",
         ] {
             assert!(is_blank(blank), "{blank:?} is blank");
+            assert_eq!(fingerprint(blank), None, "{blank:?}");
         }
         // `℀`, `™` and `㎏` are symbols, but NFKC spells them with letters.
         for text in ["a", "7", "Я", "- [x] ок", "²", "東", "℀", "™", "㎏"] {
             assert!(!is_blank(text), "{text:?} is not blank");
-        }
-    }
-
-    #[test]
-    fn is_blank_agrees_with_normalize() {
-        for t in [
-            "",
-            " \t\n",
-            "\u{a0}\u{3000}",
-            "--- *** ___",
-            "> [!note]",
-            "→ ★ © ®",
-            "\u{301}\u{307}",
-            "Права",
-            "ёлка",
-            "0",
-            "١٢٣",
-            "²",
-            "ﬁ",
-            "Ａ",
-            "℀",
-            "™",
-            "㎏",
-            "東京",
-        ] {
-            assert_eq!(is_blank(t), normalize(t).is_empty(), "{t:?}");
+            assert!(fingerprint(text).is_some(), "{text:?}");
         }
     }
 }
