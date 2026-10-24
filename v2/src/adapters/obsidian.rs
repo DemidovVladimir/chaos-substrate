@@ -1298,6 +1298,26 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn append_refuses_a_read_only_note() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("fixed.md");
+        write(dir.path(), "fixed.md", "keep\n");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).unwrap();
+        let result = open(dir.path()).append(&note("fixed"), None, "x");
+        let after = fs::read_to_string(&file).unwrap();
+        let Err(error) = result else {
+            panic!("a read-only note was rewritten:\n{after}");
+        };
+        assert!(format!("{error:#}").contains("read-only"), "{error:#}");
+        assert_eq!(after, "keep\n");
+        let mode = fs::metadata(&file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o444);
+        assert_eq!(dot_entries(dir.path()), Vec::<PathBuf>::new());
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn append_keeps_the_note_permissions() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempdir().unwrap();
