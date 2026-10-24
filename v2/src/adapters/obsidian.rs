@@ -16,6 +16,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Notes larger than this are skipped (a knowledge note is never this big).
 pub const MAX_NOTE_BYTES: u64 = 4 * 1024 * 1024;
 
+/// The Markdown dialect: Obsidian's tables, tasks, front matter and wikilinks.
+const OPTIONS: Options = Options::ENABLE_TABLES
+    .union(Options::ENABLE_STRIKETHROUGH)
+    .union(Options::ENABLE_TASKLISTS)
+    .union(Options::ENABLE_YAML_STYLE_METADATA_BLOCKS)
+    .union(Options::ENABLE_WIKILINKS);
+
 pub struct ObsidianVault {
     root: PathBuf,
 }
@@ -96,19 +103,20 @@ fn read_lossy(file: &Path) -> Result<String> {
 
 /// Parse one note's Markdown into blocks (pure; no file access).
 pub fn blocks(markdown: &str) -> Vec<Block> {
+    parse(markdown).done
+}
+
+/// Run pulldown-cmark over one note; offsets are those of `markdown`.
+fn parse(markdown: &str) -> Blocks<'_> {
     // A byte order mark hides front matter from pulldown-cmark. It holds no
     // newline, so line numbers are the same without it.
-    let markdown = markdown.strip_prefix('\u{feff}').unwrap_or(markdown);
-    let options = Options::ENABLE_TABLES
-        | Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TASKLISTS
-        | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
-        | Options::ENABLE_WIKILINKS;
+    let body = markdown.strip_prefix('\u{feff}').unwrap_or(markdown);
+    let skipped = markdown.len() - body.len();
     let mut blocks = Blocks::new(markdown);
-    for (event, range) in Parser::new_ext(markdown, options).into_offset_iter() {
-        blocks.event(event, range);
+    for (event, range) in Parser::new_ext(body, OPTIONS).into_offset_iter() {
+        blocks.event(event, range.start + skipped..range.end + skipped);
     }
-    blocks.done
+    blocks
 }
 
 /// How the text of an open block is gathered.
@@ -140,6 +148,8 @@ struct Blocks<'a> {
     line_starts: Vec<usize>,
     /// `(level, text)` of the headings above, outermost first.
     headings: Vec<(usize, String)>,
+    /// `(offset, level, text)` of every heading, in document order.
+    outline: Vec<(usize, usize, String)>,
     open: Option<Open>,
     depth: usize,
     /// Inside an HTML tag: `<` seen, `>` not yet.
@@ -154,6 +164,7 @@ impl<'a> Blocks<'a> {
             markdown,
             line_starts: std::iter::once(0).chain(newlines).collect(),
             headings: Vec::new(),
+            outline: Vec::new(),
             open: None,
             depth: 0,
             in_tag: false,
@@ -243,6 +254,7 @@ impl<'a> Blocks<'a> {
             _ => prose(&open.text),
         };
         if let Kind::Heading(level) = open.kind {
+            self.outline.push((open.start, level, text.clone()));
             self.headings.retain(|(above, _)| *above < level);
             if !text.is_empty() {
                 self.headings.push((level, text));
@@ -279,10 +291,11 @@ fn prose(text: &str) -> String {
 }
 
 /// `existing` with `text` placed as [`Vault::append`] describes (pure): at the
-/// end of the section under the first ATX heading titled `heading` (any case,
-/// outside code fences), under a new `## heading` at the end when there is no
-/// such heading, or at the end of the note. One blank line separates the text
-/// from its neighbours; the existing bytes are kept as they are.
+/// end of the section under the first heading titled `heading` (any case, the
+/// heading read as [`blocks`] reads it), under a new `## heading` at the end
+/// when there is no such heading, or at the end of the note. One blank line
+/// separates the text from its neighbours; the existing bytes are kept as
+/// they are.
 fn place(existing: &str, heading: Option<&str>, text: &str) -> String {
     let text = text.trim_end().trim_start_matches(['\r', '\n']);
     let Some(heading) = heading.map(str::trim).filter(|h| !h.is_empty()) else {
@@ -312,74 +325,19 @@ fn gap(before: &str) -> &'static str {
     }
 }
 
-/// Where the section under the first ATX heading titled `title` ends: at the
-/// next heading of the same or a higher level, or at the end of the note.
+/// Where the section under the first heading titled `title` ends: where the
+/// line of the next heading of the same or a higher level starts, or at the
+/// end of the note.
 fn section_end(markdown: &str, title: &str) -> Option<usize> {
     let title = title.to_lowercase();
-    let headings = atx_headings(markdown);
-    let at = headings.iter().position(|h| h.2.to_lowercase() == title)?;
-    let level = headings[at].1;
-    let next = headings[at + 1..].iter().find(|h| h.1 <= level);
-    Some(next.map_or(markdown.len(), |h| h.0))
-}
-
-/// `(offset, level, text)` of every ATX heading line outside code fences.
-fn atx_headings(markdown: &str) -> Vec<(usize, usize, &str)> {
-    let mut found = Vec::new();
-    let mut fence: Option<(char, usize)> = None;
-    let mut offset = 0;
-    for line in markdown.split_inclusive('\n') {
-        let start = offset;
-        offset += line.len();
-        let line = line.trim_end_matches(['\n', '\r']);
-        match (fence, fence_marker(line)) {
-            (Some(open), Some((c, n, rest)))
-                if c == open.0 && n >= open.1 && rest.trim().is_empty() =>
-            {
-                fence = None
-            }
-            (Some(_), _) => {}
-            (None, Some((c, n, _))) => fence = Some((c, n)),
-            (None, None) => {
-                if let Some((level, text)) = atx(line) {
-                    found.push((start, level, text));
-                }
-            }
-        }
-    }
-    found
-}
-
-/// `(char, length, rest)` when `line` is a code fence (three or more backticks
-/// or tildes; a backtick fence's info string has no backtick).
-fn fence_marker(line: &str) -> Option<(char, usize, &str)> {
-    let body = unindented(line)?;
-    let c = body.chars().next().filter(|c| matches!(c, '`' | '~'))?;
-    let rest = body.trim_start_matches(c);
-    let n = body.len() - rest.len();
-    (n >= 3 && !(c == '`' && rest.contains('`'))).then_some((c, n, rest))
-}
-
-/// `(level, text)` when `line` is an ATX heading (`## Text`, optionally
-/// closed by `#`s).
-fn atx(line: &str) -> Option<(usize, &str)> {
-    let body = unindented(line)?;
-    let rest = body.trim_start_matches('#');
-    let level = body.len() - rest.len();
-    let spaced = rest.is_empty() || rest.starts_with([' ', '\t']);
-    if !(1..=6).contains(&level) || !spaced {
-        return None;
-    }
-    let rest = rest.trim();
-    let unclosed = rest.trim_end_matches('#');
-    let closed = unclosed.is_empty() || unclosed.ends_with([' ', '\t']);
-    Some((level, if closed { unclosed.trim_end() } else { rest }))
-}
-
-/// `line` without its indentation, when that is at most three spaces.
-fn unindented(line: &str) -> Option<&str> {
-    let body = line.trim_start_matches(' ');
-    (line.len() - body.len() <= 3).then_some(body)
+    let outline = parse(markdown).outline;
+    let at = outline.iter().position(|h| h.2.to_lowercase() == title)?;
+    let level = outline[at].1;
+    let Some(&(next, ..)) = outline[at + 1..].iter().find(|h| h.1 <= level) else {
+        return Some(markdown.len());
+    };
+    // An indented heading starts after its indentation.
+    Some(markdown[..next].rfind(['\n', '\r']).map_or(0, |i| i + 1))
 }
 
 /// Write `bytes` to `file` through a hidden temp file in the same folder and a
@@ -964,8 +922,13 @@ mod tests {
     #[test]
     fn place_finds_a_setext_heading() {
         assert_eq!(
-            place("Oil\n===\n\nx\n\nTyres\n-----\n\ny\n", Some("oil"), "new"),
-            "Oil\n===\n\nx\n\nnew\n\nTyres\n-----\n\ny\n"
+            place("Oil\n===\n\nx\n\nTyres\n=====\n\ny\n", Some("oil"), "new"),
+            "Oil\n===\n\nx\n\nnew\n\nTyres\n=====\n\ny\n"
+        );
+        assert_eq!(
+            place("Oil\n===\n\nx\n\nBrand\n-----\n\ny\n", Some("oil"), "new"),
+            "Oil\n===\n\nx\n\nBrand\n-----\n\ny\n\nnew\n",
+            "a `-----` heading is level 2, inside the `===` section"
         );
     }
 
@@ -991,6 +954,14 @@ mod tests {
         assert_eq!(
             place("\u{feff}# Oil\n\nx\n\n# Tyres\n", Some("Oil"), "new"),
             "\u{feff}# Oil\n\nx\n\nnew\n\n# Tyres\n"
+        );
+    }
+
+    #[test]
+    fn place_ends_a_section_where_the_line_of_an_indented_heading_starts() {
+        assert_eq!(
+            place("## A\nx\n   ## B\n", Some("A"), "new"),
+            "## A\nx\n\nnew\n\n   ## B\n"
         );
     }
 
