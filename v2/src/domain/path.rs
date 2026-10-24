@@ -7,7 +7,7 @@ use std::fmt;
 
 /// A validated note path: `/`-separated, relative, every segment visible
 /// (no leading `.`), ending in `.md`. Example: `Health/Medications.md`.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
 pub struct NotePath(String);
 
@@ -76,12 +76,6 @@ impl NotePath {
 impl fmt::Display for NotePath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
-    }
-}
-
-impl fmt::Debug for NotePath {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "NotePath({})", self.0)
     }
 }
 

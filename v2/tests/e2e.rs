@@ -6,6 +6,7 @@ use chaos_kb::adapters::embedder::HttpEmbedder;
 use chaos_kb::adapters::obsidian::ObsidianVault;
 use chaos_kb::adapters::redb_index::RedbIndex;
 use chaos_kb::application::Kb;
+use chaos_kb::domain::merkle::Changes;
 use chaos_kb::domain::path::NotePath;
 use chaos_kb::domain::presence::{DEFAULT_MIN_SCORE, Presence};
 use serde_json::{Value, json};
@@ -179,7 +180,7 @@ fn personal_vault_answers_from_the_index() {
     let again = kb.sync(false).unwrap();
     assert_eq!(again.embedded, 0);
     assert_eq!(again.root, first.root);
-    assert!(again.changes.is_empty());
+    assert_eq!(again.changes, Changes::default());
 }
 
 #[test]

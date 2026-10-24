@@ -72,6 +72,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn debug_shows_the_hex() {
+        let d = leaf(b"x");
+        assert_eq!(format!("{d:?}"), format!("Digest({})", d.to_hex()));
+    }
+
+    #[test]
     fn hex_round_trip() {
         let d = leaf(b"x");
         let hex = d.to_hex();

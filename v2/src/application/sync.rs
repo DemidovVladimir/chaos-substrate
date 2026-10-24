@@ -157,7 +157,7 @@ mod tests {
         let report = world.kb().sync(false).unwrap();
         assert_eq!(report.embedded, 0);
         assert_eq!(world.embedder.embedded(), before);
-        assert!(report.changes.is_empty());
+        assert_eq!(report.changes, Changes::default());
     }
 
     #[test]

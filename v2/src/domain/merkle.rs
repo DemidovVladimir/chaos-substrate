@@ -35,12 +35,6 @@ pub struct Changes {
     pub removed: Vec<String>,
 }
 
-impl Changes {
-    pub fn is_empty(&self) -> bool {
-        self.added.is_empty() && self.changed.is_empty() && self.removed.is_empty()
-    }
-}
-
 impl Tree {
     /// Build the tree of `notes` (any order; paths are unique). An empty vault
     /// has only the root, whose hash is `hash::node([])`.
@@ -388,13 +382,12 @@ mod tests {
         assert_eq!(changes.added, ["Health/e.md", "z.md"]);
         assert_eq!(changes.changed, ["b.md"]);
         assert_eq!(changes.removed, ["Health/d.md", "a.md"]);
-        assert!(!changes.is_empty());
     }
 
     #[test]
     fn diff_ignores_unchanged_notes_and_folder_keys() {
         let tree = Tree::build(&[one("Health/c.md", "same"), one("inbox.md", "x")]);
-        assert!(tree.diff(&tree.clone()).is_empty());
+        assert_eq!(tree.diff(&tree.clone()), Changes::default());
         let (h1, h2) = (hash::leaf(b"1"), hash::leaf(b"2"));
         let old = Tree::from_nodes([(String::new(), h1), ("x/".to_string(), h1)]);
         let new = Tree::from_nodes([(String::new(), h2), ("x/".to_string(), h2)]);
