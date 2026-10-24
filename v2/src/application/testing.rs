@@ -4,7 +4,6 @@
 use super::Kb;
 use crate::domain::chunk::Chunk;
 use crate::domain::hash::Digest;
-use crate::domain::merkle::Tree;
 use crate::domain::note::{Block, Location, Note};
 use crate::domain::path::NotePath;
 use crate::domain::vector;
@@ -92,7 +91,8 @@ impl Vault for MemVault {
 /// An index held in memory, with the [`Index::replace`] contract.
 #[derive(Default)]
 pub struct MemIndex {
-    state: RefCell<Option<(String, Tree, Vec<Chunk>, Vec<(Digest, Location)>)>>,
+    /// The last update, its vectors moved into `vectors`.
+    state: RefCell<Option<Update>>,
     vectors: RefCell<HashMap<Digest, Vec<f32>>>,
     pub writes: Cell<usize>,
 }
@@ -105,21 +105,17 @@ impl MemIndex {
 
 impl Index for MemIndex {
     fn snapshot(&self) -> Result<Option<Snapshot>> {
-        Ok(self
-            .state
-            .borrow()
-            .as_ref()
-            .map(|(embedder, tree, ..)| Snapshot {
-                embedder: embedder.clone(),
-                tree: tree.clone(),
-            }))
+        Ok(self.state.borrow().as_ref().map(|u| Snapshot {
+            embedder: u.embedder.clone(),
+            tree: u.tree.clone(),
+        }))
     }
 
     fn vector_keys(&self) -> Result<HashSet<Digest>> {
         Ok(self.vectors.borrow().keys().copied().collect())
     }
 
-    fn replace(&self, update: Update) -> Result<()> {
+    fn replace(&self, mut update: Update) -> Result<()> {
         let mut vectors = self.vectors.borrow_mut();
         let supplied: HashSet<Digest> = update.vectors.iter().map(|(k, _)| *k).collect();
         if let Some(c) = update
@@ -129,11 +125,10 @@ impl Index for MemIndex {
         {
             bail!("chunk {} has no vector", c.key);
         }
-        vectors.extend(update.vectors);
+        vectors.extend(std::mem::take(&mut update.vectors));
         let used: HashSet<Digest> = update.chunks.iter().map(|c| c.key).collect();
         vectors.retain(|k, _| used.contains(k));
-        *self.state.borrow_mut() =
-            Some((update.embedder, update.tree, update.chunks, update.blocks));
+        *self.state.borrow_mut() = Some(update);
         self.writes.set(self.writes.get() + 1);
         Ok(())
     }
@@ -142,7 +137,7 @@ impl Index for MemIndex {
         let state = self.state.borrow();
         let mut out: Vec<Location> = state
             .iter()
-            .flat_map(|(.., blocks)| blocks.iter())
+            .flat_map(|u| u.blocks.iter())
             .filter(|(fp, _)| fp == fingerprint)
             .map(|(_, at)| at.clone())
             .collect();
@@ -153,7 +148,7 @@ impl Index for MemIndex {
     fn nearest(&self, query: &[f32], k: usize) -> Result<Vec<Hit>> {
         let state = self.state.borrow();
         let vectors = self.vectors.borrow();
-        let chunks: Vec<&Chunk> = state.iter().flat_map(|(_, _, c, _)| c.iter()).collect();
+        let chunks: Vec<&Chunk> = state.iter().flat_map(|u| u.chunks.iter()).collect();
         let candidates = chunks.iter().map(|c| (*c, vectors[&c.key].as_slice()));
         Ok(vector::top_k(query, candidates, k)
             .into_iter()
