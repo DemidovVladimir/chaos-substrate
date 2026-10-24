@@ -593,14 +593,37 @@ mod tests {
     }
 
     #[test]
-    fn plain_text_keeps_labels_and_drops_markup() {
+    fn plain_text_drops_markup() {
         let note = doc(
             "See [[Oil change|the oil]] and [[Tyres]], ![[pic.png]], [site](https://x.y), \
              ![alt](a.png) and `cfg` ~~old~~ *em* <span>raw</span>.\nnext line  \nhard\\\nbreak\n",
         );
         assert_eq!(
             texts(&note),
-            ["See the oil and Tyres, pic.png, site, alt and cfg old em raw. next line hard break"]
+            [
+                "See the oil Oil change and Tyres, pic.png, site https://x.y, alt and cfg old em raw. \
+                 next line hard break"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_link_reads_as_its_label_then_its_destination() {
+        let note = doc("Call [Dr. Brown](tel:+15550001111) at [[Car service|the garage]].\n");
+        assert_eq!(
+            texts(&note),
+            ["Call Dr. Brown tel:+15550001111 at the garage Car service."]
+        );
+        let edited = doc("Call [Dr. Brown](tel:+15550002222) at [[Car service|the garage]].\n");
+        assert_ne!(texts(&edited), texts(&note), "a new target is new text");
+    }
+
+    #[test]
+    fn a_link_whose_label_is_its_destination_reads_once() {
+        let note = doc("See <https://x.org>, <a@b.co>, [[Car service]] and [](https://y.org).\n");
+        assert_eq!(
+            texts(&note),
+            ["See https://x.org, a@b.co, Car service and https://y.org."]
         );
     }
 
@@ -615,7 +638,7 @@ mod tests {
             [
                 ("Аспирин 100 мг", "Здоровье > Лекарства".to_string()),
                 ("утром", "Здоровье > Лекарства".into()),
-                ("Принимать после еды.", "Здоровье > Лекарства".into()),
+                ("Принимать после еды Врач.", "Здоровье > Лекарства".into()),
             ]
         );
         assert_eq!(
