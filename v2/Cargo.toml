@@ -1,0 +1,32 @@
+[package]
+name = "chaos-kb"
+version = "2.0.0"
+edition = "2024"
+rust-version = "1.91"
+license = "Apache-2.0"
+description = "Personal knowledge base for agents: Markdown notes, local embeddings, cosine search, and a Merkle tree that answers 'is this already known?' instantly."
+
+# Standalone crate inside the 1.0 repository; never a member of a parent workspace.
+[workspace]
+
+[[bin]]
+name = "chaos-kb"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+blake3 = "1"
+clap = { version = "4", features = ["derive", "env"] }
+pulldown-cmark = { version = "0.13", default-features = false }
+redb = "4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+unicode-normalization = "0.1"
+ureq = { version = "3", features = ["json"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
