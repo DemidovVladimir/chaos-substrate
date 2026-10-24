@@ -2,11 +2,16 @@
 //! parsed with pulldown-cmark into blocks; the folder is only ever written by
 //! [`Vault::append`], atomically.
 
-use crate::domain::note::Note;
+use crate::domain::note::{Block, Note};
 use crate::domain::path::NotePath;
 use crate::ports::Vault;
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow, ensure};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use std::fs;
+use std::io::{ErrorKind, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Notes larger than this are skipped (a knowledge note is never this big).
 pub const MAX_NOTE_BYTES: u64 = 4 * 1024 * 1024;
@@ -18,32 +23,443 @@ pub struct ObsidianVault {
 impl ObsidianVault {
     /// A vault rooted at an existing folder.
     pub fn new(root: &Path) -> Result<ObsidianVault> {
-        let _ = root;
-        todo!()
+        let root = fs::canonicalize(root)
+            .with_context(|| format!("vault folder {} not found", root.display()))?;
+        ensure!(root.is_dir(), "vault {} is not a folder", root.display());
+        Ok(ObsidianVault { root })
     }
+
+    /// The file of `note`, its missing folders created. Refuses folders that
+    /// are symlinks (the walk never follows them) and a folder that resolves
+    /// outside the vault.
+    fn file(&self, note: &NotePath) -> Result<PathBuf> {
+        for folder in note.folders() {
+            let dir = self.root.join(folder);
+            match fs::symlink_metadata(&dir) {
+                Ok(meta) => ensure!(
+                    meta.is_dir(),
+                    "refusing to write {note}: {folder} is a symlink or not a folder"
+                ),
+                Err(e) if e.kind() == ErrorKind::NotFound => {
+                    fs::create_dir(&dir).with_context(|| format!("creating folder {folder}"))?
+                }
+                Err(e) => return Err(e).with_context(|| format!("checking folder {folder}")),
+            }
+        }
+        let file = self.root.join(note.as_str());
+        let name = file.file_name().context("note path has no file name")?;
+        let parent = fs::canonicalize(file.parent().context("note path has no folder")?)?;
+        ensure!(
+            parent.starts_with(&self.root),
+            "refusing to write {note}: its folder resolves outside the vault"
+        );
+        Ok(parent.join(name))
+    }
+}
+
+/// The visible Markdown files under `dir`, whose vault-relative path is
+/// `prefix`. Hidden names and symlinks are skipped, as are names
+/// [`NotePath::parse`] rejects or would change.
+fn walk(dir: &Path, prefix: &str, found: &mut Vec<(NotePath, PathBuf)>) -> Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str().filter(|n| !n.starts_with('.')) else {
+            continue;
+        };
+        let rel = match prefix {
+            "" => name.to_string(),
+            _ => format!("{prefix}/{name}"),
+        };
+        // `DirEntry::file_type` does not follow symlinks; a symlink is neither.
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            walk(&entry.path(), &rel, found)?;
+        } else if kind.is_file()
+            && is_markdown(name)
+            && entry.metadata()?.len() <= MAX_NOTE_BYTES
+            && let Ok(path) = NotePath::parse(&rel)
+            && path.as_str() == rel
+        {
+            found.push((path, entry.path()));
+        }
+    }
+    Ok(())
+}
+
+fn is_markdown(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+}
+
+/// The file's text; invalid UTF-8 is replaced, never fatal.
+fn read_lossy(file: &Path) -> Result<String> {
+    let bytes = fs::read(file).with_context(|| format!("reading {}", file.display()))?;
+    Ok(String::from_utf8(bytes)
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
 }
 
 /// Parse one note's Markdown into blocks (pure; no file access).
 pub fn parse(path: NotePath, markdown: &str) -> Note {
-    let _ = (path, markdown);
-    todo!()
+    // A byte order mark hides front matter from pulldown-cmark. It holds no
+    // newline, so line numbers are the same without it.
+    let markdown = markdown.strip_prefix('\u{feff}').unwrap_or(markdown);
+    let options = Options::ENABLE_TABLES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
+        | Options::ENABLE_WIKILINKS;
+    let mut blocks = Blocks::new(markdown);
+    for (event, range) in Parser::new_ext(markdown, options).into_offset_iter() {
+        blocks.event(event, range);
+    }
+    Note {
+        path,
+        blocks: blocks.done,
+    }
 }
 
-/// `existing` with `text` placed as [`Vault::append`] describes (pure).
+/// How the text of an open block is gathered.
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    /// A heading of this level: it sets the heading path and is no block.
+    Heading(usize),
+    /// Code or front matter: the text is kept verbatim.
+    Verbatim,
+    /// A list item: it ends where its first nested list begins.
+    Item,
+    /// Paragraphs, quotes, tables, HTML: plain text, one line per part.
+    Prose,
+}
+
+/// The block being gathered.
+struct Open {
+    kind: Kind,
+    start: usize,
+    /// Nesting depth of its start tag; the end tag at this depth closes it.
+    depth: usize,
+    text: String,
+}
+
+/// Turns pulldown-cmark events into blocks.
+struct Blocks<'a> {
+    markdown: &'a str,
+    /// Byte offset where each line starts.
+    line_starts: Vec<usize>,
+    /// `(level, text)` of the headings above, outermost first.
+    headings: Vec<(usize, String)>,
+    open: Option<Open>,
+    depth: usize,
+    /// Inside an HTML tag: `<` seen, `>` not yet.
+    in_tag: bool,
+    done: Vec<Block>,
+}
+
+impl<'a> Blocks<'a> {
+    fn new(markdown: &'a str) -> Blocks<'a> {
+        let newlines = markdown.match_indices('\n').map(|(i, _)| i + 1);
+        Blocks {
+            markdown,
+            line_starts: std::iter::once(0).chain(newlines).collect(),
+            headings: Vec::new(),
+            open: None,
+            depth: 0,
+            in_tag: false,
+            done: Vec::new(),
+        }
+    }
+
+    fn event(&mut self, event: Event<'_>, range: Range<usize>) {
+        match event {
+            Event::Start(tag) => {
+                self.start(&tag, range.start);
+                self.depth += 1;
+            }
+            Event::End(end) => {
+                self.depth -= 1;
+                if self.open.as_ref().is_some_and(|o| o.depth == self.depth) {
+                    self.close(range.end);
+                }
+                if end == TagEnd::HtmlBlock {
+                    self.in_tag = false;
+                }
+            }
+            Event::Text(text) | Event::Code(text) => self.push(&text),
+            Event::Html(html) => self.push_html(&html),
+            Event::SoftBreak | Event::HardBreak => self.push(" "),
+            // Task markers, rules and inline HTML tags carry no text.
+            _ => {}
+        }
+    }
+
+    /// Open a block at a top-level tag, or mark a part inside the open one.
+    fn start(&mut self, tag: &Tag<'_>, offset: usize) {
+        let Some(open) = &mut self.open else {
+            let kind = match tag {
+                Tag::Heading { level, .. } => Kind::Heading(*level as usize),
+                Tag::CodeBlock(_) | Tag::MetadataBlock(_) => Kind::Verbatim,
+                Tag::Item => Kind::Item,
+                Tag::Paragraph | Tag::BlockQuote(_) | Tag::Table(_) | Tag::HtmlBlock => Kind::Prose,
+                _ => return,
+            };
+            self.open = Some(Open {
+                kind,
+                start: offset,
+                depth: self.depth,
+                text: String::new(),
+            });
+            return;
+        };
+        match tag {
+            Tag::List(_) if open.kind == Kind::Item => self.close(offset),
+            Tag::Paragraph
+            | Tag::Heading { .. }
+            | Tag::CodeBlock(_)
+            | Tag::HtmlBlock
+            | Tag::Item
+            | Tag::TableHead
+            | Tag::TableRow => open.text.push('\n'),
+            Tag::TableCell if !open.text.is_empty() && !open.text.ends_with('\n') => {
+                open.text.push_str(" | ")
+            }
+            _ => {}
+        }
+    }
+
+    fn push(&mut self, text: &str) {
+        if let Some(open) = &mut self.open {
+            open.text.push_str(text);
+        }
+    }
+
+    /// HTML block lines, their tags removed.
+    fn push_html(&mut self, html: &str) {
+        let Some(open) = &mut self.open else { return };
+        for c in html.chars() {
+            match c {
+                '<' => self.in_tag = true,
+                '>' if self.in_tag => self.in_tag = false,
+                _ if !self.in_tag => open.text.push(c),
+                _ => {}
+            }
+        }
+    }
+
+    /// Close the open block at byte `end`: a heading updates the path, any
+    /// other block with text is kept.
+    fn close(&mut self, end: usize) {
+        let Some(open) = self.open.take() else { return };
+        let text = match open.kind {
+            Kind::Verbatim => open.text.trim_end().to_string(),
+            _ => prose(&open.text),
+        };
+        if let Kind::Heading(level) = open.kind {
+            self.headings.retain(|(above, _)| *above < level);
+            if !text.is_empty() {
+                self.headings.push((level, text));
+            }
+            return;
+        }
+        if text.is_empty() {
+            return;
+        }
+        let source = self.markdown[open.start..end].trim_end();
+        let last = open.start + source.len().saturating_sub(1);
+        self.done.push(Block {
+            headings: self.headings.iter().map(|(_, h)| h.clone()).collect(),
+            text,
+            source: source.to_string(),
+            lines: [self.line(open.start), self.line(last)],
+        });
+    }
+
+    /// 1-based line of a byte offset.
+    fn line(&self, offset: usize) -> u32 {
+        self.line_starts.partition_point(|&start| start <= offset) as u32
+    }
+}
+
+/// Every line trimmed, blank lines dropped.
+fn prose(text: &str) -> String {
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    lines.join("\n")
+}
+
+/// `existing` with `text` placed as [`Vault::append`] describes (pure): at the
+/// end of the section under the first ATX heading titled `heading` (any case,
+/// outside code fences), under a new `## heading` at the end when there is no
+/// such heading, or at the end of the note. One blank line separates the text
+/// from its neighbours; the existing bytes are kept as they are.
 fn place(existing: &str, heading: Option<&str>, text: &str) -> String {
-    let _ = (existing, heading, text);
-    todo!()
+    let text = text.trim_end().trim_start_matches(['\r', '\n']);
+    let Some(heading) = heading.map(str::trim).filter(|h| !h.is_empty()) else {
+        return format!("{existing}{}{text}\n", gap(existing));
+    };
+    match section_end(existing, heading) {
+        Some(end) => {
+            let (before, after) = existing.split_at(end);
+            let blank = if after.is_empty() { "" } else { "\n" };
+            format!("{before}{}{text}\n{blank}{after}", gap(before))
+        }
+        None => format!("{existing}{}## {heading}\n\n{text}\n", gap(existing)),
+    }
+}
+
+/// The newlines that put one blank line after `before` (none at the start of
+/// a note, and none added when `before` already ends with a blank line).
+fn gap(before: &str) -> &'static str {
+    let body = before.trim_end();
+    if body.is_empty() {
+        return "";
+    }
+    match before[body.len()..].matches('\n').count() {
+        0 => "\n\n",
+        1 => "\n",
+        _ => "",
+    }
+}
+
+/// Where the section under the first ATX heading titled `title` ends: at the
+/// next heading of the same or a higher level, or at the end of the note.
+fn section_end(markdown: &str, title: &str) -> Option<usize> {
+    let title = title.to_lowercase();
+    let headings = atx_headings(markdown);
+    let at = headings.iter().position(|h| h.2.to_lowercase() == title)?;
+    let level = headings[at].1;
+    let next = headings[at + 1..].iter().find(|h| h.1 <= level);
+    Some(next.map_or(markdown.len(), |h| h.0))
+}
+
+/// `(offset, level, text)` of every ATX heading line outside code fences.
+fn atx_headings(markdown: &str) -> Vec<(usize, usize, &str)> {
+    let mut found = Vec::new();
+    let mut fence: Option<(char, usize)> = None;
+    let mut offset = 0;
+    for line in markdown.split_inclusive('\n') {
+        let start = offset;
+        offset += line.len();
+        let line = line.trim_end_matches(['\n', '\r']);
+        match (fence, fence_marker(line)) {
+            (Some(open), Some((c, n, rest)))
+                if c == open.0 && n >= open.1 && rest.trim().is_empty() =>
+            {
+                fence = None
+            }
+            (Some(_), _) => {}
+            (None, Some((c, n, _))) => fence = Some((c, n)),
+            (None, None) => {
+                if let Some((level, text)) = atx(line) {
+                    found.push((start, level, text));
+                }
+            }
+        }
+    }
+    found
+}
+
+/// `(char, length, rest)` when `line` is a code fence (three or more backticks
+/// or tildes; a backtick fence's info string has no backtick).
+fn fence_marker(line: &str) -> Option<(char, usize, &str)> {
+    let body = unindented(line)?;
+    let c = body.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+    let rest = body.trim_start_matches(c);
+    let n = body.len() - rest.len();
+    (n >= 3 && !(c == '`' && rest.contains('`'))).then_some((c, n, rest))
+}
+
+/// `(level, text)` when `line` is an ATX heading (`## Text`, optionally
+/// closed by `#`s).
+fn atx(line: &str) -> Option<(usize, &str)> {
+    let body = unindented(line)?;
+    let rest = body.trim_start_matches('#');
+    let level = body.len() - rest.len();
+    let spaced = rest.is_empty() || rest.starts_with([' ', '\t']);
+    if !(1..=6).contains(&level) || !spaced {
+        return None;
+    }
+    let rest = rest.trim();
+    let unclosed = rest.trim_end_matches('#');
+    let closed = unclosed.is_empty() || unclosed.ends_with([' ', '\t']);
+    Some((level, if closed { unclosed.trim_end() } else { rest }))
+}
+
+/// `line` without its indentation, when that is at most three spaces.
+fn unindented(line: &str) -> Option<&str> {
+    let body = line.trim_start_matches(' ');
+    (line.len() - body.len() <= 3).then_some(body)
+}
+
+/// Write `bytes` to `file` through a hidden temp file in the same folder and a
+/// rename, so readers see the old note or the new one, never half of one.
+fn write_atomic(file: &Path, bytes: &[u8], permissions: Option<fs::Permissions>) -> Result<()> {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let name = file.file_name().unwrap_or_default().to_string_lossy();
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp = file.with_file_name(format!(".{name}.{}-{n}.tmp", std::process::id()));
+    let mut out = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .with_context(|| format!("creating {}", temp.display()))?;
+    let written = (|| {
+        out.write_all(bytes)?;
+        if let Some(permissions) = permissions {
+            out.set_permissions(permissions)?;
+        }
+        out.sync_all()?;
+        fs::rename(&temp, file)
+    })();
+    if written.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    written.with_context(|| format!("writing {}", file.display()))
 }
 
 impl Vault for ObsidianVault {
     fn notes(&self) -> Result<Vec<Note>> {
-        let _ = &self.root;
-        todo!()
+        let mut files = Vec::new();
+        walk(&self.root, "", &mut files)?;
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        files
+            .into_iter()
+            .map(|(path, file)| Ok(parse(path, &read_lossy(&file)?)))
+            .collect()
     }
 
     fn append(&self, note: &NotePath, heading: Option<&str>, text: &str) -> Result<()> {
-        let _ = (note, heading, text);
-        todo!()
+        ensure!(
+            !text.trim().is_empty(),
+            "nothing to append: the text is empty"
+        );
+        ensure!(
+            !heading.is_some_and(|h| h.contains(['\n', '\r'])),
+            "a heading must be one line"
+        );
+        let file = self.file(note)?;
+        let (existing, permissions) = match fs::symlink_metadata(&file) {
+            Ok(meta) => {
+                ensure!(
+                    meta.is_file(),
+                    "refusing to write {note}: it is a symlink or not a file"
+                );
+                let bytes = fs::read(&file).with_context(|| format!("reading {note}"))?;
+                let text = String::from_utf8(bytes)
+                    .map_err(|_| anyhow!("refusing to rewrite {note}: it is not valid UTF-8"))?;
+                (text, Some(meta.permissions()))
+            }
+            Err(e) if e.kind() == ErrorKind::NotFound => (String::new(), None),
+            Err(e) => return Err(e).with_context(|| format!("reading {note}")),
+        };
+        write_atomic(
+            &file,
+            place(&existing, heading, text).as_bytes(),
+            permissions,
+        )
     }
 }
 
