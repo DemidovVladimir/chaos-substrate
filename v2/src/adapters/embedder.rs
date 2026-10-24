@@ -30,9 +30,9 @@ enum Format {
 }
 
 impl Format {
-    /// EmbeddingGemma under any tag or namespace gets its prompts.
+    /// EmbeddingGemma under any tag, namespace or letter case gets its prompts.
     fn for_model(model: &str) -> Format {
-        if model.contains("embeddinggemma") {
+        if model.to_ascii_lowercase().contains("embeddinggemma") {
             Format::GemmaRetrieval
         } else {
             Format::Plain
@@ -264,7 +264,11 @@ mod tests {
         for model in [
             "embeddinggemma",
             "embeddinggemma:300m",
+            "embeddinggemma:latest",
             "google/embeddinggemma-300m",
+            "EmbeddingGemma",
+            "EMBEDDINGGEMMA:300M",
+            "google/EmbeddingGemma-300m",
         ] {
             assert_eq!(Format::for_model(model), GEMMA, "{model}");
         }
