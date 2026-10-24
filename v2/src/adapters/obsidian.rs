@@ -418,20 +418,12 @@ fn lost<T: PartialEq>(
 
 /// Write `bytes` to `file` through a hidden temp file in the same folder and a
 /// rename, so readers see the old note or the new one, never half of one.
-fn write_atomic(file: &Path, bytes: &[u8], permissions: Option<fs::Permissions>) -> Result<()> {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let name = file.file_name().unwrap_or_default().to_string_lossy();
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let temp = file.with_file_name(format!(".{name}.{}-{n}.tmp", std::process::id()));
-    let mut out = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .with_context(|| format!("creating {}", temp.display()))?;
+fn write_atomic(file: &Path, bytes: &[u8], permissions: Option<&fs::Permissions>) -> Result<()> {
+    let (temp, mut out) = create_temp(file, permissions)?;
     let written = (|| {
         out.write_all(bytes)?;
         if let Some(permissions) = permissions {
-            out.set_permissions(permissions)?;
+            out.set_permissions(permissions.clone())?;
         }
         out.sync_all()?;
         fs::rename(&temp, file)
@@ -440,6 +432,20 @@ fn write_atomic(file: &Path, bytes: &[u8], permissions: Option<fs::Permissions>)
         let _ = fs::remove_file(&temp);
     }
     written.with_context(|| format!("writing {}", file.display()))
+}
+
+/// A new hidden temp file next to `file`.
+fn create_temp(file: &Path, _permissions: Option<&fs::Permissions>) -> Result<(PathBuf, fs::File)> {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let name = file.file_name().unwrap_or_default().to_string_lossy();
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp = file.with_file_name(format!(".{name}.{}-{n}.tmp", std::process::id()));
+    let out = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .with_context(|| format!("creating {}", temp.display()))?;
+    Ok((temp, out))
 }
 
 impl Vault for ObsidianVault {
@@ -498,7 +504,7 @@ impl Vault for ObsidianVault {
                  comment does that, and so does a heading with fewer `#` than its section's own"
             );
         }
-        write_atomic(&file, placed.as_bytes(), permissions)
+        write_atomic(&file, placed.as_bytes(), permissions.as_ref())
     }
 }
 
@@ -1335,6 +1341,20 @@ mod tests {
         assert_eq!(fs::read_to_string(&file).unwrap(), "secret\n\nmore\n");
         let mode = fs::metadata(&file).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_temp_file_has_the_note_permissions_before_any_text() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("private.md");
+        let (temp, out) = create_temp(&file, Some(&fs::Permissions::from_mode(0o640))).unwrap();
+        let meta = out.metadata().unwrap();
+        fs::remove_file(temp).unwrap();
+        assert_eq!(meta.len(), 0);
+        let mode = meta.permissions().mode() & 0o777;
+        assert_eq!(format!("{mode:o}"), "640");
     }
 
     #[cfg(unix)]
