@@ -1,5 +1,8 @@
 # Chaos Substrate — Agent Guide
 
+> Scope: these rules cover the 1.0 crate at the repository root. `v2/` is a separate crate
+> (chaos-kb, a personal knowledge base) with its own rules in `v2/AGENTS.md`.
+
 Chaos Substrate (1.0) is a Rust crate that indexes repositories (Rust, TS, JS, Python, Solidity,
 GraphQL, Markdown) into a Postgres + pgvector knowledge graph so agents answer feature questions
 from the index — with code excerpts — instead of re-reading source.
