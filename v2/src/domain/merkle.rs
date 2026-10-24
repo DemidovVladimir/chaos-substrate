@@ -1,13 +1,14 @@
 //! The Merkle tree of the vault. It mirrors the folders:
 //!
 //! ```text
-//! root ("")  ── folder "Health" ── note "Health/Meds.md" ── block fingerprints
+//! root ("")  ── folder "Health/" ── note "Health/Meds.md" ── block fingerprints
 //!            └─ note "inbox.md" ── block fingerprints
 //! ```
 //!
-//! A note's hash covers its blocks in order (each labelled by its heading
-//! path, so moving a fact under another heading changes the note); a folder's
-//! hash covers its children by name. Equal roots mean equal knowledge — one
+//! A note's hash covers its non-blank blocks in order (each labelled by its
+//! heading path, so moving a fact under another heading changes the note); a
+//! folder's hash covers its direct children (folders and notes) sorted by
+//! name, each labelled by its name. Equal roots mean equal knowledge — one
 //! comparison tells an agent nothing changed. Formatting-only edits keep every
 //! hash (fingerprints ignore Markdown symbols).
 
@@ -17,8 +18,9 @@ use super::text;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
-/// Hash of every folder and note, keyed by vault path (`""` is the root,
-/// folders have no extension, notes end in `.md`).
+/// Hash of every folder and note, keyed by vault path: `""` is the root,
+/// folder keys end with `/` (`"Health/"`), note keys are note paths
+/// (`"Health/Meds.md"`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Tree {
     nodes: BTreeMap<String, Digest>,
