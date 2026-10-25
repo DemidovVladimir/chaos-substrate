@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Install and run · chaos-kb</title>
-<meta name="description" content="How to install chaos-kb, give it a local embedding model and a folder of notes, connect it to Claude Code or Codex over MCP, and keep it running day to day.">
+<meta name="description" content="How to install chaos-kb, give it a local embedding model and a folder of notes, connect it to Claude Code or Codex over MCP, open its dashboard, and keep it running day to day.">
 <script>try{var t=localStorage.getItem("tengu-tutorial-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -31,12 +31,12 @@
   <ul class="facts">
     <li>builds with Rust <b>1.91</b> or later</li>
     <li>model <b>embeddinggemma</b> on Ollama, <code>localhost:11434</code></li>
-    <li><b>6</b> tools for agents: kb_sync, kb_remember, kb_check, kb_search, kb_topics, kb_read</li>
+    <li><b>7</b> tools for agents: kb_sync, kb_remember, kb_forget, kb_check, kb_search, kb_topics, kb_read</li>
     <li>index in <code>&lt;vault&gt;/.chaos-kb/</code>, <b>safe to delete</b></li>
   </ul>
   <ul class="legend" aria-label="Colour key">
     <li><span class="chip brain">notes</span> your vault, the only copy of your knowledge</li>
-    <li><span class="chip hands"><span class="k">手</span> tools</span> chaos-kb and its six tools</li>
+    <li><span class="chip hands"><span class="k">手</span> tools</span> chaos-kb and its seven tools</li>
     <li><span class="chip heart"><span class="k">心</span> model</span> the local embedding model</li>
     <li><span class="chip data">data</span> the index file</li>
   </ul>
@@ -165,7 +165,7 @@
     </div>
     <div class="tabpanel" id="tab-claude"><pre class="wrapjson">$ claude mcp add --scope user chaos-kb -- chaos-kb --vault ~/Knowledge mcp
 $ claude mcp list</pre>
-      <p class="note"><code>--scope user</code> makes the server available in every project; without it, only in the current one. Everything after <code>--</code> is the command Claude Code runs. Inside a session, <code>/mcp</code> shows the server and its six tools.</p></div>
+      <p class="note"><code>--scope user</code> makes the server available in every project; without it, only in the current one. Everything after <code>--</code> is the command Claude Code runs. Inside a session, <code>/mcp</code> shows the server and its seven tools.</p></div>
     <div class="tabpanel" id="tab-codex" hidden><pre class="wrapjson">$ codex mcp add chaos-kb -- chaos-kb --vault /Users/you/Knowledge mcp
 Added global MCP server 'chaos-kb'.</pre>
       <p class="note">That command writes these lines to <code>~/.codex/config.toml</code> (example path), so you can also add them by hand:</p>
@@ -182,7 +182,7 @@ args = ["--vault", "/Users/you/Knowledge", "mcp"]</pre></div>
 }</pre>
       <p class="note">Most desktop clients take this shape (example paths). An app started from the Dock may not see your shell's <code>PATH</code>, so give the full path to the binary. Settings such as <code>CHAOS_KB_EMBED_MODEL</code> go in the client's <code>env</code> block.</p></div>
   </div>
-  <p class="note">When the server starts, it tells the agent how to use the tools: check before asking the user, search to read the passages, remember one fact per call, and sync after notes are edited.</p>
+  <p class="note">When the server starts, it tells the agent how to use the tools: list the topics before a task and read only what matters, check before asking the user, remember one fact per call, forget a wrong fact in its stored words before remembering the correction, and sync after notes are edited.</p>
 </section>
 
 <section class="sec" aria-labelledby="s-daily">
@@ -199,6 +199,8 @@ args = ["--vault", "/Users/you/Knowledge", "mcp"]</pre></div>
         <tr><td>Is this already known?</td><td><code>chaos-kb check "…"</code></td><td><code>exact</code>, <code>similar</code> or <code>absent</code>, with where it sits.</td></tr>
         <tr><td>What do my notes say?</td><td><code>chaos-kb search "…"</code></td><td>The best passages with note, section, lines and text; 5 by default.</td></tr>
         <tr><td>A new fact to keep</td><td class="wrap"><code>chaos-kb remember "…" --note Health --heading Blood</code></td><td>Appended under that heading and indexed; skipped when the same words are stored. Without <code>--note</code> it goes to <code>Inbox.md</code>.</td></tr>
+        <tr><td>A stored fact is wrong</td><td class="wrap"><code>chaos-kb forget "…" --note Health</code></td><td>Every block with the same words is removed from the note and the index; then <code>remember</code> the correction. Without <code>--note</code>, from every note.</td></tr>
+        <tr><td>You want to see what is stored</td><td><code>chaos-kb dashboard</code></td><td>A page at <code>http://127.0.0.1:7341</code> (<code>--port</code> picks another): your notes next to the index, with add, replace and remove. See <a href="dashboard.html">The dashboard</a>.</td></tr>
         <tr><td>You switched the model</td><td><code>chaos-kb sync</code></td><td>Everything is embedded again; vectors of two models are never compared.</td></tr>
         <tr><td>You updated chaos-kb</td><td><code>cargo install --path v2</code></td><td>The new binary replaces the old one. An index of an older layout is rebuilt by the next sync.</td></tr>
         <tr><td>The index looks wrong</td><td>delete <code>&lt;vault&gt;/.chaos-kb/</code>, then <code>chaos-kb sync</code></td><td>Rebuilt from the notes, which are never touched.</td></tr>
@@ -244,6 +246,7 @@ args = ["--vault", "/Users/you/Knowledge", "mcp"]</pre></div>
         <tr><td class="wrap"><code>error: embeddings request to http://127.0.0.1:9/v1/embeddings failed: io: Connection refused (os error 61)</code></td><td>Nothing listens at the embeddings URL (here a closed port). Start Ollama: open the app, or run <code>ollama serve</code>.</td></tr>
         <tr><td class="wrap"><code>error: embeddings API returned HTTP 404: {"error":{"message":"model \"no-such-model\" not found, try pulling it first","type":"not_found_error","param":null,"code":null}}</code></td><td>Pull the model (<code>ollama pull embeddinggemma</code>), or fix <code>--embed-model</code>.</td></tr>
         <tr><td class="wrap"><code>error: the index was built with embedder `embeddinggemma|gemma-retrieval-v1` but `all-minilm|plain-v1` is configured: run `chaos-kb sync` to re-embed</code></td><td>Set the model back, or run <code>chaos-kb sync</code> to re-embed everything with the new one.</td></tr>
+        <tr><td class="wrap"><code>error: listening on 127.0.0.1:7341: Address already in use (os error 48)</code></td><td>Another program, often a dashboard already running, holds the port. Open that one, or start this one with <code>chaos-kb dashboard --port 7342</code>.</td></tr>
         <tr><td class="wrap"><code>zsh: command not found: chaos-kb</code> (from your shell)</td><td>Add <code>~/.cargo/bin</code> to your <code>PATH</code>, or use the full path.</td></tr>
       </tbody>
     </table>
@@ -271,10 +274,10 @@ args = ["--vault", "/Users/you/Knowledge", "mcp"]</pre></div>
   </div>
   <ul class="checks">
     <li><span><b>Local by default.</b> Embeddings go to Ollama on <code>localhost</code>, and proxy settings are never used for this machine.</span></li>
-    <li><span><b>Your notes change only through remember.</b> It appends through a temporary file and a rename, and refuses to change existing text.</span></li>
+    <li><span><b>Your notes change only through remember and forget.</b> remember appends and refuses to change existing text; forget removes blocks with the same words and refuses when the rest would read differently. Both write through a temporary file and a rename.</span></li>
     <li><span><b>The server starts instantly.</b> <code>chaos-kb mcp</code> opens nothing until a tool is called, so it starts before the vault or Ollama is ready.</span></li>
     <li><span><b>An agent cannot move it.</b> Vault, index, embeddings URL and model are not tool arguments.</span></li>
-    <li><span><b>The CLI and the server can run together.</b> They take turns on lock files instead of failing.</span></li>
+    <li><span><b>The CLI, the server and the dashboard can run together.</b> They take turns on lock files instead of failing.</span></li>
     <li><span><b>The index is derived.</b> Delete <code>.chaos-kb/</code> and <code>sync</code> rebuilds it from the notes.</span></li>
   </ul>
 </section>
@@ -374,8 +377,9 @@ args = ["--vault", "/Users/you/Knowledge", "mcp"]</pre></div>
       <tbody>
         <tr><td><code>v2/src/entry/cli.rs</code></td><td>every command and setting, with its default</td></tr>
         <tr><td><code>v2/src/entry/mcp.rs</code></td><td>the MCP server on stdin and stdout</td></tr>
+        <tr><td><code>v2/src/entry/dashboard.rs</code></td><td>the dashboard server on 127.0.0.1, serving the page <code>v2/src/entry/dashboard.html</code></td></tr>
         <tr><td><code>v2/src/adapters/embedder.rs</code></td><td>the calls to Ollama or any OpenAI-compatible embeddings API</td></tr>
-        <tr><td><code>v2/Cargo.toml</code></td><td>the binary's name and the Rust version it needs</td></tr>
+        <tr><td><code>v2/Cargo.toml</code></td><td>the binary's name, the Rust version it needs, and its dependencies</td></tr>
         <tr><td><code>v2/README.md</code></td><td>the full reference, with the generated tool tables</td></tr>
       </tbody>
     </table>
@@ -383,7 +387,7 @@ args = ["--vault", "/Users/you/Knowledge", "mcp"]</pre></div>
 </section>
 
 <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
-<p class="stamp-foot">Checked against the code on 2026-10-24.</p>
+<p class="stamp-foot">Checked against the code on 2026-10-25.</p>
 </article>
 </main>
 </div>

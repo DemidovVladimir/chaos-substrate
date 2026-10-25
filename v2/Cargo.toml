@@ -22,6 +22,8 @@ clap = { version = "4", default-features = false, features = [
     "derive",
     "env",
 ] }
+# The dashboard's request parser (already in the build through ureq).
+httparse = "1"
 pulldown-cmark = { version = "0.13", default-features = false }
 redb = "4"
 serde = { version = "1", features = ["derive"] }

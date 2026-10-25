@@ -376,13 +376,14 @@ mod tests {
     }
 
     #[test]
-    fn one_tool_per_subcommand_except_mcp() {
+    fn one_tool_per_subcommand_except_mcp_and_dashboard() {
         let names: Vec<Value> = tools().into_iter().map(|t| t["name"].clone()).collect();
         assert_eq!(
             names,
             [
                 "kb_sync",
                 "kb_remember",
+                "kb_forget",
                 "kb_check",
                 "kb_search",
                 "kb_topics",
@@ -425,6 +426,11 @@ mod tests {
         assert_eq!(remember["required"], json!(["text"]));
         assert_eq!(remember["properties"]["note"]["default"], INBOX);
         assert!(remember["properties"]["heading"].get("default").is_none());
+
+        let forget = schema("kb_forget");
+        assert_eq!(forget["required"], json!(["text"]));
+        assert_eq!(forget["properties"]["note"]["type"], "string");
+        assert!(forget["properties"]["note"].get("default").is_none());
 
         let check = schema("kb_check");
         assert_eq!(check["required"], json!(["query"]));
@@ -504,6 +510,13 @@ mod tests {
                 text: "Tea at 5".into(),
                 note: INBOX.into(),
                 heading: Some("Habits".into()),
+            }
+        );
+        assert_eq!(
+            call("kb_forget", json!({"text": "Tea at 5"})).unwrap(),
+            Tool::Forget {
+                text: "Tea at 5".into(),
+                note: None,
             }
         );
         assert_eq!(
@@ -593,8 +606,16 @@ mod tests {
     }
 
     #[test]
-    fn mcp_and_unknown_tools_are_not_tools() {
-        for name in ["kb_mcp", "kb_help", "kb_nope", "check", "mcp", ""] {
+    fn mcp_dashboard_and_unknown_tools_are_not_tools() {
+        for name in [
+            "kb_mcp",
+            "kb_dashboard",
+            "kb_help",
+            "kb_nope",
+            "check",
+            "mcp",
+            "",
+        ] {
             assert!(command(name, &json!({})).is_none(), "{name}");
         }
     }

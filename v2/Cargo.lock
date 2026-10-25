@@ -74,6 +74,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "clap",
+ "httparse",
  "pulldown-cmark",
  "redb",
  "serde",

@@ -6,9 +6,9 @@ use crate::domain::chunk::Chunk;
 use crate::domain::hash::Digest;
 use crate::domain::note::{Block, Location, Note};
 use crate::domain::path::NotePath;
-use crate::domain::vector;
+use crate::domain::{text, vector};
 use crate::ports::{Embedder, Hit, Index, Snapshot, Stale, Update, Vault};
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
@@ -93,6 +93,19 @@ impl Vault for MemVault {
             source: text.to_string(),
             lines: [line, line],
         });
+        self.put(note);
+        Ok(())
+    }
+
+    fn remove(&self, path: &NotePath, blocks: &[([u32; 2], Digest)]) -> Result<()> {
+        let mut note = self.note(path.as_str()).context("no such note")?;
+        for (lines, fingerprint) in blocks {
+            let at = note.blocks.iter().position(|b| {
+                b.lines == *lines && text::fingerprint(&b.text).as_ref() == Some(fingerprint)
+            });
+            note.blocks
+                .remove(at.context("those lines no longer hold that text")?);
+        }
         self.put(note);
         Ok(())
     }

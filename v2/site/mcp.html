@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Agents and MCP · chaos-kb</title>
-<meta name="description" content="How chaos-kb serves its six tools to agents over MCP on stdio, with names, schemas and the README reference generated from one command-line definition.">
+<meta name="description" content="How chaos-kb serves its seven tools to agents over MCP on stdio, with names, schemas and the README reference generated from one command-line definition.">
 <script>try{var t=localStorage.getItem("tengu-tutorial-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -27,9 +27,9 @@
 <header class="hero">
   <div class="eyebrow"><span class="stamp" aria-hidden="true">繋</span> Agents · one definition</div>
   <h1>Agents and MCP</h1>
-  <p class="lede"><b>MCP</b>, the Model Context Protocol, is how an agent calls tools. <code>chaos-kb mcp</code> serves the six tools over stdio. Their names, descriptions, schemas and the README reference all come from the command-line definition.</p>
+  <p class="lede"><b>MCP</b>, the Model Context Protocol, is how an agent calls tools. <code>chaos-kb mcp</code> serves the seven tools over stdio. Their names, descriptions, schemas and the README reference all come from the command-line definition.</p>
   <ul class="facts">
-    <li><b>6</b> tools: kb_sync, kb_remember, kb_check, kb_search, kb_topics, kb_read</li>
+    <li><b>7</b> tools: kb_sync, kb_remember, kb_forget, kb_check, kb_search, kb_topics, kb_read</li>
     <li><b>4</b> methods: initialize, ping, tools/list, tools/call</li>
     <li><b>3</b> protocol revisions, newest <b>2025-11-25</b></li>
     <li><b>0</b> files opened before the first call</li>
@@ -143,10 +143,10 @@
     </div>
     <div class="tabpanel" id="tab-init"><pre class="wrapjson"><span class="c">→ {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"example","version":"1"}}}</span>
 ← {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"tools":{"listChanged":false}},
-   "instructions":<span class="s">"Personal knowledge base for agents: Markdown notes in, instant \"is this known?\" checks and similarity search out.\n\nBefore a task, list the topics the knowledge base holds near it, then read only the passages that would change how you do it (search returns the nearest passages' text in one step instead). Before asking the user something, check whether the knowledge base already knows it. When the user tells you a new fact, remember it, one fact per call. After editing notes in the vault, sync."</span>,
+   "instructions":<span class="s">"Personal knowledge base for agents: Markdown notes in, instant \"is this known?\" checks and similarity search out.\n\nBefore a task, list the topics the knowledge base holds near it, then read only the passages that would change how you do it (search returns the nearest passages' text in one step instead). Before asking the user something, check whether the knowledge base already knows it. When the user tells you a new fact, remember it, one fact per call. When a stored fact is wrong or no longer true, forget it in its stored words, then remember the correction. After editing notes in the vault, sync."</span>,
    "protocolVersion":<span class="s">"2025-06-18"</span>,"serverInfo":{"name":"chaos-kb","version":"2.0.0"}}}</pre></div>
     <div class="tabpanel" id="tab-list" hidden><pre class="wrapjson"><span class="c">→ {"jsonrpc":"2.0","id":2,"method":"tools/list"}</span>
-← {"id":2,"jsonrpc":"2.0","result":{"tools":[ <span class="c">… kb_sync, kb_remember, then:</span>
+← {"id":2,"jsonrpc":"2.0","result":{"tools":[ <span class="c">… kb_sync, kb_remember, kb_forget, then:</span>
    {"description":<span class="s">"Is this already in the knowledge base? Exact words are answered from the Merkle leaves without embedding; otherwise the nearest passages by cosine similarity decide. Returns where the knowledge sits"</span>,
     "inputSchema":{"additionalProperties":false,
       "properties":{
@@ -221,6 +221,7 @@
           <tr><td><code>kb_sync {"dry_run": true}</code></td><td><code>sync --dry-run</code></td></tr>
           <tr><td><code>kb_check {"query": "oil", "min_score": 0.5}</code></td><td><code>check --min-score=0.5 -- oil</code></td></tr>
           <tr><td><code>kb_remember {"text": "…", "note": "Health/Allergies"}</code></td><td><code>remember --note=Health/Allergies -- …</code></td></tr>
+          <tr><td><code>kb_forget {"text": "Tea, no sugar.", "note": "Inbox.md"}</code></td><td><code>forget --note=Inbox.md -- Tea, no sugar.</code></td></tr>
           <tr><td><code>kb_search {"query": "oil", "limit": null}</code></td><td><code>search -- oil</code>, so the default 5 applies</td></tr>
           <tr><td><code>kb_read {"ids": ["Health/Allergies.md:3-3", "Car.md:8-8"]}</code></td><td><code>read -- Health/Allergies.md:3-3 Car.md:8-8</code>, in that order</td></tr>
           <tr><td><code>kb_read {"ids": ["Car.md:8-8", 7]}</code></td><td>refused: <code>`ids` must be a list of strings</code></td></tr>
@@ -256,7 +257,7 @@
   </div>
   <ul class="checks">
     <li><span><b>Instant handshake.</b> Nothing is opened or contacted before a tool is called.</span></li>
-    <li><span><b>One definition.</b> Tool names, descriptions, schemas and defaults come from the clap definition in <code>src/entry/cli.rs</code>. One argument list in <code>src/entry/tools.rs</code> writes both the MCP schema and the README block, and the README is tested against it.</span></li>
+    <li><span><b>One definition.</b> Tool names, descriptions, schemas and defaults come from the clap definition in <code>src/entry/cli.rs</code>. One argument list in <code>src/entry/tools.rs</code> writes both the MCP schema and the README block, and the README is tested against it. The <a href="dashboard.html">dashboard</a> calls the tools through the same list.</span></li>
     <li><span><b>A call cannot move the server.</b> Vault, index, embeddings URL and model are not tool arguments.</span></li>
     <li><span><b>Unknown keys are refused.</b> The error names the arguments the tool takes.</span></li>
     <li><span><b>stdout carries replies only.</b> Each reply is one line, flushed at once.</span></li>
@@ -303,7 +304,7 @@
 </section>
 
 <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
-<p class="stamp-foot">Checked against the code on 2026-10-24.</p>
+<p class="stamp-foot">Checked against the code on 2026-10-25.</p>
 </article>
 </main>
 </div>

@@ -1,7 +1,10 @@
-//! The six use-cases — `sync`, `remember`, `check`, `search`, `topics`,
-//! `read` — written against the ports only.
+//! The use-cases — `sync`, `remember`, `forget`, `check`, `search`,
+//! `topics`, `read`, and the `overview` behind the dashboard — written
+//! against the ports only.
 
 pub mod check;
+pub mod forget;
+pub mod overview;
 pub mod read;
 pub mod remember;
 pub mod search;

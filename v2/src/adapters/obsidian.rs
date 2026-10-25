@@ -1,13 +1,16 @@
 //! The vault: a folder of Markdown notes, as Obsidian keeps them. Notes are
 //! parsed with pulldown-cmark into blocks; the folder is only ever written by
-//! [`Vault::append`], one writer at a time and atomically.
+//! [`Vault::append`] and [`Vault::remove`], one writer at a time and
+//! atomically.
 
+use crate::domain::hash::Digest;
 use crate::domain::note::{Block, Note};
 use crate::domain::path::NotePath;
 use crate::domain::text;
 use crate::ports::Vault;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::ops::Range;
@@ -34,10 +37,11 @@ impl ObsidianVault {
         Ok(ObsidianVault { root })
     }
 
-    /// The file of `note`, its missing folders created. Refuses folders that
-    /// are symlinks (the walk never follows them) and a folder that resolves
-    /// outside the vault.
-    fn file(&self, note: &NotePath) -> Result<PathBuf> {
+    /// The file of `note`, its missing folders created when `create` is set
+    /// (otherwise a missing folder means the note does not exist). Refuses
+    /// folders that are symlinks (the walk never follows them) and a folder
+    /// that resolves outside the vault.
+    fn file(&self, note: &NotePath, create: bool) -> Result<PathBuf> {
         for folder in note.folders() {
             let dir = self.root.join(folder);
             match fs::symlink_metadata(&dir) {
@@ -45,9 +49,10 @@ impl ObsidianVault {
                     meta.is_dir(),
                     "refusing to write {note}: {folder} is a symlink or not a folder"
                 ),
-                Err(e) if e.kind() == ErrorKind::NotFound => {
+                Err(e) if e.kind() == ErrorKind::NotFound && create => {
                     fs::create_dir(&dir).with_context(|| format!("creating folder {folder}"))?
                 }
+                Err(e) if e.kind() == ErrorKind::NotFound => bail!("{note} does not exist"),
                 Err(e) => return Err(e).with_context(|| format!("checking folder {folder}")),
             }
         }
@@ -173,6 +178,8 @@ struct Blocks<'a> {
     /// Inside an HTML tag: `<` seen, `>` not yet.
     in_tag: bool,
     done: Vec<Block>,
+    /// The bytes of each block's `source`, parallel to `done`.
+    spans: Vec<Range<usize>>,
 }
 
 impl<'a> Blocks<'a> {
@@ -190,6 +197,7 @@ impl<'a> Blocks<'a> {
             depth: 0,
             in_tag: false,
             done: Vec::new(),
+            spans: Vec::new(),
         }
     }
 
@@ -312,6 +320,7 @@ impl<'a> Blocks<'a> {
         }
         let source = self.markdown[open.start..end].trim_end();
         let last = open.start + source.len().saturating_sub(1);
+        self.spans.push(open.start..open.start + source.len());
         self.done.push(Block {
             headings: self.headings.iter().map(|(_, h)| h.clone()).collect(),
             text,
@@ -417,6 +426,146 @@ fn lost<T: PartialEq>(
     old.position(|item| !new.any(|n| n == item))
 }
 
+/// `markdown` without the blocks at these line ranges (pure), as
+/// [`Vault::remove`] describes: each must still hold words with that
+/// fingerprint, and every other block and heading must read as before.
+fn cut(markdown: &str, blocks: &[([u32; 2], Digest)]) -> Result<String> {
+    let old = parse(markdown);
+    let mut gone = BTreeSet::new();
+    for (lines, fingerprint) in blocks {
+        let at = old.done.iter().position(|b| {
+            b.lines == *lines && text::fingerprint(&b.text).as_ref() == Some(fingerprint)
+        });
+        let at = at.with_context(|| {
+            format!(
+                "lines {}-{} no longer hold that text: the note changed since it was read, so \
+                 nothing was written",
+                lines[0], lines[1]
+            )
+        })?;
+        gone.insert(at);
+    }
+    // Neighbouring blocks can claim the same blank line: merge what overlaps.
+    let mut cuts: Vec<Range<usize>> = Vec::new();
+    for &at in &gone {
+        let cut = whole_lines(markdown, old.spans[at].clone());
+        match cuts.last_mut() {
+            Some(last) if cut.start <= last.end => last.end = last.end.max(cut.end),
+            _ => cuts.push(cut),
+        }
+    }
+    if let Some(last) = cuts.last_mut().filter(|c| c.end == markdown.len()) {
+        last.start = above_blank_lines(markdown, last.start);
+    }
+    let mut out = markdown.to_string();
+    // Last cut first, so the offsets of the earlier ones still hold.
+    for cut in cuts.into_iter().rev() {
+        out.replace_range(cut, "");
+    }
+    if let Some(line) = moved_line(&old, &gone, &parse(&out)) {
+        bail!(
+            "the rest of the note would read differently from line {line} on, so nothing was \
+             written"
+        );
+    }
+    Ok(out)
+}
+
+/// The bytes to drop for a block at `span`: its whole lines with their line
+/// break when nothing else shares them, plus one blank line on one side so
+/// the neighbours keep a single blank line between them (or none at either
+/// end of the note); otherwise exactly `span`.
+fn whole_lines(markdown: &str, span: Range<usize>) -> Range<usize> {
+    let start = line_start(markdown, span.start);
+    let end = markdown[span.end..]
+        .find('\n')
+        .map_or(markdown.len(), |i| span.end + i + 1);
+    if !is_blank(&markdown[start..span.start]) || !is_blank(&markdown[span.end..end]) {
+        return span;
+    }
+    if end == markdown.len() {
+        // The last block: the blank lines above it go too.
+        return above_blank_lines(markdown, start)..end;
+    }
+    let after = markdown[end..]
+        .find('\n')
+        .map_or(markdown.len(), |i| end + i + 1);
+    let above_blank = start == 0 || is_blank(&markdown[line_start(markdown, start - 1)..start]);
+    if above_blank && is_blank(&markdown[end..after]) {
+        return start..after;
+    }
+    start..end
+}
+
+/// Where the blank lines right above the line starting at `start` begin
+/// (`start` itself when the line above holds text).
+fn above_blank_lines(markdown: &str, mut start: usize) -> usize {
+    while start > 0 && is_blank(&markdown[line_start(markdown, start - 1)..start]) {
+        start = line_start(markdown, start - 1);
+    }
+    start
+}
+
+/// Where the line holding byte `offset` starts.
+fn line_start(markdown: &str, offset: usize) -> usize {
+    markdown[..offset].rfind('\n').map_or(0, |i| i + 1)
+}
+
+/// Whether `line` holds nothing but whitespace (its line break included).
+fn is_blank(line: &str) -> bool {
+    line.trim().is_empty()
+}
+
+/// The first line of `old` that reads differently in `new` once the blocks
+/// numbered in `gone` are left out of `old`: every other block (with its
+/// heading path) and every heading must be in `new`, in the same order, and
+/// nothing else.
+fn moved_line(old: &Blocks, gone: &BTreeSet<usize>, new: &Blocks) -> Option<u32> {
+    let kept: Vec<&Block> = (old.done.iter().enumerate())
+        .filter(|(i, _)| !gone.contains(i))
+        .map(|(_, b)| b)
+        .collect();
+    let reads = |b: &Block| (b.headings.clone(), b.text.clone());
+    let block = (0..kept.len().max(new.done.len()))
+        .find(|&i| kept.get(i).map(|b| reads(b)) != new.done.get(i).map(reads))
+        .map(|i| kept.get(i).or(kept.last()).map_or(1, |b| b.lines[0]));
+    let heading = (0..old.outline.len().max(new.outline.len()))
+        .find(|&i| {
+            let level_text = |o: &(usize, usize, String)| (o.1, o.2.clone());
+            old.outline.get(i).map(level_text) != new.outline.get(i).map(level_text)
+        })
+        .map(|i| {
+            old.outline
+                .get(i)
+                .or(old.outline.last())
+                .map_or(1, |h| old.line(h.0))
+        });
+    block.into_iter().chain(heading).min()
+}
+
+/// The text and permissions of `note` at `file`, about to be rewritten;
+/// `None` when there is no such file. Refuses a symlink, a read-only note
+/// (the rename would replace it anyway) and one that is not valid UTF-8.
+fn editable(note: &NotePath, file: &Path) -> Result<Option<(String, fs::Permissions)>> {
+    let meta = match fs::symlink_metadata(file) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("reading {note}")),
+    };
+    ensure!(
+        meta.is_file(),
+        "refusing to write {note}: it is a symlink or not a file"
+    );
+    ensure!(
+        !meta.permissions().readonly(),
+        "refusing to write {note}: it is read-only"
+    );
+    let bytes = fs::read(file).with_context(|| format!("reading {note}"))?;
+    let text = String::from_utf8(bytes)
+        .map_err(|_| anyhow!("refusing to rewrite {note}: it is not valid UTF-8"))?;
+    Ok(Some((text, meta.permissions())))
+}
+
 /// Write `bytes` to `file` through a hidden temp file in the same folder and a
 /// rename, so readers see the old note or the new one, never half of one.
 fn write_atomic(file: &Path, bytes: &[u8], permissions: Option<&fs::Permissions>) -> Result<()> {
@@ -488,25 +637,10 @@ impl Vault for ObsidianVault {
             "a heading must be one line"
         );
         let _turn = self.lock()?;
-        let file = self.file(note)?;
-        let (existing, permissions) = match fs::symlink_metadata(&file) {
-            Ok(meta) => {
-                ensure!(
-                    meta.is_file(),
-                    "refusing to write {note}: it is a symlink or not a file"
-                );
-                // The rename would replace even a read-only note.
-                ensure!(
-                    !meta.permissions().readonly(),
-                    "refusing to write {note}: it is read-only"
-                );
-                let bytes = fs::read(&file).with_context(|| format!("reading {note}"))?;
-                let text = String::from_utf8(bytes)
-                    .map_err(|_| anyhow!("refusing to rewrite {note}: it is not valid UTF-8"))?;
-                (text, Some(meta.permissions()))
-            }
-            Err(e) if e.kind() == ErrorKind::NotFound => (String::new(), None),
-            Err(e) => return Err(e).with_context(|| format!("reading {note}")),
+        let file = self.file(note, true)?;
+        let (existing, permissions) = match editable(note, &file)? {
+            Some((text, permissions)) => (text, Some(permissions)),
+            None => (String::new(), None),
         };
         let placed = place(&existing, heading, text);
         if let Some(line) = changed_line(&existing, &placed) {
@@ -518,6 +652,16 @@ impl Vault for ObsidianVault {
             );
         }
         write_atomic(&file, placed.as_bytes(), permissions.as_ref())
+    }
+
+    fn remove(&self, note: &NotePath, blocks: &[([u32; 2], Digest)]) -> Result<()> {
+        let _turn = self.lock()?;
+        let file = self.file(note, false)?;
+        let (existing, permissions) =
+            editable(note, &file)?.with_context(|| format!("{note} does not exist"))?;
+        let kept =
+            cut(&existing, blocks).with_context(|| format!("refusing to remove from {note}"))?;
+        write_atomic(&file, kept.as_bytes(), Some(&permissions))
     }
 }
 
@@ -1411,5 +1555,160 @@ mod tests {
         vault.append(&note("A/b"), None, "fact").unwrap();
         let written = fs::read_to_string(dir.path().join("A/b.md")).unwrap();
         assert_eq!(written, "fact\n");
+    }
+
+    // ---- remove ------------------------------------------------------------
+
+    /// Where the block at `lines` of `markdown` sits, with its fingerprint.
+    fn block_at(markdown: &str, lines: [u32; 2]) -> ([u32; 2], Digest) {
+        let found = blocks(markdown).into_iter().find(|b| b.lines == lines);
+        let block = found.unwrap_or_else(|| panic!("no block at {lines:?} in {markdown:?}"));
+        (lines, text::fingerprint(&block.text).unwrap())
+    }
+
+    /// `markdown` cut without the blocks at `lines`.
+    fn cut_at(markdown: &str, lines: &[[u32; 2]]) -> String {
+        let which: Vec<_> = lines.iter().map(|l| block_at(markdown, *l)).collect();
+        cut(markdown, &which).unwrap()
+    }
+
+    #[test]
+    fn cut_takes_a_block_with_its_lines_and_keeps_one_blank_line_between_neighbours() {
+        let three = "A\n\nB\n\nC\n";
+        assert_eq!(cut_at(three, &[[3, 3]]), "A\n\nC\n");
+        assert_eq!(cut_at(three, &[[1, 1]]), "B\n\nC\n");
+        assert_eq!(cut_at(three, &[[5, 5]]), "A\n\nB\n");
+        assert_eq!(cut_at(three, &[[1, 1], [5, 5]]), "B\n");
+        assert_eq!(cut_at(three, &[[3, 3], [5, 5]]), "A\n");
+        assert_eq!(cut_at(three, &[[1, 1], [3, 3]]), "C\n");
+        assert_eq!(cut_at(three, &[[1, 1], [3, 3], [5, 5]]), "");
+        assert_eq!(cut_at("A\n\nB\n", &[[1, 1], [3, 3]]), "");
+        assert_eq!(cut_at("A\n\nB", &[[3, 3]]), "A\n");
+        assert_eq!(cut_at("Only fact.\n", &[[1, 1]]), "");
+    }
+
+    #[test]
+    fn cut_keeps_headings_list_neighbours_and_line_endings() {
+        let list = "## Allergies\n\n- penicillin\n- pollen\n- dust\n";
+        assert_eq!(
+            cut_at(list, &[[4, 4]]),
+            "## Allergies\n\n- penicillin\n- dust\n"
+        );
+        assert_eq!(
+            cut_at(list, &[[5, 5]]),
+            "## Allergies\n\n- penicillin\n- pollen\n"
+        );
+        assert_eq!(
+            cut_at("# H\n\nA\n\n# I\n\nB\n", &[[3, 3]]),
+            "# H\n\n# I\n\nB\n"
+        );
+        assert_eq!(cut_at("# H\n\nA\n", &[[3, 3]]), "# H\n");
+        assert_eq!(cut_at("- a\n  - b\n  - c\n", &[[2, 2]]), "- a\n  - c\n");
+        assert_eq!(
+            cut_at("A\r\n\r\nB\r\n\r\nC\r\n", &[[3, 3]]),
+            "A\r\n\r\nC\r\n"
+        );
+        let fence = "Intro.\n\n```sh\nmake\n```\n\nOutro.\n";
+        assert_eq!(cut_at(fence, &[[3, 5]]), "Intro.\n\nOutro.\n");
+    }
+
+    #[test]
+    fn cut_refuses_lines_that_no_longer_hold_those_words() {
+        let (lines, _) = block_at("A\n\nB\n", [3, 3]);
+        let other = text::fingerprint("something else").unwrap();
+        let e = format!("{:#}", cut("A\n\nB\n", &[(lines, other)]).unwrap_err());
+        assert!(e.contains("lines 3-3 no longer hold"), "{e}");
+        let moved = block_at("A\n\nB\n", [3, 3]);
+        let e = format!("{:#}", cut("B\n", &[moved]).unwrap_err());
+        assert!(e.contains("lines 3-3 no longer hold"), "{e}");
+    }
+
+    #[test]
+    fn cut_refuses_what_would_change_how_the_rest_reads() {
+        // Without `B`, the indented `c` becomes a second paragraph of item `a`.
+        let markdown = "- a\n\nB\n\n  c\n";
+        let e = format!(
+            "{:#}",
+            cut(markdown, &[block_at(markdown, [3, 3])]).unwrap_err()
+        );
+        assert!(e.contains("from line 1"), "{e}");
+    }
+
+    #[test]
+    fn remove_rewrites_the_note_in_place_and_keeps_its_permissions() {
+        let dir = tempdir().unwrap();
+        let car = "# Car\n\nOil every 10k.\n\nTyres in November.\n";
+        write(dir.path(), "Car.md", car);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let file = dir.path().join("Car.md");
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let vault = open(dir.path());
+        vault
+            .remove(&note("Car"), &[block_at(car, [3, 3])])
+            .unwrap();
+        let file = dir.path().join("Car.md");
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "# Car\n\nTyres in November.\n"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        assert_eq!(dot_entries(dir.path()), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn remove_changes_nothing_when_refused() {
+        let dir = tempdir().unwrap();
+        let vault = open(dir.path());
+        let gone = block_at("A\n\nB\n", [3, 3]);
+        let e = format!("{:#}", vault.remove(&note("Missing"), &[gone]).unwrap_err());
+        assert!(e.contains("Missing.md"), "{e}");
+        assert!(!dir.path().join("Missing.md").exists());
+
+        write(dir.path(), "n.md", "A\n\nC\n");
+        let e = format!("{:#}", vault.remove(&note("n"), &[gone]).unwrap_err());
+        assert!(e.contains("refusing to remove from n.md"), "{e}");
+        assert!(e.contains("nothing was written"), "{e}");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("n.md")).unwrap(),
+            "A\n\nC\n"
+        );
+        assert_eq!(dot_entries(dir.path()), Vec::<PathBuf>::new());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_refuses_read_only_and_symlinked_notes() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let text = "A\n\nB\n";
+        write(dir.path(), "fixed.md", text);
+        let fixed = dir.path().join("fixed.md");
+        fs::set_permissions(&fixed, fs::Permissions::from_mode(0o444)).unwrap();
+        write(outside.path(), "target.md", text);
+        symlink(outside.path().join("target.md"), dir.path().join("link.md")).unwrap();
+        symlink(outside.path(), dir.path().join("Escape")).unwrap();
+        write(outside.path(), "x.md", text);
+        let vault = open(dir.path());
+        let b = block_at(text, [3, 3]);
+        let e = format!("{:#}", vault.remove(&note("fixed"), &[b]).unwrap_err());
+        assert!(e.contains("read-only"), "{e}");
+        assert!(vault.remove(&note("link"), &[b]).is_err());
+        assert!(vault.remove(&note("Escape/x"), &[b]).is_err());
+        assert_eq!(fs::read_to_string(&fixed).unwrap(), text);
+        let target = fs::read_to_string(outside.path().join("target.md")).unwrap();
+        assert_eq!(target, text);
+        assert_eq!(
+            fs::read_to_string(outside.path().join("x.md")).unwrap(),
+            text
+        );
     }
 }

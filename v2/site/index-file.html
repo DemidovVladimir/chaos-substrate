@@ -133,7 +133,7 @@
         <li>Every chunk needs a vector, new or already stored. When one has none, the write stops with an error and the index stays as it was.</li>
         <li>The <code>meta</code>, <code>tree</code>, <code>chunks</code> and <code>blocks</code> tables are emptied and filled from the update. <code>meta</code> records the layout, format 2, and the embedder id. Each chunk row also records its position in the update, so chunks that share their lines, the pieces of a cut block, read back in order.</li>
         <li>New vectors are added. A stored vector stays when some chunk still uses its key; every other vector is dropped.</li>
-        <li>The transaction commits, the database is closed and the lock is released, so the next command, or a running MCP server, can open it.</li>
+        <li>The transaction commits, the database is closed and the lock is released, so the next command, a running MCP server or the dashboard can open it.</li>
       </ol>
     </div>
   </figure>
@@ -169,7 +169,7 @@
   <div class="widget">
     <div class="presets" id="beaten" role="group" aria-label="How often another writer gets in first"></div>
     <ol class="attempts" id="attempts" aria-live="polite"></ol>
-    <p class="note">Each attempt starts from the index as it is then, so the work of the other writer is kept and only what is still missing is embedded. <code>remember</code> runs two syncs, and each has its own attempts.</p>
+    <p class="note">Each attempt starts from the index as it is then, so the work of the other writer is kept and only what is still missing is embedded. <code>remember</code> and <code>forget</code> each run two syncs, and each sync has its own attempts.</p>
   </div>
 </section>
 
@@ -199,7 +199,7 @@
     <li><span><b>Derived and disposable.</b> The notes are the knowledge. Delete the file and the next sync rebuilds it with the same root.</span></li>
     <li><span><b>All or nothing.</b> A sync writes in one transaction, so the file holds the old index or the new one.</span></li>
     <li><span><b>A late sync never overwrites a newer index.</b> The write goes through only while the index still holds the snapshot that sync started from.</span></li>
-    <li><span><b>Shared, one at a time.</b> The CLI and a running MCP server each hold <code>&lt;index&gt;.lock</code> for the length of one operation.</span></li>
+    <li><span><b>Shared, one at a time.</b> The CLI, a running MCP server and the dashboard each hold <code>&lt;index&gt;.lock</code> for the length of one operation.</span></li>
     <li><span><b>No orphans.</b> A vector that no chunk uses is dropped in the same write.</span></li>
     <li><span><b>Every place is kept.</b> The same passage or block in several notes keeps a row for each.</span></li>
     <li><span><b>Nothing trusted on read.</b> A file of another layout reads as empty; a stored note path must be valid, a chunk row must hash to its key, and a vector must be whole 4-byte numbers.</span></li>
@@ -256,7 +256,7 @@
 </section>
 
 <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
-<p class="stamp-foot">Checked against the code on 2026-10-24.</p>
+<p class="stamp-foot">Checked against the code on 2026-10-25.</p>
 </article>
 </main>
 </div>

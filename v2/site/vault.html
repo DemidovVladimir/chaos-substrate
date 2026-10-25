@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>The vault · chaos-kb</title>
-<meta name="description" content="How chaos-kb reads an Obsidian vault into blocks, and how remember adds one fact right under its heading, one writer at a time, without changing how the rest of the note reads.">
+<meta name="description" content="How chaos-kb reads an Obsidian vault into blocks, how remember adds one fact right under its heading and forget takes one out by its words, one writer at a time, without changing how the rest of the note reads.">
 <script>try{var t=localStorage.getItem("tengu-tutorial-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -30,16 +30,16 @@
 <header class="hero">
   <div class="eyebrow"><span class="stamp" aria-hidden="true">蔵</span> Storage · your notes</div>
   <h1>The vault</h1>
-  <p class="lede">The <b>vault</b> is a folder of Markdown notes, as Obsidian keeps them. chaos-kb reads every visible note, whole, and splits it into blocks. It writes only when you call <code>remember</code>, and then it only adds text.</p>
+  <p class="lede">The <b>vault</b> is a folder of Markdown notes, as Obsidian keeps them. chaos-kb reads every visible note, whole, and splits it into blocks. It writes only when you call <code>remember</code>, which adds text, or <code>forget</code>, which takes blocks out.</p>
   <ul class="facts">
     <li>facts go to <b>Inbox.md</b> unless you name a note</li>
     <li><b>1</b> writer at a time, by <b>.chaos-kb/append.lock</b></li>
     <li><b>1</b> temporary file and <b>1</b> rename per write</li>
-    <li><b>0</b> existing bytes changed</li>
+    <li><b>2</b> calls write notes: remember and forget</li>
   </ul>
   <ul class="legend" aria-label="Colour key">
     <li><span class="chip brain"><span class="k">脳</span> notes</span> the vault on disk</li>
-    <li><span class="chip hands"><span class="k">手</span> tools</span> remember and its syncs</li>
+    <li><span class="chip hands"><span class="k">手</span> tools</span> remember, forget and their syncs</li>
     <li><span class="chip data">data</span> the index file</li>
     <li><span class="chip guard"><span class="k">守</span> guard</span> checks and refusals</li>
   </ul>
@@ -241,6 +241,67 @@
   </div>
 </section>
 
+<section class="sec" aria-labelledby="s-forget">
+  <div class="sec-head">
+    <span class="kicker">forget</span>
+    <h2 id="s-forget">Taking a fact out</h2>
+    <p><code>forget</code> is the other call that writes a note. It removes every block with the same words as its text, compared as fingerprints: case, spacing and punctuation aside, and never a passage that only means the same. With <code>--note</code>, only that note is touched.</p>
+  </div>
+  <ul class="states">
+    <li><span class="chip hands">found</span><span><b>the same words</b>Every block with them goes, in every note or only in <code>--note</code>. <code>removed</code> lists where each one sat.</span></li>
+    <li><span class="chip data">none</span><span><b>no block has those words</b>Nothing is written. <code>removed</code> is empty and <code>not_found</code> holds the text.</span></li>
+    <li><span class="chip brain">lines</span><span><b>whole lines</b>A removed block takes its whole lines and one blank line, so its neighbours keep one blank line between them. One list item goes; the rest of the list stays.</span></li>
+    <li><span class="chip brain">heading</span><span><b>headings stay</b>Removing the last fact under a heading leaves the heading in place.</span></li>
+    <li><span class="chip guard">moved</span><span><b>the note changed since it was read</b>Refused: those lines no longer hold the words. Nothing is written.</span></li>
+    <li><span class="chip guard">reads</span><span><b>the rest would read differently</b>Refused, for example when an indented paragraph would join the list item above it. Nothing is written.</span></li>
+    <li><span class="chip guard">file</span><span><b>a read-only note, or one that is not valid UTF-8</b>Refused, as for remember. Nothing is written.</span></li>
+  </ul>
+  <p class="note">Like remember, forget syncs before and after: the first sync makes your own edits count, the second takes the removal into the index. It holds the same <code>.chaos-kb/append.lock</code>, and the note is rewritten through a temporary file that keeps its permissions, then a rename. To correct a fact, forget it in its stored words, then remember the new one; the <a href="dashboard.html">dashboard</a>'s Replace does both.</p>
+  <div class="term-wrap">
+<pre class="term" data-type><span class="ln cmd"><span class="p">$ </span>chaos-kb forget "also allergic to LATEX"</span>
+<span class="ln o">{ "embedded": 1, "removed": [ { "lines": [5, 5], "note": "Health/Allergies.md", "section": "Allergies" } ],</span>
+<span class="ln o">  "root": "71bcab23ba3c13bd20fb25728840ea024143539b782a079ef7c5317b1d1e24bc" }</span>
+<span class="ln cmd"><span class="p">$ </span>cat Health/Allergies.md</span>
+<span class="ln o"># Allergies</span>
+<span class="ln o"></span>
+<span class="ln o">Allergic to penicillin.</span>
+<span class="ln o"></span>
+<span class="ln o">## Blood</span>
+<span class="ln o"></span>
+<span class="ln o">Blood type: A positive.</span>
+<span class="ln cmd"><span class="p">$ </span>stat -f '%Sp' Health/Allergies.md</span>
+<span class="ln o">-rw-------</span>
+<span class="ln cmd"><span class="p">$ </span>chaos-kb forget "Allergic to penicillin." --note Inbox</span>
+<span class="ln o">{ "embedded": 1, "removed": [ { "lines": [3, 3], "note": "Inbox.md", "section": "Inbox" } ],</span>
+<span class="ln o">  "root": "9a5c30e1aadb445dae46ab0dc837204bbfe9eb41a6bad066767cc6f2b4b3453b" }</span>
+<span class="ln cmd"><span class="p">$ </span>chaos-kb forget "Winter tyres go on in November."</span>
+<span class="ln o">{ "embedded": 0, "removed": [ { "lines": [9, 9], "note": "Car.md", "section": "Car &gt; Tyres" } ],</span>
+<span class="ln o">  "root": "d9cc29fc8b4220339f93ec39f3cb89c5944ba716923b29a7fe6bad86aeb2c3bf" }</span>
+<span class="ln cmd"><span class="p">$ </span>cat Car.md</span>
+<span class="ln o"># Car</span>
+<span class="ln o"></span>
+<span class="ln o">## Oil</span>
+<span class="ln o"></span>
+<span class="ln o">I change the engine oil every 10 000 km.</span>
+<span class="ln o"></span>
+<span class="ln o">## Tyres</span>
+<span class="ln cmd"><span class="p">$ </span>chaos-kb forget "Allergic to cats."</span>
+<span class="ln o">{ "embedded": 0, "not_found": [ "Allergic to cats." ], "removed": [],</span>
+<span class="ln o">  "root": "d9cc29fc8b4220339f93ec39f3cb89c5944ba716923b29a7fe6bad86aeb2c3bf" }</span>
+<span class="ln cmd"><span class="p">$ </span>cat Plans.md</span>
+<span class="ln o"># Plans</span>
+<span class="ln o"></span>
+<span class="ln o">- Learn to sail</span>
+<span class="ln o"></span>
+<span class="ln o">Ask the club first.</span>
+<span class="ln o"></span>
+<span class="ln o">  Saturday mornings</span>
+<span class="ln cmd"><span class="p">$ </span>chaos-kb forget "Ask the club first."</span>
+<span class="ln o"><span class="er">error: refusing to remove from Plans.md: the rest of the note would read differently from line 3 on, so nothing was written</span></span></pre>
+  </div>
+  <p class="note">A small vault after one sync: <code>Health/Allergies.md</code> as the session below leaves it, plus <code>Car.md</code>, an <code>Inbox.md</code> that also held <code>Allergic to penicillin.</code>, and <code>Plans.md</code>. The penicillin fact in <code>Health/Allergies.md</code> stayed, because <code>--note Inbox</code> limited the removal. Removing the tyres fact embedded nothing: its passage simply went, and <code>## Tyres</code> stayed. Without <code>Ask the club first.</code>, the indented line would join the list item on line 3, so nothing was removed. Before the forget, only its owner could read or write <code>Health/Allergies.md</code>, and after it the same holds (<code>stat</code> on macOS). JSON is shown condensed.</p>
+</section>
+
 <section class="sec" aria-labelledby="s-path">
   <div class="sec-head">
     <span class="kicker">Try it: name a note</span>
@@ -276,10 +337,11 @@
     <h2 id="s-rules">Guarantees</h2>
   </div>
   <ul class="checks">
-    <li><span><b>Only remember writes notes.</b> sync, check and search never change a note.</span></li>
-    <li><span><b>Existing text stays byte for byte.</b> remember inserts its text and one blank line around it; nothing else moves.</span></li>
-    <li><span><b>The rest of the note reads the same.</b> Text that would hide or re-nest what follows, such as an unclosed code fence or HTML comment, or a heading that takes in later sections, is refused.</span></li>
-    <li><span><b>Writers take turns.</b> Every append holds <code>.chaos-kb/append.lock</code>, so two agents writing at once keep both facts.</span></li>
+    <li><span><b>Only remember and forget write notes.</b> sync, check, search, topics and read never change a note, and neither does the dashboard except through those two.</span></li>
+    <li><span><b>Existing text stays byte for byte.</b> remember inserts its text and one blank line around it; forget takes out only the removed blocks' own lines and one blank line each. Nothing else moves.</span></li>
+    <li><span><b>The rest of the note reads the same.</b> Text that would hide or re-nest what follows, such as an unclosed code fence or HTML comment, or a heading that takes in later sections, is refused. So is a removal after which a kept block or heading would read differently.</span></li>
+    <li><span><b>Only the same words go.</b> forget looks its text up by fingerprint and removes a block only while its lines still hold those words; a passage that only means the same is never touched.</span></li>
+    <li><span><b>Writers take turns.</b> Every append and every removal holds <code>.chaos-kb/append.lock</code>, so two agents writing at once keep both facts.</span></li>
     <li><span><b>Never half a note.</b> A write goes through a temporary file that has the note's permissions from the start, a flush to disk and a rename.</span></li>
     <li><span><b>Nothing outside the vault.</b> Paths are relative with visible segments; a symlinked folder or note, or a folder resolving outside the vault, is refused.</span></li>
     <li><span><b>No damage to odd files.</b> A read-only note, or one that is not valid UTF-8, is refused, not rewritten.</span></li>
@@ -332,10 +394,11 @@
     <table>
       <thead><tr><th>File</th><th>Owns</th></tr></thead>
       <tbody>
-        <tr><td><code>src/adapters/obsidian.rs</code></td><td><code>ObsidianVault</code>: the walk, the parser, the append lock, placing text under a heading, the reads-the-same check, the atomic write</td></tr>
+        <tr><td><code>src/adapters/obsidian.rs</code></td><td><code>ObsidianVault</code>: the walk, the parser, the append lock, placing text under a heading, cutting blocks out (<code>remove</code>), the reads-the-same checks, the atomic write</td></tr>
         <tr><td><code>src/domain/path.rs</code></td><td><code>NotePath</code>: the path rules, the title and the folders</td></tr>
         <tr><td><code>src/domain/note.rs</code></td><td><code>Note</code>, <code>Block</code>, <code>Location</code> and the section text</td></tr>
         <tr><td><code>src/application/remember.rs</code></td><td>the remember use-case, <code>INBOX</code> and its report</td></tr>
+        <tr><td><code>src/application/forget.rs</code></td><td>the forget use-case: every block with the same words, in one note or all, a sync before and after, and its report</td></tr>
         <tr><td><code>src/application/mod.rs</code></td><td><code>stored</code>: is every block of the fact already in the index, read through <code>Vault::texts</code>; <code>nonblank</code></td></tr>
       </tbody>
     </table>
@@ -343,7 +406,7 @@
 </section>
 
 <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
-<p class="stamp-foot">Checked against the code on 2026-10-24.</p>
+<p class="stamp-foot">Checked against the code on 2026-10-25.</p>
 </article>
 </main>
 </div>

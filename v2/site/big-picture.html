@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>From notes to answers · chaos-kb</title>
-<meta name="description" content="How chaos-kb turns a folder of Markdown notes into a Merkle tree and searchable passages in one index file, and the six tools that use them.">
+<meta name="description" content="How chaos-kb turns a folder of Markdown notes into a Merkle tree and searchable passages in one index file, and the seven tools that use them.">
 <script>try{var t=localStorage.getItem("tengu-tutorial-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -33,7 +33,7 @@
   <h1>From notes to answers</h1>
   <p class="lede">You keep what you know as Markdown notes in one folder. One <b>sync</b> turns them into a Merkle tree and searchable passages in one index file. Then an agent can ask: is this known, and what do my notes say?</p>
   <ul class="facts">
-    <li><b>4</b> tools: sync, remember, check, search</li>
+    <li><b>7</b> tools: sync, remember, forget, check, search, topics, read</li>
     <li>passages of at most <b>1200</b> characters</li>
     <li>known from a score of <b>0.38</b></li>
     <li>index at <b>&lt;vault&gt;/.chaos-kb/index.redb</b></li>
@@ -42,7 +42,7 @@
     <li><span class="chip brain"><span class="k">脳</span> notes</span> your knowledge</li>
     <li><span class="chip jev"><span class="k">印</span> hash</span> fingerprints, Merkle tree</li>
     <li><span class="chip heart"><span class="k">心</span> model</span> the embedding model</li>
-    <li><span class="chip hands"><span class="k">手</span> tools</span> sync, remember, check, search</li>
+    <li><span class="chip hands"><span class="k">手</span> tools</span> the seven tools</li>
     <li><span class="chip guard"><span class="k">守</span> guard</span> checks and refusals</li>
     <li><span class="chip data">data</span> the index file</li>
   </ul>
@@ -148,9 +148,9 @@
 
 <section class="sec" aria-labelledby="s-tools">
   <div class="sec-head">
-    <span class="kicker">The six tools</span>
-    <h2 id="s-tools">Two write, four read</h2>
-    <p>The same six tools exist as commands (<code>chaos-kb sync</code>) and as MCP tools for agents (<code>kb_sync</code>). Every command prints JSON.</p>
+    <span class="kicker">The seven tools</span>
+    <h2 id="s-tools">Three write, four read</h2>
+    <p>The same seven tools exist as commands (<code>chaos-kb sync</code>) and as MCP tools for agents (<code>kb_sync</code>). Every command prints JSON.</p>
   </div>
   <div class="grid">
     <div class="card hands">
@@ -160,6 +160,10 @@
     <div class="card hands">
       <h3><span class="tool-name">remember</span></h3>
       <p>Stores one fact in a note and indexes it. It syncs first, and skips the fact when the same words are already anywhere in the vault. <a href="vault.html">The vault</a></p>
+    </div>
+    <div class="card hands">
+      <h3><span class="tool-name">forget</span></h3>
+      <p>Takes a fact out of the notes and the index: every block with the same words, in every note or in one. It syncs before and after, and never removes a passage that only means the same. <a href="vault.html#s-forget">Taking a fact out</a></p>
     </div>
     <div class="card hands">
       <h3><span class="tool-name">check</span></h3>
@@ -189,15 +193,15 @@
   <div class="layers">
     <div class="card jev"><b>domain</b><small>Pure rules: text, hashes, the Merkle tree, chunks, vectors, paths, presence.</small><span class="uses">uses nothing in the crate</span></div>
     <div class="card guard"><b>ports</b><small><code>Vault</code>, <code>Embedder</code>, <code>Index</code>, and the shapes they pass.</small><span class="uses">uses domain</span></div>
-    <div class="card hands"><b>application</b><small>The six use-cases on <code>Kb</code>: one vault, one index, one embedder.</small><span class="uses">uses domain, ports</span></div>
+    <div class="card hands"><b>application</b><small>The seven use-cases on <code>Kb</code>, plus the dashboard's <code>overview</code>: one vault, one index, one embedder.</small><span class="uses">uses domain, ports</span></div>
     <div class="card data"><b>adapters</b><small>The Obsidian vault on disk, the redb index file, the HTTP embedder.</small><span class="uses">never application or entry</span></div>
-    <div class="card heart"><b>entry</b><small>The clap command line, the MCP server and the tool roster they share.</small><span class="uses">wires adapters in</span></div>
+    <div class="card heart"><b>entry</b><small>The clap command line, the MCP server, the dashboard and the tool roster they share.</small><span class="uses">wires adapters in</span></div>
   </div>
   <div class="table-wrap">
     <table>
       <thead><tr><th>Port</th><th>What it does</th><th>Real adapter</th></tr></thead>
       <tbody>
-        <tr><td><code>Vault</code></td><td><code>notes()</code>: every note, parsed and sorted by path. <code>texts()</code>: read a snippet the way notes are read. <code>append()</code>: add text under a heading, never change how existing text reads.</td><td><code>ObsidianVault</code></td></tr>
+        <tr><td><code>Vault</code></td><td><code>notes()</code>: every note, parsed and sorted by path. <code>texts()</code>: read a snippet the way notes are read. <code>append()</code>: add text under a heading, never change how existing text reads. <code>remove()</code>: take out blocks by their lines while they still hold the same words, refused when the rest would read differently.</td><td><code>ObsidianVault</code></td></tr>
         <tr><td><code>Embedder</code></td><td><code>id()</code> names the vector space. <code>embed_documents()</code> for passages, <code>embed_query()</code> for questions.</td><td><code>HttpEmbedder</code></td></tr>
         <tr><td><code>Index</code></td><td><code>snapshot()</code>, <code>vector_keys()</code>, <code>replace()</code> (refused with <code>Stale</code> when another writer got in first), <code>exact()</code> by fingerprint, <code>nearest()</code> by vector.</td><td><code>RedbIndex</code></td></tr>
       </tbody>
@@ -233,7 +237,7 @@
     <li><span><b>A failed embedding writes nothing.</b> When the model fails, returns the wrong number of vectors or a zero vector, sync stops before the index changes.</span></li>
     <li><span><b>One vector space at a time.</b> Stored vectors are reused only when the index was built by the same embedder id: model plus prompt format.</span></li>
     <li><span><b>Reads need an index.</b> <code>check</code> and <code>search</code> refuse an empty one and say to run <code>chaos-kb sync</code>. Comparing vectors also needs the configured embedder's index; the same words answer without it.</span></li>
-    <li><span><b>Processes take turns.</b> Index operations hold <code>&lt;index&gt;.lock</code> and appends hold <code>.chaos-kb/append.lock</code>, so a CLI command and a running MCP server can share one vault.</span></li>
+    <li><span><b>Processes take turns.</b> Index operations hold <code>&lt;index&gt;.lock</code>, and appends and removals hold <code>.chaos-kb/append.lock</code>, so a CLI command, a running MCP server and the <a href="dashboard.html">dashboard</a> can share one vault.</span></li>
     <li><span><b>Blank input is refused.</b> A query or fact with no letter or digit is an error, not a lookup.</span></li>
     <li><span><b>Layers stay apart.</b> The <code>layering</code> test keeps the domain pure and keeps adapters out of the use-cases.</span></li>
   </ul>
@@ -308,7 +312,7 @@
 </section>
 
 <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
-<p class="stamp-foot">Checked against the code on 2026-10-24.</p>
+<p class="stamp-foot">Checked against the code on 2026-10-25.</p>
 </article>
 </main>
 </div>

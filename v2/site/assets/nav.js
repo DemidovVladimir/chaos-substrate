@@ -7,8 +7,8 @@ window.TUTORIAL = {
   chapters: [
     { id: "start", kanji: "始", name: "Start here", blurb: "What chaos-kb is, and how a folder of notes becomes quick answers." },
     { id: "answer", kanji: "答", name: "Answers", blurb: "Same words by fingerprint, same meaning by cosine, and the line between known and not known." },
-    { id: "store", kanji: "蔵", name: "Storage", blurb: "Your notes are the knowledge; the index file is derived from them and safe to delete." },
-    { id: "agents", kanji: "繋", name: "Agents", blurb: "The six tools over MCP, generated from one command-line definition." }
+    { id: "store", kanji: "蔵", name: "Storage", blurb: "Your notes are the knowledge; the index file is derived from them and safe to delete; the dashboard shows both." },
+    { id: "agents", kanji: "繋", name: "Agents", blurb: "The seven tools over MCP, generated from one command-line definition." }
   ],
   pages: [
     { slug: "chaos-kb", chapter: "start", title: "Install and run", blurb: "Build one binary, pull one local model, point it at your notes and connect it to Claude Code or Codex." },
@@ -19,8 +19,9 @@ window.TUTORIAL = {
     { slug: "check", chapter: "answer", title: "How check decides", blurb: "Exact words first; otherwise the best of three passages against a line of 0.38." },
     { slug: "topics", chapter: "answer", title: "Topics and read", blurb: "Short ranked lines for a task, a searcher that keeps what matters, and only those passages read back." },
 
-    { slug: "vault", chapter: "store", title: "The vault", blurb: "Obsidian notes parsed into blocks; remember appends one fact and never changes what is there." },
-    { slug: "index-file", chapter: "store", title: "The index file", blurb: "One redb file, replaced in one transaction, shared by the CLI and the MCP server." },
+    { slug: "vault", chapter: "store", title: "The vault", blurb: "Obsidian notes parsed into blocks; remember adds one fact under its heading, forget takes one out by its words." },
+    { slug: "index-file", chapter: "store", title: "The index file", blurb: "One redb file, replaced in one transaction, shared by the CLI, the MCP server and the dashboard." },
+    { slug: "dashboard", chapter: "store", title: "The dashboard", blurb: "One local web page: your notes next to the index as a Merkle tree, with add, replace and remove, re-synced after every change." },
 
     { slug: "mcp", chapter: "agents", title: "Agents and MCP", blurb: "A stdio server whose tools, schemas and README reference all come from the clap definition." }
   ]

@@ -95,6 +95,7 @@ sources = [
   "src/domain/path.rs",
   "src/domain/note.rs",
   "src/application/remember.rs",
+  "src/application/forget.rs",
   "src/application/mod.rs",
 ]
 
@@ -103,6 +104,18 @@ sources = [
   "src/adapters/redb_index.rs",
   "src/ports/mod.rs",
   "src/application/sync.rs",
+  "src/entry/cli.rs",
+  "README.md",
+]
+
+[pages.dashboard]
+sources = [
+  "src/entry/dashboard.rs",
+  "src/entry/dashboard.html",
+  "src/application/overview.rs",
+  "src/application/forget.rs",
+  "src/adapters/obsidian.rs",
+  "src/entry/tools.rs",
   "src/entry/cli.rs",
   "README.md",
 ]

@@ -37,7 +37,7 @@
     <li><span class="chip brain"><span class="k">脳</span> notes</span> the blocks the words come from</li>
     <li><span class="chip jev"><span class="k">印</span> hash</span> fingerprints and tree hashes</li>
     <li><span class="chip data">data</span> the index file</li>
-    <li><span class="chip hands"><span class="k">手</span> tools</span> check and remember</li>
+    <li><span class="chip hands"><span class="k">手</span> tools</span> check, remember and forget</li>
   </ul>
 </header>
 
@@ -50,7 +50,7 @@
   <figure class="stage" data-stage data-interval="3600">
     <div class="stage-canvas">
       <svg viewBox="0 0 860 380" role="img" aria-labelledby="tree-t">
-        <title id="tree-t">Blocks are normalized and fingerprinted. Fingerprints roll up into note hashes, and note hashes into one root. The fingerprints are also stored in the index, where check and remember look up the same words. Comparing the new tree with the stored one shows what changed.</title>
+        <title id="tree-t">Blocks are normalized and fingerprinted. Fingerprints roll up into note hashes, and note hashes into one root. The fingerprints are also stored in the index, where check, remember and forget look up the same words. Comparing the new tree with the stored one shows what changed.</title>
         <path class="e" id="t-blk-fp" d="M170 92 L228 92" data-at="2-3"/>
         <path class="e" id="t-fp-note" d="M400 92 L458 92" data-at="4"/>
         <path class="e" id="t-note-root" d="M630 92 L688 92" data-at="5"/>
@@ -90,7 +90,7 @@
           <rect x="460" y="230" width="170" height="80" rx="8"/>
           <text x="545" y="254" text-anchor="middle" class="t-kanji k">手</text>
           <text x="545" y="274" text-anchor="middle" class="t-title">check · remember</text>
-          <text x="545" y="292" text-anchor="middle" class="t-small">same words?</text>
+          <text x="545" y="292" text-anchor="middle" class="t-small">same words? (and forget)</text>
         </g>
         <g class="n data" data-at="8">
           <rect x="690" y="230" width="150" height="80" rx="10"/>
@@ -124,7 +124,7 @@
         <li>A <b>note's hash</b> covers its fingerprints in order, each labelled with its heading path. Line numbers and Markdown syntax never reach a hash.</li>
         <li>The <b>root</b> covers every note hash, labelled by the note's path. There are no folder hashes: the tree is the root, the notes and their fingerprints.</li>
         <li>sync also stores every fingerprint with its note, section and lines. That is the <b>exact index</b>, kept in the index file.</li>
-        <li><code>check</code> and <code>remember</code> read their input the way notes are read, then look up the fingerprint of every block there. A match needs no model call.</li>
+        <li><code>check</code>, <code>remember</code> and <code>forget</code> read their input the way notes are read, then look up the fingerprint of every block there. A match needs no model call; forget removes exactly the blocks it finds.</li>
         <li>Comparing the new tree with the stored one lists the notes <b>added</b>, <b>changed</b> and <b>removed</b>. Equal roots mean equal knowledge: nothing changed.</li>
       </ol>
     </div>
@@ -299,7 +299,7 @@ root                = node([(note path, note hash) for each note, sorted by path
 </section>
 
 <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
-<p class="stamp-foot">Checked against the code on 2026-10-24.</p>
+<p class="stamp-foot">Checked against the code on 2026-10-25.</p>
 </article>
 </main>
 </div>

@@ -1,0 +1,822 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>chaos-kb dashboard</title>
+<link rel="icon" href="data:,">
+<style>
+  /* Colours follow the chaos-kb field manual (site/assets/site.css). */
+  :root {
+    --paper: #EDF0F1; --panel: #F8FAFA; --sunk: #E2E7EA;
+    --ink: #18212D; --muted: #4F5B6A; --faint: #7A8594; --line: #C6CFD6;
+    --accent: #2C4C9E; --accent-soft: #DCE3F5;
+    --ok: #2F7A45; --ok-soft: #D8EBDD;
+    --warn: #9A6A00; --warn-soft: #F3E6CB;
+    --bad: #B3362A; --bad-soft: #F6DDD6;
+    --new: #6B43A0; --new-soft: #E6DDF2;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --radius: 10px;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #0D141E; --panel: #141D2A; --sunk: #0A1018;
+      --ink: #E4E9EF; --muted: #9DAABA; --faint: #738195; --line: #283548;
+      --accent: #93AAF2; --accent-soft: #1D2A47;
+      --ok: #7FC793; --ok-soft: #17301F;
+      --warn: #E2B65C; --warn-soft: #33280F;
+      --bad: #F0806A; --bad-soft: #3A1E1A;
+      --new: #C5A4EC; --new-soft: #2A1E3E;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { background: var(--paper); color: var(--ink); font: 15px/1.5 var(--sans); }
+  button, input, textarea { font: inherit; color: inherit; }
+  code, .mono { font-family: var(--mono); }
+  h2 { font-size: 1.05rem; margin: 0 0 .35rem; }
+  h3 { font-size: .95rem; margin: 0 0 .3rem; }
+  p { margin: .35rem 0; }
+  small, .muted { color: var(--muted); }
+
+  /* ── top bar ─────────────────────────────────────────────── */
+  .top {
+    position: sticky; top: 0; z-index: 5;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px;
+    padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .mark {
+    display: grid; place-items: center; width: 34px; height: 34px; flex: none;
+    border-radius: 8px; background: var(--ink); color: var(--panel); font-size: 18px;
+  }
+  .brand b { display: block; }
+  .brand small { display: block; overflow-wrap: anywhere; font-family: var(--mono); font-size: 12px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 5px 12px; border-radius: 999px; font-weight: 600; font-size: 14px;
+    background: var(--sunk); color: var(--muted);
+  }
+  .pill::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
+  .pill.ok { background: var(--ok-soft); color: var(--ok); }
+  .pill.warn { background: var(--warn-soft); color: var(--warn); }
+  .pill.bad { background: var(--bad-soft); color: var(--bad); }
+  .pill.busy::before { animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+  .spacer { flex: 1; }
+  .toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); cursor: pointer; }
+
+  button {
+    border: 1px solid var(--line); background: var(--panel); border-radius: 8px;
+    padding: 6px 12px; cursor: pointer; font-size: 14px;
+  }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: progress; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--panel); font-weight: 600; }
+  button.danger { color: var(--bad); }
+  button.danger.solid { background: var(--bad); border-color: var(--bad); color: var(--panel); }
+  button.link { border: 0; background: none; padding: 0; color: var(--accent); text-decoration: underline; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ── layout ──────────────────────────────────────────────── */
+  .banner { margin: 16px 20px 0; padding: 12px 16px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--panel); }
+  .banner.warn { border-color: var(--warn); background: var(--warn-soft); }
+  .banner.bad { border-color: var(--bad); background: var(--bad-soft); }
+  .banner.ok { border-color: var(--ok); background: var(--ok-soft); }
+  .banner p { margin: 0; }
+  .banner ul { margin: .4rem 0 0; padding-left: 1.2rem; }
+  .grid { display: grid; gap: 16px; padding: 16px 20px 40px; grid-template-columns: minmax(0, 1fr) minmax(300px, 400px); align-items: start; }
+  @media (max-width: 1000px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+  .col { display: grid; gap: 16px; min-width: 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; min-width: 0; }
+  .side { position: sticky; top: 72px; max-height: calc(100vh - 88px); overflow-y: auto; }
+  @media (max-width: 1000px) { .side { position: static; max-height: none; overflow: visible; } }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 12px; }
+  .stat { background: var(--sunk); border-radius: 8px; padding: 8px 10px; }
+  .stat b { display: block; font-size: 1.25rem; overflow-wrap: anywhere; }
+  .stat.word b { font-size: 1rem; line-height: 1.9rem; }
+  .stat span { color: var(--muted); font-size: 13px; }
+
+  .hash { font-family: var(--mono); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; color: var(--muted); cursor: copy; }
+  .hash:hover { color: var(--ink); }
+  .hash.none { cursor: default; font-style: italic; }
+  .hash.copied::after { content: "  copied"; font-family: var(--sans); color: var(--ok); }
+  .kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; align-items: baseline; }
+  .kv > span { font-size: 12px; color: var(--faint); white-space: nowrap; }
+
+  details.explain { margin-top: 10px; font-size: 14px; color: var(--muted); }
+  details.explain summary { cursor: pointer; color: var(--accent); }
+  details.explain ol { margin: .4rem 0 0; padding-left: 1.2rem; }
+
+  /* ── tree ────────────────────────────────────────────────── */
+  .treebar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .treebar input { flex: 1 1 220px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0 0 10px; padding: 0; list-style: none; font-size: 13px; color: var(--muted); }
+  .legend li { display: inline-flex; align-items: center; gap: 6px; }
+
+  .rootnode { border: 2px solid var(--ink); border-radius: var(--radius); padding: 10px 12px; background: var(--paper); }
+  .rootnode .title { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin-bottom: 4px; }
+  .rootnode.differs { border-color: var(--warn); }
+  .tree, .leaves { list-style: none; margin: 0; padding: 0; }
+  .tree { margin-left: 18px; border-left: 2px solid var(--line); padding-top: 6px; }
+  .tree > li { position: relative; padding: 6px 0 6px 18px; }
+  .tree > li::before { content: ""; position: absolute; left: 0; top: 24px; width: 14px; border-top: 2px solid var(--line); }
+  .note { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+  .note.flash { animation: flash 3.5s ease-out; }
+  @keyframes flash { 0%, 30% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: 0 0 0 0 transparent; } }
+  .notehead { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 10px 12px; border: 0; border-radius: var(--radius); background: none; text-align: left; }
+  .notehead:hover { background: var(--sunk); }
+  .caret { flex: none; width: 1em; color: var(--faint); transition: transform .15s; }
+  .note.open .caret { transform: rotate(90deg); }
+  .notehead .body { flex: 1; min-width: 0; display: grid; gap: 4px; }
+  .notehead .line1 { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+  .path { font-weight: 600; overflow-wrap: anywhere; }
+  .count { font-size: 13px; color: var(--muted); }
+  .badge { font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+  .s-indexed { background: var(--ok-soft); color: var(--ok); }
+  .s-changed { background: var(--warn-soft); color: var(--warn); }
+  .s-new { background: var(--new-soft); color: var(--new); }
+  .s-removed { background: var(--bad-soft); color: var(--bad); }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
+  .dot.in { background: var(--ok); }
+  .dot.out { background: var(--warn); }
+
+  .leaves { display: none; margin: 0 12px 12px 30px; border-left: 2px dashed var(--line); }
+  .note.open .leaves { display: block; }
+  .leaf { position: relative; margin: 8px 0 0 14px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+  .leaf::before { content: ""; position: absolute; left: -16px; top: 18px; width: 14px; border-top: 2px dashed var(--line); }
+  .leaf.pending { border-color: var(--warn); }
+  .leaf.flash { animation: flash 3.5s ease-out; }
+  .leaf.focus { box-shadow: 0 0 0 3px var(--accent); }
+  .leafhead { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; font-size: 13px; color: var(--muted); }
+  .sec { font-weight: 600; color: var(--ink); }
+  .text { margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .leafactions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .leafactions button { padding: 3px 10px; font-size: 13px; }
+  .edit { display: grid; gap: 6px; margin-top: 8px; padding: 8px; border-radius: 8px; background: var(--sunk); }
+  .edit textarea { width: 100%; min-height: 70px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); font-family: var(--mono); font-size: 13px; }
+  .gone { margin: 0 12px 12px 42px; font-size: 14px; color: var(--muted); }
+  .empty { padding: 16px; color: var(--muted); text-align: center; }
+
+  /* ── side panels ─────────────────────────────────────────── */
+  form { display: grid; gap: 8px; margin: 0; }
+  label { display: grid; gap: 3px; font-size: 13px; color: var(--muted); }
+  form input, form textarea { padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font-size: 14px; }
+  form textarea { min-height: 76px; resize: vertical; }
+  .pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+  .pair input { width: 100%; min-width: 0; }
+
+  /* ── phones ──────────────────────────────────────────────── */
+  @media (max-width: 640px) {
+    .top { position: static; padding: 10px 16px; }
+    .banner { margin: 12px 16px 0; }
+    .grid { padding: 12px 16px 32px; }
+    .card { padding: 12px; }
+    .tree { margin-left: 6px; }
+    .tree > li { padding-left: 10px; }
+    .tree > li::before { width: 8px; }
+    .leaves { margin: 0 6px 10px 12px; }
+    .leaf { margin-left: 8px; }
+    .leaf::before { left: -10px; width: 8px; }
+    .gone { margin-left: 18px; }
+    .pair { grid-template-columns: minmax(0, 1fr); }
+  }
+  .result { font-size: 14px; }
+  .result.ok { color: var(--ok); }
+  .result.bad { color: var(--bad); }
+  .answer { margin-top: 10px; display: grid; gap: 8px; }
+  .verdict { padding: 8px 10px; border-radius: 8px; font-size: 14px; }
+  .verdict.ok { background: var(--ok-soft); }
+  .verdict.warn { background: var(--warn-soft); }
+  .verdict.bad { background: var(--bad-soft); }
+  .hits { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  .hits button { width: 100%; text-align: left; display: grid; gap: 2px; padding: 6px 8px; }
+  .hits .score { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .log { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; max-height: 420px; overflow: auto; }
+  .log li { padding: 8px 10px; border-radius: 8px; background: var(--sunk); font-size: 13px; }
+  .log li.bad { background: var(--bad-soft); }
+  .log time { color: var(--faint); font-family: var(--mono); margin-right: 6px; }
+  .log .roots { margin-top: 4px; }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="mark" aria-hidden="true">知</span>
+    <div><b>chaos-kb dashboard</b><small id="vault">connecting…</small></div>
+  </div>
+  <span class="pill" id="state" role="status" aria-live="polite">Loading</span>
+  <span class="spacer"></span>
+  <label class="toggle" title="Edits made in Obsidian or any editor are synced as soon as the dashboard sees them">
+    <input type="checkbox" id="auto"> Sync edits made outside the dashboard
+  </label>
+  <button class="primary" id="sync">Sync now</button>
+</header>
+
+<div class="banner" id="banner" hidden></div>
+
+<main class="grid">
+  <div class="col">
+    <section class="card" aria-labelledby="h-tree">
+      <h2 id="h-tree">What the knowledge base holds</h2>
+      <p class="muted">Agents read the <b>index</b>. It is built from your notes by a sync. A fact on disk that the index does not hold yet is marked, and agents cannot find it until the next sync.</p>
+      <div class="stats" id="stats"></div>
+      <details class="explain">
+        <summary>How to read the Merkle tree</summary>
+        <ol>
+          <li><b>Leaf</b>: one fact, meaning a paragraph, a list item, a table or a code block. Its <b>fingerprint</b> is a BLAKE3 hash of its words. Case, spacing and sentence punctuation are ignored, so formatting-only edits keep it.</li>
+          <li><b>Note</b>: its hash covers its fingerprints in order, each labelled with the headings above it. Changing a fact, or moving it under another heading, changes the note hash.</li>
+          <li><b>Root</b>: one hash over every note hash and its path. When the root of your notes equals the root the index holds, the index has every fact.</li>
+        </ol>
+        <p>Adding, replacing or removing a fact here changes the note, then syncs: the tree is rebuilt and the changed note lights up. Click any hash to copy it.</p>
+      </details>
+    </section>
+
+    <section class="card" aria-labelledby="h-merkle">
+      <h2 id="h-merkle">Merkle tree</h2>
+      <div class="treebar">
+        <input type="search" id="filter" placeholder="Filter notes and facts" aria-label="Filter notes and facts">
+        <button id="expand">Expand all</button>
+        <button id="collapse">Collapse all</button>
+      </div>
+      <ul class="legend" aria-label="Note states">
+        <li><span class="badge s-indexed">in the index</span> agents see it</li>
+        <li><span class="badge s-changed">changed</span> edited on disk, not synced</li>
+        <li><span class="badge s-new">new</span> on disk, never synced</li>
+        <li><span class="badge s-removed">deleted</span> gone from disk, still in the index</li>
+      </ul>
+      <div class="rootnode" id="rootnode"></div>
+      <ol class="tree" id="tree"></ol>
+    </section>
+  </div>
+
+  <aside class="col side">
+    <section class="card" aria-labelledby="h-add">
+      <h2 id="h-add">Add a fact</h2>
+      <form id="add">
+        <label>Fact, one per entry (plain words or Markdown)
+          <textarea id="add-text" required placeholder="I change the engine oil every 10 000 km."></textarea>
+        </label>
+        <div class="pair">
+          <label>Note <input id="add-note" list="notes" placeholder="Inbox.md" autocomplete="off"></label>
+          <label>Heading <input id="add-heading" list="headings" placeholder="optional" autocomplete="off"></label>
+        </div>
+        <datalist id="notes"></datalist>
+        <datalist id="headings"></datalist>
+        <div><button type="submit" class="primary">Remember</button></div>
+        <p class="result" id="add-result" aria-live="polite"></p>
+      </form>
+    </section>
+
+    <section class="card" aria-labelledby="h-ask">
+      <h2 id="h-ask">Try a question</h2>
+      <p class="muted">See what an agent would get: <code>check</code> says whether it is known; <code>topics</code> lists the closest passages.</p>
+      <form id="ask">
+        <label>Question or task <input id="ask-q" required placeholder="How often do I change the oil?" autocomplete="off"></label>
+        <div><button type="submit">Ask the index</button></div>
+      </form>
+      <div class="answer" id="answer" aria-live="polite"></div>
+    </section>
+
+    <section class="card" aria-labelledby="h-log">
+      <h2 id="h-log">Activity</h2>
+      <ol class="log" id="log"><li class="muted">Changes made here, and syncs, show up here with the root before and after.</li></ol>
+    </section>
+  </aside>
+</main>
+
+<script>
+"use strict";
+
+// ── small helpers ──────────────────────────────────────────────────────────
+
+const $ = (id) => document.getElementById(id);
+
+/** An element with text children only: nothing from the notes is parsed as HTML. */
+function el(tag, props, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(props || {})) {
+    if (value === undefined || value === null || value === false) continue;
+    if (key === "class") node.className = value;
+    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+    else if (key in node && typeof value !== "string") node[key] = value;
+    else node.setAttribute(key, value === true ? "" : value);
+  }
+  for (const child of children.flat()) {
+    if (child === undefined || child === null || child === false) continue;
+    node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  }
+  return node;
+}
+
+/** A full hash that copies itself when clicked. */
+function hash(value, none) {
+  if (!value) return el("code", { class: "hash none" }, none || "none");
+  const code = el("code", {
+    class: "hash", title: "Click to copy",
+    onclick: (event) => {
+      event.stopPropagation();
+      if (!navigator.clipboard) return;
+      navigator.clipboard.writeText(value).then(() => {
+        code.classList.add("copied");
+        setTimeout(() => code.classList.remove("copied"), 1200);
+      }, () => {});
+    },
+  }, value);
+  return code;
+}
+
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+const lines = (l) => (l[0] === l[1] ? `line ${l[0]}` : `lines ${l[0]}–${l[1]}`);
+const words = (s) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+const leafKey = (path, leaf) => `${path}|${leaf.fingerprint}`;
+
+function store(key, value) {
+  try { if (value === undefined) return localStorage.getItem(key); localStorage.setItem(key, value); } catch (e) {}
+  return null;
+}
+
+// ── talking to the server ──────────────────────────────────────────────────
+
+async function api(path, body) {
+  const init = body === undefined ? {} : {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  };
+  const response = await fetch(path, init);
+  const data = await response.json().catch(() => ({ error: response.statusText }));
+  if (!response.ok) throw new Error(data.error || `${response.status} ${response.statusText}`);
+  return data;
+}
+
+/** Run a tool exactly as an agent would (`kb_<name>`), arguments that are empty left out. */
+function tool(name, args) {
+  const given = {};
+  for (const [key, value] of Object.entries(args || {})) {
+    if (value !== undefined && value !== null && value !== "") given[key] = value;
+  }
+  return api(`/api/tools/kb_${name}`, given);
+}
+
+// ── state ──────────────────────────────────────────────────────────────────
+
+let view = null;            // the last overview
+let viewText = "";          // its JSON, so an unchanged poll draws nothing
+let busy = false;           // a change or sync is running
+let offline = null;         // why the server cannot be reached
+let autoFailedAt = null;    // the root of the notes when an automatic sync last failed
+const open = new Set();     // expanded notes
+let flashed = { notes: new Set(), leaves: new Set() };
+let focused = new Set();    // leaf keys a question pointed at
+let editing = null;         // { key, mode: "replace" | "remove", draft, fresh }
+
+const needsSync = (v) => v && (v.indexed_root !== v.root || v.indexed_embedder !== v.embedder);
+
+/** Read the overview; draw only when it, or reaching the server, changed. */
+async function refresh() {
+  const next = await api("/api/overview");
+  const text = JSON.stringify(next);
+  if (text !== viewText || offline !== null) {
+    offline = null;
+    view = next;
+    viewText = text;
+    render();
+  }
+  return view;
+}
+
+/** Notes whose hash differs between two overviews, and leaves new in `after`. */
+function difference(before, after) {
+  const was = new Map(((before && before.notes) || []).map((n) => [n.path, n]));
+  const notes = new Set();
+  const leaves = new Set();
+  for (const n of after.notes) {
+    const old = was.get(n.path);
+    if (!old || old.hash !== n.hash || old.state !== n.state) notes.add(n.path);
+    const had = new Set(((old && old.leaves) || []).map((l) => l.fingerprint));
+    for (const l of n.leaves) if (!had.has(l.fingerprint)) leaves.add(leafKey(n.path, l));
+    was.delete(n.path);
+  }
+  for (const path of was.keys()) notes.add(path);
+  return { notes, leaves };
+}
+
+/**
+ * Run one change: `work` calls the tools and returns a sentence for the
+ * activity log. The overview is read again afterwards, and what changed
+ * lights up.
+ */
+async function change(title, work, quiet) {
+  if (busy) return null;
+  busy = true;
+  render();
+  const before = view;
+  try {
+    const sentence = await work();
+    const after = await refresh();
+    flashed = difference(before, after);
+    if (!quiet || flashed.notes.size) record(title, sentence, before, after);
+    setTimeout(() => { flashed = { notes: new Set(), leaves: new Set() }; render(); }, 3600);
+    return after;
+  } catch (e) {
+    record(title, e.message, before, null, true);
+    throw e;
+  } finally {
+    busy = false;
+    render();
+  }
+}
+
+function record(title, sentence, before, after, failed) {
+  const log = $("log");
+  if (log.firstElementChild && log.firstElementChild.classList.contains("muted")) log.firstElementChild.remove();
+  const changed = after ? [...difference(before, after).notes] : [];
+  const roots = after && el("div", { class: "kv roots" },
+    el("span", {}, "index root before"), hash(before && before.indexed_root, "empty index"),
+    el("span", {}, "index root after"), hash(after.indexed_root, "empty index"));
+  log.prepend(el("li", { class: failed ? "bad" : "" },
+    el("time", {}, new Date().toLocaleTimeString()), el("b", {}, title), el("div", {}, sentence),
+    changed.length ? el("div", {}, "Notes rebuilt: ", changed.join(", ")) : null,
+    roots));
+  while (log.children.length > 40) log.lastElementChild.remove();
+}
+
+// ── drawing ────────────────────────────────────────────────────────────────
+
+const STATES = {
+  indexed: ["s-indexed", "in the index"],
+  changed: ["s-changed", "changed"],
+  new: ["s-new", "new"],
+  removed: ["s-removed", "deleted"],
+};
+
+function render() {
+  drawTop();
+  if (!view) return;
+  drawStats();
+  drawRoot();
+  drawTree();
+  drawLists();
+}
+
+function drawTop() {
+  const pill = $("state");
+  const banner = $("banner");
+  $("sync").disabled = busy || !view;
+  banner.hidden = true;
+  banner.replaceChildren();
+  if (offline) {
+    pill.className = "pill bad";
+    pill.textContent = "Dashboard server not reachable";
+    banner.className = "banner bad";
+    banner.hidden = false;
+    banner.append(el("p", {}, `Cannot reach chaos-kb: ${offline}. Is \`chaos-kb dashboard\` still running?`));
+    return;
+  }
+  if (!view) return;
+  $("vault").textContent = `${view.vault} · v${view.version}`;
+  if (busy) {
+    pill.className = "pill busy";
+    pill.textContent = "Working: updating notes and index";
+    return;
+  }
+  const p = view.pending;
+  const pending = p.added.length + p.changed.length + p.removed.length;
+  if (view.indexed_root === null) {
+    pill.className = "pill warn";
+    pill.textContent = "Not indexed yet";
+    banner.className = "banner warn";
+    banner.append(el("p", {}, "The index is empty, so agents find nothing yet. ",
+      el("button", { class: "link", onclick: () => syncNow(false) }, "Sync now"), " to build it."));
+  } else if (view.indexed_embedder !== view.embedder) {
+    pill.className = "pill warn";
+    pill.textContent = "Embedding model changed";
+    banner.className = "banner warn";
+    banner.append(el("p", {}, `The index was built with ${view.indexed_embedder}, but ${view.embedder} is configured. Same-word checks still work; search by meaning waits for a sync, which re-embeds every passage.`));
+  } else if (pending) {
+    pill.className = "pill warn";
+    pill.textContent = `${plural(pending, "note", "notes")} not in the index yet`;
+    banner.className = "banner warn";
+    const list = el("ul", {},
+      p.added.map((n) => el("li", {}, `new: ${n}`)),
+      p.changed.map((n) => el("li", {}, `changed: ${n}`)),
+      p.removed.map((n) => el("li", {}, `deleted from disk: ${n}`)));
+    banner.append(el("p", {}, "These notes changed on disk since the last sync, and agents still see the old version. ",
+      el("button", { class: "link", onclick: () => syncNow(false) }, "Sync now"),
+      $("auto").checked && autoFailedAt === view.root ? " (the automatic sync failed: see Activity)" : ""), list);
+  } else {
+    pill.className = "pill ok";
+    pill.textContent = "In sync: agents see every fact below";
+    return;
+  }
+  banner.hidden = false;
+}
+
+function drawStats() {
+  const leaves = view.notes.reduce((n, note) => n + note.leaves.length, 0);
+  const onDisk = view.notes.filter((n) => n.state !== "removed").length;
+  const stat = (value, label, word) => el("div", { class: word ? "stat word" : "stat" }, el("b", {}, value), el("span", {}, label));
+  $("stats").replaceChildren(
+    stat(onDisk, "notes on disk"),
+    stat(leaves, "facts (leaves)"),
+    stat(view.chunks, "passages in the index"),
+    stat(view.vectors, "embeddings stored"),
+    stat(view.embedder.split("|")[0], "embedding model", true));
+}
+
+function drawRoot() {
+  const same = view.indexed_root === view.root;
+  $("rootnode").className = `rootnode${same ? "" : " differs"}`;
+  $("rootnode").replaceChildren(
+    el("div", { class: "title" }, el("b", {}, "Root"),
+      el("span", { class: `badge ${same ? "s-indexed" : "s-changed"}` },
+        same ? "the index matches your notes" : "the index is behind your notes")),
+    el("div", { class: "kv" },
+      el("span", {}, "your notes now"), hash(view.root),
+      el("span", {}, "the index holds"), hash(view.indexed_root, "nothing yet")));
+}
+
+function drawTree() {
+  const query = $("filter").value.trim().toLowerCase();
+  const has = (text) => text.toLowerCase().includes(query);
+  const tree = $("tree");
+  const scroll = window.scrollY;
+  const items = [];
+  for (const note of view.notes) {
+    const leaves = !query || has(note.path)
+      ? note.leaves
+      : note.leaves.filter((l) => has(l.text) || has(l.section));
+    if (query && !has(note.path) && !leaves.length) continue;
+    items.push(drawNote(note, leaves, Boolean(query) && !has(note.path)));
+  }
+  if (!items.length) items.push(el("li", { class: "empty" }, query ? "No note or fact matches the filter." : "The vault has no notes yet. Add a fact on the right."));
+  tree.replaceChildren(...items);
+  window.scrollTo(0, scroll);
+}
+
+function drawNote(note, leaves, filtered) {
+  const [cls, label] = STATES[note.state];
+  const isOpen = open.has(note.path) || (filtered && leaves.length > 0);
+  const facts = note.state === "removed" ? "" : plural(note.leaves.length, "fact", "facts");
+  const passages = note.chunks ? plural(note.chunks, "passage", "passages") + " in the index" : "no passages in the index";
+  const head = el("button", {
+    class: "notehead", "aria-expanded": String(isOpen),
+    onclick: () => { if (open.has(note.path)) open.delete(note.path); else open.add(note.path); render(); },
+  },
+    el("span", { class: "caret", "aria-hidden": "true" }, "▸"),
+    el("span", { class: "body" },
+      el("span", { class: "line1" },
+        el("span", { class: "path" }, note.path),
+        el("span", { class: `badge ${cls}` }, label),
+        el("span", { class: "count" }, [facts, passages].filter(Boolean).join(" · "))),
+      el("span", { class: "kv" },
+        el("span", {}, "note hash"), hash(note.hash, "gone from disk"),
+        note.indexed_hash !== note.hash ? [el("span", {}, "index holds"), hash(note.indexed_hash, "nothing yet")] : null)));
+  const li = el("li", {}, el("div", {
+    class: `note${isOpen ? " open" : ""}${flashed.notes.has(note.path) ? " flash" : ""}`, "data-path": note.path,
+  }, head,
+    note.state === "removed"
+      ? (isOpen ? el("p", { class: "gone" }, `Deleted from disk. The index still holds ${plural(note.chunks, "passage", "passages")} from it until the next sync.`) : null)
+      : el("ol", { class: "leaves" }, isOpen ? leaves.map((leaf) => drawLeaf(note, leaf)) : [])));
+  return li;
+}
+
+function drawLeaf(note, leaf) {
+  const key = leafKey(note.path, leaf);
+  const focus = focused.has(`${note.path}:${leaf.lines[0]}`);
+  const item = el("li", {
+    class: `leaf${leaf.indexed ? "" : " pending"}${flashed.leaves.has(key) ? " flash" : ""}${focus ? " focus" : ""}`,
+    "data-at": `${note.path}:${leaf.lines[0]}`,
+  },
+    el("div", { class: "leafhead" },
+      el("span", { class: "sec" }, leaf.section || "above the first heading"),
+      el("span", {}, lines(leaf.lines)),
+      el("span", {}, el("span", { class: `dot ${leaf.indexed ? "in" : "out"}` }), " ",
+        leaf.indexed ? "in the index" : "not in the index yet")),
+    el("p", { class: "text" }, leaf.text),
+    el("div", { class: "kv" }, el("span", {}, "fingerprint"), hash(leaf.fingerprint)));
+  if (editing && editing.key === key) {
+    item.append(editing.mode === "remove" ? removeBox(note, leaf) : replaceBox(note, leaf));
+  } else {
+    item.append(el("div", { class: "leafactions" },
+      el("button", { disabled: busy, onclick: () => { editing = { key, mode: "replace", draft: leaf.source, fresh: true }; render(); } }, "Replace"),
+      el("button", { class: "danger", disabled: busy, onclick: () => { editing = { key, mode: "remove" }; render(); } }, "Remove")));
+  }
+  return item;
+}
+
+function removeBox(note, leaf) {
+  return el("div", { class: "edit" },
+    el("p", {}, `Remove this fact from ${note.path}? A copy with the same words elsewhere in this note goes too. The note is rewritten, then the index is synced.`),
+    el("div", { class: "leafactions" },
+      el("button", { class: "danger solid", disabled: busy, onclick: () => removeLeaf(note, leaf) }, "Remove"),
+      el("button", { onclick: () => { editing = null; render(); } }, "Cancel")));
+}
+
+function replaceBox(note, leaf) {
+  const heading = innermost(leaf.section);
+  const area = el("textarea", { "aria-label": "New text", oninput: () => { editing.draft = area.value; } });
+  area.value = editing.draft;
+  if (editing.fresh) {
+    editing.fresh = false;
+    setTimeout(() => area.focus(), 0);
+  }
+  return el("div", { class: "edit" },
+    area,
+    el("small", {}, heading
+      ? `The new text goes under “${heading}” in ${note.path}, then the old one is removed.`
+      : `This fact sits above the first heading, so the new text goes at the end of ${note.path}; then the old one is removed.`),
+    el("div", { class: "leafactions" },
+      el("button", { class: "primary", disabled: busy, onclick: () => replaceLeaf(note, leaf, area.value) }, "Save"),
+      el("button", { onclick: () => { editing = null; render(); } }, "Cancel")));
+}
+
+function drawLists() {
+  const notes = view.notes.filter((n) => n.state !== "removed");
+  $("notes").replaceChildren(...notes.map((n) => el("option", { value: n.path })));
+  const chosen = $("add-note").value.trim();
+  const path = chosen && !/\.md$/i.test(chosen) ? `${chosen}.md` : chosen;
+  const headings = new Set();
+  for (const n of notes) {
+    if (path && n.path !== path) continue;
+    for (const l of n.leaves) { const h = innermost(l.section); if (h) headings.add(h); }
+  }
+  $("headings").replaceChildren(...[...headings].sort().map((h) => el("option", { value: h })));
+}
+
+const innermost = (section) => (section ? section.split(" > ").pop() : "");
+
+// ── actions ────────────────────────────────────────────────────────────────
+
+async function syncNow(automatic) {
+  try {
+    await change(automatic ? "Automatic sync" : "Sync", async () => {
+      const r = await tool("sync", {});
+      const moved = r.added.length + r.changed.length + r.removed.length;
+      return moved
+        ? `Took in ${plural(moved, "note", "notes")} and embedded ${plural(r.embedded, "passage", "passages")}.`
+        : "Nothing had changed.";
+    }, automatic);
+  } catch (e) {
+    if (automatic && view) autoFailedAt = view.root;
+  }
+}
+
+async function removeLeaf(note, leaf) {
+  try {
+    await change("Removed", async () => {
+      const r = await tool("forget", { text: leaf.source, note: note.path });
+      editing = null;
+      if (!r.removed.length) return `Nothing removed: those words are no longer stored in ${note.path}. The note changed; the tree is current again.`;
+      return `Removed ${plural(r.removed.length, "block", "blocks")} from ${note.path} (${r.removed.map((at) => lines(at.lines)).join(", ")}).`;
+    });
+  } catch (e) { render(); }
+}
+
+async function replaceLeaf(note, leaf, text) {
+  if (!text.trim()) return;
+  if (words(text) === words(leaf.source)) { editing = null; render(); return; }
+  try {
+    await change("Replaced", async () => {
+      // The new text first: if it is refused, the old one stays.
+      const added = await tool("remember", { text, note: note.path, heading: innermost(leaf.section) });
+      const atOld = (at) => at.note === note.path && at.lines[0] === leaf.lines[0] && at.lines[1] === leaf.lines[1];
+      editing = null;
+      if (!added.stored && added.known_at.some(atOld)) return `Nothing changed in ${note.path}: the new words are the old ones.`;
+      const gone = await tool("forget", { text: leaf.source, note: note.path });
+      const where = added.stored
+        ? `Stored the new text in ${added.note}`
+        : `The new words were already stored at ${added.known_at.map((at) => `${at.note} ${lines(at.lines)}`).join(", ")}`;
+      return `${where} and removed ${plural(gone.removed.length, "old block", "old blocks")} from ${note.path}.`;
+    });
+  } catch (e) { render(); }
+}
+
+$("add").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const text = $("add-text").value;
+  const out = $("add-result");
+  out.className = "result";
+  out.textContent = "Storing…";
+  try {
+    let report = null;
+    await change("Added", async () => {
+      report = await tool("remember", { text, note: $("add-note").value.trim(), heading: $("add-heading").value.trim() });
+      if (report.stored) return `Stored the fact in ${report.note}.`;
+      return `Nothing written: the same words are already stored at ${report.known_at.map((at) => `${at.note} (${at.section || "top"}, ${lines(at.lines)})`).join(", ")}.`;
+    });
+    if (report.stored) {
+      out.className = "result ok";
+      out.textContent = `Stored in ${report.note}. The index has it now.`;
+      $("add-text").value = "";
+      open.add(report.note);
+      render();
+    } else {
+      out.className = "result";
+      out.textContent = `Already known word for word at ${report.known_at.map((at) => `${at.note}, ${lines(at.lines)}`).join("; ")}. Nothing was written.`;
+    }
+  } catch (e) {
+    out.className = "result bad";
+    out.textContent = e.message;
+  }
+});
+
+$("ask").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const query = $("ask-q").value.trim();
+  const box = $("answer");
+  box.replaceChildren(el("p", { class: "muted" }, "Asking…"));
+  const [check, topics] = await Promise.allSettled([
+    tool("check", { query }),
+    tool("topics", { task: query, limit: 6 }),
+  ]);
+  const parts = [];
+  if (check.status === "fulfilled") {
+    const c = check.value;
+    const line = (view ? view.min_score : 0.38).toFixed(2);
+    const score = c.score === undefined ? "" : ` (similarity ${c.score.toFixed(3)}, line ${line})`;
+    const verdict = {
+      exact: ["ok", "Known: the same words are stored."],
+      similar: ["ok", `Probably known: a passage means about the same${score}.`],
+      absent: ["bad", `Not known: nothing comes close enough${score}.`],
+    }[c.presence];
+    parts.push(el("div", { class: `verdict ${verdict[0]}` }, el("b", {}, "check: "), verdict[1]));
+    if (c.matches && c.matches.length) parts.push(hitList(c.matches.map((m) => ({
+      note: m.note, lines: m.lines, title: `${m.note} · ${m.section || "top"} · ${lines(m.lines)}`, score: m.score,
+    }))));
+  } else {
+    parts.push(el("div", { class: "verdict bad" }, el("b", {}, "check failed: "), check.reason.message));
+  }
+  if (topics.status === "fulfilled") {
+    parts.push(el("h3", {}, "topics: the closest passages"));
+    parts.push(hitList(topics.value.topics.map((t) => {
+      const [, note, a, b] = /^(.*):(\d+)-(\d+)$/.exec(t.id) || [];
+      return { note, lines: [Number(a), Number(b)], title: `${t.id} · ${t.section || "top"}`, gist: t.gist, score: t.score };
+    })));
+  } else {
+    parts.push(el("div", { class: "verdict warn" }, el("b", {}, "topics: "), topics.reason.message));
+  }
+  box.replaceChildren(...parts);
+});
+
+/** Hits that, clicked, open their note and point at their leaves. */
+function hitList(hits) {
+  return el("ul", { class: "hits" }, hits.map((h) => el("li", {}, el("button", { onclick: () => point(h) },
+    el("span", {}, h.title),
+    h.gist ? el("small", {}, h.gist) : null,
+    h.score === undefined ? null : el("span", { class: "score" }, `similarity ${h.score.toFixed(3)}`)))));
+}
+
+function point(hit) {
+  if (!view || !hit.note) return;
+  focused = new Set();
+  const note = view.notes.find((n) => n.path === hit.note);
+  if (!note) return;
+  for (const l of note.leaves) {
+    if (l.lines[0] >= hit.lines[0] && l.lines[1] <= hit.lines[1]) focused.add(`${note.path}:${l.lines[0]}`);
+  }
+  open.add(note.path);
+  $("filter").value = "";
+  render();
+  const target = document.querySelector(".leaf.focus") || document.querySelector(`.note[data-path="${CSS.escape(note.path)}"]`);
+  if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+// ── controls and the poll ──────────────────────────────────────────────────
+
+$("sync").addEventListener("click", () => syncNow(false));
+$("filter").addEventListener("input", () => render());
+$("add-note").addEventListener("input", () => drawLists());
+$("expand").addEventListener("click", () => { for (const n of (view ? view.notes : [])) open.add(n.path); render(); });
+$("collapse").addEventListener("click", () => { open.clear(); focused = new Set(); render(); });
+
+const auto = $("auto");
+auto.checked = store("chaos-kb-autosync") !== "off";
+auto.addEventListener("change", () => {
+  store("chaos-kb-autosync", auto.checked ? "on" : "off");
+  autoFailedAt = null;
+  tick();
+});
+
+/** Read the overview again; sync on its own when allowed and needed. */
+async function tick() {
+  if (busy || document.hidden) return;
+  try {
+    await refresh();
+  } catch (e) {
+    offline = e.message;
+    render();
+    return;
+  }
+  if (auto.checked && needsSync(view) && autoFailedAt !== view.root) await syncNow(true);
+}
+
+tick();
+setInterval(tick, 4000);
+document.addEventListener("visibilitychange", tick);
+</script>
+</body>
+</html>

@@ -338,6 +338,62 @@ fn remember_edit_and_delete_round_trip() {
     );
 }
 
+#[test]
+fn forget_takes_a_fact_out_and_the_root_back() {
+    if !ollama_up() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    write_vault(dir.path());
+    let parts = Parts::new(dir.path());
+    let kb = parts.kb();
+    let first = kb.sync(false).unwrap().root;
+    let licences = dir.path().join("Licences.md");
+    let before = std::fs::read_to_string(&licences).unwrap();
+
+    // Remembered, then forgotten in other formatting: the note reads as it
+    // did, byte for byte, so the Merkle root is the first one again.
+    let note = NotePath::parse("Licences").unwrap();
+    let added = kb
+        .remember("Boat licence since 2022.", &note, None)
+        .unwrap();
+    assert!(added.stored);
+    assert_ne!(added.root, first);
+    let gone = kb.forget("**boat licence** since 2022", None).unwrap();
+    assert_eq!(gone.removed.len(), 1, "{gone:?}");
+    assert_eq!(gone.removed[0].note.as_str(), "Licences.md");
+    assert_eq!(std::fs::read_to_string(&licences).unwrap(), before);
+    assert_eq!(gone.root, first);
+    let asked = kb
+        .check("Boat licence since 2022.", DEFAULT_MIN_SCORE)
+        .unwrap();
+    assert_ne!(asked.presence, Presence::Exact);
+
+    // Out of a section: the heading and the other facts stay.
+    let car = dir.path().join("Car/Maintenance.md");
+    let tyres = "Winter tyres go on in November and come off in April.";
+    let out = kb
+        .forget(tyres, Some(&NotePath::parse("Car/Maintenance").unwrap()))
+        .unwrap();
+    assert_eq!(out.removed[0].section, "Maintenance > Tyres");
+    let markdown = std::fs::read_to_string(&car).unwrap();
+    assert!(!markdown.contains("Winter tyres"), "{markdown}");
+    assert!(
+        markdown.contains("## Tyres") && markdown.contains("10 000 km"),
+        "{markdown}"
+    );
+    assert_ne!(out.root, first);
+    assert_ne!(
+        kb.check(tyres, DEFAULT_MIN_SCORE).unwrap().presence,
+        Presence::Exact
+    );
+
+    // Words stored nowhere: nothing changes.
+    let none = kb.forget("I own a boat.", None).unwrap();
+    assert!(none.removed.is_empty());
+    assert_eq!(none.root, out.root);
+}
+
 /// Drive the real binary as an agent would: CLI sync, then an MCP session.
 #[test]
 fn binary_serves_cli_and_mcp() {
@@ -399,6 +455,7 @@ fn binary_serves_cli_and_mcp() {
         [
             "kb_sync",
             "kb_remember",
+            "kb_forget",
             "kb_check",
             "kb_search",
             "kb_topics",

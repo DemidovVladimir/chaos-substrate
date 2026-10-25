@@ -16,7 +16,10 @@ ask three questions quickly:
    [How `topics` and `read` work together](#how-topics-and-read-work-together).
 
 When the answer is "not known", the agent asks you and stores your answer with `remember`. That
-asking behaviour belongs to your agent. chaos-kb is only the memory and the quick lookups.
+asking behaviour belongs to your agent. chaos-kb is only the memory and the quick lookups. When a
+stored fact is wrong or no longer true, `forget` takes it out by its words, and `remember` stores
+the correction. To see what is stored, and to add, replace or remove facts yourself, open the
+[dashboard](#dashboard).
 
 Everything runs on your machine. The notes are files you own, the index is one file next to
 them, and embeddings come from a local [Ollama](https://ollama.com) model. Nothing is sent
@@ -87,6 +90,8 @@ chaos-kb search "how should things be explained to me?"
 chaos-kb topics "book the car in for its next service"
 chaos-kb read Car.md:8-8
 chaos-kb remember "Blood type: A positive." --note Health --heading Blood
+chaos-kb forget "Blood type: A positive." --note Health
+chaos-kb dashboard                    # the web page: http://127.0.0.1:7341
 ```
 
 Every command prints JSON. These samples come from the benchmark vault described under
@@ -165,7 +170,9 @@ embeds nothing. Ids the index no longer holds come back under `missing`: the not
 
 `sync` reports the notes it `added`, `changed` and `removed`, how many chunks the index holds, how
 many it `embedded`, and the new `root`. `remember` reports whether it `stored` the fact, or where
-the same words already sit (`known_at`).
+the same words already sit (`known_at`). `forget` reports where the blocks it `removed` sat,
+the blocks of the text stored nowhere (`not_found`), and the new `root`. Both re-sync the index
+before they answer.
 
 The index lives at `<vault>/.chaos-kb/index.redb`. Obsidian ignores folders whose names start
 with a dot. Deleting the folder is safe, because `sync` rebuilds it from the notes. An index
@@ -174,7 +181,7 @@ the next `sync` rebuilds it. That re-embeds every note.
 
 ### From an agent (MCP)
 
-`chaos-kb mcp` serves the same six tools over MCP (stdio, newline-delimited JSON-RPC 2.0). For
+`chaos-kb mcp` serves the same seven tools over MCP (stdio, newline-delimited JSON-RPC 2.0). For
 Claude Code:
 
 ```sh
@@ -182,7 +189,38 @@ claude mcp add chaos-kb -- chaos-kb --vault ~/Knowledge mcp
 ```
 
 Other clients take the same command and arguments in their MCP config. When it starts, the
-server also tells the agent how to use the six tools together.
+server also tells the agent how to use the seven tools together.
+
+### Dashboard
+
+`chaos-kb dashboard` serves one web page on this machine only, at `http://127.0.0.1:7341`
+(`--port` picks another port). Open it in a browser to see what the knowledge base holds and to
+change it:
+
+- **The Merkle tree.** At the top, the root of your notes as they are on disk, next to the root
+  the index holds. When the two are equal, the index has every fact. Below the root, every note
+  with its hash and its state: *in the index*, *changed* (edited since the last sync), *new*
+  (never synced) or *deleted* (gone from disk, still in the index). Open a note to see its
+  leaves: each block's section, lines, words and fingerprint, and whether the index holds it.
+  Hashes are shown whole; click one to copy it.
+- **Add, replace, remove.** *Add a fact* runs `remember`. *Remove* runs `forget` for that fact's
+  words in its note. *Replace* stores the new text under the same heading with `remember`, then
+  forgets the old text, so a refused new text leaves the old fact in place. Every change syncs
+  the index: the tree is rebuilt, and the notes it rebuilt light up. *Activity* lists each change
+  with the index root before and after.
+- **Edits made elsewhere**, in Obsidian or any editor, show up within four seconds as *changed* or
+  *new*. While "Sync edits made outside the dashboard" is ticked (the default), the page syncs
+  them on its own; untick it to sync with the button instead. After a failed automatic sync
+  (Ollama not running, say), the page waits until the notes change again.
+- **Try a question** runs `check` and `topics`, as an agent would, and points at the facts they
+  found.
+
+The page calls the same tools as an agent (`POST /api/tools/kb_<tool>`, arguments as a JSON
+object, read by the same command-line definition), so the CLI, agents and the dashboard share one
+knowledge base and take the same locks. The server answers only requests addressed to
+`127.0.0.1:<port>` or `localhost:<port>`, and its tools refuse posts from any other web page, so a
+site open in the same browser can neither read nor change your notes. The page loads nothing from
+the internet.
 
 ## Tools
 
@@ -207,6 +245,15 @@ Store one fact in the vault as Markdown and index it. Skipped when the same word
 | `text` (required) | string |  | The fact, in plain words or Markdown. One fact per call |
 | `heading` | string |  | Section heading inside the note (added when missing) |
 | `note` | string | `Inbox.md` | Note to append to, relative to the vault (`.md` optional) |
+
+### `kb_forget` · `chaos-kb forget`
+
+Take a fact out of the vault and the index: every block with the same words, compared as fingerprints (case, spacing and punctuation aside), never a passage that only means the same. Reports where the removed blocks sat; nothing is removed when no block has these words
+
+| arg | type | default | description |
+|---|---|---|---|
+| `text` (required) | string |  | The fact in its stored words, as `read` or `search` return them. Each block of it is removed wherever it is stored |
+| `note` | string |  | Only remove it from this note (relative to the vault, `.md` optional) |
 
 ### `kb_check` · `chaos-kb check`
 
@@ -328,18 +375,27 @@ either way.
 ## Your data
 
 - **The notes are the only copy of your knowledge.** chaos-kb writes to your notes only when you
-  call `remember`. `sync`, `check`, `search`, `topics` and `read` only read them.
+  call `remember` or `forget` (from the CLI, an agent or the dashboard). `sync`, `check`,
+  `search`, `topics` and `read` only read them.
 - **How `remember` writes**: with a heading, the fact goes right under that heading's own text,
   before any subheading, so it reads under exactly that heading. Headings are compared like
   fingerprints, so `--heading oil` finds `## Oil:`. A missing heading is added at
   the end of the note. The note is written through a temporary file and a rename, so it is never
   half-written, and it keeps its file permissions. Existing text is never changed.
+- **How `forget` removes**: it looks the text up by fingerprint, as `remember` does, so only
+  blocks with the same words go, never a passage that only means the same. With `--note`, only
+  that note is touched. A removed block takes its whole lines with it, and one blank line, so its
+  neighbours keep a single blank line between them. Headings stay, even when their last fact is
+  gone. The note is rewritten through a temporary file and a rename, and keeps its permissions.
+  `forget` refuses, changing nothing, when the note changed since it was read, or when the rest of
+  the note would read differently without the block (an indented paragraph that would join the
+  list item above it, for example).
 - **What `remember` refuses**: writing outside the vault or through a symlinked folder or note,
   changing a read-only note or one that is not valid UTF-8, and text that would change how the
   rest of the note reads (an unclosed code fence or HTML comment, or a heading that would take
   in the sections after it). A refused call changes no note.
-- **Several processes take turns.** A CLI command and a running MCP server can work on the same
-  vault: each index operation holds `<index>.lock`, and appends hold
+- **Several processes take turns.** CLI commands, a running MCP server and the dashboard can work
+  on the same vault: each index operation holds `<index>.lock`, and appends and removals hold
   `<vault>/.chaos-kb/append.lock`. When another process changed the index during a `sync`, the
   `sync` starts over, with at most three attempts in all.
 - **Skipped when reading**: hidden files and folders (such as `.obsidian`), symlinks, files that

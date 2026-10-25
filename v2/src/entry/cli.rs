@@ -2,7 +2,7 @@
 //! doc comment and argument docs are also its MCP description and schema
 //! (`entry::tools`), so the two surfaces cannot drift.
 
-use super::mcp;
+use super::{dashboard, mcp};
 use crate::adapters::embedder::HttpEmbedder;
 use crate::adapters::obsidian::ObsidianVault;
 use crate::adapters::redb_index::RedbIndex;
@@ -25,8 +25,9 @@ use std::process::ExitCode;
 /// only the passages that would change how you do it (search returns the
 /// nearest passages' text in one step instead). Before asking the user
 /// something, check whether the knowledge base already knows it. When the
-/// user tells you a new fact, remember it, one fact per call. After editing
-/// notes in the vault, sync.
+/// user tells you a new fact, remember it, one fact per call. When a stored
+/// fact is wrong or no longer true, forget it in its stored words, then
+/// remember the correction. After editing notes in the vault, sync.
 #[derive(Debug, Parser)]
 #[command(name = "chaos-kb", version, after_help = api_key_note())]
 pub struct Cli {
@@ -85,6 +86,15 @@ pub enum Command {
     Tool(Tool),
     /// Serve the tools to agents over MCP (stdio, newline-delimited JSON-RPC 2.0).
     Mcp,
+    /// Serve the dashboard, a web page on this machine only
+    /// (http://127.0.0.1:<port>): what the knowledge base holds and its
+    /// Merkle tree, with controls to add, replace and remove facts and to try
+    /// a question. Every change re-syncs the index.
+    Dashboard {
+        /// Port on 127.0.0.1.
+        #[arg(long, default_value_t = dashboard::DEFAULT_PORT)]
+        port: u16,
+    },
 }
 
 /// The tools: every subcommand except `mcp`, which serves them.
@@ -109,6 +119,19 @@ pub enum Tool {
         /// Section heading inside the note (added when missing).
         #[arg(long)]
         heading: Option<String>,
+    },
+    /// Take a fact out of the vault and the index: every block with the same
+    /// words, compared as fingerprints (case, spacing and punctuation aside),
+    /// never a passage that only means the same. Reports where the removed
+    /// blocks sat; nothing is removed when no block has these words.
+    Forget {
+        /// The fact in its stored words, as `read` or `search` return them.
+        /// Each block of it is removed wherever it is stored.
+        text: String,
+        /// Only remove it from this note (relative to the vault, `.md`
+        /// optional).
+        #[arg(long)]
+        note: Option<String>,
     },
     /// Is this already in the knowledge base? Exact words are answered from
     /// the Merkle leaves without embedding; otherwise the nearest passages by
@@ -154,8 +177,10 @@ pub enum Tool {
     },
 }
 
-/// Run one tool against the configured knowledge base.
-pub fn execute(settings: &Settings, tool: &Tool) -> Result<Value> {
+/// Open the configured knowledge base and hand it to `use_kb`. Fails when
+/// no vault is set or its folder is missing; nothing else is opened or
+/// contacted before `use_kb` asks for it.
+pub fn with_kb<T>(settings: &Settings, use_kb: impl FnOnce(Kb<'_>) -> Result<T>) -> Result<T> {
     let root = settings
         .vault
         .as_deref()
@@ -164,11 +189,20 @@ pub fn execute(settings: &Settings, tool: &Tool) -> Result<Value> {
     let index = RedbIndex::new(&index_path(settings, root));
     let api_key = std::env::var(API_KEY_ENV).ok();
     let embedder = HttpEmbedder::new(&settings.embed_url, &settings.embed_model, api_key);
-    let kb = Kb {
+    use_kb(Kb {
         vault: &vault,
         index: &index,
         embedder: &embedder,
-    };
+    })
+}
+
+/// Run one tool against the configured knowledge base.
+pub fn execute(settings: &Settings, tool: &Tool) -> Result<Value> {
+    with_kb(settings, |kb| run(kb, tool))
+}
+
+/// Run one tool on `kb`.
+fn run(kb: Kb<'_>, tool: &Tool) -> Result<Value> {
     match tool {
         Tool::Sync { dry_run } => json(kb.sync(*dry_run)),
         Tool::Remember {
@@ -176,6 +210,10 @@ pub fn execute(settings: &Settings, tool: &Tool) -> Result<Value> {
             note,
             heading,
         } => json(kb.remember(text, &NotePath::parse(note)?, heading.as_deref())),
+        Tool::Forget { text, note } => {
+            let note = note.as_deref().map(NotePath::parse).transpose()?;
+            json(kb.forget(text, note.as_ref()))
+        }
         Tool::Check { query, min_score } => json(kb.check(query, *min_score)),
         Tool::Search {
             query,
@@ -206,6 +244,7 @@ pub fn main() -> ExitCode {
     let Cli { settings, command } = Cli::parse();
     let outcome = match command {
         Command::Mcp => mcp::serve(&settings),
+        Command::Dashboard { port } => dashboard::serve(&settings, port),
         Command::Tool(tool) => execute(&settings, &tool).and_then(|report| {
             println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())
@@ -244,7 +283,9 @@ mod tests {
     fn about_is_the_agent_workflow() {
         let about = Cli::command().get_long_about().map(|a| a.to_string());
         let about = about.expect("a workflow paragraph after the summary");
-        for step in ["topics", "read", "check", "search", "remember", "sync"] {
+        for step in [
+            "topics", "read", "check", "search", "remember", "forget", "sync",
+        ] {
             assert!(about.contains(step), "{step}: {about}");
         }
     }
