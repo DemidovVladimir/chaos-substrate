@@ -87,9 +87,10 @@ pub enum Command {
     /// Serve the tools to agents over MCP (stdio, newline-delimited JSON-RPC 2.0).
     Mcp,
     /// Serve the dashboard, a web page on this machine only
-    /// (http://127.0.0.1:<port>): what the knowledge base holds and its
-    /// Merkle tree, with controls to add, replace and remove facts and to try
-    /// a question. Every change re-syncs the index.
+    /// (http://127.0.0.1:<port>): every note and block the knowledge base
+    /// holds and whether the index is up to date, with controls to add,
+    /// replace and remove facts and to try a question. Every change re-syncs
+    /// the index.
     Dashboard {
         /// Port on 127.0.0.1.
         #[arg(long, default_value_t = dashboard::DEFAULT_PORT)]
@@ -100,9 +101,9 @@ pub enum Command {
 /// The tools: every subcommand except `mcp`, which serves them.
 #[derive(Debug, Clone, PartialEq, Subcommand)]
 pub enum Tool {
-    /// Bring the index up to date with the vault: rebuild the Merkle tree,
-    /// embed only new or edited passages, drop deleted ones. Run after
-    /// editing notes.
+    /// Bring the index up to date with the vault: compare each note's hash
+    /// with the stored one, embed only new or edited passages, drop deleted
+    /// ones. Run after editing notes.
     Sync {
         /// Report what would change without embedding or writing anything.
         #[arg(long)]
@@ -134,8 +135,8 @@ pub enum Tool {
         note: Option<String>,
     },
     /// Is this already in the knowledge base? Exact words are answered from
-    /// the Merkle leaves without embedding; otherwise the nearest passages by
-    /// cosine similarity decide. Returns where the knowledge sits.
+    /// the stored block fingerprints without embedding; otherwise the nearest
+    /// passages by cosine similarity decide. Returns where the knowledge sits.
     Check {
         /// A fact, topic or question.
         query: String,

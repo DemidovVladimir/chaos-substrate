@@ -382,9 +382,9 @@ mod tests {
 
     #[test]
     fn the_overview_is_json_and_its_failure_a_500() {
-        let fine = || Ok(json!({"root": "r"}));
+        let fine = || Ok(json!({"synced": true}));
         let done = respond(&get("/api/overview"), PORT, &fine, &untouched);
-        assert_eq!((done.status, body(&done)), (200, json!({"root": "r"})));
+        assert_eq!((done.status, body(&done)), (200, json!({"synced": true})));
         let broken = || Err(anyhow!("index is locked").context("reading the index"));
         let failed = respond(&get("/api/overview"), PORT, &broken, &untouched);
         assert_eq!(failed.status, 500);
@@ -575,7 +575,7 @@ mod tests {
         let overview: Value = overview.body_mut().read_json().unwrap();
         assert_eq!(overview["notes"][0]["path"], "Car.md");
         assert_eq!(overview["notes"][0]["state"], "new");
-        assert_eq!(overview["indexed_root"], Value::Null);
+        assert_eq!(overview["synced"], false);
         let shown = vault.path().display().to_string();
         assert_eq!(overview["vault"], shown);
 
@@ -594,6 +594,6 @@ mod tests {
         assert_eq!(dry.status(), 200);
         let report: Value = dry.body_mut().read_json().unwrap();
         assert_eq!(report["added"], json!(["Car.md"]));
-        assert_eq!(report["root"], overview["root"]);
+        assert_eq!(report["added"], overview["pending"]["added"]);
     }
 }

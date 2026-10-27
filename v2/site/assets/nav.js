@@ -12,16 +12,16 @@ window.TUTORIAL = {
   ],
   pages: [
     { slug: "chaos-kb", chapter: "start", title: "Install and run", blurb: "Build one binary, pull one local model, point it at your notes and connect it to Claude Code or Codex." },
-    { slug: "big-picture", chapter: "start", title: "From notes to answers", blurb: "Notes become blocks, blocks become a Merkle tree and chunks, chunks become vectors in one index file." },
+    { slug: "big-picture", chapter: "start", title: "From notes to answers", blurb: "Notes become blocks, blocks become fingerprints and chunks, chunks become vectors in one index file." },
 
-    { slug: "merkle", chapter: "answer", title: "Merkle tree and exact check", blurb: "Fingerprints roll up to one root hash: the same words are found in one lookup, and one hash says nothing changed." },
+    { slug: "fingerprints", chapter: "answer", title: "Fingerprints and exact check", blurb: "One hash per block and one per note: the same words are found in one lookup, and sync sees which notes changed." },
     { slug: "search", chapter: "answer", title: "Chunks, embeddings and search", blurb: "Passages of at most 1200 characters, embedded once, ranked by an exact cosine scan." },
     { slug: "check", chapter: "answer", title: "How check decides", blurb: "Exact words first; otherwise the best of three passages against a line of 0.38." },
     { slug: "topics", chapter: "answer", title: "Topics and read", blurb: "Short ranked lines for a task, a searcher that keeps what matters, and only those passages read back." },
 
     { slug: "vault", chapter: "store", title: "The vault", blurb: "Obsidian notes parsed into blocks; remember adds one fact under its heading, forget takes one out by its words." },
     { slug: "index-file", chapter: "store", title: "The index file", blurb: "One redb file, replaced in one transaction, shared by the CLI, the MCP server and the dashboard." },
-    { slug: "dashboard", chapter: "store", title: "The dashboard", blurb: "One local web page: your notes next to the index as a Merkle tree, with add, replace and remove, re-synced after every change." },
+    { slug: "dashboard", chapter: "store", title: "The dashboard", blurb: "One local web page: your notes next to the index, with add, replace and remove, re-synced after every change." },
 
     { slug: "mcp", chapter: "agents", title: "Agents and MCP", blurb: "A stdio server whose tools, schemas and README reference all come from the clap definition." }
   ]

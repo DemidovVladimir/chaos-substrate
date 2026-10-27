@@ -111,7 +111,7 @@
           <rect x="690" y="300" width="150" height="76" rx="8"/>
           <text x="765" y="322" text-anchor="middle" class="t-kanji k">手</text>
           <text x="765" y="342" text-anchor="middle" class="t-title">Hits</text>
-          <text x="765" y="360" text-anchor="middle" class="t-small">best first, with root</text>
+          <text x="765" y="360" text-anchor="middle" class="t-small">best first</text>
         </g>
 
         <g class="pop badge" data-at="1"><rect x="10" y="118" width="170" height="22" rx="11"/><text x="95" y="133" text-anchor="middle">no letter: refused</text></g>
@@ -141,7 +141,7 @@
         <li>Every stored vector is compared with the question by a dot product, which equals cosine similarity for vectors of length 1. A vector of another length is refused.</li>
         <li>The best <b>k</b> are kept, best first: 5 for search by default, 3 for check, 8 for <a href="topics.html">topics</a>. Equal scores keep the earlier passage first.</li>
         <li>Every chunk row of each winner is read, so a passage stored in two notes gives two hits. Each row must hash to its key, or the read fails.</li>
-        <li><code>search</code> keeps at most <b>k</b> hits, drops those below <code>min_score</code> (0.0 by default), and returns note, section, lines, score and text, with the root hash.</li>
+        <li><code>search</code> keeps at most <b>k</b> hits, drops those below <code>min_score</code> (0.0 by default), and returns note, section, lines, score and text.</li>
       </ol>
     </div>
   </figure>
@@ -239,12 +239,11 @@ Authorization: Bearer <span class="c">&lt;CHAOS_KB_EMBED_API_KEY: only when it i
 <span class="ln o">{ "hits": [</span>
 <span class="ln o">  { "note": "Communication.md", "section": "How I communicate", "lines": [3, 3], "score": <span class="hl">0.5738853812217712</span>,</span>
 <span class="ln o">    "text": "When someone explains something to me, I want a concrete example first and the general rule after." },</span>
-<span class="ln o">  { "note": "Car.md", "section": "", "lines": [1, 3], "score": <span class="hl">0.12208836525678635</span>, "text": "---\ncar: Toyota Corolla 2018\n---" } ],</span>
-<span class="ln o">  "root": "6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992" }</span>
+<span class="ln o">  { "note": "Car.md", "section": "", "lines": [1, 3], "score": <span class="hl">0.12208836525678635</span>, "text": "---\ncar: Toyota Corolla 2018\n---" } ] }</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb search "winter tyres" --limit 1</span>
 <span class="ln o">{ "hits": [ { "note": "Car.md", "section": "Maintenance &gt; Tyres", "lines": [12, 12], "score": <span class="hl">0.5618284940719604</span>, "text": "Winter tyres go on in November." } ], ... }</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb search "engine oil" --limit 1 --min-score 0.5</span>
-<span class="ln o">{ "hits": [], "root": "6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992" }</span>
+<span class="ln o">{ "hits": [] }</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb search "  ---  "</span>
 <span class="ln o"><span class="er">error: the query is empty (no letters or digits)</span></span>
 <span class="ln cmd"><span class="p">$ </span>CHAOS_KB_EMBED_API_KEY=example-not-a-key chaos-kb search "winter tyres" --embed-url http://example.com/v1</span>
@@ -254,8 +253,7 @@ Authorization: Bearer <span class="c">&lt;CHAOS_KB_EMBED_API_KEY: only when it i
 <span class="ln o"># a vault where x/Plan.md and y/Plan.md both read: # Plan, Rest on Sundays.</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb search "when do I rest" --limit 5</span>
 <span class="ln o">{ "hits": [ { "note": "x/Plan.md", "section": "Plan", "lines": [3, 3], "score": <span class="hl">0.5179471969604492</span>, "text": "Rest on Sundays." },</span>
-<span class="ln o">            { "note": "y/Plan.md", "section": "Plan", "lines": [3, 3], "score": <span class="hl">0.5179471969604492</span>, "text": "Rest on Sundays." } ],</span>
-<span class="ln o">  "root": "3af4ab256e6408b6da7444cee6ced75ba7c5d42e6a12fe083ca4ae8bdd07ece6" }</span></pre>
+<span class="ln o">            { "note": "y/Plan.md", "section": "Plan", "lines": [3, 3], "score": <span class="hl">0.5179471969604492</span>, "text": "Rest on Sundays." } ] }</span></pre>
   </div>
   <p class="note">The second hit of the first search is the front matter, with a low score. <code>search</code> returns the best passages even when they are weak; raise <code>--min-score</code> to drop them. Nothing listens on port 9, so the search with proxies set shows that a local embedder is reached directly. The two <code>Plan.md</code> passages share one content key and one vector, and each keeps its own place.</p>
 </section>
@@ -281,7 +279,7 @@ Authorization: Bearer <span class="c">&lt;CHAOS_KB_EMBED_API_KEY: only when it i
 </section>
 
 <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
-<p class="stamp-foot">Checked against the code on 2026-10-25.</p>
+<p class="stamp-foot">Checked against the code on 2026-10-27.</p>
 </article>
 </main>
 </div>

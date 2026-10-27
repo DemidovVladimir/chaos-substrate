@@ -1,16 +1,11 @@
-//! The Merkle tree of the vault, three levels deep:
-//!
-//! ```text
-//! root ── note "Health/Meds.md" ── block fingerprints (the leaves)
-//!      └─ note "inbox.md"       ── block fingerprints
-//! ```
+//! What changed in the vault since the last sync: every note's hash, and the
+//! notes added, changed or removed between two sets of them.
 //!
 //! A note's hash covers its non-blank blocks in order, each labelled by its
-//! heading path, so moving a fact under another heading changes the note. The
-//! root covers every note hash, labelled by the note's path. Equal roots mean
-//! equal knowledge: one comparison tells an agent nothing changed.
-//! Formatting-only edits keep every hash, because fingerprints and heading
-//! labels ignore case, spacing and punctuation.
+//! heading path, so moving a fact under another heading changes the note.
+//! Formatting-only edits keep the hash, because fingerprints and heading
+//! labels ignore case, spacing and punctuation. Nothing is rolled up above
+//! the notes: `sync` needs to know which notes changed, not one value for all.
 
 use super::hash::{self, Digest};
 use super::note::{Block, Note};
@@ -20,11 +15,11 @@ use std::collections::BTreeMap;
 
 /// The hash of every note, keyed by note path.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Tree {
+pub struct NoteHashes {
     notes: BTreeMap<String, Digest>,
 }
 
-/// Notes that differ between two trees, each list sorted by path.
+/// Notes that differ between two sets of note hashes, each list sorted by path.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct Changes {
     pub added: Vec<String>,
@@ -32,10 +27,10 @@ pub struct Changes {
     pub removed: Vec<String>,
 }
 
-impl Tree {
-    /// Build the tree of `notes` (any order; paths are unique).
-    pub fn build(notes: &[Note]) -> Tree {
-        Tree::from_notes(
+impl NoteHashes {
+    /// The hash of every one of `notes` (any order; paths are unique).
+    pub fn build(notes: &[Note]) -> NoteHashes {
+        NoteHashes::from_notes(
             notes
                 .iter()
                 .map(|n| (n.path.to_string(), note_hash(&n.blocks))),
@@ -43,8 +38,8 @@ impl Tree {
     }
 
     /// Rebuild from stored `(note path, note hash)` pairs (the index's copy).
-    pub fn from_notes(notes: impl IntoIterator<Item = (String, Digest)>) -> Tree {
-        Tree {
+    pub fn from_notes(notes: impl IntoIterator<Item = (String, Digest)>) -> NoteHashes {
+        NoteHashes {
             notes: notes.into_iter().collect(),
         }
     }
@@ -54,14 +49,8 @@ impl Tree {
         self.notes.iter().map(|(p, h)| (p.as_str(), *h))
     }
 
-    /// The root hash: one value for the whole knowledge base. An empty vault
-    /// has the root `hash::node([])`.
-    pub fn root(&self) -> Digest {
-        hash::node(self.notes())
-    }
-
     /// Notes added, changed or removed going from `self` to `newer`.
-    pub fn diff(&self, newer: &Tree) -> Changes {
+    pub fn diff(&self, newer: &NoteHashes) -> Changes {
         let mut changes = Changes::default();
         for (path, hash) in newer.notes() {
             match self.notes.get(path) {
@@ -86,10 +75,10 @@ pub fn note_hash(blocks: &[Block]) -> Digest {
         .iter()
         .filter_map(|b| Some((heading_label(&b.headings), text::fingerprint(&b.text)?)))
         .collect();
-    hash::node(leaves.iter().map(|(label, leaf)| (label.as_str(), *leaf)))
+    hash::list(leaves.iter().map(|(label, leaf)| (label.as_str(), *leaf)))
 }
 
-/// A block's heading path as a Merkle label: each heading normalized like
+/// A block's heading path as a hash label: each heading normalized like
 /// block text (so `**Oil:**` labels like `Oil`), joined by a newline, which a
 /// normalized heading never contains, so nesting stays unambiguous.
 fn heading_label(headings: &[String]) -> String {
@@ -122,8 +111,8 @@ mod tests {
         note(path, vec![block(&[], text)])
     }
 
-    fn keys(tree: &Tree) -> Vec<&str> {
-        tree.notes().map(|(p, _)| p).collect()
+    fn keys(hashes: &NoteHashes) -> Vec<&str> {
+        hashes.notes().map(|(p, _)| p).collect()
     }
 
     #[test]
@@ -132,7 +121,7 @@ mod tests {
             block(&[], "Intro line"),
             block(&["Car", "Oil"], "Change every 10k km"),
         ];
-        let expected = hash::node([
+        let expected = hash::list([
             ("", text::fingerprint("Intro line").unwrap()),
             (
                 "car\noil",
@@ -163,8 +152,8 @@ mod tests {
             plain
         );
         assert_ne!(note_hash(&[b, a]), plain, "order is part of the note");
-        assert_eq!(note_hash(&[]), hash::node([]));
-        assert_eq!(note_hash(&[block(&["A"], "** --")]), hash::node([]));
+        assert_eq!(note_hash(&[]), hash::list([]));
+        assert_eq!(note_hash(&[block(&["A"], "** --")]), hash::list([]));
     }
 
     #[test]
@@ -177,12 +166,11 @@ mod tests {
     }
 
     #[test]
-    fn moving_a_block_under_another_heading_changes_note_and_root() {
+    fn moving_a_block_under_another_heading_changes_the_note() {
         let before = vec![note("Car.md", vec![block(&["Oil"], "Castrol 5W-30")])];
         let after = vec![note("Car.md", vec![block(&["Tyres"], "Castrol 5W-30")])];
-        let (old, new) = (Tree::build(&before), Tree::build(&after));
-        assert_ne!(old.diff(&new).changed, Vec::<String>::new());
-        assert_ne!(old.root(), new.root());
+        let (old, new) = (NoteHashes::build(&before), NoteHashes::build(&after));
+        assert_eq!(old.diff(&new).changed, ["Car.md"]);
     }
 
     #[test]
@@ -201,26 +189,22 @@ mod tests {
             ),
             one("inbox.md", "Call the GARAGE!"),
         ];
-        assert_eq!(Tree::build(&before), Tree::build(&after));
+        assert_eq!(NoteHashes::build(&before), NoteHashes::build(&after));
     }
 
     #[test]
-    fn the_root_covers_every_note_hash_by_path() {
+    fn build_keys_every_note_hash_by_path() {
         let plan = note("Health/Treatment/Plan.md", vec![block(&["Week 1"], "rest")]);
         let meds = one("Health/Meds.md", "vitamin d");
         let inbox = one("inbox.md", "buy milk");
-        let tree = Tree::build(&[inbox.clone(), plan.clone(), meds.clone()]);
+        let hashes = NoteHashes::build(&[inbox.clone(), plan.clone(), meds.clone()]);
         assert_eq!(
-            keys(&tree),
+            keys(&hashes),
             ["Health/Meds.md", "Health/Treatment/Plan.md", "inbox.md"]
         );
         let h = |n: &Note| note_hash(&n.blocks);
-        let root = hash::node([
-            ("Health/Meds.md", h(&meds)),
-            ("Health/Treatment/Plan.md", h(&plan)),
-            ("inbox.md", h(&inbox)),
-        ]);
-        assert_eq!(tree.root(), root);
+        let stored: Vec<Digest> = hashes.notes().map(|(_, d)| d).collect();
+        assert_eq!(stored, [h(&meds), h(&plan), h(&inbox)]);
     }
 
     #[test]
@@ -228,27 +212,23 @@ mod tests {
         let notes = vec![one("b.md", "b"), one("x/a.md", "a"), one("a.md", "c")];
         let mut reversed = notes.clone();
         reversed.reverse();
-        assert_eq!(Tree::build(&notes), Tree::build(&reversed));
+        assert_eq!(NoteHashes::build(&notes), NoteHashes::build(&reversed));
     }
 
     #[test]
-    fn empty_vault_has_the_empty_root() {
-        let tree = Tree::build(&[]);
-        assert_eq!(tree.root(), hash::node([]));
-        assert_eq!(tree.notes().count(), 0);
-        assert_eq!(Tree::default().root(), hash::node([]));
-    }
-
-    #[test]
-    fn renaming_a_note_changes_the_root() {
-        let old = Tree::build(&[one("inbox.md", "buy milk")]);
-        let new = Tree::build(&[one("todo.md", "buy milk")]);
+    fn renaming_a_note_keeps_its_hash_but_shows_as_removed_and_added() {
+        let old = NoteHashes::build(&[one("inbox.md", "buy milk")]);
+        let new = NoteHashes::build(&[one("todo.md", "buy milk")]);
         assert_eq!(old.notes().next().unwrap().1, new.notes().next().unwrap().1);
-        assert_ne!(old.root(), new.root());
+        let changes = old.diff(&new);
+        assert_eq!(
+            (changes.added, changes.removed),
+            (vec!["todo.md".to_string()], vec!["inbox.md".to_string()])
+        );
     }
 
     #[test]
-    fn editing_a_note_changes_that_note_and_the_root_only() {
+    fn editing_a_note_changes_that_note_only() {
         let notes = |dose: &str| {
             vec![
                 one("Health/Treatment/Plan.md", dose),
@@ -256,31 +236,33 @@ mod tests {
                 one("inbox.md", "buy milk"),
             ]
         };
-        let (old, new) = (Tree::build(&notes("10 mg")), Tree::build(&notes("20 mg")));
-        assert_ne!(old.root(), new.root());
+        let (old, new) = (
+            NoteHashes::build(&notes("10 mg")),
+            NoteHashes::build(&notes("20 mg")),
+        );
         assert_eq!(old.diff(&new).changed, ["Health/Treatment/Plan.md"]);
+        assert_eq!(old.diff(&old), Changes::default());
     }
 
     #[test]
     fn from_notes_round_trips() {
-        let tree = Tree::build(&[
+        let hashes = NoteHashes::build(&[
             one("Health/Treatment/Plan.md", "rest"),
             one("inbox.md", "buy milk"),
         ]);
-        let copy = Tree::from_notes(tree.notes().map(|(p, h)| (p.to_string(), h)));
-        assert_eq!(copy, tree);
-        assert_eq!(copy.root(), tree.root());
+        let copy = NoteHashes::from_notes(hashes.notes().map(|(p, h)| (p.to_string(), h)));
+        assert_eq!(copy, hashes);
     }
 
     #[test]
     fn diff_lists_added_changed_and_removed_notes_sorted() {
-        let old = Tree::build(&[
+        let old = NoteHashes::build(&[
             one("a.md", "gone"),
             one("b.md", "old text"),
             one("Health/c.md", "same"),
             one("Health/d.md", "gone too"),
         ]);
-        let new = Tree::build(&[
+        let new = NoteHashes::build(&[
             one("z.md", "new"),
             one("b.md", "new text"),
             one("Health/c.md", "same"),
@@ -294,11 +276,11 @@ mod tests {
 
     #[test]
     fn diff_from_nothing_adds_every_note() {
-        let tree = Tree::build(&[one("b.md", "b"), one("A/a.md", "a")]);
-        let changes = Tree::default().diff(&tree);
+        let hashes = NoteHashes::build(&[one("b.md", "b"), one("A/a.md", "a")]);
+        let changes = NoteHashes::default().diff(&hashes);
         assert_eq!(changes.added, ["A/a.md", "b.md"]);
         assert!(changes.changed.is_empty() && changes.removed.is_empty());
-        let back = tree.diff(&Tree::build(&[]));
+        let back = hashes.diff(&NoteHashes::build(&[]));
         assert_eq!(back.removed, ["A/a.md", "b.md"]);
         assert!(back.added.is_empty() && back.changed.is_empty());
     }

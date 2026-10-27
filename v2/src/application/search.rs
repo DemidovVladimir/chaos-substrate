@@ -1,7 +1,6 @@
 //! `search`: the passages most similar to a question, with their text.
 
 use super::{Kb, nonblank};
-use crate::domain::hash::Digest;
 use crate::domain::note::Location;
 use anyhow::Result;
 use serde::Serialize;
@@ -9,8 +8,6 @@ use serde::Serialize;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SearchReport {
     pub hits: Vec<Found>,
-    /// Merkle root of the index that answered.
-    pub root: Digest,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -25,7 +22,7 @@ impl Kb<'_> {
     /// Up to `limit` passages with similarity at least `min_score`, best first.
     pub fn search(&self, query: &str, limit: usize, min_score: f32) -> Result<SearchReport> {
         let query = nonblank(query, "query")?;
-        let root = self.ready()?.tree.root();
+        self.ready()?;
         let hits = self
             .similar(query, limit)?
             .into_iter()
@@ -36,7 +33,7 @@ impl Kb<'_> {
                 text: h.chunk.text,
             })
             .collect();
-        Ok(SearchReport { hits, root })
+        Ok(SearchReport { hits })
     }
 }
 
@@ -54,7 +51,6 @@ mod tests {
         assert_eq!(top.at.section, "Oil");
         assert_eq!(top.text, "I change the engine oil every 10000 km.");
         assert!(report.hits.windows(2).all(|w| w[0].score >= w[1].score));
-        assert_eq!(report.root, world.kb().sync(true).unwrap().root);
     }
 
     #[test]

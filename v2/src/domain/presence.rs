@@ -12,7 +12,7 @@ pub const DEFAULT_MIN_SCORE: f32 = 0.38;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Presence {
-    /// The same words are stored (fingerprint match in the Merkle leaves).
+    /// The same words are stored (a stored block fingerprint matches).
     Exact,
     /// A stored passage is at least `min_score` similar.
     Similar,

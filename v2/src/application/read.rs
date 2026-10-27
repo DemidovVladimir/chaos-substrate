@@ -2,7 +2,6 @@
 //! looks ids up in the index and embeds nothing.
 
 use super::Kb;
-use crate::domain::hash::Digest;
 use crate::domain::note::parse_id;
 use anyhow::{Result, ensure};
 use serde::Serialize;
@@ -14,8 +13,6 @@ pub struct ReadReport {
     /// Ids the index does not hold (the note changed or is gone: run
     /// `topics` again).
     pub missing: Vec<String>,
-    /// Merkle root of the index that answered.
-    pub root: Digest,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -39,7 +36,7 @@ impl Kb<'_> {
                 wanted.push(place);
             }
         }
-        let root = self.indexed()?.tree.root();
+        self.indexed()?;
         let stored = self.index.chunks()?;
         let mut passages = Vec::new();
         let mut missing = Vec::new();
@@ -59,11 +56,7 @@ impl Kb<'_> {
                 missing.push(id.to_string());
             }
         }
-        Ok(ReadReport {
-            passages,
-            missing,
-            root,
-        })
+        Ok(ReadReport { passages, missing })
     }
 }
 
@@ -104,7 +97,6 @@ mod tests {
             ]
         );
         assert!(report.missing.is_empty());
-        assert_eq!(report.root, world.kb().sync(true).unwrap().root);
     }
 
     #[test]

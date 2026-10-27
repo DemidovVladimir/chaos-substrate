@@ -1,8 +1,8 @@
 //! Pure rules: no I/O, nothing from the other layers.
 
+pub mod changes;
 pub mod chunk;
 pub mod hash;
-pub mod merkle;
 pub mod note;
 pub mod path;
 pub mod presence;

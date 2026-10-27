@@ -3,9 +3,9 @@
 //! running MCP server take turns on it; vectors are stored as little-endian
 //! `f32` bytes.
 
+use crate::domain::changes::NoteHashes;
 use crate::domain::chunk::Chunk;
 use crate::domain::hash::Digest;
-use crate::domain::merkle::Tree;
 use crate::domain::note::Location;
 use crate::domain::path::NotePath;
 use crate::domain::vector;
@@ -37,8 +37,9 @@ type ChunkRow<'a> = (LocRow<'a>, u32, &'a str, &'a str);
 /// `"format"` → the table layout; `"embedder"` → the embedder id of the
 /// stored vectors.
 const META: TableDefinition<&str, &str> = TableDefinition::new("meta");
-/// Merkle tree: note path → note hash.
-const TREE: TableDefinition<&str, &[u8; 32]> = TableDefinition::new("tree");
+/// Note path → note hash. The table keeps its old on-disk name `tree`, so
+/// index files written before keep opening.
+const NOTES: TableDefinition<&str, &[u8; 32]> = TableDefinition::new("tree");
 /// Chunk key → every chunk with that content (the same passage can sit in
 /// several notes).
 const CHUNKS: MultimapTableDefinition<&[u8; 32], ChunkRow<'static>> =
@@ -148,15 +149,15 @@ fn fresh<'t, K: Key + 'static, V: Value + 'static>(
     Ok(txn.open_table(def)?)
 }
 
-/// The snapshot held by `meta` and `tree`; `None` before the first write.
+/// The snapshot held by `meta` and the note hashes; `None` before the first write.
 fn snapshot_in(
     meta: &impl ReadableTable<&'static str, &'static str>,
-    tree: &impl ReadableTable<&'static str, &'static [u8; 32]>,
+    hashes: &impl ReadableTable<&'static str, &'static [u8; 32]>,
 ) -> Result<Option<Snapshot>> {
     let Some(embedder) = meta.get(EMBEDDER_KEY)? else {
         return Ok(None);
     };
-    let notes = tree
+    let notes = hashes
         .iter()?
         .map(|row| {
             let (path, hash) = row?;
@@ -165,7 +166,7 @@ fn snapshot_in(
         .collect::<Result<Vec<_>>>()?;
     Ok(Some(Snapshot {
         embedder: embedder.value().to_string(),
-        tree: Tree::from_notes(notes),
+        notes: NoteHashes::from_notes(notes),
     }))
 }
 
@@ -177,7 +178,7 @@ fn write(txn: &WriteTransaction, update: &Update) -> Result<()> {
     let current = {
         let meta = txn.open_table(META)?;
         if is_current(&meta)? {
-            snapshot_in(&meta, &txn.open_table(TREE)?)?
+            snapshot_in(&meta, &txn.open_table(NOTES)?)?
         } else {
             None
         }
@@ -205,9 +206,9 @@ fn write(txn: &WriteTransaction, update: &Update) -> Result<()> {
     let mut meta = fresh(txn, META)?;
     meta.insert(FORMAT_KEY, FORMAT)?;
     meta.insert(EMBEDDER_KEY, update.embedder.as_str())?;
-    let mut tree = fresh(txn, TREE)?;
-    for (path, hash) in update.tree.notes() {
-        tree.insert(path, &hash.0)?;
+    let mut notes = fresh(txn, NOTES)?;
+    for (path, hash) in update.notes.notes() {
+        notes.insert(path, &hash.0)?;
     }
     txn.delete_multimap_table(CHUNKS)?;
     let mut chunks = txn.open_multimap_table(CHUNKS)?;
@@ -292,7 +293,7 @@ fn vector(key: Digest, bytes: &[u8]) -> Result<Vec<f32>> {
 impl Index for RedbIndex {
     fn snapshot(&self) -> Result<Option<Snapshot>> {
         self.read(None, |txn| {
-            snapshot_in(&txn.open_table(META)?, &txn.open_table(TREE)?)
+            snapshot_in(&txn.open_table(META)?, &txn.open_table(NOTES)?)
         })
     }
 
@@ -437,24 +438,24 @@ mod tests {
         chunk("Car.md", "Oil", [2, 5], "Change the oil every 10000 km.")
     }
 
-    fn tree(paths: &[&str]) -> Tree {
-        Tree::from_notes(
+    fn hashes(paths: &[&str]) -> NoteHashes {
+        NoteHashes::from_notes(
             paths
                 .iter()
-                .map(|p| (p.to_string(), hash::leaf(p.as_bytes()))),
+                .map(|p| (p.to_string(), hash::bytes(p.as_bytes()))),
         )
     }
 
     /// Fingerprint of a chunk's only block, as the fixtures store it.
     fn fp(chunk: &Chunk) -> Digest {
-        hash::leaf(chunk.text.as_bytes())
+        hash::bytes(chunk.text.as_bytes())
     }
 
     fn update(chunks: Vec<Chunk>, vectors: &[(Digest, &[f32])]) -> Update {
         Update {
             base: None,
             embedder: EMBEDDER.to_string(),
-            tree: tree(&["", "Health/", "Health/Meds.md", "Car.md"]),
+            notes: hashes(&["", "Health/", "Health/Meds.md", "Car.md"]),
             blocks: chunks.iter().map(|c| (fp(c), c.at.clone())).collect(),
             chunks,
             vectors: vectors.iter().map(|(k, v)| (*k, v.to_vec())).collect(),
@@ -523,7 +524,7 @@ mod tests {
             index.snapshot().unwrap(),
             Some(Snapshot {
                 embedder: EMBEDDER.to_string(),
-                tree: full().tree,
+                notes: full().notes,
             })
         );
         assert_eq!(
@@ -547,7 +548,7 @@ mod tests {
         drop(Database::open(&path).unwrap());
 
         let fresh = RedbIndex::new(&path);
-        assert_eq!(fresh.snapshot().unwrap().unwrap().tree, full().tree);
+        assert_eq!(fresh.snapshot().unwrap().unwrap().notes, full().notes);
         drop(Database::open(&path).unwrap());
         assert_eq!(fresh.vector_keys().unwrap().len(), 3);
         assert_eq!(fresh.exact(&fp(&b())).unwrap(), vec![b().at]);
@@ -611,7 +612,7 @@ mod tests {
         let before = observe(&index);
         let mut bad = on(&index, update(vec![a(), orphan.clone()], &[(a().key, &VB)]));
         bad.embedder = "another-embedder".to_string();
-        bad.tree = tree(&["", "Inbox.md"]);
+        bad.notes = hashes(&["", "Inbox.md"]);
 
         let err = index.replace(bad).unwrap_err();
 
@@ -696,8 +697,8 @@ mod tests {
     fn exact_returns_every_location_sorted() {
         let dir = tempdir().unwrap();
         let index = RedbIndex::new(&dir.path().join("index.redb"));
-        let fact = hash::leaf(b"vitamin d");
-        let other = hash::leaf(b"oil");
+        let fact = hash::bytes(b"vitamin d");
+        let other = hash::bytes(b"oil");
         let mut up = full();
         up.blocks = vec![
             (fact, loc("Health/Meds.md", "Morning", [10, 10])),
@@ -721,7 +722,7 @@ mod tests {
             index.exact(&other).unwrap(),
             vec![loc("Car.md", "Oil", [2, 2])]
         );
-        assert!(index.exact(&hash::leaf(b"unknown")).unwrap().is_empty());
+        assert!(index.exact(&hash::bytes(b"unknown")).unwrap().is_empty());
     }
 
     #[test]
@@ -751,7 +752,7 @@ mod tests {
         assert!(index.nearest(&VA, 3).unwrap().is_empty());
 
         index.replace(full()).unwrap();
-        assert_eq!(index.snapshot().unwrap().unwrap().tree, full().tree);
+        assert_eq!(index.snapshot().unwrap().unwrap().notes, full().notes);
     }
 
     #[test]
@@ -816,7 +817,7 @@ mod tests {
             "the lock was held, so snapshot had to wait: {:?}",
             started.elapsed()
         );
-        assert_eq!(snapshot.map(|s| s.tree), Some(full().tree));
+        assert_eq!(snapshot.map(|s| s.notes), Some(full().notes));
         holder.join().unwrap();
     }
 
@@ -845,7 +846,7 @@ mod tests {
         assert!(index.nearest(&VA, 3).unwrap().is_empty());
 
         index.replace(full()).unwrap();
-        assert_eq!(index.snapshot().unwrap().unwrap().tree, full().tree);
+        assert_eq!(index.snapshot().unwrap().unwrap().notes, full().notes);
         assert_eq!(chunks(&index.nearest(&VA, 1).unwrap()), vec![a()]);
 
         // A layout from a later build is foreign too.
@@ -868,7 +869,7 @@ mod tests {
             .unwrap()
             .insert(FORMAT_KEY, FORMAT)
             .unwrap();
-        txn.open_table(TREE).unwrap();
+        txn.open_table(NOTES).unwrap();
         txn.open_table(VECTORS).unwrap();
         txn.open_multimap_table(CHUNKS).unwrap();
         txn.open_multimap_table(BLOCKS).unwrap();
@@ -877,7 +878,7 @@ mod tests {
     #[test]
     fn undecodable_rows_are_errors_not_panics() {
         let dir = tempdir().unwrap();
-        let fact = hash::leaf(b"fact");
+        let fact = hash::bytes(b"fact");
 
         // A block outside the vault and a vector of 5 bytes.
         let broken = dir.path().join("broken.redb");

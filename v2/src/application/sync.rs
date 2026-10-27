@@ -1,12 +1,13 @@
-//! `sync`: make the index match the vault. The Merkle tree is rebuilt from the
-//! notes; only chunks whose content key has no stored vector are embedded;
+//! `sync`: make the index match the vault. Each note's hash is compared with
+//! the stored one to report what changed; only chunks whose content key has no
+//! stored vector are embedded;
 //! vectors, chunks and fingerprints of deleted text are dropped. The write
 //! goes through only if the index is still the one this sync read.
 
 use super::Kb;
+use crate::domain::changes::{Changes, NoteHashes};
 use crate::domain::chunk::{self, Chunk, MAX_CHUNK_CHARS};
 use crate::domain::hash::Digest;
-use crate::domain::merkle::{Changes, Tree};
 use crate::domain::note::{Location, Note, section};
 use crate::domain::{text, vector};
 use crate::ports::{Stale, Update};
@@ -23,8 +24,6 @@ pub const SYNC_ATTEMPTS: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SyncReport {
-    /// Merkle root of the vault after the sync.
-    pub root: Digest,
     pub notes: usize,
     pub chunks: usize,
     /// Chunks embedded by this run (new or edited text). With `dry_run`, the
@@ -50,12 +49,12 @@ impl Kb<'_> {
 
     fn sync_once(&self, dry_run: bool) -> Result<SyncReport> {
         let notes = self.vault.notes()?;
-        let tree = Tree::build(&notes);
+        let hashes = NoteHashes::build(&notes);
         let previous = self.index.snapshot()?;
         let changes = previous
             .as_ref()
-            .map_or_else(Tree::default, |s| s.tree.clone())
-            .diff(&tree);
+            .map_or_else(NoteHashes::default, |s| s.notes.clone())
+            .diff(&hashes);
         let chunks: Vec<Chunk> = notes
             .iter()
             .flat_map(|n| chunk::chunks(n, MAX_CHUNK_CHARS))
@@ -71,7 +70,6 @@ impl Kb<'_> {
             .filter(|c| !stored.contains(&c.key) && queued.insert(c.key))
             .collect();
         let report = SyncReport {
-            root: tree.root(),
             notes: notes.len(),
             chunks: chunks.len(),
             embedded: missing.len(),
@@ -85,7 +83,7 @@ impl Kb<'_> {
         self.index.replace(Update {
             base: previous,
             embedder: self.embedder.id().to_string(),
-            tree,
+            notes: hashes,
             blocks: fingerprints(&notes),
             chunks,
             vectors,
@@ -140,16 +138,15 @@ fn fingerprints(notes: &[Note]) -> Vec<(Digest, Location)> {
 mod tests {
     use super::super::testing::{World, note, sample_notes};
     use super::*;
-    use crate::domain::merkle::Tree;
+    use crate::domain::changes::NoteHashes;
     use crate::domain::text;
     use crate::ports::{Index, Vault};
 
     #[test]
-    fn first_sync_embeds_everything_and_reports_the_root() {
+    fn first_sync_embeds_everything_and_stores_every_note_hash() {
         let world = World::new(sample_notes());
         let report = world.kb().sync(false).unwrap();
         let notes = world.vault.notes().unwrap();
-        assert_eq!(report.root, Tree::build(&notes).root());
         assert_eq!(report.notes, 3);
         assert_eq!(report.chunks, 4);
         assert_eq!(report.embedded, 4);
@@ -162,7 +159,7 @@ mod tests {
         assert_eq!(world.index.vector_count(), 4);
         let snapshot = world.index.snapshot().unwrap().unwrap();
         assert_eq!(snapshot.embedder, "stub|v1");
-        assert_eq!(snapshot.tree.root(), report.root);
+        assert_eq!(snapshot.notes, NoteHashes::build(&notes));
     }
 
     #[test]
@@ -178,7 +175,7 @@ mod tests {
     #[test]
     fn an_edit_embeds_only_the_edited_chunk() {
         let world = World::synced();
-        let first_root = world.index.snapshot().unwrap().unwrap().tree.root();
+        let first = world.index.snapshot().unwrap().unwrap().notes;
         world.vault.put(note(
             "Education.md",
             &[(&["University"], "Master of Science in physics, 2015.")],
@@ -186,7 +183,7 @@ mod tests {
         let report = world.kb().sync(false).unwrap();
         assert_eq!(report.embedded, 1);
         assert_eq!(report.changes.changed, ["Education.md"]);
-        assert_ne!(report.root, first_root);
+        assert_ne!(world.index.snapshot().unwrap().unwrap().notes, first);
         assert_eq!(world.index.vector_count(), 4, "old vector dropped");
     }
 
@@ -260,8 +257,8 @@ mod tests {
         assert_eq!(report.notes, 3);
         assert_eq!(world.index.writes.get(), 1);
         assert_eq!(
-            world.index.snapshot().unwrap().unwrap().tree.root(),
-            report.root
+            world.index.snapshot().unwrap().unwrap().notes,
+            NoteHashes::build(&world.vault.notes().unwrap())
         );
     }
 

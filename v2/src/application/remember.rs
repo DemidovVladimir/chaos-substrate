@@ -3,7 +3,6 @@
 //! embedding).
 
 use super::{Kb, nonblank};
-use crate::domain::hash::Digest;
 use crate::domain::note::Location;
 use crate::domain::path::NotePath;
 use anyhow::Result;
@@ -20,8 +19,6 @@ pub struct RememberReport {
     /// Where its blocks already sit (when `stored` is false).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub known_at: Vec<Location>,
-    /// Merkle root after the call.
-    pub root: Digest,
     /// Chunks embedded by the call (the new fact, plus any pending vault edits).
     pub embedded: usize,
 }
@@ -42,7 +39,6 @@ impl Kb<'_> {
                 stored: false,
                 note: note.clone(),
                 known_at,
-                root: before.root,
                 embedded: before.embedded,
             });
         }
@@ -52,7 +48,6 @@ impl Kb<'_> {
             stored: true,
             note: note.clone(),
             known_at: Vec::new(),
-            root: after.root,
             embedded: before.embedded + after.embedded,
         })
     }
@@ -72,7 +67,7 @@ mod tests {
     #[test]
     fn a_new_fact_is_written_and_indexed() {
         let world = World::synced();
-        let before = world.index.snapshot().unwrap().unwrap().tree.root();
+        let before = world.index.snapshot().unwrap().unwrap().notes;
         let report = world
             .kb()
             .remember("Driving licence category B since 2015.", &inbox(), None)
@@ -81,7 +76,7 @@ mod tests {
         assert_eq!(report.note, inbox());
         assert!(report.known_at.is_empty());
         assert_eq!(report.embedded, 1);
-        assert_ne!(report.root, before);
+        assert_ne!(world.index.snapshot().unwrap().unwrap().notes, before);
         let written = world.vault.note(INBOX).unwrap();
         assert_eq!(written.blocks.len(), 1);
         assert_eq!(

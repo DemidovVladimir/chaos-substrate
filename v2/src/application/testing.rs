@@ -132,7 +132,7 @@ impl Index for MemIndex {
     fn snapshot(&self) -> Result<Option<Snapshot>> {
         Ok(self.state.borrow().as_ref().map(|u| Snapshot {
             embedder: u.embedder.clone(),
-            tree: u.tree.clone(),
+            notes: u.notes.clone(),
         }))
     }
 

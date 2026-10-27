@@ -9,7 +9,7 @@
 //! | links resolve | a relative `href` or `src` points to a file that does not exist |
 //! | fonts only | a page or the stylesheet loads anything from outside the site except Google Fonts |
 //! | named files exist | a page names a `src/…` or `tests/…` Rust file that does not exist |
-//! | full hashes | a page shows a hash, root or key shorter than 64 hex characters |
+//! | full hashes | a page shows a hash or key shorter than 64 hex characters |
 //!
 //! After a code change, update every `[pages.<slug>]` whose `sources` lists the
 //! changed file or one of its parent folders, and bump that page's footer date.

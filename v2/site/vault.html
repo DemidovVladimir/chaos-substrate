@@ -113,7 +113,7 @@
         <g class="n hands" data-at="9">
           <rect x="680" y="300" width="160" height="64" rx="8"/>
           <text x="760" y="326" text-anchor="middle" class="t-title">sync again</text>
-          <text x="760" y="345" text-anchor="middle" class="t-small">stored: true · root</text>
+          <text x="760" y="345" text-anchor="middle" class="t-small">stored: true</text>
         </g>
 
         <g class="pop badge" data-at="1"><rect x="10" y="118" width="170" height="22" rx="11"/><text x="95" y="133" text-anchor="middle">default Inbox.md</text></g>
@@ -147,7 +147,7 @@
         <li>The text goes right under its heading's own text, before any subheading. Headings compare like fingerprints, so <code>oil</code> finds <code>## Oil:</code>. A missing heading is added at the end.</li>
         <li>The result must read like the old note plus the fact: every heading and block kept, in order. Otherwise nothing is written and the error names the line.</li>
         <li>The note goes to a hidden temporary file with its permissions, is flushed to disk and renamed over the note. Readers see the old note or the new one.</li>
-        <li>A second sync indexes the fact. <code>embedded</code> counts the chunks both syncs embedded, and <code>root</code> is the vault's new root hash.</li>
+        <li>A second sync indexes the fact. <code>embedded</code> counts the chunks both syncs embedded.</li>
       </ol>
     </div>
   </figure>
@@ -259,8 +259,7 @@
   <p class="note">Like remember, forget syncs before and after: the first sync makes your own edits count, the second takes the removal into the index. It holds the same <code>.chaos-kb/append.lock</code>, and the note is rewritten through a temporary file that keeps its permissions, then a rename. To correct a fact, forget it in its stored words, then remember the new one; the <a href="dashboard.html">dashboard</a>'s Replace does both.</p>
   <div class="term-wrap">
 <pre class="term" data-type><span class="ln cmd"><span class="p">$ </span>chaos-kb forget "also allergic to LATEX"</span>
-<span class="ln o">{ "embedded": 1, "removed": [ { "lines": [5, 5], "note": "Health/Allergies.md", "section": "Allergies" } ],</span>
-<span class="ln o">  "root": "71bcab23ba3c13bd20fb25728840ea024143539b782a079ef7c5317b1d1e24bc" }</span>
+<span class="ln o">{ "embedded": 1, "removed": [ { "lines": [5, 5], "note": "Health/Allergies.md", "section": "Allergies" } ] }</span>
 <span class="ln cmd"><span class="p">$ </span>cat Health/Allergies.md</span>
 <span class="ln o"># Allergies</span>
 <span class="ln o"></span>
@@ -272,11 +271,9 @@
 <span class="ln cmd"><span class="p">$ </span>stat -f '%Sp' Health/Allergies.md</span>
 <span class="ln o">-rw-------</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb forget "Allergic to penicillin." --note Inbox</span>
-<span class="ln o">{ "embedded": 1, "removed": [ { "lines": [3, 3], "note": "Inbox.md", "section": "Inbox" } ],</span>
-<span class="ln o">  "root": "9a5c30e1aadb445dae46ab0dc837204bbfe9eb41a6bad066767cc6f2b4b3453b" }</span>
+<span class="ln o">{ "embedded": 1, "removed": [ { "lines": [3, 3], "note": "Inbox.md", "section": "Inbox" } ] }</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb forget "Winter tyres go on in November."</span>
-<span class="ln o">{ "embedded": 0, "removed": [ { "lines": [9, 9], "note": "Car.md", "section": "Car &gt; Tyres" } ],</span>
-<span class="ln o">  "root": "d9cc29fc8b4220339f93ec39f3cb89c5944ba716923b29a7fe6bad86aeb2c3bf" }</span>
+<span class="ln o">{ "embedded": 0, "removed": [ { "lines": [9, 9], "note": "Car.md", "section": "Car &gt; Tyres" } ] }</span>
 <span class="ln cmd"><span class="p">$ </span>cat Car.md</span>
 <span class="ln o"># Car</span>
 <span class="ln o"></span>
@@ -286,8 +283,7 @@
 <span class="ln o"></span>
 <span class="ln o">## Tyres</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb forget "Allergic to cats."</span>
-<span class="ln o">{ "embedded": 0, "not_found": [ "Allergic to cats." ], "removed": [],</span>
-<span class="ln o">  "root": "d9cc29fc8b4220339f93ec39f3cb89c5944ba716923b29a7fe6bad86aeb2c3bf" }</span>
+<span class="ln o">{ "embedded": 0, "not_found": [ "Allergic to cats." ], "removed": [] }</span>
 <span class="ln cmd"><span class="p">$ </span>cat Plans.md</span>
 <span class="ln o"># Plans</span>
 <span class="ln o"></span>
@@ -357,11 +353,9 @@
   </div>
   <div class="term-wrap">
 <pre class="term" data-type><span class="ln cmd"><span class="p">$ </span>chaos-kb remember "Blood type: A positive." --note Health/Allergies --heading Blood</span>
-<span class="ln o">{ "stored": <span class="hl">true</span>, "note": "Health/Allergies.md", "embedded": 1,</span>
-<span class="ln o">  "root": "5cfa5a3cecd2d2dcc655c04fabd092e8714dd3b47e334cf094f7f83e714fc815" }</span>
+<span class="ln o">{ "stored": <span class="hl">true</span>, "note": "Health/Allergies.md", "embedded": 1 }</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb remember "Also allergic to latex." --note Health/Allergies --heading allergies</span>
-<span class="ln o">{ "stored": <span class="hl">true</span>, "note": "Health/Allergies.md", "embedded": 1,</span>
-<span class="ln o">  "root": "67ac2b69b1e1727a673fd196d482bffb7b602e832705844579157737247044ac" }</span>
+<span class="ln o">{ "stored": <span class="hl">true</span>, "note": "Health/Allergies.md", "embedded": 1 }</span>
 <span class="ln cmd"><span class="p">$ </span>cat Health/Allergies.md</span>
 <span class="ln o"># Allergies</span>
 <span class="ln o"></span>
@@ -406,7 +400,7 @@
 </section>
 
 <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
-<p class="stamp-foot">Checked against the code on 2026-10-25.</p>
+<p class="stamp-foot">Checked against the code on 2026-10-27.</p>
 </article>
 </main>
 </div>

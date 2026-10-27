@@ -206,7 +206,6 @@
     <li><span><b>The order you asked for.</b> Passages come back in the order of the ids, also over MCP, where the ids are a JSON array.</span></li>
     <li><span><b>Pieces read in order.</b> The index stores each passage's position from <code>sync</code>, so the pieces of a cut block come back as they read in the note, not in hash order.</span></li>
     <li><span><b>Nothing is guessed.</b> An id the index does not hold is reported under <code>missing</code>; a malformed id fails the call.</span></li>
-    <li><span><b>The root says which index answered.</b> Both reports carry the root hash, like every other report.</span></li>
   </ul>
 </section>
 
@@ -218,14 +217,13 @@
   </div>
   <div class="term-wrap">
 <pre class="term" data-type><span class="ln cmd"><span class="p">$ </span>chaos-kb topics "Prescribe an antibiotic for my sore throat." --limit 3</span>
-<span class="ln o">{ "root": "6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992", "topics": [</span>
+<span class="ln o">{ "topics": [</span>
 <span class="ln o">  { "gist": "Allergic to penicillin.", "id": "Health/Allergies.md:3-3", "score": <span class="hl">0.23157881200313568</span>, "section": "Allergies" },</span>
 <span class="ln o">  { "gist": "When someone explains something to me, I want a concrete example first and the general rule after.",</span>
 <span class="ln o">    "id": "Communication.md:3-3", "score": <span class="hl">0.06845960021018982</span>, "section": "How I communicate" },</span>
 <span class="ln o">  { "gist": "--- car: Toyota Corolla 2018 ---", "id": "Car.md:1-3", "score": <span class="hl">0.06677795201539993</span>, "section": "" } ] }</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb read Health/Allergies.md:3-3</span>
-<span class="ln o">{ "missing": [], "passages": [ { "id": "Health/Allergies.md:3-3", "section": "Allergies", "text": "Allergic to penicillin." } ],</span>
-<span class="ln o">  "root": "6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992" }</span>
+<span class="ln o">{ "missing": [], "passages": [ { "id": "Health/Allergies.md:3-3", "section": "Allergies", "text": "Allergic to penicillin." } ] }</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb read Car.md:8-8 Car.md:7-8</span>
 <span class="ln o">{ "missing": ["Car.md:7-8"], "passages": [ { "id": "Car.md:8-8", "section": "Maintenance &gt; Oil", "text": "I change the engine oil every 10 000 km." } ], ... }</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb read Car.md</span>
@@ -259,7 +257,7 @@
 </section>
 
 <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
-<p class="stamp-foot">Checked against the code on 2026-10-25.</p>
+<p class="stamp-foot">Checked against the code on 2026-10-27.</p>
 </article>
 </main>
 </div>

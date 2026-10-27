@@ -45,11 +45,11 @@ sources = [
 
 # ── Answers ───────────────────────────────────────────────────────────────
 
-[pages.merkle]
+[pages.fingerprints]
 sources = [
   "src/domain/text.rs",
   "src/domain/hash.rs",
-  "src/domain/merkle.rs",
+  "src/domain/changes.rs",
   "src/application/mod.rs",
   "src/application/sync.rs",
 ]

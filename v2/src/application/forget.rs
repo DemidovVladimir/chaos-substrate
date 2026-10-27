@@ -18,8 +18,6 @@ pub struct ForgetReport {
     /// Blocks of the text stored nowhere (in `note`, when one is named).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub not_found: Vec<String>,
-    /// Merkle root after the call.
-    pub root: Digest,
     /// Chunks embedded by the call: what is left of an edited passage, plus
     /// any pending vault edits.
     pub embedded: usize,
@@ -52,7 +50,6 @@ impl Kb<'_> {
             return Ok(ForgetReport {
                 removed: Vec::new(),
                 not_found,
-                root: before.root,
                 embedded: before.embedded,
             });
         }
@@ -65,7 +62,6 @@ impl Kb<'_> {
         Ok(ForgetReport {
             removed: places.into_iter().map(|(at, _)| at).collect(),
             not_found,
-            root: after.root,
             embedded: before.embedded + after.embedded,
         })
     }
@@ -89,7 +85,7 @@ mod tests {
     #[test]
     fn the_same_words_are_removed_from_the_vault_and_the_index() {
         let world = World::synced();
-        let before = world.index.snapshot().unwrap().unwrap().tree.root();
+        let before = world.index.snapshot().unwrap().unwrap().notes;
         let report = world
             .kb()
             .forget("  i CHANGE the engine oil, every 10000 km  ", None)
@@ -98,8 +94,7 @@ mod tests {
         assert_eq!(report.removed[0].note.as_str(), "Car/Maintenance.md");
         assert_eq!(report.removed[0].section, "Oil");
         assert!(report.not_found.is_empty());
-        assert_ne!(report.root, before);
-        assert_eq!(report.root, world.kb().sync(true).unwrap().root);
+        assert_ne!(world.index.snapshot().unwrap().unwrap().notes, before);
         assert_eq!(
             texts(&world, "Car/Maintenance.md"),
             ["Winter tyres go on in November."]
@@ -112,12 +107,12 @@ mod tests {
     #[test]
     fn words_stored_nowhere_change_nothing() {
         let world = World::synced();
-        let before = world.index.snapshot().unwrap().unwrap().tree.root();
+        let before = world.index.snapshot().unwrap().unwrap().notes;
         let writes = world.index.writes.get();
         let report = world.kb().forget("I own a motorbike.", None).unwrap();
         assert!(report.removed.is_empty());
         assert_eq!(report.not_found, ["I own a motorbike."]);
-        assert_eq!(report.root, before);
+        assert_eq!(world.index.snapshot().unwrap().unwrap().notes, before);
         assert_eq!(world.index.writes.get(), writes + 1, "only the first sync");
         assert_eq!(world.vault.notes().unwrap(), sample_notes());
     }

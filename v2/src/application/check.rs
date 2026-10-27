@@ -1,9 +1,8 @@
 //! `check`: is this already known? First the exact path: every block of the
-//! query looked up by fingerprint (the Merkle leaves), with no embedding.
+//! query looked up by fingerprint, with no embedding.
 //! Then the nearest passages by cosine similarity.
 
 use super::{Kb, nonblank};
-use crate::domain::hash::Digest;
 use crate::domain::note::Location;
 use crate::domain::presence::{self, Presence};
 use anyhow::Result;
@@ -22,8 +21,6 @@ pub struct CheckReport {
     /// Where the knowledge sits: exact locations, or passages at or above
     /// `min_score`, best first.
     pub matches: Vec<Match>,
-    /// Merkle root of the index that answered.
-    pub root: Digest,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -38,7 +35,7 @@ impl Kb<'_> {
     pub fn check(&self, query: &str, min_score: f32) -> Result<CheckReport> {
         let query = nonblank(query, "query")?;
         // The same words need no vectors, so no matching embedder either.
-        let root = self.indexed()?.tree.root();
+        self.indexed()?;
         if let Some(exact) = self.stored(query)? {
             return Ok(CheckReport {
                 known: true,
@@ -48,7 +45,6 @@ impl Kb<'_> {
                     .into_iter()
                     .map(|at| Match { at, score: None })
                     .collect(),
-                root,
             });
         }
         self.ready()?;
@@ -68,7 +64,6 @@ impl Kb<'_> {
             presence,
             score: best,
             matches,
-            root,
         })
     }
 }
@@ -97,8 +92,6 @@ mod tests {
             0,
             "no embedding on the exact path"
         );
-        let root = world.kb().sync(true).unwrap().root;
-        assert_eq!(report.root, root);
     }
 
     #[test]

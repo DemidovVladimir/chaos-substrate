@@ -34,8 +34,8 @@ at the repository root, which indexes code repositories into Postgres.
  your notes (Markdown, an Obsidian vault)
         │  sync
         ▼
- blocks ─ fingerprint (BLAKE3 of the words) ─▶ Merkle tree ─▶ root hash
-   │                                            exact "is this known?"
+ blocks ─ fingerprint (BLAKE3 of the words) ─▶ exact "is this known?"
+   │            └─▶ note hash ─▶ which notes changed since the last sync
    │
    └─ chunks (≤ 1200 chars, with "Title > Heading") ─▶ embeddings (Ollama) ─▶ index file (redb)
                                                        "what do I know about it?", by meaning
@@ -50,16 +50,14 @@ at the repository root, which indexes code repositories into Postgres.
   get the same fingerprint. Every other symbol counts, so `Blood type: A+` and `Blood type: A-`
   stay two different facts, and so do `≤ 140` and `≥ 140`. A colon between digits counts too:
   `1:5` is a ratio, `1.5` a number, while `1,5` and `1.5` are the same number.
-- **Merkle tree**: the fingerprints of a note, each labelled by its headings, roll up into one
-  hash per note, and the note hashes roll up into one root hash for the whole vault. This gives
-  two things:
-  - A fact stored with the same words is found by looking up its fingerprint (a leaf of the
-    tree), without an embedding call.
-  - If the root hash has not changed, nothing in your knowledge has changed. An agent can cache
-    what it learned and compare a single hash. Every report includes the root. Formatting-only
-    edits, such as bold text or extra spaces, keep every hash.
+- **Note hash**: the fingerprints of a note in order, each labelled by its headings, hashed
+  together. `sync` compares each note's hash with the one the index holds, so it knows which
+  notes were added, changed or removed. Formatting-only edits, such as bold text or extra spaces,
+  keep every hash. A fact stored with the same words is found by looking up its fingerprint,
+  without an embedding call. Nothing is hashed above the notes: no tool needs one value for the
+  whole vault, and `sync --dry-run` already says what changed.
 
-  A Merkle tree cannot tell that *"how often do I change the oil?"* is about your note *"I change
+  A hash cannot tell that *"how often do I change the oil?"* is about your note *"I change
   the engine oil every 10 000 km"*: the words differ but the meaning is the same. Embeddings
   handle that, so `check` falls back to them.
 - **Chunk**: consecutive blocks under one heading, packed up to 1200 characters, and embedded
@@ -109,7 +107,6 @@ Every command prints JSON. These samples come from the benchmark vault described
     }
   ],
   "presence": "similar",
-  "root": "86a0327e7604fd6dd90baf53f1eb7f46fd39de883bcdb5157f62d71687ad9e5d",
   "score": 0.583015501499176
 }
 ```
@@ -123,8 +120,7 @@ by its fingerprint. Nothing is embedded, so there is no score:
   "matches": [
     { "lines": [8, 8], "note": "Car.md", "section": "Maintenance > Oil" }
   ],
-  "presence": "exact",
-  "root": "86a0327e7604fd6dd90baf53f1eb7f46fd39de883bcdb5157f62d71687ad9e5d"
+  "presence": "exact"
 }
 ```
 
@@ -145,7 +141,6 @@ passage's first words (at most 100 characters). There is no text, so the list st
 
 ```json
 {
-  "root": "86a0327e7604fd6dd90baf53f1eb7f46fd39de883bcdb5157f62d71687ad9e5d",
   "topics": [
     { "gist": "--- car: Toyota Corolla 2018 ---", "id": "Car.md:1-3", "score": 0.2798360586166382, "section": "" },
     { "gist": "I change the engine oil every 10 000 km.", "id": "Car.md:8-8", "score": 0.2677106559276581, "section": "Maintenance > Oil" },
@@ -163,15 +158,14 @@ embeds nothing. Ids the index no longer holds come back under `missing`: the not
   "missing": ["Gone.md:1-1"],
   "passages": [
     { "id": "Car.md:8-8", "section": "Maintenance > Oil", "text": "I change the engine oil every 10 000 km." }
-  ],
-  "root": "86a0327e7604fd6dd90baf53f1eb7f46fd39de883bcdb5157f62d71687ad9e5d"
+  ]
 }
 ```
 
 `sync` reports the notes it `added`, `changed` and `removed`, how many chunks the index holds, how
-many it `embedded`, and the new `root`. `remember` reports whether it `stored` the fact, or where
+many it `embedded`. `remember` reports whether it `stored` the fact, or where
 the same words already sit (`known_at`). `forget` reports where the blocks it `removed` sat,
-the blocks of the text stored nowhere (`not_found`), and the new `root`. Both re-sync the index
+and the blocks of the text stored nowhere (`not_found`). Both re-sync the index
 before they answer.
 
 The index lives at `<vault>/.chaos-kb/index.redb`. Obsidian ignores folders whose names start
@@ -197,17 +191,16 @@ server also tells the agent how to use the seven tools together.
 (`--port` picks another port). Open it in a browser to see what the knowledge base holds and to
 change it:
 
-- **The Merkle tree.** At the top, the root of your notes as they are on disk, next to the root
-  the index holds. When the two are equal, the index has every fact. Below the root, every note
-  with its hash and its state: *in the index*, *changed* (edited since the last sync), *new*
-  (never synced) or *deleted* (gone from disk, still in the index). Open a note to see its
-  leaves: each block's section, lines, words and fingerprint, and whether the index holds it.
+- **Notes.** Every note with its hash and its state: *in the index*, *changed* (edited since the
+  last sync), *new* (never synced) or *deleted* (gone from disk, still in the index). The bar at
+  the top says whether the index holds every note as it is on disk. Open a note to see its
+  blocks: each block's section, lines, words and fingerprint, and whether the index holds it.
   Hashes are shown whole; click one to copy it.
 - **Add, replace, remove.** *Add a fact* runs `remember`. *Remove* runs `forget` for that fact's
   words in its note. *Replace* stores the new text under the same heading with `remember`, then
   forgets the old text, so a refused new text leaves the old fact in place. Every change syncs
-  the index: the tree is rebuilt, and the notes it rebuilt light up. *Activity* lists each change
-  with the index root before and after.
+  the index, and the notes it changed light up. *Activity* lists each change with the notes it
+  changed.
 - **Edits made elsewhere**, in Obsidian or any editor, show up within four seconds as *changed* or
   *new*. While "Sync edits made outside the dashboard" is ticked (the default), the page syncs
   them on its own; untick it to sync with the button instead. After a failed automatic sync
@@ -230,7 +223,7 @@ of date.
 <!-- tools:start -->
 ### `kb_sync` · `chaos-kb sync`
 
-Bring the index up to date with the vault: rebuild the Merkle tree, embed only new or edited passages, drop deleted ones. Run after editing notes
+Bring the index up to date with the vault: compare each note's hash with the stored one, embed only new or edited passages, drop deleted ones. Run after editing notes
 
 | arg | type | default | description |
 |---|---|---|---|
@@ -257,7 +250,7 @@ Take a fact out of the vault and the index: every block with the same words, com
 
 ### `kb_check` · `chaos-kb check`
 
-Is this already in the knowledge base? Exact words are answered from the Merkle leaves without embedding; otherwise the nearest passages by cosine similarity decide. Returns where the knowledge sits
+Is this already in the knowledge base? Exact words are answered from the stored block fingerprints without embedding; otherwise the nearest passages by cosine similarity decide. Returns where the knowledge sits
 
 | arg | type | default | description |
 |---|---|---|---|

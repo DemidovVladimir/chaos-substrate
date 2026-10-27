@@ -147,7 +147,7 @@
    "protocolVersion":<span class="s">"2025-06-18"</span>,"serverInfo":{"name":"chaos-kb","version":"2.0.0"}}}</pre></div>
     <div class="tabpanel" id="tab-list" hidden><pre class="wrapjson"><span class="c">→ {"jsonrpc":"2.0","id":2,"method":"tools/list"}</span>
 ← {"id":2,"jsonrpc":"2.0","result":{"tools":[ <span class="c">… kb_sync, kb_remember, kb_forget, then:</span>
-   {"description":<span class="s">"Is this already in the knowledge base? Exact words are answered from the Merkle leaves without embedding; otherwise the nearest passages by cosine similarity decide. Returns where the knowledge sits"</span>,
+   {"description":<span class="s">"Is this already in the knowledge base? Exact words are answered from the stored block fingerprints without embedding; otherwise the nearest passages by cosine similarity decide. Returns where the knowledge sits"</span>,
     "inputSchema":{"additionalProperties":false,
       "properties":{
         "min_score":{"default":<span class="n">0.38</span>,"description":"Similarity from which a passage counts as covering the query","type":"number"},
@@ -163,7 +163,7 @@
     "name":<span class="s">"kb_read"</span>} ]}}</pre></div>
     <div class="tabpanel" id="tab-call" hidden><pre class="wrapjson"><span class="c">→ {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"kb_check","arguments":{"query":"how often do I change the oil?"}}}</span>
 ← {"id":3,"jsonrpc":"2.0","result":{"content":[{"text":
-   <span class="s">"{\"known\":true,\"matches\":[{\"lines\":[8,8],\"note\":\"Car.md\",\"score\":0.583015501499176,\"section\":\"Maintenance &gt; Oil\"}],\"presence\":\"similar\",\"root\":\"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992\",\"score\":0.583015501499176}"</span>,"type":"text"}],
+   <span class="s">"{\"known\":true,\"matches\":[{\"lines\":[8,8],\"note\":\"Car.md\",\"score\":0.583015501499176,\"section\":\"Maintenance &gt; Oil\"}],\"presence\":\"similar\",\"score\":0.583015501499176}"</span>,"type":"text"}],
    "isError":<span class="n">false</span>}}</pre></div>
     <div class="tabpanel" id="tab-bad" hidden><pre class="wrapjson"><span class="c">→ {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"kb_search","arguments":{"query":"winter tyres","limit":"many"}}}</span>
 ← {"id":4,"jsonrpc":"2.0","result":{"content":[{"text":
@@ -276,9 +276,9 @@
 <span class="ln cmd"><span class="p">$ </span>echo '{"jsonrpc":"2.0","id":7,"method":"ping"}' | chaos-kb mcp</span>
 <span class="ln o">{"id":7,"jsonrpc":"2.0","result":{}}</span>
 <span class="ln cmd"><span class="p">$ </span>echo '{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"kb_search","arguments":{"query":"winter tyres","limit":1}}}' | chaos-kb mcp</span>
-<span class="ln o">{"id":10,"jsonrpc":"2.0","result":{"content":[{"text":"{\"hits\":[{\"lines\":[12,12],\"note\":\"Car.md\",\"score\":0.5618284940719604,\"section\":\"Maintenance &gt; Tyres\",\"text\":\"Winter tyres go on in November.\"}],\"root\":\"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992\"}","type":"text"}],"isError":false}}</span>
+<span class="ln o">{"id":10,"jsonrpc":"2.0","result":{"content":[{"text":"{\"hits\":[{\"lines\":[12,12],\"note\":\"Car.md\",\"score\":0.5618284940719604,\"section\":\"Maintenance &gt; Tyres\",\"text\":\"Winter tyres go on in November.\"}]}","type":"text"}],"isError":false}}</span>
 <span class="ln cmd"><span class="p">$ </span>echo '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"kb_read","arguments":{"ids":["Health/Allergies.md:3-3","Car.md:8-8"]}}}' | chaos-kb mcp</span>
-<span class="ln o">{"id":11,"jsonrpc":"2.0","result":{"content":[{"text":"{\"missing\":[],\"passages\":[{\"id\":\"Health/Allergies.md:3-3\",\"section\":\"Allergies\",\"text\":\"Allergic to penicillin.\"},{\"id\":\"Car.md:8-8\",\"section\":\"Maintenance &gt; Oil\",\"text\":\"I change the engine oil every 10 000 km.\"}],\"root\":\"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992\"}","type":"text"}],"isError":false}}</span>
+<span class="ln o">{"id":11,"jsonrpc":"2.0","result":{"content":[{"text":"{\"missing\":[],\"passages\":[{\"id\":\"Health/Allergies.md:3-3\",\"section\":\"Allergies\",\"text\":\"Allergic to penicillin.\"},{\"id\":\"Car.md:8-8\",\"section\":\"Maintenance &gt; Oil\",\"text\":\"I change the engine oil every 10 000 km.\"}]}","type":"text"}],"isError":false}}</span>
 <span class="ln cmd"><span class="p">$ </span>echo '{nope' | chaos-kb mcp</span>
 <span class="ln o">{"error":{"code":-32700,"message":"parse error: key must be a string at line 1 column 2"},"id":null,"jsonrpc":"2.0"}</span></pre>
   </div>
@@ -304,7 +304,7 @@
 </section>
 
 <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
-<p class="stamp-foot">Checked against the code on 2026-10-25.</p>
+<p class="stamp-foot">Checked against the code on 2026-10-27.</p>
 </article>
 </main>
 </div>

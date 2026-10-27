@@ -50,7 +50,7 @@ pub fn normalize(text: &str) -> String {
 /// Leaf hash of the normalized text; `None` when the text holds no letter or
 /// digit (see [`is_blank`]), which is never stored and never matches.
 pub fn fingerprint(text: &str) -> Option<Digest> {
-    (!is_blank(text)).then(|| hash::leaf(normalize(text).as_bytes()))
+    (!is_blank(text)).then(|| hash::bytes(normalize(text).as_bytes()))
 }
 
 /// True when `text` holds no letter or digit: nothing worth storing or
@@ -207,8 +207,8 @@ mod tests {
 
     #[test]
     fn fingerprint_is_the_leaf_of_the_normalized_text() {
-        assert_eq!(fingerprint("Hi, there!"), Some(hash::leaf(b"hi there")));
-        assert_eq!(fingerprint("A+"), Some(hash::leaf(b"a +")));
+        assert_eq!(fingerprint("Hi, there!"), Some(hash::bytes(b"hi there")));
+        assert_eq!(fingerprint("A+"), Some(hash::bytes(b"a +")));
     }
 
     #[test]

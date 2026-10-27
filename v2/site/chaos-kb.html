@@ -308,8 +308,7 @@ args = ["--vault", "/Users/you/Knowledge", "mcp"]</pre></div>
   "dry_run": false,
   "embedded": 3,
   "notes": 3,
-  "removed": [],
-  "root": "8446c764f648d17cf3caffdf493bcb8c12694ef3752f38472b30e8de5fe5f87a"
+  "removed": []
 }</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb check 'allergic to PENICILLIN'</span>
 <span class="ln o">{
@@ -324,15 +323,13 @@ args = ["--vault", "/Users/you/Knowledge", "mcp"]</pre></div>
       "section": "Allergies"
     }
   ],
-  "presence": "exact",
-  "root": "8446c764f648d17cf3caffdf493bcb8c12694ef3752f38472b30e8de5fe5f87a"
+  "presence": "exact"
 }</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb check 'how should you explain things to me?'</span>
 <span class="ln o">{
   "known": false,
   "matches": [],
   "presence": "absent",
-  "root": "8446c764f648d17cf3caffdf493bcb8c12694ef3752f38472b30e8de5fe5f87a",
   "score": 0.3630710244178772
 }</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb search 'how should you explain things to me?' --limit 1</span>
@@ -348,14 +345,12 @@ args = ["--vault", "/Users/you/Knowledge", "mcp"]</pre></div>
       "section": "How I like answers",
       "text": "Short answers first, details after. Plain words, no jargon."
     }
-  ],
-  "root": "8446c764f648d17cf3caffdf493bcb8c12694ef3752f38472b30e8de5fe5f87a"
+  ]
 }</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb remember 'Dentist: Dr. Weber, every six months.' --note Health/Dentist</span>
 <span class="ln o">{
   "embedded": 1,
   "note": "Health/Dentist.md",
-  "root": "ccb991cf086d4f0b4316308ebb5d070edd71d784272de38827edf2ae7c38d31d",
   "stored": true
 }</span>
 <span class="ln cmd"><span class="p">$ </span>cat ~/Knowledge/Health/Dentist.md</span>
@@ -387,7 +382,7 @@ args = ["--vault", "/Users/you/Knowledge", "mcp"]</pre></div>
 </section>
 
 <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
-<p class="stamp-foot">Checked against the code on 2026-10-25.</p>
+<p class="stamp-foot">Checked against the code on 2026-10-27.</p>
 </article>
 </main>
 </div>

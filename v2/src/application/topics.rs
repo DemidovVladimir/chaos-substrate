@@ -3,7 +3,6 @@
 //! searcher reads it, keeps the ids that matter and fetches them with `read`.
 
 use super::{Kb, nonblank};
-use crate::domain::hash::Digest;
 use crate::domain::text;
 use anyhow::Result;
 use serde::Serialize;
@@ -17,8 +16,6 @@ pub const GIST_CHARS: usize = 100;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TopicsReport {
     pub topics: Vec<Topic>,
-    /// Merkle root of the index that answered.
-    pub root: Digest,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -35,7 +32,7 @@ impl Kb<'_> {
     /// Up to `limit` passages nearest to `task`, best first, each id once.
     pub fn topics(&self, task: &str, limit: usize) -> Result<TopicsReport> {
         let task = nonblank(task, "task")?;
-        let root = self.ready()?.tree.root();
+        self.ready()?;
         let mut topics: Vec<Topic> = Vec::new();
         for hit in self.similar(task, limit)? {
             let id = hit.chunk.at.id();
@@ -49,7 +46,7 @@ impl Kb<'_> {
                 gist: text::gist(&hit.chunk.text, GIST_CHARS),
             });
         }
-        Ok(TopicsReport { topics, root })
+        Ok(TopicsReport { topics })
     }
 }
 
@@ -69,7 +66,6 @@ mod tests {
         assert_eq!(top.section, "Oil");
         assert_eq!(top.gist, "I change the engine oil every 10000 km.");
         assert!(report.topics.windows(2).all(|w| w[0].score >= w[1].score));
-        assert_eq!(report.root, world.kb().sync(true).unwrap().root);
     }
 
     #[test]

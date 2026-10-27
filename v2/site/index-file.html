@@ -30,7 +30,7 @@
 <header class="hero">
   <div class="eyebrow"><span class="stamp" aria-hidden="true">蔵</span> Storage · derived data</div>
   <h1>The index file</h1>
-  <p class="lede">The <b>index</b> is one redb file, by default <code>&lt;vault&gt;/.chaos-kb/index.redb</code>. It holds the Merkle tree, the chunks, their vectors and the block fingerprints. A sync rewrites it in one transaction. Delete it, and the next sync rebuilds it.</p>
+  <p class="lede">The <b>index</b> is one redb file, by default <code>&lt;vault&gt;/.chaos-kb/index.redb</code>. It holds the note hashes, the chunks, their vectors and the block fingerprints. A sync rewrites it in one transaction. Delete it, and the next sync rebuilds it.</p>
   <ul class="facts">
     <li><b>5</b> tables in <b>1</b> file</li>
     <li><b>1</b> write transaction per sync</li>
@@ -105,7 +105,7 @@
           <text x="290" y="275" text-anchor="middle" class="t-small">lock released</text>
         </g>
 
-        <g class="pop badge" data-at="1"><rect x="15" y="18" width="150" height="22" rx="11"/><text x="90" y="33" text-anchor="middle">base · tree · chunks</text></g>
+        <g class="pop badge" data-at="1"><rect x="15" y="18" width="150" height="22" rx="11"/><text x="90" y="33" text-anchor="middle">base · notes · chunks</text></g>
         <g class="pop badge" data-at="2"><rect x="185" y="18" width="150" height="22" rx="11"/><text x="260" y="33" text-anchor="middle">held? wait for it</text></g>
         <g class="pop badge" data-at="3"><rect x="355" y="18" width="150" height="22" rx="11"/><text x="430" y="33" text-anchor="middle">one per sync</text></g>
         <g class="pop badge" data-at="4"><rect x="265" y="186" width="160" height="22" rx="11"/><text x="345" y="201" text-anchor="middle">changed: start over</text></g>
@@ -126,7 +126,7 @@
     </div>
     <div class="stage-side">
       <ol class="captions">
-        <li>sync builds an <b>update</b> in memory: the snapshot it started from, the embedder id, the new tree, every chunk and block fingerprint, and the vectors it just embedded.</li>
+        <li>sync builds an <b>update</b> in memory: the snapshot it started from, the embedder id, the new note hashes, every chunk and block fingerprint, and the vectors it just embedded.</li>
         <li>It waits for the lock file <code>&lt;index&gt;.lock</code> for as long as another process holds it. Every read and every write holds that lock while the database is open.</li>
         <li>One write transaction begins. Everything below is saved together at the commit, or not at all.</li>
         <li>The index must still hold the snapshot this sync started from. If another writer changed it meanwhile, nothing is written and the sync starts over.</li>
@@ -150,14 +150,14 @@
       <thead><tr><th>Table</th><th>Key → value</th><th>Example row</th></tr></thead>
       <tbody>
         <tr><td><code>meta</code></td><td><code>"format"</code> → table layout; <code>"embedder"</code> → embedder id</td><td class="wrap"><code>"format"</code> → <code>2</code>; <code>"embedder"</code> → <code>embeddinggemma|gemma-retrieval-v1</code></td></tr>
-        <tr><td><code>tree</code></td><td>note path → 32-byte note hash</td><td class="wrap"><code>Car.md</code> → <code>885f1a568822853399253402e042d3556fe7739ae3014df2be91bbee1614cf8f</code></td></tr>
+        <tr><td><code>tree</code></td><td>note path → 32-byte note hash (the table keeps its old name)</td><td class="wrap"><code>Car.md</code> → <code>885f1a568822853399253402e042d3556fe7739ae3014df2be91bbee1614cf8f</code></td></tr>
         <tr><td><code>chunks</code></td><td>content key → every chunk with that content: note, section, first and last line, position in the sync, context, text</td><td class="wrap"><code>0b998bf4fbf675ad07f1b434a4d4032ea87cce39446a259fe9c07d9b748d7f5e</code> → <code>Car.md</code>, <code>Maintenance &gt; Oil</code>, 8, 8, 1, <code>Car &gt; Maintenance &gt; Oil</code>, <code>I change the engine oil every 10 000 km.</code></td></tr>
         <tr><td><code>vectors</code></td><td>content key → unit vector as bytes</td><td class="wrap">the same key → 768 numbers of 4 bytes each with embeddinggemma, the length its live test expects</td></tr>
         <tr><td><code>blocks</code></td><td>fingerprint → every place it occurs</td><td class="wrap"><code>973c899aeacc8e7035e6746bbb7e0c0e471bc5b5af45d289e125bc722244774e</code> → <code>Health/Allergies.md</code>, <code>Allergies</code>, 3, 3</td></tr>
       </tbody>
     </table>
   </div>
-  <p class="note">A chunk's key comes from its context line and text only. Two notes with the same title, section and words, such as <code>x/Plan.md</code> and <code>y/Plan.md</code>, share one key and one vector, and <code>chunks</code> keeps a row for each, so a search and a same-words check both name both notes. The root is not stored: it is computed from the <code>tree</code> rows.</p>
+  <p class="note">A chunk's key comes from its context line and text only. Two notes with the same title, section and words, such as <code>x/Plan.md</code> and <code>y/Plan.md</code>, share one key and one vector, and <code>chunks</code> keeps a row for each, so a search and a same-words check both name both notes. The <code>tree</code> table keeps the name it had when chaos-kb also hashed every note into one root, so index files written then still open; it holds only the note hashes.</p>
 </section>
 
 <section class="sec" aria-labelledby="s-race">
@@ -196,7 +196,7 @@
     <h2 id="s-rules">Guarantees</h2>
   </div>
   <ul class="checks">
-    <li><span><b>Derived and disposable.</b> The notes are the knowledge. Delete the file and the next sync rebuilds it with the same root.</span></li>
+    <li><span><b>Derived and disposable.</b> The notes are the knowledge. Delete the file and the next sync rebuilds it with the same note hashes.</span></li>
     <li><span><b>All or nothing.</b> A sync writes in one transaction, so the file holds the old index or the new one.</span></li>
     <li><span><b>A late sync never overwrites a newer index.</b> The write goes through only while the index still holds the snapshot that sync started from.</span></li>
     <li><span><b>Shared, one at a time.</b> The CLI, a running MCP server and the dashboard each hold <code>&lt;index&gt;.lock</code> for the length of one operation.</span></li>
@@ -217,19 +217,17 @@
 <pre class="term" data-type><span class="ln cmd"><span class="p">$ </span>chaos-kb check "allergic to penicillin"</span>
 <span class="ln o"><span class="er">error: the index is empty: run `chaos-kb sync` first</span></span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb sync</span>
-<span class="ln o">{ "added": ["Car.md", "Communication.md", "Health/Allergies.md"], "notes": 3, "chunks": 5, "embedded": <span class="hl">5</span>,</span>
-<span class="ln o">  "root": "6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992" }</span>
+<span class="ln o">{ "added": ["Car.md", "Communication.md", "Health/Allergies.md"], "notes": 3, "chunks": 5, "embedded": <span class="hl">5</span> }</span>
 <span class="ln o"># another process holds .chaos-kb/index.redb.lock for 2 s; this check starts 0.3 s in</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb check "allergic to PENICILLIN"</span>
 <span class="ln o">{ "known": true, "presence": "exact", "matches": [ { "note": "Health/Allergies.md", "section": "Allergies", "lines": [3, 3] } ], ... }</span>
 <span class="ln o"># answered after <span class="hl">1.7 s</span>: it waited for the lock</span>
-<span class="ln o"># a copy after the edits of the Merkle page</span>
+<span class="ln o"># a copy after the edits of the Fingerprints page</span>
 <span class="ln cmd"><span class="p">$ </span>wc -c .chaos-kb/index.redb</span>
 <span class="ln o">  118784 .chaos-kb/index.redb</span>
 <span class="ln cmd"><span class="p">$ </span>rm -r .chaos-kb &amp;&amp; chaos-kb sync</span>
-<span class="ln o">{ "added": ["Car.md", "Talking.md"], "notes": 2, "chunks": 4, "embedded": <span class="hl">4</span>,</span>
-<span class="ln o">  "root": "4471d8e59fc2d50b613338f7b204aa37d2fa955ceaed849347079fd0e28254a0" }</span>
-<span class="ln o"># the same root as before the delete: the notes did not change</span>
+<span class="ln o">{ "added": ["Car.md", "Talking.md"], "notes": 2, "chunks": 4, "embedded": <span class="hl">4</span> }</span>
+<span class="ln o"># every chunk embedded again: the vectors were only in the deleted file</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb check "x" --index ./none.redb</span>
 <span class="ln o"><span class="er">error: the index is empty: run `chaos-kb sync` first</span></span></pre>
   </div>
@@ -256,7 +254,7 @@
 </section>
 
 <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
-<p class="stamp-foot">Checked against the code on 2026-10-25.</p>
+<p class="stamp-foot">Checked against the code on 2026-10-27.</p>
 </article>
 </main>
 </div>

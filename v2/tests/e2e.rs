@@ -6,9 +6,10 @@ use chaos_kb::adapters::embedder::HttpEmbedder;
 use chaos_kb::adapters::obsidian::ObsidianVault;
 use chaos_kb::adapters::redb_index::RedbIndex;
 use chaos_kb::application::Kb;
-use chaos_kb::domain::merkle::Changes;
+use chaos_kb::domain::changes::{Changes, NoteHashes};
 use chaos_kb::domain::path::NotePath;
 use chaos_kb::domain::presence::{DEFAULT_MIN_SCORE, Presence};
+use chaos_kb::ports::Index;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -148,6 +149,11 @@ impl Parts {
             embedder: &self.embedder,
         }
     }
+
+    /// Each note's hash as the index holds it.
+    fn hashes(&self) -> NoteHashes {
+        self.index.snapshot().unwrap().unwrap().notes
+    }
 }
 
 #[test]
@@ -165,7 +171,7 @@ fn personal_vault_answers_from_the_index() {
     assert_eq!(first.embedded, first.chunks);
     assert_eq!(first.changes.added.len(), VAULT.len());
 
-    // Exact words: answered from the Merkle leaves.
+    // Exact words: answered from the stored fingerprints.
     let exact = kb
         .check("allergic to PENICILLIN", DEFAULT_MIN_SCORE)
         .unwrap();
@@ -202,10 +208,9 @@ fn personal_vault_answers_from_the_index() {
         assert_eq!(check.presence, Presence::Absent, "{question}: {check:?}");
     }
 
-    // Nothing changed: nothing embedded, same root.
+    // Nothing changed: nothing embedded, no note changed.
     let again = kb.sync(false).unwrap();
     assert_eq!(again.embedded, 0);
-    assert_eq!(again.root, first.root);
     assert_eq!(again.changes, Changes::default());
 }
 
@@ -288,9 +293,10 @@ fn remember_edit_and_delete_round_trip() {
 
     // A correction differs by one symbol: it is a new fact, not a repeat.
     let plus = kb.remember("Rhesus factor: A+", &inbox, None).unwrap();
+    let after_plus = parts.hashes();
     let minus = kb.remember("Rhesus factor: A-", &inbox, None).unwrap();
     assert!(plus.stored && minus.stored, "{minus:?}");
-    assert_ne!(plus.root, minus.root);
+    assert_ne!(parts.hashes(), after_plus);
 
     // Markdown is read like a note: a list item with a link is stored once.
     let fact = "- My GP is [Dr. Smith](https://clinic.example/smith).";
@@ -300,16 +306,22 @@ fn remember_edit_and_delete_round_trip() {
     let inbox_text = std::fs::read_to_string(dir.path().join("Inbox.md")).unwrap();
     assert_eq!(inbox_text.matches("Dr. Smith").count(), 1);
 
-    // Formatting-only edit: same knowledge, same root.
+    // Formatting-only edit: same knowledge, same note hashes.
     let licences = dir.path().join("Licences.md");
-    let root = kb.sync(false).unwrap().root;
+    kb.sync(false).unwrap();
+    let before = parts.hashes();
     std::fs::write(
         &licences,
         "# Licences\n\n**Driving licence** category B since 2015.\n\nMotorcycle licence A2 since 2019.\n",
     )
     .unwrap();
     let formatted = kb.sync(false).unwrap();
-    assert_eq!(formatted.root, root, "fingerprints ignore Markdown symbols");
+    assert_eq!(
+        formatted.changes,
+        Changes::default(),
+        "fingerprints ignore Markdown symbols"
+    );
+    assert_eq!(parts.hashes(), before);
     assert_eq!(formatted.embedded, 1, "the passage text changed");
 
     // A real edit: one note changed, one chunk embedded.
@@ -321,7 +333,7 @@ fn remember_edit_and_delete_round_trip() {
     let edited = kb.sync(false).unwrap();
     assert_eq!(edited.changes.changed, ["Licences.md"]);
     assert_eq!(edited.embedded, 1);
-    assert_ne!(edited.root, root);
+    assert_ne!(parts.hashes(), before);
 
     // Deleting a note removes its knowledge from the index.
     std::fs::remove_file(dir.path().join("Health/Treatment.md")).unwrap();
@@ -339,7 +351,7 @@ fn remember_edit_and_delete_round_trip() {
 }
 
 #[test]
-fn forget_takes_a_fact_out_and_the_root_back() {
+fn forget_takes_a_fact_out_and_the_note_back() {
     if !ollama_up() {
         return;
     }
@@ -347,23 +359,24 @@ fn forget_takes_a_fact_out_and_the_root_back() {
     write_vault(dir.path());
     let parts = Parts::new(dir.path());
     let kb = parts.kb();
-    let first = kb.sync(false).unwrap().root;
+    kb.sync(false).unwrap();
+    let first = parts.hashes();
     let licences = dir.path().join("Licences.md");
     let before = std::fs::read_to_string(&licences).unwrap();
 
     // Remembered, then forgotten in other formatting: the note reads as it
-    // did, byte for byte, so the Merkle root is the first one again.
+    // did, byte for byte, so every note hash is the first one again.
     let note = NotePath::parse("Licences").unwrap();
     let added = kb
         .remember("Boat licence since 2022.", &note, None)
         .unwrap();
     assert!(added.stored);
-    assert_ne!(added.root, first);
+    assert_ne!(parts.hashes(), first);
     let gone = kb.forget("**boat licence** since 2022", None).unwrap();
     assert_eq!(gone.removed.len(), 1, "{gone:?}");
     assert_eq!(gone.removed[0].note.as_str(), "Licences.md");
     assert_eq!(std::fs::read_to_string(&licences).unwrap(), before);
-    assert_eq!(gone.root, first);
+    assert_eq!(parts.hashes(), first);
     let asked = kb
         .check("Boat licence since 2022.", DEFAULT_MIN_SCORE)
         .unwrap();
@@ -382,7 +395,8 @@ fn forget_takes_a_fact_out_and_the_root_back() {
         markdown.contains("## Tyres") && markdown.contains("10 000 km"),
         "{markdown}"
     );
-    assert_ne!(out.root, first);
+    let after_out = parts.hashes();
+    assert_ne!(after_out, first);
     assert_ne!(
         kb.check(tyres, DEFAULT_MIN_SCORE).unwrap().presence,
         Presence::Exact
@@ -391,7 +405,7 @@ fn forget_takes_a_fact_out_and_the_root_back() {
     // Words stored nowhere: nothing changes.
     let none = kb.forget("I own a boat.", None).unwrap();
     assert!(none.removed.is_empty());
-    assert_eq!(none.root, out.root);
+    assert_eq!(parts.hashes(), after_out);
 }
 
 /// Drive the real binary as an agent would: CLI sync, then an MCP session.

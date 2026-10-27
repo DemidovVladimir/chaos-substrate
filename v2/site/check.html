@@ -137,11 +137,11 @@
       <ol class="captions">
         <li>A query arrives: a fact, a topic or a question. When it holds no letter or digit, it is refused with an error.</li>
         <li>The index must exist; before the first sync the error says to run <code>chaos-kb sync</code>. The same-words path needs nothing more, not even the configured model.</li>
-        <li>Same words? The query is read like a note and split into blocks; each block's fingerprint is looked up in the exact index. See <a href="merkle.html">Merkle tree and exact check</a>.</li>
+        <li>Same words? The query is read like a note and split into blocks; each block's fingerprint is looked up in the exact index. See <a href="fingerprints.html">Fingerprints and exact check</a>.</li>
         <li>Every block found: the answer is <b>exact</b> and known. <code>matches</code> lists every place that holds them, with no score. No model was called.</li>
         <li>Otherwise the index must have been built by the configured embedder, or the error asks for a sync. Then the query is embedded and the 3 nearest passages scored.</li>
         <li>The best score decides. At least <code>min_score</code> means <b>similar</b>; lower means <b>absent</b>. A score equal to the line counts as similar.</li>
-        <li><code>matches</code> keeps only passages at or above the line. The best score is reported even when the answer is absent, together with the root hash.</li>
+        <li><code>matches</code> keeps only passages at or above the line. The best score is reported even when the answer is absent.</li>
       </ol>
     </div>
   </figure>
@@ -180,20 +180,17 @@
     <div class="tabpanel" id="tab-exact"><pre><span class="c">$ chaos-kb check "allergic to PENICILLIN"</span>
 { <span class="k">"known"</span>: <span class="n">true</span>,
   <span class="k">"matches"</span>: [ { <span class="k">"lines"</span>: [<span class="n">3</span>, <span class="n">3</span>], <span class="k">"note"</span>: <span class="s">"Health/Allergies.md"</span>, <span class="k">"section"</span>: <span class="s">"Allergies"</span> } ],
-  <span class="k">"presence"</span>: <span class="s">"exact"</span>,
-  <span class="k">"root"</span>: <span class="s">"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992"</span> }
+  <span class="k">"presence"</span>: <span class="s">"exact"</span> }
 <span class="c"># no "score": nothing was embedded</span></pre></div>
     <div class="tabpanel" id="tab-similar" hidden><pre><span class="c">$ chaos-kb check "how often do I change the oil?"</span>
 { <span class="k">"known"</span>: <span class="n">true</span>,
   <span class="k">"matches"</span>: [ { <span class="k">"lines"</span>: [<span class="n">8</span>, <span class="n">8</span>], <span class="k">"note"</span>: <span class="s">"Car.md"</span>, <span class="k">"score"</span>: <span class="n">0.583015501499176</span>, <span class="k">"section"</span>: <span class="s">"Maintenance &gt; Oil"</span> } ],
   <span class="k">"presence"</span>: <span class="s">"similar"</span>,
-  <span class="k">"root"</span>: <span class="s">"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992"</span>,
   <span class="k">"score"</span>: <span class="n">0.583015501499176</span> }</pre></div>
     <div class="tabpanel" id="tab-absent" hidden><pre><span class="c">$ chaos-kb check "what is the name of my dog?"</span>
 { <span class="k">"known"</span>: <span class="n">false</span>,
   <span class="k">"matches"</span>: [],
   <span class="k">"presence"</span>: <span class="s">"absent"</span>,
-  <span class="k">"root"</span>: <span class="s">"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992"</span>,
   <span class="k">"score"</span>: <span class="n">0.20223255455493927</span> }</pre></div>
     <div class="tabpanel" id="tab-two" hidden><pre><span class="c">$ chaos-kb check "Allergic to penicillin.
 
@@ -201,15 +198,13 @@ Winter tyres go on in November."</span>
 { <span class="k">"known"</span>: <span class="n">true</span>,
   <span class="k">"matches"</span>: [ { <span class="k">"lines"</span>: [<span class="n">12</span>, <span class="n">12</span>], <span class="k">"note"</span>: <span class="s">"Car.md"</span>, <span class="k">"section"</span>: <span class="s">"Maintenance &gt; Tyres"</span> },
                { <span class="k">"lines"</span>: [<span class="n">3</span>, <span class="n">3</span>], <span class="k">"note"</span>: <span class="s">"Health/Allergies.md"</span>, <span class="k">"section"</span>: <span class="s">"Allergies"</span> } ],
-  <span class="k">"presence"</span>: <span class="s">"exact"</span>,
-  <span class="k">"root"</span>: <span class="s">"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992"</span> }
+  <span class="k">"presence"</span>: <span class="s">"exact"</span> }
 <span class="c">$ chaos-kb check "Allergic to penicillin.
 
 My dog is called Rex."</span>
 { <span class="k">"known"</span>: <span class="n">true</span>,
   <span class="k">"matches"</span>: [ { <span class="k">"lines"</span>: [<span class="n">3</span>, <span class="n">3</span>], <span class="k">"note"</span>: <span class="s">"Health/Allergies.md"</span>, <span class="k">"score"</span>: <span class="n">0.5817030072212219</span>, <span class="k">"section"</span>: <span class="s">"Allergies"</span> } ],
   <span class="k">"presence"</span>: <span class="s">"similar"</span>,
-  <span class="k">"root"</span>: <span class="s">"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992"</span>,
   <span class="k">"score"</span>: <span class="n">0.5817030072212219</span> }
 <span class="c"># one block is not stored, so the whole query is judged by meaning</span></pre></div>
   </div>
@@ -243,7 +238,6 @@ My dog is called Rex."</span>
     <li><span><b>Nothing is not a match.</b> No passage, or a score that is not a number, is absent.</span></li>
     <li><span><b>Matches are never weaker than the line.</b> Passages below <code>min_score</code> are left out of <code>matches</code>.</span></li>
     <li><span><b>Only absent is unknown.</b> <code>known</code> is true for exact and similar.</span></li>
-    <li><span><b>Every answer names its index.</b> The report carries the root hash of the index that answered.</span></li>
   </ul>
 </section>
 
@@ -294,7 +288,7 @@ My dog is called Rex."</span>
 </section>
 
 <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
-<p class="stamp-foot">Checked against the code on 2026-10-25.</p>
+<p class="stamp-foot">Checked against the code on 2026-10-27.</p>
 </article>
 </main>
 </div>

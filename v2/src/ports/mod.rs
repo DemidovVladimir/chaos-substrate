@@ -1,9 +1,9 @@
 //! What the use-cases need from the outside world, as traits. Adapters
 //! implement them; the application sees nothing else.
 
+use crate::domain::changes::NoteHashes;
 use crate::domain::chunk::Chunk;
 use crate::domain::hash::Digest;
-use crate::domain::merkle::Tree;
 use crate::domain::note::{Location, Note};
 use crate::domain::path::NotePath;
 use anyhow::Result;
@@ -55,7 +55,8 @@ pub trait Embedder {
 pub struct Snapshot {
     /// [`Embedder::id`] of the stored vectors.
     pub embedder: String,
-    pub tree: Tree,
+    /// Each note's hash as last synced.
+    pub notes: NoteHashes,
 }
 
 /// The complete derived state written by one sync.
@@ -65,7 +66,7 @@ pub struct Update {
     /// only while the index still holds it.
     pub base: Option<Snapshot>,
     pub embedder: String,
-    pub tree: Tree,
+    pub notes: NoteHashes,
     /// Each note's chunks in reading order (the pieces of a cut block share
     /// a location; this order is the only one that says which comes first).
     pub chunks: Vec<Chunk>,
@@ -95,7 +96,7 @@ pub struct Hit {
     pub score: f32,
 }
 
-/// The derived index: Merkle tree, block fingerprints, chunks and vectors.
+/// The derived index: note hashes, block fingerprints, chunks and vectors.
 pub trait Index {
     /// The stored snapshot; `None` before the first sync.
     fn snapshot(&self) -> Result<Option<Snapshot>>;
@@ -103,7 +104,7 @@ pub trait Index {
     /// Keys of every stored vector.
     fn vector_keys(&self) -> Result<HashSet<Digest>>;
 
-    /// Atomically make the index equal to `update`: tree, chunks and blocks
+    /// Atomically make the index equal to `update`: note hashes, chunks and blocks
     /// are replaced; vectors are added from `update.vectors` (overwriting the
     /// same key) and dropped when no chunk uses them. Fails, changing nothing,
     /// when a chunk would be left without a vector, and with [`Stale`] when

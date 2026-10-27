@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>From notes to answers · chaos-kb</title>
-<meta name="description" content="How chaos-kb turns a folder of Markdown notes into a Merkle tree and searchable passages in one index file, and the seven tools that use them.">
+<meta name="description" content="How chaos-kb turns a folder of Markdown notes into fingerprints, note hashes and searchable passages in one index file, and the seven tools that use them.">
 <script>try{var t=localStorage.getItem("tengu-tutorial-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -31,7 +31,7 @@
 <header class="hero">
   <div class="eyebrow"><span class="stamp" aria-hidden="true">始</span> Start here · the big picture</div>
   <h1>From notes to answers</h1>
-  <p class="lede">You keep what you know as Markdown notes in one folder. One <b>sync</b> turns them into a Merkle tree and searchable passages in one index file. Then an agent can ask: is this known, and what do my notes say?</p>
+  <p class="lede">You keep what you know as Markdown notes in one folder. One <b>sync</b> turns them into fingerprints and searchable passages in one index file. Then an agent can ask: is this known, and what do my notes say?</p>
   <ul class="facts">
     <li><b>7</b> tools: sync, remember, forget, check, search, topics, read</li>
     <li>passages of at most <b>1200</b> characters</li>
@@ -40,7 +40,7 @@
   </ul>
   <ul class="legend" aria-label="Colour key">
     <li><span class="chip brain"><span class="k">脳</span> notes</span> your knowledge</li>
-    <li><span class="chip jev"><span class="k">印</span> hash</span> fingerprints, Merkle tree</li>
+    <li><span class="chip jev"><span class="k">印</span> hash</span> fingerprints, note hashes</li>
     <li><span class="chip heart"><span class="k">心</span> model</span> the embedding model</li>
     <li><span class="chip hands"><span class="k">手</span> tools</span> the seven tools</li>
     <li><span class="chip guard"><span class="k">守</span> guard</span> checks and refusals</li>
@@ -56,13 +56,13 @@
   <figure class="stage" data-stage data-interval="3600">
     <div class="stage-canvas">
       <svg viewBox="0 0 860 430" role="img" aria-labelledby="flow-t">
-        <title id="flow-t">Notes are parsed into blocks. Blocks get fingerprints that roll up into a Merkle tree, and are packed into chunks that the embedding model turns into vectors. Both go into one index file, which check and search read.</title>
+        <title id="flow-t">Notes are parsed into blocks. Blocks get fingerprints that make one hash per note, and are packed into chunks that the embedding model turns into vectors. Both go into one index file, which check and search read.</title>
         <path class="e" id="p-notes-blocks" d="M95 110 L95 186" data-at="2"/>
         <path class="e" id="p-blocks-fp" d="M170 205 C200 205 200 90 228 90" data-at="3"/>
-        <path class="e" id="p-fp-tree" d="M390 90 L448 90" data-at="4"/>
+        <path class="e" id="p-fp-notes" d="M390 90 L448 90" data-at="4"/>
         <path class="e" id="p-blocks-chunks" d="M170 235 C200 235 200 300 228 300" data-at="5"/>
         <path class="e" id="p-chunks-emb" d="M390 300 L448 300" data-at="6"/>
-        <path class="e" id="p-tree-index" d="M610 90 C645 90 645 170 668 170" data-at="7"/>
+        <path class="e" id="p-notes-index" d="M610 90 C645 90 645 170 668 170" data-at="7"/>
         <path class="e" id="p-emb-index" d="M610 300 C645 300 645 230 668 230" data-at="7"/>
         <path class="e flow" id="p-index-tools" d="M755 262 L755 326" data-at="8"/>
 
@@ -84,8 +84,8 @@
         </g>
         <g class="n jev" data-at="4,7">
           <rect x="450" y="60" width="160" height="62" rx="8"/>
-          <text x="530" y="86" text-anchor="middle" class="t-title">Merkle tree</text>
-          <text x="530" y="105" text-anchor="middle" class="t-small">notes · one root</text>
+          <text x="530" y="86" text-anchor="middle" class="t-title">Note hashes</text>
+          <text x="530" y="105" text-anchor="middle" class="t-small">one per note</text>
         </g>
         <g class="n" data-at="5-6">
           <rect x="230" y="270" width="160" height="62" rx="8"/>
@@ -103,19 +103,19 @@
           <text x="755" y="176" text-anchor="middle" class="zone-label">one file</text>
           <text x="755" y="200" text-anchor="middle" class="t-title">Index</text>
           <text x="755" y="220" text-anchor="middle" class="t-small t-mono">index.redb</text>
-          <text x="755" y="240" text-anchor="middle" class="t-small">tree · chunks · vectors</text>
+          <text x="755" y="240" text-anchor="middle" class="t-small">hashes · chunks · vectors</text>
         </g>
         <g class="n hands" data-at="8">
           <rect x="670" y="328" width="170" height="70" rx="8"/>
           <text x="755" y="352" text-anchor="middle" class="t-kanji k">手</text>
           <text x="755" y="372" text-anchor="middle" class="t-title">check · search</text>
-          <text x="755" y="389" text-anchor="middle" class="t-small">answers carry the root</text>
+          <text x="755" y="389" text-anchor="middle" class="t-small">from the index alone</text>
         </g>
 
         <g class="pop badge" data-at="1"><rect x="10" y="122" width="170" height="22" rx="11"/><text x="95" y="137" text-anchor="middle">the only copy</text></g>
         <g class="pop badge" data-at="2"><rect x="10" y="264" width="170" height="22" rx="11"/><text x="95" y="279" text-anchor="middle">headings set the path</text></g>
         <g class="pop badge" data-at="3"><rect x="225" y="134" width="170" height="22" rx="11"/><text x="310" y="149" text-anchor="middle">same words, same hash</text></g>
-        <g class="pop badge" data-at="4"><rect x="445" y="134" width="170" height="22" rx="11"/><text x="530" y="149" text-anchor="middle">one root for the vault</text></g>
+        <g class="pop badge" data-at="4"><rect x="445" y="134" width="170" height="22" rx="11"/><text x="530" y="149" text-anchor="middle">what changed, by note</text></g>
         <g class="pop badge" data-at="5"><rect x="225" y="344" width="170" height="22" rx="11"/><text x="310" y="359" text-anchor="middle">Title &gt; Heading context</text></g>
         <g class="pop badge" data-at="6"><rect x="445" y="352" width="170" height="22" rx="11"/><text x="530" y="367" text-anchor="middle">32 per request</text></g>
         <g class="pop badge" data-at="7"><rect x="670" y="112" width="170" height="22" rx="11"/><text x="755" y="127" text-anchor="middle">one write transaction</text></g>
@@ -123,10 +123,10 @@
 
         <circle class="tok brain" r="6" data-path="p-notes-blocks" data-at="2"/>
         <circle class="tok jev" r="6" data-path="p-blocks-fp" data-at="3"/>
-        <circle class="tok jev" r="6" data-path="p-fp-tree" data-at="4" data-dur="900"/>
+        <circle class="tok jev" r="6" data-path="p-fp-notes" data-at="4" data-dur="900"/>
         <circle class="tok" r="6" data-path="p-blocks-chunks" data-at="5"/>
         <circle class="tok heart" r="6" data-path="p-chunks-emb" data-at="6" data-dur="900"/>
-        <circle class="tok jev" r="6" data-path="p-tree-index" data-at="7"/>
+        <circle class="tok jev" r="6" data-path="p-notes-index" data-at="7"/>
         <circle class="tok heart" r="6" data-path="p-emb-index" data-at="7" data-delay="300"/>
         <circle class="tok hands" r="6" data-path="p-index-tools" data-at="8" data-reverse/>
       </svg>
@@ -136,11 +136,11 @@
         <li>Your notes are Markdown files in one folder, an Obsidian <b>vault</b>. They are the only copy of the knowledge. Everything else is derived from them.</li>
         <li><code>sync</code> reads every visible <code>.md</code> file, whole, and splits it into <b>blocks</b>: a paragraph, one list item, a table, a quote, a code or HTML block, or the front matter.</li>
         <li>Each block gets a <b>fingerprint</b>: a BLAKE3 hash of its words. Case, spacing, sentence punctuation and Markdown emphasis do not change it; a symbol such as <code>+</code> does.</li>
-        <li>Fingerprints, each labelled by its headings, roll up into one hash per note, and the note hashes into one <b>root hash</b> for the whole vault. This is the Merkle tree.</li>
+        <li>Fingerprints, each labelled by its headings, make one <b>hash per note</b>. Comparing them with the stored ones shows which notes were added, changed or removed.</li>
         <li>Consecutive blocks under the same heading are packed into <b>chunks</b> of at most 1200 characters. Each chunk has a context line such as <code>Car &gt; Maintenance &gt; Oil</code>.</li>
         <li>Only chunks whose content has no stored vector go to the embedding model, at most 32 per request. Unchanged text is never embedded again.</li>
-        <li>One write transaction makes the index file match the vault, if no other process wrote since this sync read it: the tree, chunks and fingerprints are replaced, unused vectors dropped.</li>
-        <li><code>check</code> and <code>search</code> answer from the index alone. Every answer carries the root hash of the index that gave it.</li>
+        <li>One write transaction makes the index file match the vault, if no other process wrote since this sync read it: note hashes, chunks and fingerprints are replaced, unused vectors dropped.</li>
+        <li><code>check</code> and <code>search</code> answer from the index alone. The notes are not read again.</li>
       </ol>
     </div>
   </figure>
@@ -155,7 +155,7 @@
   <div class="grid">
     <div class="card hands">
       <h3><span class="tool-name">sync</span></h3>
-      <p>Makes the index match the vault. Rebuilds the Merkle tree, embeds only new or edited chunks, and drops deleted ones. Run it after you edit notes. <a href="merkle.html">Merkle tree</a></p>
+      <p>Makes the index match the vault. Compares note hashes, embeds only new or edited chunks, and drops deleted ones. Run it after you edit notes. <a href="fingerprints.html">Fingerprints</a></p>
     </div>
     <div class="card hands">
       <h3><span class="tool-name">remember</span></h3>
@@ -191,7 +191,7 @@
     <p>A <b>port</b> is a trait: what a use-case needs from outside. An <b>adapter</b> implements one. The <code>layering</code> test in <code>src/lib.rs</code> fails when a file names a layer it may not use.</p>
   </div>
   <div class="layers">
-    <div class="card jev"><b>domain</b><small>Pure rules: text, hashes, the Merkle tree, chunks, vectors, paths, presence.</small><span class="uses">uses nothing in the crate</span></div>
+    <div class="card jev"><b>domain</b><small>Pure rules: text, hashes, what changed, chunks, vectors, paths, presence.</small><span class="uses">uses nothing in the crate</span></div>
     <div class="card guard"><b>ports</b><small><code>Vault</code>, <code>Embedder</code>, <code>Index</code>, and the shapes they pass.</small><span class="uses">uses domain</span></div>
     <div class="card hands"><b>application</b><small>The seven use-cases on <code>Kb</code>, plus the dashboard's <code>overview</code>: one vault, one index, one embedder.</small><span class="uses">uses domain, ports</span></div>
     <div class="card data"><b>adapters</b><small>The Obsidian vault on disk, the redb index file, the HTTP embedder.</small><span class="uses">never application or entry</span></div>
@@ -213,11 +213,11 @@
   <div class="sec-head">
     <span class="kicker">What a sync reports</span>
     <h2 id="s-out">Seven situations</h2>
-    <p>A sync report holds the new <code>root</code>, the counts <code>notes</code>, <code>chunks</code> and <code>embedded</code>, the notes <code>added</code>, <code>changed</code> and <code>removed</code>, and <code>dry_run</code>.</p>
+    <p>A sync report holds the counts <code>notes</code>, <code>chunks</code> and <code>embedded</code>, the notes <code>added</code>, <code>changed</code> and <code>removed</code>, and <code>dry_run</code>.</p>
   </div>
   <ul class="states">
     <li><span class="chip hands">new</span><span><b>first sync</b>Every note is added and every chunk is embedded.</span></li>
-    <li><span class="chip data">same</span><span><b>nothing changed</b><code>embedded</code> is 0 and the root is the same.</span></li>
+    <li><span class="chip data">same</span><span><b>nothing changed</b><code>embedded</code> is 0 and the three note lists are empty.</span></li>
     <li><span class="chip jev">edit</span><span><b>a note edited</b><code>changed</code> lists it; only its new chunks are embedded.</span></li>
     <li><span class="chip guard">gone</span><span><b>a note deleted</b><code>removed</code> lists it; its vectors, chunks and fingerprints are dropped.</span></li>
     <li><span class="chip heart">model</span><span><b>another model</b>Old vectors are never reused, so every chunk is embedded again.</span></li>
@@ -273,18 +273,14 @@
 <span class="ln cmd"><span class="p">$ </span>export CHAOS_KB_VAULT=~/Knowledge</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb sync --dry-run</span>
 <span class="ln o">{ "added": ["Car.md", "Communication.md", "Health/Allergies.md"], "changed": [], "removed": [],</span>
-<span class="ln o">  "notes": 3, "chunks": 5, "embedded": 5, "dry_run": true,</span>
-<span class="ln o">  "root": <span class="hl">"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992"</span> }</span>
+<span class="ln o">  "notes": 3, "chunks": 5, "embedded": 5, "dry_run": true }</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb sync</span>
 <span class="ln o">{ "added": ["Car.md", "Communication.md", "Health/Allergies.md"], "changed": [], "removed": [],</span>
-<span class="ln o">  "notes": 3, "chunks": 5, "embedded": 5, "dry_run": false,</span>
-<span class="ln o">  "root": <span class="hl">"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992"</span> }</span>
+<span class="ln o">  "notes": 3, "chunks": 5, "embedded": 5, "dry_run": false }</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb sync</span>
-<span class="ln o">{ "added": [], "changed": [], "removed": [], "notes": 3, "chunks": 5, "embedded": 0, "dry_run": false,</span>
-<span class="ln o">  "root": <span class="hl">"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992"</span> }</span>
+<span class="ln o">{ "added": [], "changed": [], "removed": [], "notes": 3, "chunks": 5, "embedded": 0, "dry_run": false }</span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb check "allergic to PENICILLIN"</span>
-<span class="ln o">{ "known": true, "presence": "exact", "matches": [ { "note": "Health/Allergies.md", "section": "Allergies", "lines": [3, 3] } ],</span>
-<span class="ln o">  "root": <span class="hl">"6939b7715417f3ca93a3365d1befca7784a8a9e25dc994ed9fdf9fcb37e5a992"</span> }</span>
+<span class="ln o">{ "known": true, "presence": "exact", "matches": [ { "note": "Health/Allergies.md", "section": "Allergies", "lines": [3, 3] } ] }</span>
 <span class="ln o"># without a vault: error: set --vault or CHAOS_KB_VAULT</span></pre>
   </div>
 </section>
@@ -312,7 +308,7 @@
 </section>
 
 <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
-<p class="stamp-foot">Checked against the code on 2026-10-25.</p>
+<p class="stamp-foot">Checked against the code on 2026-10-27.</p>
 </article>
 </main>
 </div>

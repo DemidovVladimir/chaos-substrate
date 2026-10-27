@@ -30,9 +30,9 @@ pub struct Chunk {
 impl Chunk {
     /// Build a chunk; the key is derived, never supplied.
     pub fn new(at: Location, context: String, text: String) -> Chunk {
-        let key = hash::node([
-            ("context", hash::leaf(context.as_bytes())),
-            ("text", hash::leaf(text.as_bytes())),
+        let key = hash::list([
+            ("context", hash::bytes(context.as_bytes())),
+            ("text", hash::bytes(text.as_bytes())),
         ]);
         Chunk {
             at,

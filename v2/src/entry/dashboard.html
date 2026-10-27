@@ -112,19 +112,14 @@
   details.explain summary { cursor: pointer; color: var(--accent); }
   details.explain ol { margin: .4rem 0 0; padding-left: 1.2rem; }
 
-  /* ── tree ────────────────────────────────────────────────── */
-  .treebar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
-  .treebar input { flex: 1 1 220px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+  /* ── notes ───────────────────────────────────────────────── */
+  .notesbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .notesbar input { flex: 1 1 220px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
   .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0 0 10px; padding: 0; list-style: none; font-size: 13px; color: var(--muted); }
   .legend li { display: inline-flex; align-items: center; gap: 6px; }
 
-  .rootnode { border: 2px solid var(--ink); border-radius: var(--radius); padding: 10px 12px; background: var(--paper); }
-  .rootnode .title { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin-bottom: 4px; }
-  .rootnode.differs { border-color: var(--warn); }
-  .tree, .leaves { list-style: none; margin: 0; padding: 0; }
-  .tree { margin-left: 18px; border-left: 2px solid var(--line); padding-top: 6px; }
-  .tree > li { position: relative; padding: 6px 0 6px 18px; }
-  .tree > li::before { content: ""; position: absolute; left: 0; top: 24px; width: 14px; border-top: 2px solid var(--line); }
+  .notes, .blocks { list-style: none; margin: 0; padding: 0; }
+  .notes > li { padding: 6px 0; }
   .note { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
   .note.flash { animation: flash 3.5s ease-out; }
   @keyframes flash { 0%, 30% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: 0 0 0 0 transparent; } }
@@ -145,18 +140,18 @@
   .dot.in { background: var(--ok); }
   .dot.out { background: var(--warn); }
 
-  .leaves { display: none; margin: 0 12px 12px 30px; border-left: 2px dashed var(--line); }
-  .note.open .leaves { display: block; }
-  .leaf { position: relative; margin: 8px 0 0 14px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
-  .leaf::before { content: ""; position: absolute; left: -16px; top: 18px; width: 14px; border-top: 2px dashed var(--line); }
-  .leaf.pending { border-color: var(--warn); }
-  .leaf.flash { animation: flash 3.5s ease-out; }
-  .leaf.focus { box-shadow: 0 0 0 3px var(--accent); }
-  .leafhead { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; font-size: 13px; color: var(--muted); }
+  .blocks { display: none; margin: 0 12px 12px 30px; border-left: 2px dashed var(--line); }
+  .note.open .blocks { display: block; }
+  .block { position: relative; margin: 8px 0 0 14px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+  .block::before { content: ""; position: absolute; left: -16px; top: 18px; width: 14px; border-top: 2px dashed var(--line); }
+  .block.pending { border-color: var(--warn); }
+  .block.flash { animation: flash 3.5s ease-out; }
+  .block.focus { box-shadow: 0 0 0 3px var(--accent); }
+  .blockhead { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; font-size: 13px; color: var(--muted); }
   .sec { font-weight: 600; color: var(--ink); }
   .text { margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .leafactions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-  .leafactions button { padding: 3px 10px; font-size: 13px; }
+  .blockactions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .blockactions button { padding: 3px 10px; font-size: 13px; }
   .edit { display: grid; gap: 6px; margin-top: 8px; padding: 8px; border-radius: 8px; background: var(--sunk); }
   .edit textarea { width: 100%; min-height: 70px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); font-family: var(--mono); font-size: 13px; }
   .gone { margin: 0 12px 12px 42px; font-size: 14px; color: var(--muted); }
@@ -176,12 +171,9 @@
     .banner { margin: 12px 16px 0; }
     .grid { padding: 12px 16px 32px; }
     .card { padding: 12px; }
-    .tree { margin-left: 6px; }
-    .tree > li { padding-left: 10px; }
-    .tree > li::before { width: 8px; }
-    .leaves { margin: 0 6px 10px 12px; }
-    .leaf { margin-left: 8px; }
-    .leaf::before { left: -10px; width: 8px; }
+    .blocks { margin: 0 6px 10px 12px; }
+    .block { margin-left: 8px; }
+    .block::before { left: -10px; width: 8px; }
     .gone { margin-left: 18px; }
     .pair { grid-template-columns: minmax(0, 1fr); }
   }
@@ -200,7 +192,6 @@
   .log li { padding: 8px 10px; border-radius: 8px; background: var(--sunk); font-size: 13px; }
   .log li.bad { background: var(--bad-soft); }
   .log time { color: var(--faint); font-family: var(--mono); margin-right: 6px; }
-  .log .roots { margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -221,24 +212,23 @@
 
 <main class="grid">
   <div class="col">
-    <section class="card" aria-labelledby="h-tree">
-      <h2 id="h-tree">What the knowledge base holds</h2>
+    <section class="card" aria-labelledby="h-holds">
+      <h2 id="h-holds">What the knowledge base holds</h2>
       <p class="muted">Agents read the <b>index</b>. It is built from your notes by a sync. A fact on disk that the index does not hold yet is marked, and agents cannot find it until the next sync.</p>
       <div class="stats" id="stats"></div>
       <details class="explain">
-        <summary>How to read the Merkle tree</summary>
+        <summary>How to read the notes</summary>
         <ol>
-          <li><b>Leaf</b>: one fact, meaning a paragraph, a list item, a table or a code block. Its <b>fingerprint</b> is a BLAKE3 hash of its words. Case, spacing and sentence punctuation are ignored, so formatting-only edits keep it.</li>
-          <li><b>Note</b>: its hash covers its fingerprints in order, each labelled with the headings above it. Changing a fact, or moving it under another heading, changes the note hash.</li>
-          <li><b>Root</b>: one hash over every note hash and its path. When the root of your notes equals the root the index holds, the index has every fact.</li>
+          <li><b>Fact</b>: one block, meaning a paragraph, a list item, a table or a code block. Its <b>fingerprint</b> is a BLAKE3 hash of its words. Case, spacing and sentence punctuation are ignored, so formatting-only edits keep it. A check for the same words looks the fingerprint up, without embedding.</li>
+          <li><b>Note</b>: its hash covers its fingerprints in order, each labelled with the headings above it. A sync compares it with the hash the index holds to find the notes that changed. Changing a fact, or moving it under another heading, changes it.</li>
         </ol>
-        <p>Adding, replacing or removing a fact here changes the note, then syncs: the tree is rebuilt and the changed note lights up. Click any hash to copy it.</p>
+        <p>Adding, replacing or removing a fact here changes the note, then syncs, and the changed note lights up. Click any hash to copy it.</p>
       </details>
     </section>
 
-    <section class="card" aria-labelledby="h-merkle">
-      <h2 id="h-merkle">Merkle tree</h2>
-      <div class="treebar">
+    <section class="card" aria-labelledby="h-notes">
+      <h2 id="h-notes">Notes</h2>
+      <div class="notesbar">
         <input type="search" id="filter" placeholder="Filter notes and facts" aria-label="Filter notes and facts">
         <button id="expand">Expand all</button>
         <button id="collapse">Collapse all</button>
@@ -249,8 +239,7 @@
         <li><span class="badge s-new">new</span> on disk, never synced</li>
         <li><span class="badge s-removed">deleted</span> gone from disk, still in the index</li>
       </ul>
-      <div class="rootnode" id="rootnode"></div>
-      <ol class="tree" id="tree"></ol>
+      <ol class="notes" id="notes-list"></ol>
     </section>
   </div>
 
@@ -284,7 +273,7 @@
 
     <section class="card" aria-labelledby="h-log">
       <h2 id="h-log">Activity</h2>
-      <ol class="log" id="log"><li class="muted">Changes made here, and syncs, show up here with the root before and after.</li></ol>
+      <ol class="log" id="log"><li class="muted">Changes made here, and syncs, show up here with the notes they changed.</li></ol>
     </section>
   </aside>
 </main>
@@ -333,7 +322,7 @@ function hash(value, none) {
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 const lines = (l) => (l[0] === l[1] ? `line ${l[0]}` : `lines ${l[0]}–${l[1]}`);
 const words = (s) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-const leafKey = (path, leaf) => `${path}|${leaf.fingerprint}`;
+const blockKey = (path, block) => `${path}|${block.fingerprint}`;
 
 function store(key, value) {
   try { if (value === undefined) return localStorage.getItem(key); localStorage.setItem(key, value); } catch (e) {}
@@ -367,13 +356,14 @@ let view = null;            // the last overview
 let viewText = "";          // its JSON, so an unchanged poll draws nothing
 let busy = false;           // a change or sync is running
 let offline = null;         // why the server cannot be reached
-let autoFailedAt = null;    // the root of the notes when an automatic sync last failed
+let autoFailedAt = null;    // the notes (paths and hashes) when an automatic sync last failed
 const open = new Set();     // expanded notes
-let flashed = { notes: new Set(), leaves: new Set() };
-let focused = new Set();    // leaf keys a question pointed at
+let flashed = { notes: new Set(), blocks: new Set() };
+let focused = new Set();    // block keys a question pointed at
 let editing = null;         // { key, mode: "replace" | "remove", draft, fresh }
 
-const needsSync = (v) => v && (v.indexed_root !== v.root || v.indexed_embedder !== v.embedder);
+const needsSync = (v) => v && !v.synced;
+const notesKey = (v) => v.notes.map((n) => `${n.path}:${n.hash}`).join("|");
 
 /** Read the overview; draw only when it, or reaching the server, changed. */
 async function refresh() {
@@ -388,20 +378,20 @@ async function refresh() {
   return view;
 }
 
-/** Notes whose hash differs between two overviews, and leaves new in `after`. */
+/** Notes whose hash differs between two overviews, and blocks new in `after`. */
 function difference(before, after) {
   const was = new Map(((before && before.notes) || []).map((n) => [n.path, n]));
   const notes = new Set();
-  const leaves = new Set();
+  const blocks = new Set();
   for (const n of after.notes) {
     const old = was.get(n.path);
     if (!old || old.hash !== n.hash || old.state !== n.state) notes.add(n.path);
-    const had = new Set(((old && old.leaves) || []).map((l) => l.fingerprint));
-    for (const l of n.leaves) if (!had.has(l.fingerprint)) leaves.add(leafKey(n.path, l));
+    const had = new Set(((old && old.blocks) || []).map((l) => l.fingerprint));
+    for (const l of n.blocks) if (!had.has(l.fingerprint)) blocks.add(blockKey(n.path, l));
     was.delete(n.path);
   }
   for (const path of was.keys()) notes.add(path);
-  return { notes, leaves };
+  return { notes, blocks };
 }
 
 /**
@@ -419,7 +409,7 @@ async function change(title, work, quiet) {
     const after = await refresh();
     flashed = difference(before, after);
     if (!quiet || flashed.notes.size) record(title, sentence, before, after);
-    setTimeout(() => { flashed = { notes: new Set(), leaves: new Set() }; render(); }, 3600);
+    setTimeout(() => { flashed = { notes: new Set(), blocks: new Set() }; render(); }, 3600);
     return after;
   } catch (e) {
     record(title, e.message, before, null, true);
@@ -434,13 +424,9 @@ function record(title, sentence, before, after, failed) {
   const log = $("log");
   if (log.firstElementChild && log.firstElementChild.classList.contains("muted")) log.firstElementChild.remove();
   const changed = after ? [...difference(before, after).notes] : [];
-  const roots = after && el("div", { class: "kv roots" },
-    el("span", {}, "index root before"), hash(before && before.indexed_root, "empty index"),
-    el("span", {}, "index root after"), hash(after.indexed_root, "empty index"));
   log.prepend(el("li", { class: failed ? "bad" : "" },
     el("time", {}, new Date().toLocaleTimeString()), el("b", {}, title), el("div", {}, sentence),
-    changed.length ? el("div", {}, "Notes rebuilt: ", changed.join(", ")) : null,
-    roots));
+    changed.length ? el("div", {}, "Notes changed: ", changed.join(", ")) : null));
   while (log.children.length > 40) log.lastElementChild.remove();
 }
 
@@ -457,8 +443,7 @@ function render() {
   drawTop();
   if (!view) return;
   drawStats();
-  drawRoot();
-  drawTree();
+  drawNotes();
   drawLists();
 }
 
@@ -485,7 +470,7 @@ function drawTop() {
   }
   const p = view.pending;
   const pending = p.added.length + p.changed.length + p.removed.length;
-  if (view.indexed_root === null) {
+  if (view.indexed_embedder === null) {
     pill.className = "pill warn";
     pill.textContent = "Not indexed yet";
     banner.className = "banner warn";
@@ -506,7 +491,7 @@ function drawTop() {
       p.removed.map((n) => el("li", {}, `deleted from disk: ${n}`)));
     banner.append(el("p", {}, "These notes changed on disk since the last sync, and agents still see the old version. ",
       el("button", { class: "link", onclick: () => syncNow(false) }, "Sync now"),
-      $("auto").checked && autoFailedAt === view.root ? " (the automatic sync failed: see Activity)" : ""), list);
+      $("auto").checked && autoFailedAt === notesKey(view) ? " (the automatic sync failed: see Activity)" : ""), list);
   } else {
     pill.className = "pill ok";
     pill.textContent = "In sync: agents see every fact below";
@@ -516,51 +501,39 @@ function drawTop() {
 }
 
 function drawStats() {
-  const leaves = view.notes.reduce((n, note) => n + note.leaves.length, 0);
+  const blocks = view.notes.reduce((n, note) => n + note.blocks.length, 0);
   const onDisk = view.notes.filter((n) => n.state !== "removed").length;
   const stat = (value, label, word) => el("div", { class: word ? "stat word" : "stat" }, el("b", {}, value), el("span", {}, label));
   $("stats").replaceChildren(
     stat(onDisk, "notes on disk"),
-    stat(leaves, "facts (leaves)"),
+    stat(blocks, "facts"),
     stat(view.chunks, "passages in the index"),
     stat(view.vectors, "embeddings stored"),
     stat(view.embedder.split("|")[0], "embedding model", true));
 }
 
-function drawRoot() {
-  const same = view.indexed_root === view.root;
-  $("rootnode").className = `rootnode${same ? "" : " differs"}`;
-  $("rootnode").replaceChildren(
-    el("div", { class: "title" }, el("b", {}, "Root"),
-      el("span", { class: `badge ${same ? "s-indexed" : "s-changed"}` },
-        same ? "the index matches your notes" : "the index is behind your notes")),
-    el("div", { class: "kv" },
-      el("span", {}, "your notes now"), hash(view.root),
-      el("span", {}, "the index holds"), hash(view.indexed_root, "nothing yet")));
-}
-
-function drawTree() {
+function drawNotes() {
   const query = $("filter").value.trim().toLowerCase();
   const has = (text) => text.toLowerCase().includes(query);
-  const tree = $("tree");
+  const list = $("notes-list");
   const scroll = window.scrollY;
   const items = [];
   for (const note of view.notes) {
-    const leaves = !query || has(note.path)
-      ? note.leaves
-      : note.leaves.filter((l) => has(l.text) || has(l.section));
-    if (query && !has(note.path) && !leaves.length) continue;
-    items.push(drawNote(note, leaves, Boolean(query) && !has(note.path)));
+    const blocks = !query || has(note.path)
+      ? note.blocks
+      : note.blocks.filter((l) => has(l.text) || has(l.section));
+    if (query && !has(note.path) && !blocks.length) continue;
+    items.push(drawNote(note, blocks, Boolean(query) && !has(note.path)));
   }
   if (!items.length) items.push(el("li", { class: "empty" }, query ? "No note or fact matches the filter." : "The vault has no notes yet. Add a fact on the right."));
-  tree.replaceChildren(...items);
+  list.replaceChildren(...items);
   window.scrollTo(0, scroll);
 }
 
-function drawNote(note, leaves, filtered) {
+function drawNote(note, blocks, filtered) {
   const [cls, label] = STATES[note.state];
-  const isOpen = open.has(note.path) || (filtered && leaves.length > 0);
-  const facts = note.state === "removed" ? "" : plural(note.leaves.length, "fact", "facts");
+  const isOpen = open.has(note.path) || (filtered && blocks.length > 0);
+  const facts = note.state === "removed" ? "" : plural(note.blocks.length, "fact", "facts");
   const passages = note.chunks ? plural(note.chunks, "passage", "passages") + " in the index" : "no passages in the index";
   const head = el("button", {
     class: "notehead", "aria-expanded": String(isOpen),
@@ -580,44 +553,44 @@ function drawNote(note, leaves, filtered) {
   }, head,
     note.state === "removed"
       ? (isOpen ? el("p", { class: "gone" }, `Deleted from disk. The index still holds ${plural(note.chunks, "passage", "passages")} from it until the next sync.`) : null)
-      : el("ol", { class: "leaves" }, isOpen ? leaves.map((leaf) => drawLeaf(note, leaf)) : [])));
+      : el("ol", { class: "blocks" }, isOpen ? blocks.map((block) => drawBlock(note, block)) : [])));
   return li;
 }
 
-function drawLeaf(note, leaf) {
-  const key = leafKey(note.path, leaf);
-  const focus = focused.has(`${note.path}:${leaf.lines[0]}`);
+function drawBlock(note, block) {
+  const key = blockKey(note.path, block);
+  const focus = focused.has(`${note.path}:${block.lines[0]}`);
   const item = el("li", {
-    class: `leaf${leaf.indexed ? "" : " pending"}${flashed.leaves.has(key) ? " flash" : ""}${focus ? " focus" : ""}`,
-    "data-at": `${note.path}:${leaf.lines[0]}`,
+    class: `block${block.indexed ? "" : " pending"}${flashed.blocks.has(key) ? " flash" : ""}${focus ? " focus" : ""}`,
+    "data-at": `${note.path}:${block.lines[0]}`,
   },
-    el("div", { class: "leafhead" },
-      el("span", { class: "sec" }, leaf.section || "above the first heading"),
-      el("span", {}, lines(leaf.lines)),
-      el("span", {}, el("span", { class: `dot ${leaf.indexed ? "in" : "out"}` }), " ",
-        leaf.indexed ? "in the index" : "not in the index yet")),
-    el("p", { class: "text" }, leaf.text),
-    el("div", { class: "kv" }, el("span", {}, "fingerprint"), hash(leaf.fingerprint)));
+    el("div", { class: "blockhead" },
+      el("span", { class: "sec" }, block.section || "above the first heading"),
+      el("span", {}, lines(block.lines)),
+      el("span", {}, el("span", { class: `dot ${block.indexed ? "in" : "out"}` }), " ",
+        block.indexed ? "in the index" : "not in the index yet")),
+    el("p", { class: "text" }, block.text),
+    el("div", { class: "kv" }, el("span", {}, "fingerprint"), hash(block.fingerprint)));
   if (editing && editing.key === key) {
-    item.append(editing.mode === "remove" ? removeBox(note, leaf) : replaceBox(note, leaf));
+    item.append(editing.mode === "remove" ? removeBox(note, block) : replaceBox(note, block));
   } else {
-    item.append(el("div", { class: "leafactions" },
-      el("button", { disabled: busy, onclick: () => { editing = { key, mode: "replace", draft: leaf.source, fresh: true }; render(); } }, "Replace"),
+    item.append(el("div", { class: "blockactions" },
+      el("button", { disabled: busy, onclick: () => { editing = { key, mode: "replace", draft: block.source, fresh: true }; render(); } }, "Replace"),
       el("button", { class: "danger", disabled: busy, onclick: () => { editing = { key, mode: "remove" }; render(); } }, "Remove")));
   }
   return item;
 }
 
-function removeBox(note, leaf) {
+function removeBox(note, block) {
   return el("div", { class: "edit" },
     el("p", {}, `Remove this fact from ${note.path}? A copy with the same words elsewhere in this note goes too. The note is rewritten, then the index is synced.`),
-    el("div", { class: "leafactions" },
-      el("button", { class: "danger solid", disabled: busy, onclick: () => removeLeaf(note, leaf) }, "Remove"),
+    el("div", { class: "blockactions" },
+      el("button", { class: "danger solid", disabled: busy, onclick: () => removeBlock(note, block) }, "Remove"),
       el("button", { onclick: () => { editing = null; render(); } }, "Cancel")));
 }
 
-function replaceBox(note, leaf) {
-  const heading = innermost(leaf.section);
+function replaceBox(note, block) {
+  const heading = innermost(block.section);
   const area = el("textarea", { "aria-label": "New text", oninput: () => { editing.draft = area.value; } });
   area.value = editing.draft;
   if (editing.fresh) {
@@ -629,8 +602,8 @@ function replaceBox(note, leaf) {
     el("small", {}, heading
       ? `The new text goes under “${heading}” in ${note.path}, then the old one is removed.`
       : `This fact sits above the first heading, so the new text goes at the end of ${note.path}; then the old one is removed.`),
-    el("div", { class: "leafactions" },
-      el("button", { class: "primary", disabled: busy, onclick: () => replaceLeaf(note, leaf, area.value) }, "Save"),
+    el("div", { class: "blockactions" },
+      el("button", { class: "primary", disabled: busy, onclick: () => replaceBlock(note, block, area.value) }, "Save"),
       el("button", { onclick: () => { editing = null; render(); } }, "Cancel")));
 }
 
@@ -642,7 +615,7 @@ function drawLists() {
   const headings = new Set();
   for (const n of notes) {
     if (path && n.path !== path) continue;
-    for (const l of n.leaves) { const h = innermost(l.section); if (h) headings.add(h); }
+    for (const l of n.blocks) { const h = innermost(l.section); if (h) headings.add(h); }
   }
   $("headings").replaceChildren(...[...headings].sort().map((h) => el("option", { value: h })));
 }
@@ -661,32 +634,32 @@ async function syncNow(automatic) {
         : "Nothing had changed.";
     }, automatic);
   } catch (e) {
-    if (automatic && view) autoFailedAt = view.root;
+    if (automatic && view) autoFailedAt = notesKey(view);
   }
 }
 
-async function removeLeaf(note, leaf) {
+async function removeBlock(note, block) {
   try {
     await change("Removed", async () => {
-      const r = await tool("forget", { text: leaf.source, note: note.path });
+      const r = await tool("forget", { text: block.source, note: note.path });
       editing = null;
-      if (!r.removed.length) return `Nothing removed: those words are no longer stored in ${note.path}. The note changed; the tree is current again.`;
+      if (!r.removed.length) return `Nothing removed: those words are no longer stored in ${note.path}. The note changed; the list is current again.`;
       return `Removed ${plural(r.removed.length, "block", "blocks")} from ${note.path} (${r.removed.map((at) => lines(at.lines)).join(", ")}).`;
     });
   } catch (e) { render(); }
 }
 
-async function replaceLeaf(note, leaf, text) {
+async function replaceBlock(note, block, text) {
   if (!text.trim()) return;
-  if (words(text) === words(leaf.source)) { editing = null; render(); return; }
+  if (words(text) === words(block.source)) { editing = null; render(); return; }
   try {
     await change("Replaced", async () => {
       // The new text first: if it is refused, the old one stays.
-      const added = await tool("remember", { text, note: note.path, heading: innermost(leaf.section) });
-      const atOld = (at) => at.note === note.path && at.lines[0] === leaf.lines[0] && at.lines[1] === leaf.lines[1];
+      const added = await tool("remember", { text, note: note.path, heading: innermost(block.section) });
+      const atOld = (at) => at.note === note.path && at.lines[0] === block.lines[0] && at.lines[1] === block.lines[1];
       editing = null;
       if (!added.stored && added.known_at.some(atOld)) return `Nothing changed in ${note.path}: the new words are the old ones.`;
-      const gone = await tool("forget", { text: leaf.source, note: note.path });
+      const gone = await tool("forget", { text: block.source, note: note.path });
       const where = added.stored
         ? `Stored the new text in ${added.note}`
         : `The new words were already stored at ${added.known_at.map((at) => `${at.note} ${lines(at.lines)}`).join(", ")}`;
@@ -762,7 +735,7 @@ $("ask").addEventListener("submit", async (event) => {
   box.replaceChildren(...parts);
 });
 
-/** Hits that, clicked, open their note and point at their leaves. */
+/** Hits that, clicked, open their note and point at their blocks. */
 function hitList(hits) {
   return el("ul", { class: "hits" }, hits.map((h) => el("li", {}, el("button", { onclick: () => point(h) },
     el("span", {}, h.title),
@@ -775,13 +748,13 @@ function point(hit) {
   focused = new Set();
   const note = view.notes.find((n) => n.path === hit.note);
   if (!note) return;
-  for (const l of note.leaves) {
+  for (const l of note.blocks) {
     if (l.lines[0] >= hit.lines[0] && l.lines[1] <= hit.lines[1]) focused.add(`${note.path}:${l.lines[0]}`);
   }
   open.add(note.path);
   $("filter").value = "";
   render();
-  const target = document.querySelector(".leaf.focus") || document.querySelector(`.note[data-path="${CSS.escape(note.path)}"]`);
+  const target = document.querySelector(".block.focus") || document.querySelector(`.note[data-path="${CSS.escape(note.path)}"]`);
   if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
@@ -811,7 +784,7 @@ async function tick() {
     render();
     return;
   }
-  if (auto.checked && needsSync(view) && autoFailedAt !== view.root) await syncNow(true);
+  if (auto.checked && needsSync(view) && autoFailedAt !== notesKey(view)) await syncNow(true);
 }
 
 tick();
