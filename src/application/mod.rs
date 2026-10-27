@@ -6,4 +6,5 @@ pub mod compose;
 pub mod correlations;
 pub mod feature;
 pub mod index;
+pub mod project_feature;
 pub mod tools;

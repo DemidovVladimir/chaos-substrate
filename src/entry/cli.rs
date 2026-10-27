@@ -81,6 +81,12 @@ pub enum Command {
         /// Print JSON instead of markdown.
         #[arg(long)]
         json: bool,
+        /// Answer across these project repos (aliases/paths) on one page.
+        #[arg(long, num_args = 1..)]
+        repos: Vec<String>,
+        /// Answer across every repo of the project (chaos.toml).
+        #[arg(long)]
+        all_repos: bool,
     },
     /// Write the feature website of a repository (index + per-feature pages).
     Compose {
@@ -227,8 +233,6 @@ impl Services {
                     .map(str::trim)
                     .filter(|q| !q.is_empty())
                     .context("`question` is required")?;
-                let root = self.resolve_root(repo_arg)?;
-                let repo = self.indexed_repo(&root).await?;
                 let mut req = application::feature::FeatureRequest::new(question);
                 if let Some(b) = args.get("budget_tokens").and_then(Value::as_u64) {
                     req.budget_tokens = b as usize;
@@ -242,6 +246,35 @@ impl Services {
                     embedder: self.embedder.as_ref(),
                     pages: &self.pages,
                 };
+                let only = string_list(args, "repos");
+                let all_repos = args
+                    .get("all_repos")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if all_repos || !only.is_empty() {
+                    let (project, project_dir) = self.project_arg(args)?;
+                    if all_repos && project.is_none() {
+                        bail!("`all_repos` needs a project: no chaos.toml found (pass `project`)");
+                    }
+                    let members = select_members(project.as_ref(), &only)?;
+                    let mut selected = Vec::with_capacity(members.len());
+                    for (alias, root) in members {
+                        let repo = self.indexed_repo(&root).await?;
+                        selected.push(application::project_feature::Member { alias, repo, root });
+                    }
+                    let name = project
+                        .as_ref()
+                        .map(|p| p.name.clone())
+                        .unwrap_or_else(|| selected[0].alias.clone());
+                    let out_dir = features_dir(project_dir.as_deref(), &selected[0].root);
+                    let answer = application::project_feature::project_feature(
+                        deps, &name, &selected, &out_dir, req,
+                    )
+                    .await?;
+                    return Ok(serde_json::to_value(answer)?);
+                }
+                let root = self.resolve_root(repo_arg)?;
+                let repo = self.indexed_repo(&root).await?;
                 let answer = application::feature::feature(deps, &repo, &root, req).await?;
                 Ok(serde_json::to_value(answer)?)
             }
@@ -267,20 +300,8 @@ impl Services {
                     .get("min_confidence")
                     .and_then(Value::as_f64)
                     .unwrap_or(0.5) as f32;
-                let only: Vec<String> = args
-                    .get("repos")
-                    .and_then(Value::as_array)
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(Value::as_str)
-                            .map(String::from)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let (project, project_dir) = match args.get("project").and_then(Value::as_str) {
-                    Some(p) => load_project(Some(Path::new(p)))?,
-                    None => (self.project.clone(), self.project_dir.clone()),
-                };
+                let only = string_list(args, "repos");
+                let (project, project_dir) = self.project_arg(args)?;
                 let report = self
                     .correlations(project, project_dir, &only, min_confidence)
                     .await?;
@@ -293,6 +314,14 @@ impl Services {
         }
     }
 
+    /// The project named by the `project` argument, else the one resolved at startup.
+    fn project_arg(&self, args: &Value) -> Result<(Option<Project>, Option<PathBuf>)> {
+        match args.get("project").and_then(Value::as_str) {
+            Some(p) => load_project(Some(Path::new(p))),
+            None => Ok((self.project.clone(), self.project_dir.clone())),
+        }
+    }
+
     async fn correlations(
         &self,
         project: Option<Project>,
@@ -300,51 +329,7 @@ impl Services {
         only: &[String],
         min_confidence: f32,
     ) -> Result<application::correlations::CorrelationReport> {
-        // Members: the project's repos (filtered by `only`), or the cwd repo alone.
-        let mut members: Vec<(String, PathBuf)> = Vec::new();
-        match &project {
-            Some(p) => {
-                for entry in &p.repos {
-                    let selected = only.is_empty()
-                        || only
-                            .iter()
-                            .any(|o| o == &entry.alias || Path::new(o) == Path::new(&entry.path));
-                    if selected {
-                        members.push((entry.alias.clone(), PathBuf::from(&entry.path)));
-                    }
-                }
-                for o in only {
-                    if !members.iter().any(|(a, _)| a == o)
-                        && p.repos.iter().all(|e| Path::new(o) != Path::new(&e.path))
-                    {
-                        let root = Project::resolve_repo(Some(p), Some(o))?;
-                        let alias = root
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| o.clone());
-                        members.push((alias, root));
-                    }
-                }
-            }
-            None => {
-                let targets: Vec<Option<&str>> = if only.is_empty() {
-                    vec![None]
-                } else {
-                    only.iter().map(|s| Some(s.as_str())).collect()
-                };
-                for t in targets {
-                    let root = Project::resolve_repo(None, t)?;
-                    let alias = root
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| "repo".into());
-                    members.push((alias, root));
-                }
-            }
-        }
-        if members.is_empty() {
-            bail!("no repositories selected for correlations");
-        }
+        let members = select_members(project.as_ref(), only)?;
         let mut repos = Vec::new();
         let mut manifests = Vec::new();
         let mut unindexed = Vec::new();
@@ -369,10 +354,7 @@ impl Services {
                 unindexed.join(", ")
             );
         }
-        let out_dir = match (&project_dir, repos.len()) {
-            (Some(dir), _) => dir.join(application::feature::FEATURES_DIR),
-            (None, _) => members[0].1.join(application::feature::FEATURES_DIR),
-        };
+        let out_dir = features_dir(project_dir.as_deref(), &members[0].1);
         let deps = application::correlations::Deps {
             store: &self.store,
             communities: &self.store,
@@ -381,6 +363,77 @@ impl Services {
         application::correlations::correlations(&deps, &repos, &manifests, &out_dir, min_confidence)
             .await
     }
+}
+
+/// A JSON string-array argument (missing or malformed → empty).
+fn string_list(args: &Value, key: &str) -> Vec<String> {
+    args.get(key)
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Where project-level pages go: `<project dir>/docs/features_memory`, or the
+/// first member's features directory when there is no chaos.toml.
+fn features_dir(project_dir: Option<&Path>, first_root: &Path) -> PathBuf {
+    project_dir
+        .unwrap_or(first_root)
+        .join(application::feature::FEATURES_DIR)
+}
+
+/// Members of a multi-repo call: the project's repos (filtered by `only`,
+/// aliases or paths), or — without a chaos.toml — `only` (or the cwd) as paths.
+fn select_members(project: Option<&Project>, only: &[String]) -> Result<Vec<(String, PathBuf)>> {
+    let mut members: Vec<(String, PathBuf)> = Vec::new();
+    match project {
+        Some(p) => {
+            for entry in &p.repos {
+                let selected = only.is_empty()
+                    || only
+                        .iter()
+                        .any(|o| o == &entry.alias || Path::new(o) == Path::new(&entry.path));
+                if selected {
+                    members.push((entry.alias.clone(), PathBuf::from(&entry.path)));
+                }
+            }
+            for o in only {
+                if !members.iter().any(|(a, _)| a == o)
+                    && p.repos.iter().all(|e| Path::new(o) != Path::new(&e.path))
+                {
+                    let root = Project::resolve_repo(Some(p), Some(o))?;
+                    let alias = root
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| o.clone());
+                    members.push((alias, root));
+                }
+            }
+        }
+        None => {
+            let targets: Vec<Option<&str>> = if only.is_empty() {
+                vec![None]
+            } else {
+                only.iter().map(|s| Some(s.as_str())).collect()
+            };
+            for t in targets {
+                let root = Project::resolve_repo(None, t)?;
+                let alias = root
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "repo".into());
+                members.push((alias, root));
+            }
+        }
+    }
+    if members.is_empty() {
+        bail!("no repositories selected");
+    }
+    Ok(members)
 }
 
 /// `--project <chaos.toml>` or the nearest chaos.toml above the cwd.
@@ -401,6 +454,8 @@ fn load_project(explicit: Option<&Path>) -> Result<(Option<Project>, Option<Path
     };
     match path {
         Some(p) => {
+            // Absolute, so pages written under the project dir report real paths.
+            let p = p.canonicalize().unwrap_or(p);
             let project = Project::load(&p)?;
             let dir = p
                 .parent()
@@ -556,6 +611,71 @@ fn fence_lang(path: &str) -> &'static str {
         "md" | "mdx" => "markdown",
         _ => "",
     }
+}
+
+/// Markdown rendering of a project-wide `feature` answer: one
+/// [`feature_markdown`] block per repo (retitled by alias), then the links.
+pub fn project_feature_markdown(answer: &Value) -> String {
+    let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let repos = answer
+        .get("repos")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let links = answer
+        .get("links")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut out = format!(
+        "# {}
+
+project: {}  ·  repos: {}  ·  tokens: {}",
+        s(answer, "question"),
+        s(answer, "project"),
+        repos
+            .iter()
+            .map(|r| s(r, "alias"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        answer
+            .get("tokens_used")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    );
+    if let Some(p) = answer.get("page").and_then(Value::as_str) {
+        let cached = answer
+            .get("page_cached")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        out.push_str(&format!(
+            "  ·  page: {p}{}",
+            if cached { " (cached)" } else { "" }
+        ));
+    }
+    out.push_str("\n\n");
+    for r in &repos {
+        let body = feature_markdown(r);
+        let body = body.split_once('\n').map(|(_, rest)| rest).unwrap_or("");
+        out.push_str(&format!("---\n\n# [{}]\n{body}\n", s(r, "alias")));
+    }
+    out.push_str("## Cross-repo links\n\n");
+    if links.is_empty() {
+        out.push_str("_none found_\n");
+    }
+    for l in &links {
+        out.push_str(&format!(
+            "- {} `{}` ({}) → {} `{}` ({}) — name `{}`\n",
+            s(l, "from_repo"),
+            s(l, "from"),
+            s(l, "from_path"),
+            s(l, "to_repo"),
+            s(l, "to"),
+            s(l, "to_path"),
+            s(l, "term")
+        ));
+    }
+    out
 }
 
 /// Markdown rendering of a `feature` answer (features, then excerpts as fenced code).
@@ -783,12 +903,18 @@ async fn run_command(cli: Cli) -> Result<()> {
             budget,
             no_persist,
             json: as_json,
+            repos,
+            all_repos,
         } => {
             let services = Services::connect(config_path, project_path).await?;
-            let args = json!({"repo": cli.repo, "question": question, "budget_tokens": budget, "persist": !no_persist});
+            let args = json!({"repo": cli.repo, "question": question, "budget_tokens": budget,
+                "persist": !no_persist, "repos": repos, "all_repos": all_repos});
             let v = services.call_tool("feature", &args).await?;
             if as_json {
                 print_json(&v)
+            } else if v.get("repos").is_some() {
+                print!("{}", project_feature_markdown(&v));
+                Ok(())
             } else {
                 print!("{}", feature_markdown(&v));
                 Ok(())
@@ -867,10 +993,30 @@ mod tests {
                 budget,
                 no_persist,
                 json,
+                ..
             } => {
                 assert_eq!(question, "how?");
                 assert_eq!(budget, 2000);
                 assert!(no_persist && json);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let cli = Cli::try_parse_from([
+            "chaos",
+            "feature",
+            "byot?",
+            "--repos",
+            "contracts",
+            "web",
+            "--all-repos",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Feature {
+                repos, all_repos, ..
+            } => {
+                assert_eq!(repos, ["contracts", "web"]);
+                assert!(all_repos);
             }
             other => panic!("unexpected {other:?}"),
         }

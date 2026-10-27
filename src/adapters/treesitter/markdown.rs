@@ -64,10 +64,12 @@ fn scan(content: &str) -> (Vec<Heading>, Vec<(usize, usize)>) {
     (headings, blocks)
 }
 
+/// 1-based line of byte offset `at`. Counts on bytes, so `at` may fall inside
+/// a multi-byte char (callers pass `end - 1`).
 fn line_of(content: &str, at: usize) -> u32 {
-    content[..at.min(content.len())]
-        .bytes()
-        .filter(|b| *b == b'\n')
+    content.as_bytes()[..at.min(content.len())]
+        .iter()
+        .filter(|b| **b == b'\n')
         .count() as u32
         + 1
 }
@@ -204,6 +206,14 @@ mod tests {
         assert!(x.symbols.is_empty());
         assert_eq!(x.free_ranges, [(0, "just text\n\nmore text\n".len())]);
         assert_eq!(x.language, Some(Language::Markdown));
+    }
+
+    #[test]
+    fn section_ending_in_multibyte_char() {
+        let x = md("# A\n\nversion —\n\n# B\n\nend —");
+        assert_eq!(x.symbols.len(), 2);
+        assert_eq!((x.symbols[0].line_start, x.symbols[0].line_end), (1, 3));
+        assert_eq!((x.symbols[1].line_start, x.symbols[1].line_end), (5, 7));
     }
 
     #[test]

@@ -107,25 +107,38 @@ where a feature's hash changed. Use after every edit instead of `reindex`.
 Returns `changed`, `purged`, nodes, chunks, `chunks_embedded`, `communities_changed`,
 `summaries_recomputed`, warnings, provenance.
 
-### feature — `chaos feature "<question>" [--budget N] [--no-persist] [--json]` / `chaos_feature`
+### feature — `chaos feature "<question>" [--budget N] [--no-persist] [--json] [--repos a b | --all-repos]` / `chaos_feature`
 
 Answer ONE feature question from the index without reading source: routes to the matching feature
-communities, retrieves the relevant chunks (semantic + keyword + literal), expands one hop over
-call/import edges, and returns a token-bounded payload. Persists the answer as a page
-(`docs/features_memory/<slug>.html`, hash-gated).
+communities, retrieves the relevant chunks (literal identifiers named in the question over the
+whole repo, then semantic + keyword over the routed files plus the literal hits' files), expands
+one hop over call/import edges, and returns a token-bounded payload. Persists the answer as a page
+with a visual feature map (`docs/features_memory/<slug>.html`, hash-gated).
+
+With `repos` or `all_repos` the same question is answered in each selected repo of the project
+(chaos.toml) and joined by cross-repo links — an excerpt's symbol name (identifier-shaped, ≥ 6
+chars) found as a whole word in another repo's excerpt — on ONE page under
+`<project dir>/docs/features_memory/`. Use it for features that span repos (contract → indexer →
+UI → docs). Name the key identifiers in the question: they pull their files into scope.
 
 | arg | type | notes |
 |---|---|---|
 | `question` | string | required, e.g. "how are embeddings reused on reindex" |
 | `repo` | string | optional |
-| `budget_tokens` | integer | default 6000, min 1000, max 16000 (CLI `--budget`) |
+| `repos` | string[] | answer across these project repos (CLI `--repos`) |
+| `all_repos` | boolean | answer across every project repo (CLI `--all-repos`) |
+| `project` | string | chaos.toml for `repos`/`all_repos` (CLI global `--project`) |
+| `budget_tokens` | integer | default 6000, min 1000, max 16000; across repos, split evenly (≥ 1000 each) (CLI `--budget`) |
 | `persist` | boolean | default `true` (CLI `--no-persist`) |
 
 Return fields: `features[]` (`id`, `label`, `score`, `summary`, `files`), `excerpts[]` (`path`,
 `lines [start, end]`, `symbol`, `kind`, `score`, `why` = semantic/keyword/literal/graph, `code`,
-`code_truncated`), `graph[]` (`from`, `kind`, `to`), `surfaces[]` (env vars, HTTP routes),
-`page`, `page_cached`, `content_hash`, `tokens_used`, `warnings`, `provenance`. The CLI prints
-Markdown by default; `--json` prints the payload.
+`code_truncated`), `graph[]` (`from`, `kind`, `to`, `from_path`, `to_path`), `surfaces[]` (env
+vars, HTTP routes), `page`, `page_cached`, `content_hash`, `tokens_used`, `warnings`,
+`provenance`. Across repos: `question`, `project`, `repos[]` (`alias` + the fields above),
+`links[]` (`from_repo`, `from`, `from_path`, `to_repo`, `to`, `to_path`, `term`), `page`
+(absolute), `page_cached`, `content_hash`, `tokens_used`. The CLI prints Markdown by default;
+`--json` prints the payload.
 
 ### compose — `chaos compose [--out <dir>] [--limit N]` / `chaos_compose`
 

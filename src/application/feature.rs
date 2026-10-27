@@ -2,8 +2,10 @@
 //! without reading source files.
 //!
 //! Pipeline: embed the question once → route to the best-matching feature
-//! communities by summary embedding → fused chunk retrieval (semantic /
-//! keyword / literal) restricted to those communities' files → 1-hop graph
+//! communities by summary embedding → fused chunk retrieval: literal
+//! identifiers named in the question over the whole repo, then semantic and
+//! keyword over the routed files plus the files of those literal hits (an
+//! exact identifier outranks summary routing) → 1-hop graph
 //! expansion of the top hits → env-var / HTTP-route surfaces of the involved
 //! files → pack everything under a token budget → optionally persist the
 //! answer as a hash-gated page. Deterministic given the store outputs.
@@ -47,6 +49,7 @@ pub const MIN_BUDGET: usize = 1000;
 pub const MAX_BUDGET: usize = 16000;
 
 /// Everything the use-case needs, as trait objects.
+#[derive(Clone, Copy)]
 pub struct Deps<'a> {
     pub search: &'a dyn SearchStore,
     pub communities: &'a dyn CommunityStore,
@@ -102,6 +105,9 @@ pub struct GraphEdge {
     pub from: String,
     pub kind: String,
     pub to: String,
+    /// Repo-relative files of `from` / `to` (from the node stable ids).
+    pub from_path: String,
+    pub to_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -181,7 +187,7 @@ pub fn literal_terms(question: &str) -> Vec<String> {
     out
 }
 
-fn looks_like_identifier(tok: &str) -> bool {
+pub(crate) fn looks_like_identifier(tok: &str) -> bool {
     if !tok
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '.' | '-' | '/'))
@@ -225,6 +231,21 @@ fn node_symbol(node: &Node) -> String {
     }
 }
 
+/// Serialized size of a graph edge, charged against the budget.
+fn edge_cost(g: &GraphEdge) -> usize {
+    g.from.len() + g.kind.len() + g.to.len() + g.from_path.len() + g.to_path.len() + 48
+}
+
+/// Repo-relative file of a node: the `{path}` of `{lang}:{path}:{kind}:{qualified}`
+/// (or of `file:{path}`); empty when the id has neither shape.
+fn node_path(node: &Node) -> String {
+    let parts: Vec<&str> = node.stable_id.splitn(4, ':').collect();
+    match parts.as_slice() {
+        [_, path, _, _] | ["file", path] => path.to_string(),
+        _ => String::new(),
+    }
+}
+
 /// Symbol for a chunk with no node (file head) — derived from its header.
 fn header_symbol(chunk: &Chunk, path: &str) -> String {
     for line in chunk.header.lines() {
@@ -244,6 +265,8 @@ struct Candidates {
     hit_by_chunk: HashMap<Uuid, Hit>,
     channels: Vec<Vec<Candidate>>,
     counts: BTreeMap<&'static str, usize>,
+    /// Files added to the routed scope because they contain a literal term.
+    literal_files: usize,
 }
 
 async fn retrieve(
@@ -270,19 +293,8 @@ async fn retrieve(
         out
     };
 
-    let semantic = deps
-        .search
-        .semantic(repo.id, &model, embedding, file_ids, SEMANTIC_LIMIT)
-        .await
-        .context("semantic search")?;
-    let semantic = to_candidates(semantic, Channel::Semantic);
-    let keyword = deps
-        .search
-        .keyword(repo.id, question, file_ids, KEYWORD_LIMIT)
-        .await
-        .context("keyword search")?;
-    let keyword = to_candidates(keyword, Channel::Keyword);
-
+    // Literal identifiers first, over the whole repo: files that contain an
+    // identifier the question names join the routed scope of the other channels.
     let terms = literal_terms(question);
     let mut literal_hits: Vec<Hit> = Vec::new();
     if !terms.is_empty() {
@@ -290,7 +302,7 @@ async fn retrieve(
         for term in &terms {
             literal_hits.extend(
                 deps.search
-                    .literal(repo.id, term, file_ids, per_term)
+                    .literal(repo.id, term, None, per_term)
                     .await
                     .with_context(|| format!("literal search for {term}"))?,
             );
@@ -304,12 +316,40 @@ async fn retrieve(
         literal_hits.dedup_by(|a, b| a.chunk.id == b.chunk.id);
         literal_hits.truncate(LITERAL_TOTAL);
     }
+    let scope: Option<Vec<Uuid>> = file_ids.map(|routed| {
+        let mut ids: Vec<Uuid> = routed
+            .iter()
+            .copied()
+            .chain(literal_hits.iter().filter_map(|h| h.chunk.file_id))
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    });
+    let literal_files = match (&scope, file_ids) {
+        (Some(s), Some(r)) => s.len() - r.len(),
+        _ => 0,
+    };
+
+    let semantic = deps
+        .search
+        .semantic(repo.id, &model, embedding, scope.as_deref(), SEMANTIC_LIMIT)
+        .await
+        .context("semantic search")?;
+    let semantic = to_candidates(semantic, Channel::Semantic);
+    let keyword = deps
+        .search
+        .keyword(repo.id, question, scope.as_deref(), KEYWORD_LIMIT)
+        .await
+        .context("keyword search")?;
+    let keyword = to_candidates(keyword, Channel::Keyword);
     let literal = to_candidates(literal_hits, Channel::Literal);
 
     Ok(Candidates {
         hit_by_chunk,
         channels: vec![semantic, keyword, literal],
         counts,
+        literal_files,
     })
 }
 
@@ -415,12 +455,12 @@ pub async fn feature(
             source::POSTGRES,
             "hybrid",
             format!(
-                "semantic {} / keyword {} / literal {} hits fused to {} (weights 1.0/0.6/0.4, scope: {})",
+                "semantic {} / keyword {} / literal {} hits fused to {} (weights 1.0/0.6/0.4, scope: {}; literal: whole repo)",
                 cands.counts.get("semantic").copied().unwrap_or(0),
                 cands.counts.get("keyword").copied().unwrap_or(0),
                 cands.counts.get("literal").copied().unwrap_or(0),
                 fused.len(),
-                file_ids.as_ref().map(|f| format!("{} routed files", f.len())).unwrap_or_else(|| "whole repo".into())
+                file_ids.as_ref().map(|f| format!("{} routed + {} literal-hit files", f.len(), cands.literal_files)).unwrap_or_else(|| "whole repo".into())
             ),
         )
         .with_locator("chunks"),
@@ -523,6 +563,8 @@ pub async fn feature(
                 from: node_symbol(from),
                 kind: e.kind.as_str().to_string(),
                 to: node_symbol(to),
+                from_path: node_path(from),
+                to_path: node_path(to),
             })
         })
         .collect();
@@ -593,10 +635,7 @@ pub async fn feature(
 
     // --- surfaces ----------------------------------------------------------
     let excerpt_files: BTreeSet<Uuid> = raws.iter().filter_map(|r| r.chunk.file_id).collect();
-    let surface_scope: Vec<Uuid> = match &file_ids {
-        Some(ids) => ids.clone(),
-        None => excerpt_files.iter().copied().collect(),
-    };
+    let surface_scope: Vec<Uuid> = excerpt_files.iter().copied().collect();
     let mut surface_nodes = if surface_scope.is_empty() {
         Vec::new()
     } else {
@@ -648,10 +687,7 @@ pub async fn feature(
             body_chars: r.chunk.body.len() + 1,
         })
         .collect();
-    let graph_chars: usize = graph
-        .iter()
-        .map(|g| g.from.len() + g.kind.len() + g.to.len() + 24)
-        .sum::<usize>()
+    let graph_chars: usize = graph.iter().map(edge_cost).sum::<usize>()
         + surfaces
             .iter()
             .map(|s| s.kind.len() + s.name.len() + s.path.len() + 36)
@@ -706,7 +742,7 @@ pub async fn feature(
     let mut granted = packed.graph_chars;
     let mut kept_graph = Vec::new();
     for g in graph {
-        let cost = g.from.len() + g.kind.len() + g.to.len() + 24;
+        let cost = edge_cost(&g);
         if cost <= granted {
             granted -= cost;
             kept_graph.push(g);
@@ -935,10 +971,13 @@ mod tests {
             &self,
             _r: Uuid,
             term: &str,
-            _f: Option<&[Uuid]>,
+            file_ids: Option<&[Uuid]>,
             limit: i64,
         ) -> Result<Vec<Hit>> {
-            self.log(format!("literal {term} limit={limit}"));
+            self.log(format!(
+                "literal {term} limit={limit} scope={:?}",
+                file_ids.map(|f| f.len())
+            ));
             Ok(self.literal.clone())
         }
         async fn communities_by_embedding(
@@ -1226,7 +1265,9 @@ mod tests {
             vec![GraphEdge {
                 from: "Store::replace".into(),
                 kind: "calls".into(),
-                to: "insert_chunk".into()
+                to: "insert_chunk".into(),
+                from_path: "src/f100.rs".into(),
+                to_path: "src/f102.rs".into(),
             }]
         );
         // Surfaces are filtered to files of the returned excerpts.
@@ -1239,14 +1280,56 @@ mod tests {
                 line: 3
             }]
         );
+        assert!(
+            script
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| c == "literal replace_repo limit=20 scope=None"),
+            "literal identifiers search the whole repo, not the routed files"
+        );
         assert!(script
             .calls
             .lock()
             .unwrap()
             .iter()
-            .any(|c| c.starts_with("literal replace_repo")));
+            .any(|c| c == "semantic scope=Some(2)"));
         assert!(out.excerpts.iter().all(|e| !e.code_truncated));
         assert!(out.tokens_used > 0 && out.tokens_used <= 6000);
+    }
+
+    #[tokio::test]
+    async fn literal_hit_files_join_the_routed_scope() {
+        let routed = chunk(20, Some(200), 100, 100);
+        let named = chunk(22, Some(202), 105, 100);
+        let script = Script {
+            communities: vec![(community(10, "storage", "s1"), 0.9)],
+            file_ids: vec![id(100), id(101)],
+            semantic: vec![hit(routed.clone(), 0.9)],
+            literal: vec![hit(named.clone(), 0.75)],
+            nodes: vec![
+                node(200, 100, NodeKind::Function, "alpha"),
+                node(202, 105, NodeKind::Function, "replace_repo"),
+            ],
+            ..Default::default()
+        };
+        run(
+            &script,
+            &MemPages::default(),
+            FeatureRequest {
+                persist: false,
+                ..FeatureRequest::new("where is replace_repo")
+            },
+        )
+        .await;
+        let calls = script.calls.lock().unwrap().clone();
+        let at = |p: &str| calls.iter().position(|c| c.starts_with(p)).unwrap();
+        assert!(at("literal replace_repo") < at("semantic"), "{calls:?}");
+        assert!(
+            calls.contains(&"semantic scope=Some(3)".to_string()),
+            "{calls:?}"
+        );
     }
 
     #[tokio::test]

@@ -36,10 +36,12 @@ argument schemas live in one place: `src/application/tools.rs`.
 - `add [--since <ref>]` — incrementally index what changed since the last index (content-hash
   drift, plus git's changes when `--since` is given); files gone from disk
   are purged; only new chunks are embedded. Use after every edit.
-- `feature "<question>" [--budget N] [--no-persist] [--json]` — answer one feature question from
-  the index without reading source: routed to matching features, code excerpts with exact line
-  ranges, a 1-hop call/import graph, env vars and HTTP routes. Persists
+- `feature "<question>" [--budget N] [--no-persist] [--json] [--repos a b | --all-repos]` — answer
+  one feature question from the index without reading source: routed to matching features, code
+  excerpts with exact line ranges, a 1-hop call/import graph, env vars and HTTP routes. Persists
   `docs/features_memory/<slug>.html` (hash-gated). Read `excerpts[].code` instead of opening files.
+  With `--repos`/`--all-repos` it answers in each repo of the project (budget split between them)
+  and links them where a symbol name from one repo appears verbatim in another's code, on one page.
 - `compose [--out <dir>] [--limit N]` — write the feature website (`docs/features_memory/site/`):
   an index plus one page per feature, content-hash gated. Cached pages must not be re-read.
 - `correlations [--repos a b] [--min-confidence 0.5]` — intra-repo pairs of features sharing files

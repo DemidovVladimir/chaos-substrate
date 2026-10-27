@@ -9,6 +9,9 @@ use std::path::Path;
 pub enum PageKind {
     /// One `feature` answer persisted: question, features, excerpts, graph.
     Feature,
+    /// One `feature` question answered across several repos of a project,
+    /// with the cross-repo links between their excerpts.
+    ProjectFeature,
     /// Site index listing every community with links to per-feature pages.
     SiteIndex,
     /// One community's drill-down page (members, files, relations, summary).

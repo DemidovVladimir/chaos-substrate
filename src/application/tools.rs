@@ -47,11 +47,14 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "feature",
-            description: "Answer ONE feature question from the index WITHOUT reading source: routes to the matching feature communities, retrieves the relevant code chunks (semantic + keyword + literal), expands one hop over call/import edges, and returns a token-bounded payload — feature summaries, code excerpts with exact line ranges, the 1-hop graph, and the env vars / HTTP routes involved. Persists the answer as a page (hash-gated). Read the returned `excerpts[].code` instead of opening files.",
+            description: "Answer ONE feature question from the index WITHOUT reading source: routes to the matching feature communities, retrieves the relevant code chunks (semantic + keyword + literal), expands one hop over call/import edges, and returns a token-bounded payload — feature summaries, code excerpts with exact line ranges, the 1-hop graph, and the env vars / HTTP routes involved. Persists the answer as a page with a visual feature map (hash-gated). With `repos` or `all_repos` the question is answered in each selected repo of the project (chaos.toml) and joined by cross-repo links (an excerpt's symbol name found verbatim in another repo's excerpt) on ONE page under the project's docs/features_memory. Read the returned `excerpts[].code` instead of opening files.",
             input_schema: json!({"type": "object", "properties": {
                 "question": {"type": "string", "description": "What you want to understand, e.g. 'how are embeddings reused on reindex'."},
                 "repo": repo_prop(),
-                "budget_tokens": {"type": "integer", "default": 6000, "minimum": 1000, "maximum": 16000},
+                "repos": {"type": "array", "items": {"type": "string"}, "description": "Answer across these project repos (aliases/paths) on one page."},
+                "all_repos": {"type": "boolean", "default": false, "description": "Answer across every repo of the project."},
+                "project": {"type": "string", "description": "Path to chaos.toml for `repos`/`all_repos`. Default: nearest ancestor of the current directory."},
+                "budget_tokens": {"type": "integer", "default": 6000, "minimum": 1000, "maximum": 16000, "description": "Across repos, the total split evenly between them (at least 1000 each)."},
                 "persist": {"type": "boolean", "default": true}
             }, "required": ["question"]}),
         },

@@ -76,6 +76,23 @@ pre code{background:none;padding:0}.excerpt .meta{font-size:12.5px;color:var(--i
 .prov{font-size:13px}.prov li{margin:0 0 4px}.prov .src{font-family:var(--mono);color:var(--purple-500)}
 .muted{color:var(--ink-200);font-size:13px}.empty{color:var(--ink-200);font-style:italic}
 footer{margin-top:48px;padding-top:16px;border-top:1px solid var(--border-soft);font-size:12px;color:var(--ink-200)}
+.mapwrap{overflow-x:auto;background:var(--surface-0);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:8px}
+.fmap{display:block;font:12px var(--mono)}.fmap .band{fill:var(--surface-2);stroke:var(--border-soft)}
+.fmap .bl{font:600 13px var(--font);fill:var(--ink-900)}.fmap .bm{font:12px var(--font);fill:var(--ink-200)}
+.fmap .n rect{fill:var(--surface-0);stroke:var(--ink-200);stroke-dasharray:3 2}.fmap .n.ex rect{fill:var(--blue-50);stroke:var(--blue-600);stroke-dasharray:none}
+.fmap .n text{fill:var(--ink-700)}.fmap .n .k{fill:var(--ink-200);font-size:10.5px}.fmap .n.pick{cursor:pointer}
+.fmap .e{fill:none;stroke-width:1.4;opacity:.7}.fmap .e.calls{stroke:var(--blue-600)}.fmap .e.imports{stroke:var(--ink-200)}.fmap .e.other{stroke:var(--purple-500)}
+.fmap .e.cross{stroke:var(--warn);stroke-width:1.3;stroke-dasharray:5 4;opacity:.45}
+.fmap .ah.calls{fill:var(--blue-600)}.fmap .ah.imports{fill:var(--ink-200)}.fmap .ah.other{fill:var(--purple-500)}.fmap .ah.cross{fill:var(--warn)}
+.fmap.focus .n:not(.on),.fmap.focus .e:not(.on){opacity:.12}.fmap .n.on rect{stroke-width:2}.fmap .e.on{opacity:1;stroke-width:2.4}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin:10px 2px 0;font-size:12.5px;color:var(--ink-500)}
+.legend span::before{content:"";display:inline-block;width:18px;height:0;margin-right:6px;vertical-align:3px;border-top:2px solid}
+.legend .ex::before{height:10px;vertical-align:-1px;border:1.5px solid var(--blue-600);background:var(--blue-50);border-radius:3px}
+.legend .nb::before{height:10px;vertical-align:-1px;border:1.5px dashed var(--ink-200);border-radius:3px}
+.legend .calls::before{border-color:var(--blue-600)}.legend .imports::before{border-color:var(--ink-200)}.legend .other::before{border-color:var(--purple-500)}.legend .cross::before{border-top:2px dashed var(--warn)}
+.excerpt{scroll-margin-top:64px}details.card>summary{cursor:pointer;list-style:none}details.card>summary::-webkit-details-marker{display:none}
+details.card>summary::before{content:"\25B8  ";color:var(--ink-200)}details.card[open]>summary::before{content:"\25BE  "}
+.flash{animation:flash 1.6s ease-out}@keyframes flash{0%{box-shadow:0 0 0 3px var(--blue-300)}100%{box-shadow:var(--shadow)}}
 @media(max-width:640px){.hero h1{font-size:24px}.wrap{padding:0 14px 40px}}
 "#;
 
@@ -97,6 +114,87 @@ function hero(kicker,title,lead){var d=h("div",{class:"hero"},[h("div",{class:"k
 function summaryBand(text){return text?h("div",{class:"nutshell",text:text}):null}
 "#;
 
+/// Feature map (Feature + ProjectFeature pages): one swimlane per repository,
+/// columns by call depth (callers left), cross-repo links between lanes.
+const MAP_JS: &str = r#"
+function jump(id){var el=document.getElementById(id);if(!el)return;if(el.tagName==="DETAILS")el.open=true;el.scrollIntoView({behavior:"smooth",block:"start"});el.classList.remove("flash");void el.offsetWidth;el.classList.add("flash");}
+function excerptCard(e,id,open){
+ var range=e.start_line!=null?" : "+num(e.start_line)+(e.end_line!=null?"\u2013"+num(e.end_line):""):"";
+ var meta=h("summary",{class:"meta"},[h("b",{text:str(e.path)}),range,"   ",e.symbol?h("span",{class:"chip k",text:str(e.symbol)}):null,e.retrieved_by?h("span",{class:"chip f",text:str(e.retrieved_by)}):null]);
+ var d=h("details",{class:"card excerpt",id:id},[meta,h("pre",{},[h("code",{text:str(e.code||e.content)})])]);if(open)d.open=true;return d;}
+function featureMap(lanes,links,pick){
+ var NS="http://www.w3.org/2000/svg",CW=204,CG=40,NH=26,RG=9,LH=32,LP=12,PX=14,MAXL=6,ROWS=9,GRID=4;
+ function sv(tag,a,kids){var el=document.createElementNS(NS,tag);for(var k in a)el.setAttribute(k,a[k]);(kids||[]).forEach(function(c){if(c!=null)el.appendChild(typeof c==="string"?document.createTextNode(c):c)});return el;}
+ var nodes={},list=[],E=[];
+ function key(l,s){return l+"\u0001"+s}
+ function node(l,s,info){var k=key(l,s),n=nodes[k];if(!n){n=nodes[k]={lane:l,sym:s,path:"",kind:"",ex:-1,out:[],inn:[],deg:0};list.push(n)}
+  if(info.path&&!n.path)n.path=info.path;if(info.kind&&!n.kind)n.kind=info.kind;if(info.ex!=null&&n.ex<0){n.ex=info.ex;n.lines=info.lines}return n}
+ lanes.forEach(function(L){
+  arr(L.excerpts).forEach(function(e,i){node(L.key,str(e.symbol),{path:str(e.path),kind:str(e.kind),ex:i,lines:str(e.start_line)+"\u2013"+str(e.end_line)})});
+  arr(L.edges).forEach(function(g){var a=node(L.key,str(g.from),{path:str(g.from_path)}),b=node(L.key,str(g.to),{path:str(g.to_path)});if(a===b)return;E.push({a:a,b:b,kind:str(g.kind)});a.out.push(b);b.inn.push(a);a.deg++;b.deg++});
+ });
+ arr(links).forEach(function(x){var a=nodes[key(str(x.from_repo),str(x.from))],b=nodes[key(str(x.to_repo),str(x.to))];if(a&&b&&a!==b){E.push({a:a,b:b,kind:"mentions",cross:true,term:str(x.term)});a.deg++;b.deg++}});
+ function rank(n){return n.ex>=0?n.ex:1e4-n.deg}
+ var y=4,width=0,bands=[];
+ lanes.forEach(function(L){
+  var ns=list.filter(function(n){return n.lane===L.key});if(!ns.length)return;
+  ns.forEach(function(n){n.layer=0});
+  for(var it=0;it<=MAXL;it++){var ch=false;ns.forEach(function(n){n.out.forEach(function(m){if(n.layer+1>m.layer&&n.layer<MAXL){m.layer=n.layer+1;ch=true}})});if(!ch)break}
+  var linked=ns.filter(function(n){return n.out.length||n.inn.length}),lone=ns.filter(function(n){return !(n.out.length||n.inn.length)}).sort(function(p,q){return rank(p)-rank(q)});
+  var layers=[];linked.forEach(function(n){(layers[n.layer]=layers[n.layer]||[]).push(n)});layers=layers.filter(Boolean);
+  var phys=[];
+  layers.forEach(function(c,ci){
+   if(ci===0)c.sort(function(p,q){return rank(p)-rank(q)});
+   else{c.forEach(function(n){var ps=n.inn.filter(function(m){return m.row!=null});n.bc=ps.length?ps.reduce(function(s,m){return s+m.row},0)/ps.length:1e3+rank(n)});c.sort(function(p,q){return p.bc-q.bc||rank(p)-rank(q)})}
+   for(var i=0;i<c.length;i+=ROWS){var sl=c.slice(i,i+ROWS);sl.forEach(function(n,ri){n.row=ri});phys.push(sl)}
+  });
+  var rows=phys.length?Math.max.apply(null,phys.map(function(c){return c.length})):0,top=y+LH,G=Math.max(GRID,phys.length);
+  phys.forEach(function(c,ci){c.forEach(function(n,ri){n.x=PX+ci*(CW+CG);n.y=top+ri*(NH+RG)})});
+  var loneTop=top+rows*(NH+RG)+(rows&&lone.length?24:0);
+  lone.forEach(function(n,i){n.x=PX+(i%G)*(CW+CG);n.y=loneTop+Math.floor(i/G)*(NH+RG)});
+  var bh=loneTop-y+Math.ceil(lone.length/G)*(NH+RG)+LP;bands.push({label:str(L.label),y:y,h:bh,n:ns.length,loneY:rows&&lone.length?loneTop-8:null});
+  width=Math.max(width,PX+Math.max(phys.length,Math.min(G,lone.length))*(CW+CG));y+=bh+12;
+ });
+ var W=Math.max(width+24,640),H=Math.max(y,80);
+ var svg=sv("svg",{class:"fmap",width:W,height:H,viewBox:"0 0 "+W+" "+H,role:"img","aria-label":"Feature map"});
+ var defs=sv("defs");["calls","imports","other","cross"].forEach(function(c){defs.appendChild(sv("marker",{id:"ah-"+c,viewBox:"0 0 10 10",refX:"9",refY:"5",markerWidth:"7",markerHeight:"7",orient:"auto-start-reverse"},[sv("path",{d:"M0,0L10,5L0,10z",class:"ah "+c})]))});svg.appendChild(defs);
+ bands.forEach(function(b){svg.appendChild(sv("rect",{x:2,y:b.y,width:W-4,height:b.h,rx:10,class:"band"}));
+  svg.appendChild(sv("text",{x:PX,y:b.y+21},[sv("tspan",{class:"bl"},[b.label]),sv("tspan",{class:"bm",dx:"10"},[b.n+" symbols"])]));
+  if(b.loneY!=null)svg.appendChild(sv("text",{x:PX,y:b.loneY,class:"bm"},["no edge in the 1-hop graph"]));});
+ var eg=sv("g"),ng=sv("g");svg.appendChild(eg);svg.appendChild(ng);
+ function cls(e){return e.cross?"cross":e.kind==="calls"?"calls":e.kind==="imports"?"imports":"other"}
+ E.forEach(function(e){var a=e.a,b=e.b,d;if(a.x==null||b.x==null)return;
+  if(e.cross){var ax=a.x+CW/2,bx=b.x+CW/2,dn=b.y>a.y,ay=dn?a.y+NH:a.y,by=dn?b.y:b.y+NH,m=(ay+by)/2;d="M"+ax+","+ay+" C"+ax+","+m+" "+bx+","+m+" "+bx+","+by;}
+  else if(b.x!==a.x){var fw=b.x>a.x,x1=fw?a.x+CW:a.x,x2=fw?b.x:b.x+CW,y1=a.y+NH/2,y2=b.y+NH/2,mx=(x1+x2)/2;d="M"+x1+","+y1+" C"+mx+","+y1+" "+mx+","+y2+" "+x2+","+y2;}
+  else{var x=a.x+CW,y1=a.y+NH/2,y2=b.y+NH/2,o=22+Math.abs(y2-y1)*0.12;d="M"+x+","+y1+" C"+(x+o)+","+y1+" "+(x+o)+","+y2+" "+x+","+y2;}
+  var c=cls(e),p=sv("path",{d:d,class:"e "+c,"marker-end":"url(#ah-"+c+")"});
+  p.appendChild(sv("title",{},[e.cross?a.lane+" \u00b7 "+a.sym+"  \u2192  "+b.lane+" \u00b7 "+b.sym+"\nname '"+e.term+"' appears in its code":a.sym+"  "+e.kind+"  "+b.sym]));
+  e.el=p;eg.appendChild(p);});
+ var KT={function:"fn",method:"fn",type:"type",interface:"ifc",enum:"enum",type_alias:"type",field:"field",operation:"op",fragment:"frag",section:"\u00a7",file:"file",module:"mod"};
+ function clip(s,n){return s.length>n?s.slice(0,n-1)+"\u2026":s}
+ function label(n){var max=KT[n.kind]?20:25,s=n.sym;
+  if(n.kind==="section"&&n.path){var stem=n.path.split("/").pop().replace(/\.mdx?$/,""),t=s.split(" > ").pop();
+   if((stem+" \u203a "+t).length<=max)return stem+" \u203a "+t;
+   return t.length<=14?clip(stem,Math.max(6,max-3-t.length))+" \u203a "+t:clip(t,max);}
+  if(s.indexOf("/")>=0&&s.indexOf(" ")<0)return clip(s.split("/").pop(),max);
+  if(s.length<=max)return s;var t=s.split(/ > |::|\./).pop();return t.length>=max?clip(t,max):"\u2026"+t}
+ function focus(n,on){svg.classList.toggle("focus",on);n.el.classList.toggle("on",on);E.forEach(function(e){if(!e.el||(e.a!==n&&e.b!==n))return;e.el.classList.toggle("on",on);var o=e.a===n?e.b:e.a;if(o.el)o.el.classList.toggle("on",on)})}
+ list.forEach(function(n){if(n.x==null)return;
+  var g=sv("g",{class:"n"+(n.ex>=0?" ex":"")+(n.ex>=0&&pick?" pick":""),transform:"translate("+n.x+","+n.y+")"});
+  g.appendChild(sv("rect",{width:CW,height:NH,rx:6}));g.appendChild(sv("text",{x:9,y:17},[label(n)]));
+  if(KT[n.kind])g.appendChild(sv("text",{x:CW-8,y:17,class:"k","text-anchor":"end"},[KT[n.kind]]));
+  g.appendChild(sv("title",{},[n.lane+" \u00b7 "+n.sym+(n.path?"\n"+n.path+(n.lines?" : "+n.lines:""):"")+(n.ex>=0?"\nretrieved excerpt"+(pick?" (click to open)":""):"\n1-hop neighbour")]));
+  g.addEventListener("mouseenter",function(){focus(n,true)});g.addEventListener("mouseleave",function(){focus(n,false)});
+  if(n.ex>=0&&pick)g.addEventListener("click",function(){pick(n.lane,n.ex)});
+  n.el=g;ng.appendChild(g);});
+ var kinds={};E.forEach(function(e){kinds[cls(e)]=1});
+ var lg=[h("span",{class:"ex",text:"retrieved excerpt"}),h("span",{class:"nb",text:"1-hop neighbour"})];
+ if(kinds.calls)lg.push(h("span",{class:"calls",text:"calls"}));if(kinds.imports)lg.push(h("span",{class:"imports",text:"imports"}));
+ if(kinds.other)lg.push(h("span",{class:"other",text:"extends / implements / defines / queries"}));if(kinds.cross)lg.push(h("span",{class:"cross",text:"cross-repo: name appears verbatim in the other repo's code"}));
+ return h("div",{},[h("div",{class:"mapwrap"},[svg]),h("div",{class:"legend"},lg)]);
+}
+"#;
+
 /// Feature answer: question, features, excerpts, graph edges, surfaces.
 const FEATURE_JS: &str = r#"
 (function(){
@@ -109,13 +207,35 @@ const FEATURE_JS: &str = r#"
   if(meta.length)c.appendChild(h("p",{class:"muted",text:meta.join(" · ")}));
   if(arr(f.symbols).length)c.appendChild(chips(f.symbols));
   return c;})));
- body.push(sec("Code excerpts","Verbatim source the answer is grounded in.",ex.map(function(e){
-  var range=e.start_line!=null?" : "+num(e.start_line)+(e.end_line!=null?"–"+num(e.end_line):""):"";
-  var meta=h("div",{class:"meta"},[h("b",{text:str(e.path)}),range,e.symbol?"   ":"",e.symbol?h("span",{class:"chip k",text:str(e.symbol)}):null,e.retrieved_by?h("span",{class:"chip f",text:str(e.retrieved_by)}):null]);
-  return h("div",{class:"card excerpt"},[meta,h("pre",{},[h("code",{text:str(e.code||e.content)})])]);})));
+ var lane=str(M.repo).split("/").pop()||"repo";
+ if(ex.length)body.push(sec("Feature map","Retrieved symbols (solid) and their 1-hop neighbours (dashed), columns by call depth. Hover to trace, click a solid box to open its excerpt.",[featureMap([{key:lane,label:lane,excerpts:ex,edges:edges}],[],function(l,i){jump("ex-0-"+i)})]));
+ body.push(sec("Code excerpts","Verbatim source the answer is grounded in.",ex.map(function(e,i){return excerptCard(e,"ex-0-"+i,true)})));
  body.push(sec("Graph edges","Typed relations between the symbols above.",edges.length?[table(["From","Kind","To"],edges,function(e){return [h("code",{text:str(e.from)}),h("span",{class:"chip k",text:str(e.kind)}),h("code",{text:str(e.to)})]})]:[]));
  body.push(sec("User surfaces","Routes, commands, env vars and GraphQL fields the feature exposes.",surf.length?[table(["Kind","Surface","Where"],surf,function(s){return [h("span",{class:"chip",text:str(s.kind)}),h("code",{text:str(s.value||s.name)}),str(s.path)]})]:[]));
- mount(hero("Feature",str(M.title||M.question||"Feature"),M.title?str(M.question):""),[summaryBand(str(M.answer||M.summary))].concat(body));
+ mount(hero("Feature",str(M.title||M.question||"Feature"),str(M.repo?"Repository: "+str(M.repo).split("/").pop():"")),[summaryBand(str(M.answer||M.summary))].concat(body));
+})();
+"#;
+
+/// One question answered across a project's repos: map, cross-repo links,
+/// then one section per repository.
+const PROJECT_FEATURE_JS: &str = r#"
+(function(){
+ var repos=arr(M.repos),links=arr(M.links),idx={};repos.forEach(function(r,i){idx[str(r.alias)]=i});
+ var lanes=repos.map(function(r){return {key:str(r.alias),label:str(r.alias),excerpts:arr(r.excerpts),edges:arr(r.edges)}});
+ var nEx=0,nEd=0;repos.forEach(function(r){nEx+=arr(r.excerpts).length;nEd+=arr(r.edges).length});
+ var body=[summaryBand(repos.length+" repositories \u00b7 "+nEx+" excerpts \u00b7 "+nEd+" graph edges \u00b7 "+links.length+" cross-repo links. Each repository answered the question from its own index; a cross-repo link means a symbol retrieved in one repository is named verbatim in code retrieved from another.")];
+ body.push(sec("Feature map","One lane per repository; columns follow call depth (callers left). Solid boxes are retrieved excerpts, dashed boxes 1-hop neighbours, dashed orange lines cross-repo links. Hover to trace, click a solid box to open its excerpt.",[featureMap(lanes,links,function(l,i){jump("ex-"+idx[l]+"-"+i)})]));
+ function side(r,sym,path){return h("div",{},[h("span",{class:"chip f",text:str(r)}),h("code",{text:str(sym)}),h("div",{class:"muted",text:str(path)})])}
+ body.push(sec("Cross-repo links",links.length+" link(s): the symbol on the left is named verbatim in the code on the right.",links.length?[table(["Defined in","Name","Mentioned in"],links,function(l){return [side(l.from_repo,l.from,l.from_path),h("span",{class:"chip k",text:str(l.term)}),side(l.to_repo,l.to,l.to_path)]})]:[]));
+ repos.forEach(function(r,ri){
+  var feats=arr(r.features),ex=arr(r.excerpts),surf=arr(r.surfaces),kids=[];
+  if(feats.length)kids.push(h("div",{class:"grid"},feats.map(function(f){var c=h("div",{class:"card"},[h("h3",{text:str(f.label)})]);if(f.summary)c.appendChild(h("p",{text:str(f.summary)}));if(f.score!=null)c.appendChild(h("p",{class:"muted",text:"relevance "+Math.round(num(f.score)*100)+"%"}));return c})));
+  ex.forEach(function(e,i){kids.push(excerptCard(e,"ex-"+ri+"-"+i,i<2))});
+  if(surf.length)kids.push(table(["Kind","Surface","Where"],surf,function(s){return [h("span",{class:"chip",text:str(s.kind)}),h("code",{text:str(s.name)}),str(s.path)+(s.line?":"+num(s.line):"")]}));
+  body.push(sec(str(r.alias),feats.length+" feature(s) routed \u00b7 "+ex.length+" excerpt(s) \u00b7 "+arr(r.edges).length+" edge(s) \u00b7 "+str(r.repo),kids));
+ });
+ if(arr(M.warnings).length)body.push(sec("Warnings","Reported while answering.",[h("ul",{class:"prov"},arr(M.warnings).map(function(w){return h("li",{text:str(w)})}))]));
+ mount(hero("Project feature",str(M.title||M.question||"Feature"),"Project "+str(M.project)+" \u00b7 "+repos.map(function(r){return str(r.alias)}).join(", ")),body);
 })();
 "#;
 
@@ -179,6 +299,7 @@ const PAGE_TEMPLATE: &str = r#"<!doctype html>
 fn kind_label(kind: PageKind) -> &'static str {
     match kind {
         PageKind::Feature => "feature",
+        PageKind::ProjectFeature => "project feature",
         PageKind::SiteIndex => "site index",
         PageKind::SitePage => "feature page",
         PageKind::Correlations => "correlations",
@@ -188,9 +309,18 @@ fn kind_label(kind: PageKind) -> &'static str {
 fn kind_js(kind: PageKind) -> &'static str {
     match kind {
         PageKind::Feature => FEATURE_JS,
+        PageKind::ProjectFeature => PROJECT_FEATURE_JS,
         PageKind::SiteIndex => SITE_INDEX_JS,
         PageKind::SitePage => SITE_PAGE_JS,
         PageKind::Correlations => CORRELATIONS_JS,
+    }
+}
+
+/// The feature-map helpers, only on pages that draw a map.
+fn kind_map_js(kind: PageKind) -> &'static str {
+    match kind {
+        PageKind::Feature | PageKind::ProjectFeature => MAP_JS,
+        PageKind::SiteIndex | PageKind::SitePage | PageKind::Correlations => "",
     }
 }
 
@@ -214,7 +344,10 @@ pub fn render_page(kind: PageKind, manifest: &Value) -> String {
         .replace("__THEME__", THEME_CSS)
         .replace("__MANIFEST_ID__", MANIFEST_ID)
         .replace("__DATA__", &data)
-        .replace("__JS__", &format!("{REPORT_JS}\n{}", kind_js(kind)))
+        .replace(
+            "__JS__",
+            &format!("{REPORT_JS}\n{}{}", kind_map_js(kind), kind_js(kind)),
+        )
 }
 
 /// Extract the embedded manifest JSON from a page's HTML, if present.
@@ -282,12 +415,29 @@ mod tests {
     }
 
     #[test]
+    fn feature_map_only_on_feature_pages() {
+        let m = json!({"content_hash":"h","question":"q"});
+        for (kind, map) in [
+            (PageKind::Feature, true),
+            (PageKind::ProjectFeature, true),
+            (PageKind::SiteIndex, false),
+            (PageKind::SitePage, false),
+            (PageKind::Correlations, false),
+        ] {
+            let html = render_page(kind, &m);
+            assert_eq!(html.contains("function featureMap("), map, "{kind:?}");
+        }
+        assert!(render_page(PageKind::ProjectFeature, &m).contains("Cross-repo links"));
+    }
+
+    #[test]
     fn manifest_round_trip_survives_script_breakout() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("p.html");
         let m = json!({"content_hash":"h","label":"</script><script>alert(1)</script><!--",
             "summary":"a & b < c","members":[{"name":"f","kind":"fn","path":"src/a.rs"}]});
         for kind in [
+            PageKind::ProjectFeature,
             PageKind::SiteIndex,
             PageKind::SitePage,
             PageKind::Correlations,
