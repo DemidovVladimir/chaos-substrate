@@ -1,5 +1,5 @@
-//! `IndexStore` on Postgres: the L0 write path (replace / merge), graph loads,
-//! Merkle inputs and embedding bookkeeping. Bulk rows go through `unnest`.
+//! `IndexStore` on Postgres: the L0 write path (replace / merge), graph loads
+//! and embedding bookkeeping. Bulk rows go through `unnest`.
 
 use super::{
     row_to_chunk, row_to_edge, row_to_file, row_to_node, row_to_repo, vector_literal, Postgres,
@@ -19,11 +19,11 @@ async fn insert_files(conn: &mut PgConnection, files: &[SourceFile]) -> Result<(
     for batch in files.chunks(BATCH) {
         sqlx::query(
             r#"
-            insert into files (id, repo_id, path, language, content_hash, line_count, subtree_hash)
-            select * from unnest($1::uuid[], $2::uuid[], $3::text[], $4::text[], $5::text[], $6::int4[], $7::text[])
+            insert into files (id, repo_id, path, language, content_hash, line_count)
+            select * from unnest($1::uuid[], $2::uuid[], $3::text[], $4::text[], $5::text[], $6::int4[])
             on conflict (repo_id, path) do update set
                 language = excluded.language, content_hash = excluded.content_hash,
-                line_count = excluded.line_count, subtree_hash = excluded.subtree_hash
+                line_count = excluded.line_count
             "#,
         )
         .bind(batch.iter().map(|f| f.id).collect::<Vec<_>>())
@@ -32,7 +32,6 @@ async fn insert_files(conn: &mut PgConnection, files: &[SourceFile]) -> Result<(
         .bind(batch.iter().map(|f| f.language.as_str().to_string()).collect::<Vec<_>>())
         .bind(batch.iter().map(|f| f.content_hash.clone()).collect::<Vec<_>>())
         .bind(batch.iter().map(|f| f.line_count).collect::<Vec<_>>())
-        .bind(batch.iter().map(|f| f.subtree_hash.clone()).collect::<Vec<_>>())
         .execute(&mut *conn)
         .await?;
     }
@@ -134,48 +133,44 @@ impl IndexStore for Postgres {
     async fn upsert_repo(&self, repo: &Repo) -> Result<()> {
         sqlx::query(
             r#"
-            insert into repositories (id, name, root_path, commit_sha, root_hash, indexed_at)
-            values ($1, $2, $3, $4, $5, now())
+            insert into repositories (id, name, root_path, commit_sha, indexed_at)
+            values ($1, $2, $3, $4, now())
             on conflict (root_path) do update set
-                name = excluded.name, commit_sha = excluded.commit_sha,
-                root_hash = excluded.root_hash, indexed_at = now()
+                name = excluded.name, commit_sha = excluded.commit_sha, indexed_at = now()
             "#,
         )
         .bind(repo.id)
         .bind(&repo.name)
         .bind(&repo.root_path)
         .bind(&repo.commit_sha)
-        .bind(&repo.root_hash)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
     async fn find_repo(&self, root_path: &str) -> Result<Option<Repo>> {
-        let row = sqlx::query("select id, name, root_path, commit_sha, root_hash from repositories where root_path = $1")
-            .bind(root_path)
-            .fetch_optional(&self.pool)
-            .await?;
+        let row = sqlx::query(
+            "select id, name, root_path, commit_sha from repositories where root_path = $1",
+        )
+        .bind(root_path)
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(row.as_ref().map(row_to_repo))
     }
 
     async fn list_repos(&self) -> Result<Vec<Repo>> {
-        let rows = sqlx::query("select id, name, root_path, commit_sha, root_hash from repositories order by root_path")
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(
+            "select id, name, root_path, commit_sha from repositories order by root_path",
+        )
+        .fetch_all(&self.pool)
+        .await?;
         Ok(rows.iter().map(row_to_repo).collect())
     }
 
-    async fn set_repo_hashes(
-        &self,
-        repo_id: Uuid,
-        commit_sha: Option<&str>,
-        root_hash: &str,
-    ) -> Result<()> {
-        sqlx::query("update repositories set commit_sha = $2, root_hash = $3, indexed_at = now() where id = $1")
+    async fn set_repo_commit(&self, repo_id: Uuid, commit_sha: Option<&str>) -> Result<()> {
+        sqlx::query("update repositories set commit_sha = $2, indexed_at = now() where id = $1")
             .bind(repo_id)
             .bind(commit_sha)
-            .bind(root_hash)
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -262,6 +257,27 @@ impl IndexStore for Postgres {
         .bind(&touched)
         .execute(&mut *tx)
         .await?;
+        // Edges INTO a purged path from a file that stays are not re-derived
+        // (only the changed files are analyzed), but purging cascades them.
+        // Keep them and put back every one whose symbol still exists: node ids
+        // are uuid5(repo_id, stable_id), so a re-inserted symbol keeps its id.
+        sqlx::query(
+            r#"
+            create temp table _chaos_saved_edges on commit drop as
+            select e.id, e.repo_id, e.source_node_id, e.target_node_id, e.kind, e.confidence
+            from edges e
+            join nodes t on t.id = e.target_node_id
+            join files tf on tf.id = t.file_id
+            join nodes s on s.id = e.source_node_id
+            left join files sf on sf.id = s.file_id
+            where e.repo_id = $1 and tf.path = any($2)
+              and (sf.path is null or not (sf.path = any($2)))
+            "#,
+        )
+        .bind(repo_id)
+        .bind(purge_paths)
+        .execute(&mut *tx)
+        .await?;
         if !purge_paths.is_empty() {
             sqlx::query("delete from files where repo_id = $1 and path = any($2)")
                 .bind(repo_id)
@@ -312,6 +328,18 @@ impl IndexStore for Postgres {
             .collect();
         upsert_nodes(&mut tx, &nodes).await?;
         insert_edges(&mut tx, &bundle.edges).await?;
+        sqlx::query(
+            r#"
+            insert into edges (id, repo_id, source_node_id, target_node_id, kind, confidence)
+            select s.id, s.repo_id, s.source_node_id, s.target_node_id, s.kind, s.confidence
+            from _chaos_saved_edges s
+            where exists (select 1 from nodes n where n.id = s.source_node_id)
+              and exists (select 1 from nodes n where n.id = s.target_node_id)
+            on conflict do nothing
+            "#,
+        )
+        .execute(&mut *tx)
+        .await?;
         let chunks: Vec<Chunk> = bundle
             .chunks
             .iter()
@@ -339,7 +367,7 @@ impl IndexStore for Postgres {
     }
 
     async fn load_graph(&self, repo_id: Uuid) -> Result<Graph> {
-        let files = sqlx::query("select id, repo_id, path, language, content_hash, line_count, subtree_hash from files where repo_id = $1 order by path")
+        let files = sqlx::query("select id, repo_id, path, language, content_hash, line_count from files where repo_id = $1 order by path")
             .bind(repo_id)
             .fetch_all(&self.pool)
             .await?;
@@ -356,41 +384,6 @@ impl IndexStore for Postgres {
             nodes: nodes.iter().map(row_to_node).collect::<Result<_>>()?,
             edges: edges.iter().map(row_to_edge).collect::<Result<_>>()?,
         })
-    }
-
-    async fn load_chunk_hashes(&self, repo_id: Uuid) -> Result<Vec<(String, String)>> {
-        let rows = sqlx::query(
-            "select f.path, c.content_hash from chunks c join files f on f.id = c.file_id where c.repo_id = $1 order by f.path, c.line_start nulls last, c.content_hash",
-        )
-        .bind(repo_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .iter()
-            .map(|r| (r.get("path"), r.get("content_hash")))
-            .collect())
-    }
-
-    async fn set_file_subtree_hashes(
-        &self,
-        repo_id: Uuid,
-        hashes: &[(String, String)],
-    ) -> Result<()> {
-        for batch in hashes.chunks(BATCH) {
-            sqlx::query(
-                r#"
-                update files f set subtree_hash = h.hash
-                from unnest($2::text[], $3::text[]) as h(path, hash)
-                where f.repo_id = $1 and f.path = h.path
-                "#,
-            )
-            .bind(repo_id)
-            .bind(batch.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>())
-            .bind(batch.iter().map(|(_, h)| h.clone()).collect::<Vec<_>>())
-            .execute(&self.pool)
-            .await?;
-        }
-        Ok(())
     }
 
     async fn chunks_missing_embeddings(

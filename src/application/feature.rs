@@ -914,7 +914,6 @@ mod tests {
             repo_id: id(1),
             label: label.into(),
             member_count: 5,
-            subtree_hash: "h".into(),
             summary: Some(summary.into()),
             summary_hash: Some("g".into()),
             top_members: vec![],
@@ -1053,14 +1052,7 @@ mod tests {
         ) -> Result<Vec<Community>> {
             unreachable!()
         }
-        async fn save_summary(
-            &self,
-            _c: Uuid,
-            _s: &str,
-            _h: &str,
-            _m: &ModelRef,
-            _e: &[f32],
-        ) -> Result<()> {
+        async fn save_summary_embedding(&self, _c: Uuid, _m: &ModelRef, _e: &[f32]) -> Result<()> {
             unreachable!()
         }
     }
@@ -1113,7 +1105,6 @@ mod tests {
             name: "api".into(),
             root_path: "/r".into(),
             commit_sha: None,
-            root_hash: None,
         }
     }
 

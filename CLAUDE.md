@@ -29,8 +29,8 @@ Every tool is a CLI subcommand (`chaos <name>`) and an MCP tool (`chaos_<name>`)
 argument schemas live in one place: `src/application/tools.rs`.
 
 - `index` — fully index a repository: tree-sitter extraction -> project-wide import/call
-  resolution -> contextual chunks -> real embeddings -> feature communities -> Merkle hashes ->
-  hash-gated summaries. Run once per repo.
+  resolution -> contextual chunks -> real embeddings -> feature communities -> summaries (each
+  embedded only when its text changed). Run once per repo.
 - `reindex [--force]` — re-run a full index; a no-op when git HEAD equals the indexed commit and the
   worktree is clean. Unchanged chunks keep their embeddings (content-hash reuse).
 - `add [--since <ref>]` — incrementally index what changed since the last index (content-hash
@@ -55,10 +55,10 @@ Global flags: `--config <chaos-substrate.toml>`, `--project <chaos.toml>`, `--re
 
 - Chunk: one AST unit (function, struct, section) with a short context header, embedded as a vector.
 - Community (feature, L1): a group of related nodes found by deterministic Louvain over the graph.
-- Merkle hash (L2): content hashes rolled up chunk -> file -> community -> repo, so unchanged parts
-  are recognised and skipped.
-- Summary (L3): a templated text per community, embedded for routing; recomputed only when its
-  community's hash changed.
+- Summary (L2): a templated text per community, embedded for routing; embedded again only when the
+  text itself changed (its `summary_hash` is the hash of the text and the model).
+- Content hash: the SHA-256 of a piece's own input. Chunks, files, summaries and generated pages are
+  each keyed by it, so unchanged parts are recognised and skipped. There is no hash roll-up.
 
 ## Configuration
 

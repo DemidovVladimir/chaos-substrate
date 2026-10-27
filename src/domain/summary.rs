@@ -1,11 +1,9 @@
-//! Templated L3 community summaries (deterministic, embedder-free text) and
-//! the hash gate that decides when a summary must be re-embedded.
+//! Templated L2 community summaries (deterministic, embedder-free text) and
+//! the key their embeddings are stored under: the hash of the text itself.
 
 use crate::domain::hash::sha256_hex;
 use std::collections::BTreeSet;
 
-/// Bump when the template changes so every summary is regenerated.
-pub const SUMMARY_ALGO_VERSION: u32 = 1;
 /// Hard cap on the composed summary text.
 pub const SUMMARY_MAX_CHARS: usize = 1600;
 
@@ -122,12 +120,11 @@ pub fn compose(input: &SummaryInput) -> String {
     truncate(&sections.join("\n"), SUMMARY_MAX_CHARS)
 }
 
-/// Gate key for a community summary: changes when the community content, the
-/// embedding model, or the template version changes.
-pub fn summary_gate(subtree_hash: &str, model_id: &str) -> String {
-    sha256_hex(&format!(
-        "{subtree_hash}:{model_id}:v{SUMMARY_ALGO_VERSION}"
-    ))
+/// Key of a summary's embedding: the hash of the composed text and the model.
+/// An embedding stored under the same key is the same vector, so it is reused;
+/// a template change changes the text and therefore the key.
+pub fn summary_hash(text: &str, model_id: &str) -> String {
+    sha256_hex(&format!("{model_id}\n{text}"))
 }
 
 /// Split an identifier into lower-case words: `camelCase`, `PascalCase`,
@@ -260,7 +257,8 @@ mod tests {
         let s = compose(&big);
         assert!(s.len() <= SUMMARY_MAX_CHARS);
         assert!(s.contains("(+92 more)"));
-        assert_eq!(summary_gate("h", "m"), sha256_hex("h:m:v1"));
-        assert_ne!(summary_gate("h", "m"), summary_gate("h", "n"));
+        assert_eq!(summary_hash("t", "m"), sha256_hex("m\nt"));
+        assert_ne!(summary_hash("t", "m"), summary_hash("t", "n"));
+        assert_ne!(summary_hash("t", "m"), summary_hash("u", "m"));
     }
 }

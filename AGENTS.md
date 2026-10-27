@@ -20,7 +20,7 @@ from the index — with code excerpts — instead of re-reading source.
 
 | Tool | What it does |
 |---|---|
-| `index` | Full index: extraction -> import/call resolution -> chunks -> embeddings -> communities -> Merkle hashes -> summaries. Once per repo. |
+| `index` | Full index: extraction -> import/call resolution -> chunks -> embeddings -> communities -> summaries. Once per repo. |
 | `reindex [--force]` | Full re-run; no-op when HEAD is indexed and the worktree is clean. Embeddings reused by content hash. |
 | `add [--since <ref>]` | Index only git-changed files; purge deleted ones. Use after every edit. |
 | `feature "<q>" [--budget N] [--no-persist] [--json]` | Answer one question from the index: feature summaries, excerpts with line ranges, 1-hop graph, env vars/routes. Writes `docs/features_memory/<slug>.html`. |
@@ -30,7 +30,8 @@ from the index — with code excerpts — instead of re-reading source.
 CLI-only: `migrate [--reset]`, `doctor`, `mcp`, `help`. Global flags: `--config`, `--project`, `--repo`, `-v`.
 
 Terms: *chunk* = one AST unit plus context header, embedded; *community* = feature-sized node group
-from deterministic Louvain; *Merkle hash* = content hashes rolled up chunk -> file -> community -> repo.
+from deterministic Louvain; *content hash* = SHA-256 of a piece's own input (chunk, file, summary
+text, page), so an unchanged piece is recognised and reused.
 
 ## Config and workflow
 

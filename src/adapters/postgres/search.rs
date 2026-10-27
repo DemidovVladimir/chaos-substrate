@@ -158,7 +158,7 @@ impl SearchStore for Postgres {
     ) -> Result<Vec<(Community, f32)>> {
         let rows = sqlx::query(
             r#"
-            select id, repo_id, label, member_count, subtree_hash, summary, summary_hash, top_members, files,
+            select id, repo_id, label, member_count, summary, summary_hash, top_members, files,
                    (1 - (summary_embedding <=> $2::vector))::float8 as score
             from communities
             where repo_id = $1 and summary_embedding is not null

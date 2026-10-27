@@ -3,9 +3,9 @@
 //! (members, files, relations to sibling communities, user surfaces, summary).
 //!
 //! Everything is resolved from the persisted index (communities + graph);
-//! no source file is read. Every page carries a `content_hash` and is written
-//! through the [`PageStore`] gate, so an unchanged repo re-composes to zero
-//! writes.
+//! no source file is read. Every page carries a `content_hash` — the hash of
+//! the data it shows — and is written through the [`PageStore`] gate, so an
+//! unchanged repo re-composes to zero writes.
 
 /// (from community, to community, edge kind, direction) → (count, example symbol pairs).
 type QuotientMap = BTreeMap<(Uuid, Uuid, &'static str, &'static str), (usize, Vec<String>)>;
@@ -97,6 +97,17 @@ fn unique_slug(base: &str, taken: &mut HashSet<String>) -> String {
         candidate = format!("{base}-{n}");
     }
     candidate
+}
+
+/// A page's `content_hash`: the hash of the data the page shows. Provenance and
+/// the commit stamp are left out, so they alone never rewrite a page.
+fn page_hash(manifest: &Value) -> String {
+    let mut shown = manifest.clone();
+    if let Some(fields) = shown.as_object_mut() {
+        fields.remove("provenance");
+        fields.remove("generated_for_commit");
+    }
+    sha256_hex(&shown.to_string())
 }
 
 fn snippet(summary: Option<&str>) -> String {
@@ -263,12 +274,9 @@ pub async fn compose(
     let mut written = 0usize;
     let mut cached = 0usize;
     let mut index_entries = Vec::with_capacity(total);
-    let mut hash_lines = Vec::with_capacity(total);
 
     for (i, c) in communities.iter().enumerate() {
         let page = page_of(&c.id, i);
-        let summary_hash = c.summary_hash.clone().unwrap_or_default();
-        hash_lines.push(format!("{}:{}:{}", c.id, c.subtree_hash, summary_hash));
         index_entries.push(json!({
             "id": c.id,
             "label": c.label,
@@ -334,23 +342,6 @@ pub async fn compose(
                 .cmp(&a.weight)
                 .then_with(|| (a.other, a.direction, a.kind).cmp(&(b.other, b.direction, b.kind)))
         });
-        let relations_hash = sha256_hex(
-            &relations
-                .iter()
-                .map(|r| {
-                    format!(
-                        "{}:{}:{}:{}:{}",
-                        r.other,
-                        r.direction,
-                        r.kind,
-                        r.weight,
-                        r.page.as_deref().unwrap_or("")
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
-        );
-
         let mut surfaces: Vec<Value> = c
             .files
             .iter()
@@ -365,25 +356,21 @@ pub async fn compose(
             )
         });
 
-        let content_hash = sha256_hex(&format!(
-            "{}\n{}\n{}",
-            c.subtree_hash, summary_hash, relations_hash
-        ));
-        let manifest = json!({
+        let mut manifest = json!({
             "title": c.label,
             "label": c.label,
             "repo": repo.name,
             "index": "../index.html",
-            "community": {"id": c.id, "label": c.label, "slug": slugs[&c.id], "member_count": c.member_count, "subtree_hash": c.subtree_hash},
+            "community": {"id": c.id, "label": c.label, "slug": slugs[&c.id], "member_count": c.member_count},
             "summary": c.summary,
             "members": member_json,
             "members_omitted": members_omitted,
             "files": c.files,
             "relations": relations,
             "surfaces": surfaces,
-            "content_hash": content_hash,
             "provenance": provenance,
         });
+        manifest["content_hash"] = json!(page_hash(&manifest));
         let path = out_dir
             .join("features")
             .join(format!("{}.html", slugs[&c.id]));
@@ -398,9 +385,7 @@ pub async fn compose(
         }
     }
 
-    hash_lines.sort();
-    let index_hash = sha256_hex(&format!("{}\n{}", hash_lines.join("\n"), listed));
-    let index_manifest = json!({
+    let mut index_manifest = json!({
         "title": format!("{} — features", repo.name),
         "repo": repo.name,
         "generated_for_commit": repo.commit_sha,
@@ -414,9 +399,9 @@ pub async fn compose(
             "summary": snippet(c.summary.as_deref()),
         })).collect::<Vec<_>>(),
         "omitted": omitted,
-        "content_hash": index_hash,
         "provenance": provenance,
     });
+    index_manifest["content_hash"] = json!(page_hash(&index_manifest));
     let index_path = out_dir.join("index.html");
     if deps
         .pages
@@ -476,7 +461,7 @@ mod tests {
         async fn list_repos(&self) -> Result<Vec<Repo>> {
             unimplemented!()
         }
-        async fn set_repo_hashes(&self, _: Uuid, _: Option<&str>, _: &str) -> Result<()> {
+        async fn set_repo_commit(&self, _: Uuid, _: Option<&str>) -> Result<()> {
             unimplemented!()
         }
         async fn replace_repo(&self, _: Uuid, _: &IndexBundle) -> Result<()> {
@@ -487,12 +472,6 @@ mod tests {
         }
         async fn load_graph(&self, _: Uuid) -> Result<Graph> {
             Ok(self.graph.clone())
-        }
-        async fn load_chunk_hashes(&self, _: Uuid) -> Result<Vec<(String, String)>> {
-            unimplemented!()
-        }
-        async fn set_file_subtree_hashes(&self, _: Uuid, _: &[(String, String)]) -> Result<()> {
-            unimplemented!()
         }
         async fn chunks_missing_embeddings(&self, _: Uuid, _: &ModelRef) -> Result<Vec<Chunk>> {
             unimplemented!()
@@ -532,14 +511,7 @@ mod tests {
         ) -> Result<Vec<Community>> {
             unimplemented!()
         }
-        async fn save_summary(
-            &self,
-            _: Uuid,
-            _: &str,
-            _: &str,
-            _: &ModelRef,
-            _: &[f32],
-        ) -> Result<()> {
+        async fn save_summary_embedding(&self, _: Uuid, _: &ModelRef, _: &[f32]) -> Result<()> {
             unimplemented!()
         }
     }
@@ -646,7 +618,6 @@ mod tests {
             repo_id: Uuid::nil(),
             label: label.into(),
             member_count: members.len() as i32,
-            subtree_hash: sha256_hex(label),
             summary: Some(format!("Feature: {label}")),
             summary_hash: Some(sha256_hex(&format!("s:{label}"))),
             top_members: members.iter().map(|n| n.name.clone()).collect(),
@@ -720,7 +691,6 @@ mod tests {
                 language: crate::domain::model::Language::Rust,
                 content_hash: "h".into(),
                 line_count: 10,
-                subtree_hash: None,
             })
             .collect();
         Fake {
@@ -741,7 +711,6 @@ mod tests {
             name: "demo".into(),
             root_path: "/r".into(),
             commit_sha: Some("abc".into()),
-            root_hash: None,
         }
     }
 

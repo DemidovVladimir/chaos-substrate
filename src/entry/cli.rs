@@ -196,6 +196,13 @@ impl Services {
     /// Dispatch one of the six tools by bare name with JSON arguments
     /// (the MCP `tools/call` shape; the CLI builds the same arguments).
     pub async fn call_tool(&self, name: &str, args: &Value) -> Result<Value> {
+        // Checked per call, not at connect, so `chaos mcp` still starts and
+        // every tool answers with the next command to run.
+        let pending = self.store.pending_migrations().await?;
+        anyhow::ensure!(
+            pending.is_empty(),
+            "the database schema is older than this binary (migrations {pending:?} not applied); run `chaos migrate`"
+        );
         let repo_arg = args.get("repo").and_then(Value::as_str);
         match name {
             "index" => {

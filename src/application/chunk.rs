@@ -3,7 +3,7 @@
 //! oversize units (semantic merge when an embedder is available, line split
 //! otherwise) and one `file_head` chunk per file for the bytes no symbol owns.
 //!
-//! Deterministic for a fixed embedder + content (Merkle gating relies on it):
+//! Deterministic for a fixed embedder + content (embedding reuse relies on it):
 //! chunk ids derive from `content_hash + stable_id + part`.
 
 use crate::application::analyze::{file_stable_id, Analyzed, Unit};

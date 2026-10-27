@@ -7,8 +7,8 @@
 //! documented limitation). Deleted and renamed-from
 //! paths are purged; every changed path is purged too and re-inserted by
 //! `merge_files`. Only chunks the store reports missing get embedded. The
-//! hierarchy is always rebuilt, but summaries are hash-gated so a no-change
-//! add recomputes zero.
+//! hierarchy is always rebuilt, but a summary is embedded only when its text
+//! changed, so a no-change add recomputes zero.
 
 use crate::application::index::{
     embed_missing, extract_and_analyze, finish_warnings, identify, push_warning, read_input,
@@ -32,7 +32,7 @@ pub struct AddReport {
     pub nodes: usize,
     pub chunks: usize,
     pub chunks_embedded: usize,
-    /// Communities whose subtree hash changed, appeared or disappeared.
+    /// Communities whose summary text changed, appeared or disappeared.
     pub communities_changed: usize,
     pub summaries_recomputed: usize,
     pub warnings: Vec<String>,
@@ -203,7 +203,7 @@ pub async fn add(
         .load_communities(repo_id)
         .await?
         .into_iter()
-        .map(|c| (c.id, c.subtree_hash))
+        .map(|c| (c.id, c.summary_hash))
         .collect();
     deps.store
         .merge_files(repo_id, &purge_paths, &bundle)
@@ -227,29 +227,27 @@ pub async fn add(
     let after: HashMap<_, _> = hier
         .communities
         .iter()
-        .map(|c| (c.id, c.subtree_hash.as_str()))
+        .map(|c| (c.id, &c.summary_hash))
         .collect();
     let mut changed_comms = after
         .iter()
-        .filter(|(id, h)| before.get(*id).map(|b| b != **h).unwrap_or(true))
+        .filter(|(id, h)| before.get(*id) != Some(**h))
         .count();
     changed_comms += before.keys().filter(|id| !after.contains_key(*id)).count();
     report.communities_changed = changed_comms;
     report.summaries_recomputed = hier.summaries_recomputed;
     provenance.extend(hier.provenance);
     provenance.push(Breadcrumb::new(
-        source::MERKLE,
+        source::GRAPH,
         "diff",
         format!(
-            "{changed_comms} of {} communities changed subtree hash",
+            "{changed_comms} of {} communities changed their summary",
             after.len()
         ),
     ));
 
     let head = deps.vcs.head_sha(&ident.root).unwrap_or(None);
-    deps.store
-        .set_repo_hashes(repo_id, head.as_deref(), &hier.root_hash)
-        .await?;
+    deps.store.set_repo_commit(repo_id, head.as_deref()).await?;
     report.warnings = finish_warnings(warnings, omitted);
     report.provenance = provenance;
     tracing::info!(
@@ -293,7 +291,6 @@ mod tests {
             name: ident.name.clone(),
             root_path: ident.root_path.clone(),
             commit_sha: Some("abc".into()),
-            root_hash: None,
         });
         ident.id
     }
@@ -413,7 +410,7 @@ mod tests {
             writes.iter().any(|w| w.starts_with("merge_files:4:")),
             "{writes:?}"
         );
-        assert_eq!(writes.last().unwrap(), "set_repo_hashes");
+        assert_eq!(writes.last().unwrap(), "set_repo_commit");
         assert_eq!(report.summaries_recomputed, 0);
         assert!(report.provenance.iter().any(|b| b.method == "git diff"));
     }

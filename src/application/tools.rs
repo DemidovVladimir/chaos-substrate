@@ -32,7 +32,7 @@ pub fn tools() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
             name: "index",
-            description: "Fully index a repository: tree-sitter structural extraction → project-wide import/call resolution → contextual chunks → real embeddings → feature communities (L1) → Merkle hashes (L2) → hash-gated feature summaries (L3). Run once per repo; afterwards use `add` for changes.",
+            description: "Fully index a repository: tree-sitter structural extraction → project-wide import/call resolution → contextual chunks → real embeddings → feature communities (L1) → feature summaries (L2), each embedded only when its text changed. Run once per repo; afterwards use `add` for changes.",
             input_schema: json!({"type": "object", "properties": {"repo": repo_prop()}, "required": []}),
         },
         ToolSpec {
@@ -42,7 +42,7 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "add",
-            description: "Incrementally index what changed since the last index: files whose content hash differs from the stored one (plus, with `since`, everything git reports in that range) are re-extracted and analyzed against the persisted graph, files gone from disk are purged, only new chunks are embedded, and communities/summaries are recomputed only where a feature's hash changed. Use after every edit instead of `reindex`.",
+            description: "Incrementally index what changed since the last index: files whose content hash differs from the stored one (plus, with `since`, everything git reports in that range) are re-extracted and analyzed against the persisted graph, files gone from disk are purged, only new chunks are embedded, and communities are rebuilt with a summary embedded again only where its text changed. Use after every edit instead of `reindex`.",
             input_schema: json!({"type": "object", "properties": {"repo": repo_prop(), "since": {"type": "string", "description": "Optional git ref: also re-index everything git reports changed since it (e.g. HEAD~1, main). Content-hash drift is always detected regardless."}}, "required": []}),
         },
         ToolSpec {

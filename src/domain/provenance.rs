@@ -37,7 +37,6 @@ pub mod source {
     pub const FILE: &str = "file";
     pub const TREE_SITTER: &str = "tree-sitter";
     pub const EMBEDDING: &str = "embedding";
-    pub const MERKLE: &str = "merkle";
     pub const GRAPH: &str = "graph";
     pub const PAGE: &str = "page";
 }

@@ -220,7 +220,6 @@ pub fn analyze_with(
             language,
             content_hash: x.content_hash.clone(),
             line_count: x.line_count as i32,
-            subtree_hash: None,
         });
         out.bundle.nodes.push(Node {
             id: node_id,

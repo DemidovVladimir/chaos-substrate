@@ -4,8 +4,8 @@
 //! `analyze` (project-wide resolution) → `build_chunks` → persist
 //! (IndexStore::replace_repo, embeddings preserved by content hash) → embed
 //! only the chunks the store reports missing → rebuild the hierarchy
-//! (Merkle file hashes → Louvain communities → hash-gated summaries) → stamp
-//! the repo with `commit_sha` + `root_hash`.
+//! (Louvain communities → summaries, embedded only when their text changed)
+//! → stamp the repo with `commit_sha`.
 //!
 //! Everything here depends on `domain` + `ports` only.
 
@@ -13,7 +13,7 @@ use crate::application::{analyze, chunk};
 use crate::domain::community::{detect, to_communities};
 use crate::domain::model::{Community, IndexBundle, Language, Node, NodeKind, Repo};
 use crate::domain::provenance::{source, Breadcrumb};
-use crate::domain::{hash, merkle, summary};
+use crate::domain::{hash, summary};
 use crate::ports::community_store::CommunityStore;
 use crate::ports::embedder::Embedder;
 use crate::ports::extractor::{FileExtraction, FileInput, SourceExtractor};
@@ -90,7 +90,6 @@ pub struct IndexReport {
 pub struct HierarchyReport {
     pub communities: Vec<Community>,
     pub summaries_recomputed: usize,
-    pub root_hash: String,
     pub provenance: Vec<Breadcrumb>,
 }
 
@@ -306,45 +305,39 @@ pub async fn embed_missing(
     Ok(done)
 }
 
-/// Rebuild L2 (Merkle) + L1 (communities) + L3 (hash-gated summaries) from the
-/// persisted graph. Summaries are recomputed ONLY when the stored
-/// `summary_hash` differs from `summary::summary_gate(subtree_hash, model_id)`.
+/// Rebuild L1 (communities) + L2 (summaries) from the persisted graph. Every
+/// summary is composed and keyed by `summary::summary_hash(text, model_id)`;
+/// the store restores an embedding saved under the same key, so only a
+/// summary whose text changed is embedded again.
 pub async fn rebuild_hierarchy(deps: Deps<'_>, repo_id: Uuid) -> Result<HierarchyReport> {
     let mut provenance = Vec::new();
     let graph = deps.store.load_graph(repo_id).await?;
-    let leaves = deps.store.load_chunk_hashes(repo_id).await?;
     provenance.push(Breadcrumb::new(
         source::POSTGRES,
         "load_graph",
         format!(
-            "{} files, {} nodes, {} edges, {} chunk hashes",
+            "{} files, {} nodes, {} edges",
             graph.files.len(),
             graph.nodes.len(),
-            graph.edges.len(),
-            leaves.len()
+            graph.edges.len()
         ),
     ));
 
-    // L2: Merkle roll-up.
-    let file_hashes = merkle::file_hashes(&leaves);
-    let mut file_rows: Vec<(String, String)> = file_hashes
-        .iter()
-        .map(|(p, h)| (p.clone(), h.clone()))
-        .collect();
-    file_rows.sort();
-    deps.store
-        .set_file_subtree_hashes(repo_id, &file_rows)
-        .await?;
-    let root_hash = merkle::root_hash(&file_hashes);
-    provenance.push(Breadcrumb::new(
-        source::MERKLE,
-        "rollup",
-        format!("{} file hashes → root {root_hash}", file_rows.len()),
-    ));
-
-    // L1: communities.
+    // L1: communities, each with its composed L2 summary text and key.
     let det = detect(repo_id, &graph.nodes, &graph.edges);
-    let (communities, members) = to_communities(&det, repo_id, &file_hashes);
+    let (mut communities, members) = to_communities(&det, repo_id);
+    let model = deps.embedder.model_ref();
+    let texts: Vec<String> = {
+        let ctx = SummaryContext::new(&graph.nodes, &graph.edges, &communities, &members);
+        communities
+            .iter()
+            .map(|c| summary::compose(&ctx.input_for(c)))
+            .collect()
+    };
+    for (c, text) in communities.iter_mut().zip(texts) {
+        c.summary_hash = Some(summary::summary_hash(&text, &model.model_id));
+        c.summary = Some(text);
+    }
     deps.communities
         .replace_communities(repo_id, &communities, &members)
         .await?;
@@ -361,45 +354,38 @@ pub async fn rebuild_hierarchy(deps: Deps<'_>, repo_id: Uuid) -> Result<Hierarch
     ));
     tracing::info!(repo = %repo_id, communities = communities.len(), "hierarchy rebuilt");
 
-    // L3: hash-gated summaries.
-    let model = deps.embedder.model_ref();
-    let candidates = deps
+    // L2: embed only the summaries the store has no vector for.
+    let missing = deps
         .communities
         .communities_needing_summary(repo_id, &model)
         .await?;
-    let ctx = SummaryContext::new(&graph.nodes, &graph.edges, &communities, &members);
     let mut recomputed = 0usize;
-    for c in &candidates {
-        let gate = summary::summary_gate(&c.subtree_hash, &model.model_id);
-        if c.summary_hash.as_deref() == Some(gate.as_str()) {
+    for c in &missing {
+        let Some(text) = c.summary.as_deref() else {
             continue;
-        }
-        let input = ctx.input_for(c);
-        let text = summary::compose(&input);
+        };
         let vector = deps
             .embedder
-            .embed(&text)
+            .embed(text)
             .await
             .with_context(|| format!("summary embedding for {}", c.label))?;
         deps.communities
-            .save_summary(c.id, &text, &gate, &model, &vector)
+            .save_summary_embedding(c.id, &model, &vector)
             .await?;
         recomputed += 1;
     }
     provenance.push(Breadcrumb::new(
         source::EMBEDDING,
-        "summary_gate",
+        "summary_hash",
         format!(
-            "{recomputed} of {} candidate summaries recomputed ({} communities total)",
-            candidates.len(),
-            communities.len()
+            "{recomputed} summaries embedded, {} reused (same text)",
+            communities.len().saturating_sub(recomputed)
         ),
     ));
-    tracing::info!(recomputed, candidates = candidates.len(), "summaries");
+    tracing::info!(recomputed, communities = communities.len(), "summaries");
     Ok(HierarchyReport {
         communities,
         summaries_recomputed: recomputed,
-        root_hash,
         provenance,
     })
 }
@@ -597,7 +583,6 @@ pub async fn index(deps: Deps<'_>, root: &Path, opts: IndexOptions) -> Result<In
         name: ident.name.clone(),
         root_path: ident.root_path.clone(),
         commit_sha: head_sha.clone(),
-        root_hash: None,
     };
     deps.store.upsert_repo(&repo).await?;
     deps.store.replace_repo(ident.id, &bundle).await?;
@@ -621,16 +606,12 @@ pub async fn index(deps: Deps<'_>, root: &Path, opts: IndexOptions) -> Result<In
     report.summaries_recomputed = hier.summaries_recomputed;
     provenance.extend(hier.provenance);
     deps.store
-        .set_repo_hashes(ident.id, head_sha.as_deref(), &hier.root_hash)
+        .set_repo_commit(ident.id, head_sha.as_deref())
         .await?;
     provenance.push(Breadcrumb::new(
         source::POSTGRES,
-        "set_repo_hashes",
-        format!(
-            "commit {} root {}",
-            head_sha.as_deref().unwrap_or("none"),
-            hier.root_hash
-        ),
+        "set_repo_commit",
+        format!("commit {}", head_sha.as_deref().unwrap_or("none")),
     ));
 
     report.warnings = finish_warnings(warnings, omitted);
@@ -688,7 +669,6 @@ pub(crate) mod fakes {
         pub writes: Mutex<Vec<String>>,
         pub repo: Mutex<Option<Repo>>,
         pub graph: Mutex<Graph>,
-        pub chunk_hashes: Mutex<Vec<(String, String)>>,
         pub missing: Mutex<Vec<Chunk>>,
         pub saved_embeddings: Mutex<Vec<(Uuid, String)>>,
         pub purged: Mutex<Vec<String>>,
@@ -718,13 +698,8 @@ pub(crate) mod fakes {
         async fn list_repos(&self) -> Result<Vec<Repo>> {
             Ok(self.repo.lock().unwrap().clone().into_iter().collect())
         }
-        async fn set_repo_hashes(
-            &self,
-            _repo_id: Uuid,
-            _commit_sha: Option<&str>,
-            _root_hash: &str,
-        ) -> Result<()> {
-            self.log("set_repo_hashes");
+        async fn set_repo_commit(&self, _repo_id: Uuid, _commit_sha: Option<&str>) -> Result<()> {
+            self.log("set_repo_commit");
             Ok(())
         }
         async fn replace_repo(&self, _repo_id: Uuid, bundle: &IndexBundle) -> Result<()> {
@@ -751,17 +726,6 @@ pub(crate) mod fakes {
         async fn load_graph(&self, _repo_id: Uuid) -> Result<Graph> {
             Ok(self.graph.lock().unwrap().clone())
         }
-        async fn load_chunk_hashes(&self, _repo_id: Uuid) -> Result<Vec<(String, String)>> {
-            Ok(self.chunk_hashes.lock().unwrap().clone())
-        }
-        async fn set_file_subtree_hashes(
-            &self,
-            _repo_id: Uuid,
-            _hashes: &[(String, String)],
-        ) -> Result<()> {
-            self.log("set_file_subtree_hashes");
-            Ok(())
-        }
         async fn chunks_missing_embeddings(
             &self,
             _repo_id: Uuid,
@@ -786,14 +750,17 @@ pub(crate) mod fakes {
         }
     }
 
+    /// Keeps the store contract: an embedding saved under a `summary_hash`
+    /// survives `replace_communities`, and only rows whose hash has none are
+    /// reported as needing a summary.
     #[derive(Default)]
     pub struct FakeCommunities {
         pub writes: Mutex<Vec<String>>,
-        /// Returned by `communities_needing_summary` (scripted).
-        pub needing: Mutex<Vec<Community>>,
         /// Last `replace_communities` payload.
         pub stored: Mutex<Vec<Community>>,
-        pub summaries_saved: Mutex<Vec<(Uuid, String)>>,
+        /// `summary_hash`es that have an embedding.
+        pub embedded: Mutex<HashSet<String>>,
+        pub summaries_saved: Mutex<Vec<Uuid>>,
     }
 
     #[async_trait]
@@ -822,21 +789,40 @@ pub(crate) mod fakes {
             _repo_id: Uuid,
             _model: &ModelRef,
         ) -> Result<Vec<Community>> {
-            Ok(self.needing.lock().unwrap().clone())
+            let embedded = self.embedded.lock().unwrap();
+            Ok(self
+                .stored
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| c.summary.is_some())
+                .filter(|c| {
+                    !c.summary_hash
+                        .as_ref()
+                        .is_some_and(|h| embedded.contains(h))
+                })
+                .cloned()
+                .collect())
         }
-        async fn save_summary(
+        async fn save_summary_embedding(
             &self,
             community_id: Uuid,
-            _summary: &str,
-            summary_hash: &str,
             _model: &ModelRef,
             _embedding: &[f32],
         ) -> Result<()> {
-            self.writes.lock().unwrap().push("save_summary".into());
-            self.summaries_saved
+            self.writes
                 .lock()
                 .unwrap()
-                .push((community_id, summary_hash.to_string()));
+                .push("save_summary_embedding".into());
+            let hash = self
+                .stored
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|c| c.id == community_id)
+                .and_then(|c| c.summary_hash.clone());
+            self.embedded.lock().unwrap().extend(hash);
+            self.summaries_saved.lock().unwrap().push(community_id);
             Ok(())
         }
     }
@@ -1055,7 +1041,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn full_index_persists_embeds_missing_and_stamps_hashes() {
+    async fn full_index_persists_embeds_missing_and_stamps_commit() {
         let dir = tmp_repo();
         let store = FakeStore::default();
         let repo_id = identify(dir.path()).unwrap().id;
@@ -1087,7 +1073,7 @@ mod tests {
             writes.iter().any(|w| w == "save_embeddings:2"),
             "{writes:?}"
         );
-        assert_eq!(writes.last().unwrap(), "set_repo_hashes");
+        assert_eq!(writes.last().unwrap(), "set_repo_commit");
         assert_eq!(
             store
                 .repo
@@ -1111,7 +1097,6 @@ mod tests {
             name: ident.name.clone(),
             root_path: ident.root_path.clone(),
             commit_sha: Some("abc".into()),
-            root_hash: Some("r".into()),
         });
         let comms = FakeCommunities::default();
         let emb = FakeEmbedder::default();
@@ -1170,77 +1155,79 @@ mod tests {
         assert!(!report.skipped);
     }
 
-    #[tokio::test]
-    async fn summaries_recomputed_only_when_gate_differs() {
-        let repo_id = hash::repo_id("/x");
-        let store = FakeStore::default();
-        // A small graph: 5 connected nodes so Louvain yields ≥ 1 community.
-        let ids: Vec<&str> = vec![
+    /// Five connected functions in two files (Louvain yields ≥ 1 community),
+    /// every one documented with `doc` and starting at `line`.
+    fn small_graph(repo_id: Uuid, doc: &str, line: i32) -> Graph {
+        let nodes: Vec<Node> = [
             "rust:src/a.rs:function:a",
             "rust:src/a.rs:function:b",
             "rust:src/a.rs:function:c",
             "rust:src/b.rs:function:d",
             "rust:src/b.rs:function:e",
-        ];
-        let nodes: Vec<Node> = ids
-            .iter()
-            .map(|s| node(repo_id, s, NodeKind::Function, Some("does a thing")))
+        ]
+        .iter()
+        .map(|s| Node {
+            line_start: Some(line),
+            line_end: Some(line + 1),
+            ..node(repo_id, s, NodeKind::Function, Some(doc))
+        })
+        .collect();
+        let edges = nodes
+            .windows(2)
+            .map(|w| {
+                edge(
+                    repo_id,
+                    w[0].id,
+                    w[1].id,
+                    crate::domain::model::EdgeKind::Calls,
+                )
+            })
             .collect();
-        let mut edges = Vec::new();
-        for w in nodes.windows(2) {
-            edges.push(edge(
-                repo_id,
-                w[0].id,
-                w[1].id,
-                crate::domain::model::EdgeKind::Calls,
-            ));
+        Graph {
+            nodes,
+            edges,
+            ..Default::default()
         }
-        store.graph.lock().unwrap().nodes = nodes;
-        store.graph.lock().unwrap().edges = edges;
-        *store.chunk_hashes.lock().unwrap() = vec![
-            ("src/a.rs".into(), "h1".into()),
-            ("src/b.rs".into(), "h2".into()),
-        ];
+    }
 
+    #[tokio::test]
+    async fn summaries_are_embedded_only_when_their_text_changes() {
+        let repo_id = hash::repo_id("/x");
+        let store = FakeStore::default();
         let comms = FakeCommunities::default();
         let emb = FakeEmbedder::default();
         let ext = FakeExtractor;
         let vcs = FakeVcs::default();
-        let model_id = emb.model_id().to_string();
-        // Script the "needing summary" list: one community already at the gate, one stale, one new.
-        let mk = |key: &str, hash: &str, stored: Option<String>| Community {
-            id: hash::scoped_id(repo_id, key),
-            repo_id,
-            label: key.to_string(),
-            member_count: 1,
-            subtree_hash: hash.to_string(),
-            summary: stored.as_ref().map(|_| "old".to_string()),
-            summary_hash: stored,
-            top_members: vec!["a".into()],
-            files: vec!["src/a.rs".into()],
-        };
-        let at_gate = mk("k1", "s1", Some(summary::summary_gate("s1", &model_id)));
-        let stale = mk("k2", "s2", Some("stale".into()));
-        let fresh = mk("k3", "s3", None);
-        *comms.needing.lock().unwrap() = vec![at_gate.clone(), stale.clone(), fresh.clone()];
+        let run = || rebuild_hierarchy(deps(&store, &comms, &emb, &ext, &vcs), repo_id);
 
-        let hier = rebuild_hierarchy(deps(&store, &comms, &emb, &ext, &vcs), repo_id)
-            .await
-            .unwrap();
-        assert_eq!(hier.summaries_recomputed, 2);
-        let saved = comms.summaries_saved.lock().unwrap().clone();
-        let saved_ids: Vec<Uuid> = saved.iter().map(|(id, _)| *id).collect();
-        assert!(!saved_ids.contains(&at_gate.id));
-        assert!(saved_ids.contains(&stale.id));
-        assert!(saved_ids.contains(&fresh.id));
-        assert!(saved.iter().all(|(_, h)| h.len() == 64));
-        assert!(!hier.root_hash.is_empty());
-        assert!(!hier.communities.is_empty());
-        assert!(store
-            .writes
-            .lock()
-            .unwrap()
-            .contains(&"set_file_subtree_hashes".to_string()));
+        *store.graph.lock().unwrap() = small_graph(repo_id, "does a thing", 1);
+        let first = run().await.unwrap();
+        assert!(!first.communities.is_empty());
+        assert_eq!(first.summaries_recomputed, first.communities.len());
+        for c in &first.communities {
+            let text = c.summary.as_deref().unwrap();
+            assert_eq!(
+                c.summary_hash.as_deref(),
+                Some(summary::summary_hash(text, "fake-model").as_str())
+            );
+        }
+
+        // Nothing changed: every summary keeps its vector.
+        assert_eq!(run().await.unwrap().summaries_recomputed, 0);
+
+        // The code moved inside its files, but no summary reads line numbers.
+        *store.graph.lock().unwrap() = small_graph(repo_id, "does a thing", 40);
+        assert_eq!(run().await.unwrap().summaries_recomputed, 0);
+
+        // A doc comment changed: the summaries that quote it are embedded again.
+        *store.graph.lock().unwrap() = small_graph(repo_id, "does another thing", 40);
+        let changed = run().await.unwrap();
+        assert!(changed.summaries_recomputed > 0);
+        assert!(changed.summaries_recomputed <= changed.communities.len());
+        assert_eq!(
+            comms.summaries_saved.lock().unwrap().len(),
+            first.summaries_recomputed + changed.summaries_recomputed
+        );
     }
 
     #[test]

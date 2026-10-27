@@ -15,7 +15,7 @@ pub fn sha256_hex(input: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Hash of several already-hashed parts (Merkle step): sorted-by-caller join.
+/// Hash of several parts joined by newlines, in the order the caller gives.
 pub fn combine(parts: &[String]) -> String {
     sha256_hex(&parts.join("\n"))
 }

@@ -158,14 +158,13 @@ async fn schema_check(store: &Postgres) -> Check {
         Ok(None) => {}
         Err(e) => return Check::fail("schema", format!("{e:#}")),
     }
-    let applied: Result<Option<String>, sqlx::Error> =
-        sqlx::query_scalar("select to_regclass('public.repositories')::text")
-            .fetch_one(store.pool())
-            .await;
-    match applied {
-        Ok(Some(_)) => Check::ok("schema", "migrations applied"),
-        Ok(None) => Check::fail("schema", "migrations not applied — run `chaos migrate`"),
-        Err(e) => Check::fail("schema", e.to_string()),
+    match store.pending_migrations().await {
+        Ok(pending) if pending.is_empty() => Check::ok("schema", "migrations applied"),
+        Ok(pending) => Check::fail(
+            "schema",
+            format!("migrations {pending:?} not applied — run `chaos migrate`"),
+        ),
+        Err(e) => Check::fail("schema", format!("{e:#}")),
     }
 }
 

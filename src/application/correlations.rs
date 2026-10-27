@@ -682,7 +682,7 @@ mod tests {
         async fn list_repos(&self) -> Result<Vec<Repo>> {
             unimplemented!()
         }
-        async fn set_repo_hashes(&self, _: Uuid, _: Option<&str>, _: &str) -> Result<()> {
+        async fn set_repo_commit(&self, _: Uuid, _: Option<&str>) -> Result<()> {
             unimplemented!()
         }
         async fn replace_repo(&self, _: Uuid, _: &IndexBundle) -> Result<()> {
@@ -693,12 +693,6 @@ mod tests {
         }
         async fn load_graph(&self, repo_id: Uuid) -> Result<Graph> {
             Ok(self.graphs.get(&repo_id).cloned().unwrap_or_default())
-        }
-        async fn load_chunk_hashes(&self, _: Uuid) -> Result<Vec<(String, String)>> {
-            unimplemented!()
-        }
-        async fn set_file_subtree_hashes(&self, _: Uuid, _: &[(String, String)]) -> Result<()> {
-            unimplemented!()
         }
         async fn chunks_missing_embeddings(&self, _: Uuid, _: &ModelRef) -> Result<Vec<Chunk>> {
             unimplemented!()
@@ -738,14 +732,7 @@ mod tests {
         ) -> Result<Vec<Community>> {
             unimplemented!()
         }
-        async fn save_summary(
-            &self,
-            _: Uuid,
-            _: &str,
-            _: &str,
-            _: &ModelRef,
-            _: &[f32],
-        ) -> Result<()> {
+        async fn save_summary_embedding(&self, _: Uuid, _: &ModelRef, _: &[f32]) -> Result<()> {
             unimplemented!()
         }
     }
@@ -812,7 +799,6 @@ mod tests {
             language: Language::TypeScript,
             content_hash: String::new(),
             line_count: 1,
-            subtree_hash: None,
         }
     }
 
@@ -822,7 +808,6 @@ mod tests {
             repo_id: repo,
             label: label.into(),
             member_count: 0,
-            subtree_hash: String::new(),
             summary: None,
             summary_hash: None,
             top_members: vec![],
@@ -838,7 +823,6 @@ mod tests {
                 name: alias.into(),
                 root_path: format!("/{alias}"),
                 commit_sha: None,
-                root_hash: None,
             },
         }
     }

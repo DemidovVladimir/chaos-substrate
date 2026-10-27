@@ -1,7 +1,7 @@
 //! Postgres + pgvector adapter: the production implementation of the
 //! `IndexStore`, `SearchStore` and `CommunityStore` ports.
 //!
-//! One `sqlx::PgPool`, one migration (`migrations/001_init.sql`), no ORM.
+//! One `sqlx::PgPool`, the migrations in `migrations/`, no ORM.
 //! Vectors travel as text literals (`[0.1,0.2,...]`) cast to `::vector`.
 
 mod community;
@@ -41,11 +41,6 @@ impl Postgres {
             .await
             .context("connect to Postgres")?;
         Ok(Self { pool })
-    }
-
-    /// The underlying pool.
-    pub fn pool(&self) -> &PgPool {
-        &self.pool
     }
 
     /// Apply `migrations/`. A database holding the legacy 0.x schema (legacy
@@ -98,6 +93,27 @@ impl Postgres {
         } else {
             Ok(Some(format!("unknown migration versions {foreign:?}")))
         }
+    }
+
+    /// Versions of the shipped migrations not yet applied to this database.
+    pub async fn pending_migrations(&self) -> Result<Vec<i64>> {
+        let has_history: Option<String> =
+            sqlx::query_scalar("select to_regclass('public._sqlx_migrations')::text")
+                .fetch_one(&self.pool)
+                .await?;
+        let applied: Vec<i64> = if has_history.is_some() {
+            sqlx::query_scalar("select version from _sqlx_migrations where success")
+                .fetch_all(&self.pool)
+                .await?
+        } else {
+            Vec::new()
+        };
+        Ok(MIGRATOR
+            .migrations
+            .iter()
+            .map(|m| m.version)
+            .filter(|v| !applied.contains(v))
+            .collect())
     }
 
     /// Server version plus whether the `vector` extension is installed.
@@ -154,7 +170,6 @@ pub(crate) fn row_to_repo(row: &PgRow) -> Repo {
         name: row.get("name"),
         root_path: row.get("root_path"),
         commit_sha: row.get("commit_sha"),
-        root_hash: row.get("root_hash"),
     }
 }
 
@@ -166,7 +181,6 @@ pub(crate) fn row_to_file(row: &PgRow) -> Result<SourceFile> {
         language: parse_kind(Language::parse, row.get("language"), "language")?,
         content_hash: row.get("content_hash"),
         line_count: row.get("line_count"),
-        subtree_hash: row.get("subtree_hash"),
     })
 }
 
@@ -219,7 +233,6 @@ pub(crate) fn row_to_community(row: &PgRow) -> Community {
         repo_id: row.get("repo_id"),
         label: row.get("label"),
         member_count: row.get("member_count"),
-        subtree_hash: row.get("subtree_hash"),
         summary: row.get("summary"),
         summary_hash: row.get("summary_hash"),
         top_members: json_strings(&row.get::<serde_json::Value, _>("top_members")),
@@ -279,7 +292,6 @@ mod tests {
             language: Language::Rust,
             content_hash: format!("h-{path}"),
             line_count: 3,
-            subtree_hash: None,
         };
         let n = |file, stable: &str, name: &str, kind| Node {
             id: node_id(repo, stable),
@@ -364,20 +376,18 @@ mod tests {
             name: "t".into(),
             root_path: "/tmp/chaos-adapter-test".into(),
             commit_sha: None,
-            root_hash: None,
         };
         pg.upsert_repo(&repo).await.unwrap();
         assert_eq!(
             pg.find_repo(&repo.root_path).await.unwrap().unwrap().id,
             repo.id
         );
-        pg.set_repo_hashes(repo.id, Some("abc"), "root")
-            .await
-            .unwrap();
+        pg.set_repo_commit(repo.id, Some("abc")).await.unwrap();
         assert_eq!(
-            pg.list_repos().await.unwrap()[0].root_hash.as_deref(),
-            Some("root")
+            pg.list_repos().await.unwrap()[0].commit_sha.as_deref(),
+            Some("abc")
         );
+        assert!(pg.pending_migrations().await.unwrap().is_empty());
 
         let b = bundle(repo.id);
         pg.replace_repo(repo.id, &b).await.unwrap();
@@ -467,31 +477,16 @@ mod tests {
             pg.file_paths(&[b.files[0].id]).await.unwrap()[0].1,
             "src/a.rs"
         );
-        assert_eq!(pg.load_chunk_hashes(repo.id).await.unwrap().len(), 2);
-        pg.set_file_subtree_hashes(repo.id, &[("src/a.rs".into(), "sub-a".into())])
-            .await
-            .unwrap();
-        let g = pg.load_graph(repo.id).await.unwrap();
-        assert_eq!(
-            g.files
-                .iter()
-                .find(|f| f.path == "src/a.rs")
-                .unwrap()
-                .subtree_hash
-                .as_deref(),
-            Some("sub-a")
-        );
 
-        // Communities with hash-gated summary preservation.
+        // Communities: a summary embedding is kept under its summary_hash.
         let cid = Uuid::new_v5(&repo.id, b"community:0");
         let comm = Community {
             id: cid,
             repo_id: repo.id,
             label: "src".into(),
             member_count: 2,
-            subtree_hash: "s1".into(),
-            summary: None,
-            summary_hash: None,
+            summary: Some("does alpha things".into()),
+            summary_hash: Some("h1".into()),
             top_members: vec!["alpha".into()],
             files: vec!["src/a.rs".into()],
         };
@@ -509,7 +504,7 @@ mod tests {
                 .len(),
             1
         );
-        pg.save_summary(cid, "does alpha things", "s1:v1", &m, &[0.0, 1.0, 0.0])
+        pg.save_summary_embedding(cid, &m, &[0.0, 1.0, 0.0])
             .await
             .unwrap();
         assert!(pg
@@ -533,7 +528,12 @@ mod tests {
             .unwrap();
         let loaded = pg.load_communities(repo.id).await.unwrap();
         assert_eq!(loaded[0].summary.as_deref(), Some("does alpha things"));
-        assert_eq!(loaded[0].summary_hash.as_deref(), Some("s1:v1"));
+        assert_eq!(loaded[0].summary_hash.as_deref(), Some("h1"));
+        assert!(pg
+            .communities_needing_summary(repo.id, &m)
+            .await
+            .unwrap()
+            .is_empty());
         assert_eq!(loaded[0].top_members, vec!["alpha".to_string()]);
         assert_eq!(pg.load_members(repo.id).await.unwrap(), vec![(cid, alpha)]);
         let ranked = pg
@@ -546,16 +546,52 @@ mod tests {
             pg.community_file_ids(&[cid]).await.unwrap(),
             vec![b.files[0].id]
         );
+        // Same summary under a new id keeps its vector; a changed summary loses it.
+        let moved = Community {
+            id: Uuid::new_v5(&repo.id, b"community:1"),
+            ..comm.clone()
+        };
+        pg.replace_communities(repo.id, std::slice::from_ref(&moved), &[(moved.id, alpha)])
+            .await
+            .unwrap();
+        assert!(pg
+            .communities_needing_summary(repo.id, &m)
+            .await
+            .unwrap()
+            .is_empty());
         let changed = Community {
-            subtree_hash: "s2".into(),
+            summary: Some("does other things".into()),
+            summary_hash: Some("h2".into()),
             ..comm
         };
         pg.replace_communities(repo.id, &[changed], &[(cid, alpha)])
             .await
             .unwrap();
-        assert!(pg.load_communities(repo.id).await.unwrap()[0]
-            .summary
-            .is_none());
+        assert_eq!(
+            pg.communities_needing_summary(repo.id, &m)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // `add` of b.rs alone: the edge alpha → beta comes from a.rs, which is
+        // not re-analyzed, so the merge must keep it.
+        let readd_b = IndexBundle {
+            files: vec![b.files[1].clone()],
+            nodes: vec![b.nodes[1].clone()],
+            chunks: vec![b.chunks[1].clone()],
+            ..Default::default()
+        };
+        pg.merge_files(repo.id, &["src/b.rs".to_string()], &readd_b)
+            .await
+            .unwrap();
+        let g = pg.load_graph(repo.id).await.unwrap();
+        assert_eq!(g.edges.len(), 1, "{:?}", g.edges);
+        assert_eq!(
+            (g.edges[0].source_node_id, g.edges[0].target_node_id),
+            (alpha, b.nodes[1].id)
+        );
 
         // Incremental merge: purge b.rs, re-insert a.rs with a new chunk.
         let mut b3 = IndexBundle {
@@ -592,7 +628,7 @@ mod tests {
 
         // Legacy schema detection: a 0.x table makes a plain migrate refuse.
         sqlx::raw_sql("create table analysis_runs (id int)")
-            .execute(pg.pool())
+            .execute(&pg.pool)
             .await
             .unwrap();
         let err = pg.migrate(false).await.unwrap_err().to_string();

@@ -183,7 +183,6 @@ pub struct Repo {
     pub name: String,
     pub root_path: String,
     pub commit_sha: Option<String>,
-    pub root_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -194,7 +193,6 @@ pub struct SourceFile {
     pub language: Language,
     pub content_hash: String,
     pub line_count: i32,
-    pub subtree_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -247,17 +245,17 @@ impl Chunk {
     }
 }
 
-/// An L1 community ("feature"): a Louvain cluster of nodes with a templated,
-/// hash-gated summary whose embedding routes feature questions.
+/// An L1 community ("feature"): a Louvain cluster of nodes with a templated
+/// summary whose embedding routes feature questions.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Community {
     pub id: Uuid,
     pub repo_id: Uuid,
     pub label: String,
     pub member_count: i32,
-    /// Merkle roll-up of member files; gates summary recomputation.
-    pub subtree_hash: String,
     pub summary: Option<String>,
+    /// [`crate::domain::summary::summary_hash`] of `summary`: the key its
+    /// embedding is stored and reused under.
     pub summary_hash: Option<String>,
     /// Top member symbol names (weighted degree order).
     pub top_members: Vec<String>,

@@ -6,7 +6,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use uuid::Uuid;
 
-/// Nodes + edges + files of a repo (no chunk bodies) — the community/merkle input.
+/// Nodes + edges + files of a repo (no chunk bodies) — the community input.
 #[derive(Debug, Clone, Default)]
 pub struct Graph {
     pub files: Vec<SourceFile>,
@@ -19,12 +19,8 @@ pub trait IndexStore: Send + Sync {
     async fn upsert_repo(&self, repo: &Repo) -> Result<()>;
     async fn find_repo(&self, root_path: &str) -> Result<Option<Repo>>;
     async fn list_repos(&self) -> Result<Vec<Repo>>;
-    async fn set_repo_hashes(
-        &self,
-        repo_id: Uuid,
-        commit_sha: Option<&str>,
-        root_hash: &str,
-    ) -> Result<()>;
+    /// Record the commit the index now reflects (`reindex` skips when HEAD equals it).
+    async fn set_repo_commit(&self, repo_id: Uuid, commit_sha: Option<&str>) -> Result<()>;
 
     /// Replace the WHOLE index of a repo. Embeddings whose `(content_hash,
     /// model)` still exist in the new bundle MUST be preserved (harvested into
@@ -35,7 +31,8 @@ pub trait IndexStore: Send + Sync {
     /// edges/chunks/embeddings), then insert `bundle`. Nodes are upserted by
     /// `(repo_id, stable_id)`; because ids are uuid5(repo_id, stable_id) no
     /// remap is needed. Edges referencing nodes absent from both DB and bundle
-    /// are skipped, not errors.
+    /// are skipped, not errors. Edges into a purged path from a path that stays
+    /// (not re-analyzed) MUST be kept when both ends exist after the merge.
     async fn merge_files(
         &self,
         repo_id: Uuid,
@@ -44,13 +41,6 @@ pub trait IndexStore: Send + Sync {
     ) -> Result<()>;
 
     async fn load_graph(&self, repo_id: Uuid) -> Result<Graph>;
-    /// `(file path, chunk content_hash)` pairs — Merkle leaves.
-    async fn load_chunk_hashes(&self, repo_id: Uuid) -> Result<Vec<(String, String)>>;
-    async fn set_file_subtree_hashes(
-        &self,
-        repo_id: Uuid,
-        hashes: &[(String, String)],
-    ) -> Result<()>;
 
     async fn chunks_missing_embeddings(
         &self,

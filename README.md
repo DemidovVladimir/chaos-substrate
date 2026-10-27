@@ -39,7 +39,7 @@ directory.
 
 | Tool | What it does | Key arguments |
 | --- | --- | --- |
-| `index` | Full index: extraction → import/call resolution → contextual chunks → embeddings → feature communities → Merkle hashes → summaries. Run once per repo. | `repo`, `--dry-run` (CLI only) |
+| `index` | Full index: extraction → import/call resolution → contextual chunks → embeddings → feature communities → summaries. Run once per repo. | `repo`, `--dry-run` (CLI only) |
 | `reindex` | Re-run a full index. No-op when git HEAD equals the indexed commit and the worktree is clean. Unchanged chunks keep their embeddings. | `repo`, `force` |
 | `add` | Incremental index of what changed since the last index (content-hash drift; plus everything git reports with `--since REF`). Files gone from disk are purged; only new chunks are embedded. Use after every edit. | `repo`, `since` |
 | `feature` | Answer one feature question from the index, without reading source. Returns feature summaries, code excerpts with line ranges, a 1-hop graph, env vars / HTTP routes involved. Persists the answer as a page with a visual feature map. With `repos`/`all_repos`, answers across the project's repos on one page with cross-repo links. | `question`, `repo`, `repos`, `all_repos`, `project`, `budget_tokens` (1000–16000, default 6000; across repos, split evenly between them), `persist` |
@@ -51,8 +51,9 @@ CLI-only plumbing: `migrate [--reset]`, `doctor`, `mcp`, `help`.
 Terms used throughout: a **chunk** is one unit of code (usually one function/type) stored with a
 context header and an embedding; a **community** (also called a *feature*) is a cluster of
 symbols that call and import each other more than they touch the rest of the graph; a
-**Merkle hash** is a hash of hashes, so a change deep inside a file changes the hash of every
-level above it and nothing else.
+**content hash** is the SHA-256 of a piece's own input. A chunk, a file, a feature summary and a
+generated page are each stored under the hash of exactly what they are made from, so an
+unchanged piece is recognised and its embedding (or page) is reused.
 
 ## Multi-repo projects: `chaos.toml`
 

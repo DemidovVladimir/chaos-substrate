@@ -47,27 +47,29 @@ help, the MCP `tools/list` roster, and a test that both stay in sync.
 4. **Chunk** (`application/chunk.rs`, policy in `domain/chunking.rs`). See below.
 5. **Persist.** `IndexStore::replace_repo` swaps the repo's rows; embeddings survive by content
    hash. Only chunks the store reports missing an embedding for are embedded (batches of 16).
-6. **Hierarchy.** Merkle hashes (L2) → Louvain communities (L1) → hash-gated summaries (L3).
-7. **Stamp** the repository with the git `commit_sha` and the Merkle `root_hash`.
+6. **Hierarchy.** Louvain communities (L1) → summaries (L2), each embedded only when its text
+   changed.
+7. **Stamp** the repository with the git `commit_sha`.
 
 `reindex` runs the same pipeline unless HEAD equals the indexed commit and the worktree is clean
 (then it returns `skipped: true`; `force` overrides). `add` runs steps 2–7 for the files git
 whose on-disk content hash differs from the stored one (plus what git reports with `since <ref>`), purges files gone from disk
-and renamed-from paths, and resolves relations only within the changed set. Documented
-limitation: an edge from an unchanged file to a brand-new symbol waits for the next full
-`index`.
+and renamed-from paths, and resolves relations only within the changed set. Edges from
+unchanged files into a re-added file are kept by `merge_files` while their target symbol still
+exists. Documented limitation: an edge from an unchanged file to a brand-new symbol waits for
+the next full `index`.
 
-## Data model (`migrations/001_init.sql`, 8 tables)
+## Data model (`migrations/`, 8 tables)
 
 | Table | Holds |
 | --- | --- |
-| `repositories` | `root_path` (unique), `commit_sha`, Merkle `root_hash` |
-| `files` | path, language, `content_hash`, `subtree_hash` |
+| `repositories` | `root_path` (unique), `commit_sha` |
+| `files` | path, language, `content_hash` |
 | `nodes` | symbols, files, surfaces: `kind`, `stable_id` (unique per repo), name, signature, doc, lines, `metadata` |
 | `edges` | `source → target`, `kind`, `confidence`; unique per (source, target, kind) |
 | `chunks` | `header`, `body`, `content_hash`, line range, generated `search_vector` (tsvector over header + body + identifier-split text) |
 | `embeddings` | one row per (chunk, provider, model, dimensions); `check (dimensions = vector_dims(embedding))` |
-| `communities` | label, member count, `subtree_hash`, summary text, `summary_hash`, `summary_embedding`, top members, files |
+| `communities` | label, member count, summary text, `summary_hash`, `summary_embedding`, top members, files |
 | `community_members` | community ↔ node |
 
 Ids are deterministic (UUIDv5 of repo root path / `stable_id` / edge triple), so re-indexing
@@ -89,7 +91,7 @@ line-split at ≤ 4500. When an embedder is present the planned segments are emb
 (header prepended to each) and adjacent segments are merged left-to-right while cosine ≥ 0.82
 and the merge stays ≤ 4500 chars; a failed batch falls back to the line split (recorded in chunk
 metadata). Chunk ids derive from `content_hash + stable_id + part`, so the result is deterministic
-for a fixed encoder and content, which the Merkle gating relies on.
+for a fixed encoder and content, which embedding reuse relies on.
 
 ## Retrieval and fusion (`feature`)
 
@@ -110,7 +112,7 @@ for a fixed encoder and content, which the Merkle gating relies on.
    boundary (never below 600 chars) or degrades to its header line so symbol coverage stays wide.
 7. Persist `docs/features_memory/<slug>.html` through the hash-gated `PageStore`.
 
-## Hierarchy: L1 / L2 / L3 and the hash gates
+## Hierarchy: L1 / L2 and what is reused
 
 - **L0** is the flat graph (nodes + edges + chunks).
 - **L1, communities** (`domain/community.rs`): deterministic Louvain modularity optimisation
@@ -119,14 +121,22 @@ for a fixed encoder and content, which the Merkle gating relies on.
   best-coupled neighbour so the layer holds features, not per-file singletons. Community ids are
   derived from the smallest member `stable_id`, so they are stable across re-indexes. The
   synthetic repository node is excluded.
-- **L2, Merkle roll-up** (`domain/merkle.rs`): `chunk.content_hash` → file hash → community
-  `subtree_hash` and repo `root_hash`, each level hashing a canonically ordered list of child
-  hashes. The result depends only on content, never on ids.
-- **L3, summaries** (`domain/summary.rs`): a templated, embedder-free text per community (label,
+- **L2, summaries** (`domain/summary.rs`): a templated, embedder-free text per community (label,
   top symbols, doc sentences, files, neighbour communities; ≤ 1600 chars) that is then embedded
-  for routing. Gate key: `sha256(subtree_hash : model_id : v<SUMMARY_ALGO_VERSION>)`. A community
-  whose gate key equals its stored `summary_hash` is skipped, so a no-change `add` or `reindex`
-  recomputes zero summaries; changing the embedding model or the template version invalidates all.
+  for routing. Its key is `summary_hash = sha256(model_id \n text)`. `replace_communities` keeps
+  every summary embedding under that key and gives it back to any community whose new text has
+  the same key, whatever its id, so only a summary whose text changed is embedded again. A
+  no-change `add` or `reindex` embeds zero summaries; so does an edit that does not reach the
+  text (a comment inside a function, code moved down a few lines). Changing the embedding model
+  or the template changes the text or the key and re-embeds them all.
+
+Every reuse in the index is keyed the same way, by the hash of the thing's own input: a chunk
+embedding by the chunk's `content_hash` (header + body), a file by the hash of its bytes (`add`
+compares it with the stored one), a summary embedding by `summary_hash`, a generated page by the
+hash of the data it shows. There is no roll-up of hashes into a tree: nothing in `feature`,
+`add` or `reindex` asks "did anything below this change?", so a tree would have no reader.
+`reindex` decides whether to run from git (HEAD equals the indexed commit and the worktree is
+clean).
 
 ## Cross-repo correlations
 
@@ -153,4 +163,4 @@ pages.
 
 Generated answers carry `Breadcrumb { source, method, detail, locator }` entries
 (`domain/provenance.rs`) saying where each piece came from: git, postgres, file, tree-sitter, embedding,
-merkle, graph, page. They are part of every tool return and every page manifest.
+graph, page. They are part of every tool return and every page manifest.

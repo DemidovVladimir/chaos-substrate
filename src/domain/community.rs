@@ -15,7 +15,6 @@
 //! community.
 
 use crate::domain::hash;
-use crate::domain::merkle;
 use crate::domain::model::{Community, Edge, EdgeKind, Node, NodeKind};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
@@ -164,13 +163,8 @@ pub fn detect(repo_id: Uuid, nodes: &[Node], edges: &[Edge]) -> Detection {
 }
 
 /// Convert a detection into persistable [`Community`] rows plus
-/// `(community_id, node_id)` member pairs; `subtree_hash` is the Merkle
-/// roll-up of the member files under `file_hashes`.
-pub fn to_communities(
-    det: &Detection,
-    repo_id: Uuid,
-    file_hashes: &HashMap<String, String>,
-) -> (Vec<Community>, Vec<(Uuid, Uuid)>) {
+/// `(community_id, node_id)` member pairs. Summaries are filled in later.
+pub fn to_communities(det: &Detection, repo_id: Uuid) -> (Vec<Community>, Vec<(Uuid, Uuid)>) {
     let mut rows = Vec::with_capacity(det.communities.len());
     let mut members = Vec::new();
     for c in &det.communities {
@@ -179,7 +173,6 @@ pub fn to_communities(
             repo_id,
             label: c.label.clone(),
             member_count: c.members.len() as i32,
-            subtree_hash: merkle::community_hash(&c.files, file_hashes),
             summary: None,
             summary_hash: None,
             top_members: c.top_members.clone(),
@@ -716,26 +709,16 @@ mod tests {
     }
 
     #[test]
-    fn to_communities_fills_hashes_and_members() {
+    fn to_communities_fills_rows_and_members() {
         let (nodes, edges) = cliques();
         let det = detect(Uuid::nil(), &nodes, &edges);
-        let leaves: Vec<(String, String)> = nodes
-            .iter()
-            .map(|n| {
-                (
-                    node_path(&n.stable_id).to_string(),
-                    hash::sha256_hex(&n.stable_id),
-                )
-            })
-            .collect();
-        let fh = merkle::file_hashes(&leaves);
-        let (rows, members) = to_communities(&det, Uuid::nil(), &fh);
+        let (rows, members) = to_communities(&det, Uuid::nil());
         assert_eq!(rows.len(), 3);
         assert_eq!(members.len(), 12);
         for r in &rows {
             assert_eq!(r.member_count, 4);
-            assert_eq!(r.subtree_hash, merkle::community_hash(&r.files, &fh));
             assert_eq!(r.top_members.len(), 4);
+            assert!(r.summary.is_none() && r.summary_hash.is_none());
         }
     }
 

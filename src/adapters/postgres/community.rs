@@ -1,5 +1,5 @@
-//! `CommunityStore` on Postgres: L1 communities + members and their L3
-//! summaries, preserved across re-clustering by the `subtree_hash` gate.
+//! `CommunityStore` on Postgres: L1 communities + members and their L2
+//! summaries, whose embeddings survive re-clustering under `summary_hash`.
 
 use super::{row_to_community, vector_literal, Postgres};
 use crate::domain::model::{Community, ModelRef};
@@ -12,16 +12,16 @@ use uuid::Uuid;
 const BATCH: usize = 2000;
 
 const COMMUNITY_COLS: &str =
-    "id, repo_id, label, member_count, subtree_hash, summary, summary_hash, top_members, files";
+    "id, repo_id, label, member_count, summary, summary_hash, top_members, files";
 
 #[async_trait]
 impl CommunityStore for Postgres {
-    /// Harvest the repo's summaries into a temp table, replace the community
-    /// rows and members, then restore summary / summary_hash / provider /
-    /// model / embedding for every community whose id AND `subtree_hash` are
-    /// unchanged. Members are inserted via `unnest` (only ids present in
-    /// `nodes` are kept, so a member of a since-purged node is dropped rather
-    /// than failing the FK).
+    /// Harvest the repo's summary embeddings by `summary_hash` into a temp
+    /// table, replace the community rows (with their summary text and hash)
+    /// and members, then restore provider / model / embedding for every row
+    /// whose `summary_hash` was harvested — whatever its id. Members are
+    /// inserted via `unnest` (only ids present in `nodes` are kept, so a member
+    /// of a since-purged node is dropped rather than failing the FK).
     async fn replace_communities(
         &self,
         repo_id: Uuid,
@@ -32,8 +32,10 @@ impl CommunityStore for Postgres {
         sqlx::query(
             r#"
             create temp table _chaos_saved_summaries on commit drop as
-            select id, subtree_hash, summary, summary_hash, summary_provider, summary_model, summary_embedding
-            from communities where repo_id = $1 and summary is not null
+            select distinct on (summary_hash) summary_hash, summary_provider, summary_model, summary_embedding
+            from communities
+            where repo_id = $1 and summary_hash is not null and summary_embedding is not null
+            order by summary_hash, id
             "#,
         )
         .bind(repo_id)
@@ -47,15 +49,16 @@ impl CommunityStore for Postgres {
             let json = |v: &Vec<String>| serde_json::to_value(v).unwrap_or_default();
             sqlx::query(
                 r#"
-                insert into communities (id, repo_id, label, member_count, subtree_hash, top_members, files)
-                select * from unnest($1::uuid[], $2::uuid[], $3::text[], $4::int4[], $5::text[], $6::jsonb[], $7::jsonb[])
+                insert into communities (id, repo_id, label, member_count, summary, summary_hash, top_members, files)
+                select * from unnest($1::uuid[], $2::uuid[], $3::text[], $4::int4[], $5::text[], $6::text[], $7::jsonb[], $8::jsonb[])
                 "#,
             )
             .bind(batch.iter().map(|c| c.id).collect::<Vec<_>>())
             .bind(batch.iter().map(|_| repo_id).collect::<Vec<_>>())
             .bind(batch.iter().map(|c| c.label.clone()).collect::<Vec<_>>())
             .bind(batch.iter().map(|c| c.member_count).collect::<Vec<_>>())
-            .bind(batch.iter().map(|c| c.subtree_hash.clone()).collect::<Vec<_>>())
+            .bind(batch.iter().map(|c| c.summary.clone()).collect::<Vec<_>>())
+            .bind(batch.iter().map(|c| c.summary_hash.clone()).collect::<Vec<_>>())
             .bind(batch.iter().map(|c| json(&c.top_members)).collect::<Vec<_>>())
             .bind(batch.iter().map(|c| json(&c.files)).collect::<Vec<_>>())
             .execute(&mut *tx)
@@ -80,10 +83,10 @@ impl CommunityStore for Postgres {
         sqlx::query(
             r#"
             update communities c set
-                summary = s.summary, summary_hash = s.summary_hash, summary_provider = s.summary_provider,
-                summary_model = s.summary_model, summary_embedding = s.summary_embedding
+                summary_provider = s.summary_provider, summary_model = s.summary_model,
+                summary_embedding = s.summary_embedding
             from _chaos_saved_summaries s
-            where c.id = s.id and c.subtree_hash = s.subtree_hash and c.repo_id = $1
+            where c.repo_id = $1 and c.summary_hash = s.summary_hash
             "#,
         )
         .bind(repo_id)
@@ -118,13 +121,8 @@ impl CommunityStore for Postgres {
             .collect())
     }
 
-    /// Communities with no summary, no `summary_hash`, no embedding, or a
-    /// summary produced by a different provider/model than `model`. The store
-    /// does not know the domain's gate formula: the use-case additionally
-    /// compares each returned-or-not community's `summary_hash` against the
-    /// domain gate value (derived from `subtree_hash`) and re-summarises on
-    /// mismatch — `replace_communities` already wipes the summary of any
-    /// community whose `subtree_hash` changed, so that check is a safety net.
+    /// Communities with a summary but no embedding, or an embedding from a
+    /// different provider / model / dimension count than `model`.
     async fn communities_needing_summary(
         &self,
         repo_id: Uuid,
@@ -133,8 +131,8 @@ impl CommunityStore for Postgres {
         let rows = sqlx::query(&format!(
             r#"
             select {COMMUNITY_COLS} from communities
-            where repo_id = $1 and (
-                summary is null or summary_hash is null or summary_embedding is null
+            where repo_id = $1 and summary is not null and (
+                summary_embedding is null
                 or summary_provider is distinct from $2 or summary_model is distinct from $3
                 or vector_dims(summary_embedding) <> $4)
             order by member_count desc, label, id
@@ -149,11 +147,9 @@ impl CommunityStore for Postgres {
         Ok(rows.iter().map(row_to_community).collect())
     }
 
-    async fn save_summary(
+    async fn save_summary_embedding(
         &self,
         community_id: Uuid,
-        summary: &str,
-        summary_hash: &str,
         model: &ModelRef,
         embedding: &[f32],
     ) -> Result<()> {
@@ -167,14 +163,12 @@ impl CommunityStore for Postgres {
         }
         sqlx::query(
             r#"
-            update communities set summary = $2, summary_hash = $3, summary_provider = $4, summary_model = $5,
-                                   summary_embedding = $6::vector, updated_at = now()
+            update communities set summary_provider = $2, summary_model = $3,
+                                   summary_embedding = $4::vector, updated_at = now()
             where id = $1
             "#,
         )
         .bind(community_id)
-        .bind(summary)
-        .bind(summary_hash)
         .bind(&model.provider)
         .bind(&model.model_id)
         .bind(vector_literal(embedding))

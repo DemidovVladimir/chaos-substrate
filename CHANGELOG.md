@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.2.0 — 2026-10-27
+
+Simpler: the Merkle tree is gone.
+
+The index used to roll content hashes up into a tree (chunk → file → feature → repository) and
+re-embedded a feature summary whenever its feature's hash moved. Nothing read the tree's root,
+and search never used the tree at all. Its only job was that summary gate, and the gate was too
+coarse: any edit inside a feature (a comment, a moved line) re-embedded the summary, even though
+the summary text had not changed.
+
+- A summary embedding is now stored under the hash of the summary text and the model
+  (`summary_hash`). It is kept across re-clustering and handed back to any feature whose text
+  has the same hash, whatever its id, so only a summary whose text changed is embedded again.
+- Generated website pages are keyed by the hash of the data they show.
+- Removed: `domain/merkle.rs`, the `repositories.root_hash`, `files.subtree_hash` and
+  `communities.subtree_hash` columns (migration `002_drop_merkle.sql`), and the store methods
+  that fed them. `set_repo_hashes` became `set_repo_commit`.
+- `chaos doctor` names migrations that are not applied yet, and every tool stops with
+  "run `chaos migrate`" instead of failing on a missing column.
+
+Fixed: `add` lost the edges that point into an edited file from files that did not change
+(purging the file cascaded them, and only the edited file is re-analyzed). The lost edges moved
+feature boundaries, so summaries changed for no reason. `merge_files` now keeps those edges.
+
+Measured on this repository (97 files, 1723 chunks, 33 features, embeddinggemma), with the same
+edits for 1.1 and 1.2:
+
+| Edit, then `add` | 1.1 | 1.2 |
+| --- | --- | --- |
+| nothing changed | 0 chunks, 0 summaries | 0 chunks, 0 summaries |
+| one comment inside a test function | 1 chunk, 2 summaries, 2 edges lost | 1 chunk, 0 summaries, 0 edges lost |
+| a blank line (the code below moves down) | 9 chunks, 1 summary | 9 chunks, 0 summaries |
+
+Upgrade: run `chaos migrate`. The first `index`, or the first `add` that finds a change, embeds
+every summary once (32 of 33 here), because the summary key changed; chunk embeddings are kept.
+
 ## 1.0.0 — 2026-08-28
 
 Ground-up rewrite. Chaos Substrate is now a small hexagonal Rust crate

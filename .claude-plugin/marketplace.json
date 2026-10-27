@@ -10,7 +10,7 @@
     {
       "name": "chaos-substrate",
       "description": "Knowledge-graph code memory for multi-repository projects (Rust, TypeScript, JavaScript, Python, Solidity, GraphQL). Six MCP tools: chaos_index, chaos_reindex, chaos_add, chaos_feature, chaos_compose, chaos_correlations. Postgres + pgvector storage, Ollama or OpenAI embeddings.",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "author": {
         "name": "Chaos Substrate"
       },

@@ -15,8 +15,8 @@ Terms used below:
   header, stored with a real embedding vector.
 - **Community** (feature): a group of related graph nodes found by deterministic Louvain; each has
   a templated summary whose embedding routes questions to it.
-- **Merkle hash**: content hashes rolled up chunk -> file -> community -> repo, so re-runs skip
-  what did not change and pages are only rewritten when their content hash changed.
+- **Content hash**: the SHA-256 of a piece's own input. A chunk, a file, a feature summary and a
+  generated page are each stored under it, so re-runs skip what did not change.
 
 ## When to use
 
@@ -72,8 +72,8 @@ Argument tables are copied from `src/application/tools.rs` (the single source of
 ### index — `chaos index [--dry-run]` / `chaos_index`
 
 Fully index a repository: tree-sitter structural extraction -> project-wide import/call resolution
--> contextual chunks -> real embeddings -> feature communities (L1) -> Merkle hashes (L2) ->
-hash-gated feature summaries (L3). Run once per repo; afterwards use `add`.
+-> contextual chunks -> real embeddings -> feature communities (L1) -> feature summaries (L2),
+each embedded only when its text changed. Run once per repo; afterwards use `add`.
 
 | arg | type | notes |
 |---|---|---|
@@ -96,8 +96,8 @@ Re-run a full index. No-op when git HEAD equals the indexed commit and the workt
 ### add — `chaos add [--since <ref>]` / `chaos_add`
 
 Incrementally index what changed since the last index: drifted files re-extracted against the persisted graph, deleted and
-renamed-away files purged, only new chunks embedded, communities and summaries recomputed only
-where a feature's hash changed. Use after every edit instead of `reindex`.
+renamed-away files purged, only new chunks embedded, communities rebuilt and a summary embedded
+again only where its text changed. Use after every edit instead of `reindex`.
 
 | arg | type | notes |
 |---|---|---|
