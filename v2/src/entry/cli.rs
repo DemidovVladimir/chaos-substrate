@@ -177,7 +177,8 @@ pub enum Tool {
     /// `missing` (the note changed: list the topics again).
     Read {
         /// Passage ids from `topics` (`note:first-last`, like `Car.md:8-8`).
-        #[arg(required = true)]
+        // `id` is the field name in the topics rows, so an MCP call may use it.
+        #[arg(required = true, alias = "id")]
         ids: Vec<String>,
     },
 }

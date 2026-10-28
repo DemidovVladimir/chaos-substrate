@@ -151,7 +151,9 @@ passage's first words (at most 100 characters). There is no text, so the list st
 
 `read` returns the `passages` behind the ids, in the order asked for, with their full `text`. It
 embeds nothing. Ids the index no longer holds come back under `missing`: the note changed since
-`topics` listed them, so list the topics again. `chaos-kb read Car.md:8-8 Gone.md:1-1`:
+`topics` listed them, so list the topics again. Over MCP the ids may also come as `id`, the name
+the topics rows give them, as one string or a list: an agent that calls `kb_read` without having
+loaded its schema guesses that name. `chaos-kb read Car.md:8-8 Gone.md:1-1`:
 
 ```json
 {
@@ -283,7 +285,7 @@ The passages behind ids from `topics`, with their text, in the order given. Embe
 
 | arg | type | default | description |
 |---|---|---|---|
-| `ids` (required) | list of strings |  | Passage ids from `topics` (`note:first-last`, like `Car.md:8-8`) |
+| `ids` (required), or `id` | list of strings |  | Passage ids from `topics` (`note:first-last`, like `Car.md:8-8`) |
 
 ### Settings
 

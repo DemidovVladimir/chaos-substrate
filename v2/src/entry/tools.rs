@@ -74,7 +74,7 @@ fn argv(bin: &str, sub: &clap::Command, arguments: &Value) -> Result<Vec<String>
         let (position, arg) = sub
             .get_arguments()
             .enumerate()
-            .find(|(_, a)| a.get_id() == key.as_str())
+            .find(|(_, a)| named(a, key))
             .ok_or_else(|| unknown_key(sub, key))?;
         match (Kind::of(arg), value) {
             (_, Value::Null) => {}
@@ -187,6 +187,8 @@ impl Kind {
 /// One tool argument, as both the MCP schema and the README table show it.
 struct Param {
     id: String,
+    /// Other names a call may use; the README lists them, the schema does not.
+    aliases: Vec<String>,
     kind: Kind,
     required: bool,
     default: Option<Value>,
@@ -200,6 +202,12 @@ fn params(sub: &clap::Command) -> Vec<Param> {
             let kind = Kind::of(arg);
             Param {
                 id: arg.get_id().to_string(),
+                aliases: arg
+                    .get_all_aliases()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
                 kind,
                 required: arg.is_required_set(),
                 default: kind.default(arg),
@@ -207,6 +215,15 @@ fn params(sub: &clap::Command) -> Vec<Param> {
             }
         })
         .collect()
+}
+
+/// Whether `key` names `arg`: its id, or one of its aliases (left out of the
+/// schema, for callers that guess the name).
+fn named(arg: &Arg, key: &str) -> bool {
+    arg.get_id() == key
+        || arg
+            .get_all_aliases()
+            .is_some_and(|aliases| aliases.contains(&key))
 }
 
 fn unknown_key(sub: &clap::Command, key: &str) -> anyhow::Error {
@@ -286,6 +303,7 @@ fn section(bin: &str, sub: &clap::Command) -> String {
     out.push_str("\n| arg | type | default | description |\n|---|---|---|---|\n");
     for p in params {
         let mark = if p.required { " (required)" } else { "" };
+        let also: String = p.aliases.iter().map(|a| format!(", or `{a}`")).collect();
         let kind = match p.kind {
             Kind::Count => "integer ≥ 0",
             Kind::List => "list of strings",
@@ -297,7 +315,7 @@ fn section(bin: &str, sub: &clap::Command) -> String {
             None => String::new(),
         };
         out.push_str(&format!(
-            "| `{}`{mark} | {kind} | {default} | {} |\n",
+            "| `{}`{mark}{also} | {kind} | {default} | {} |\n",
             p.id,
             cell(&p.description)
         ));
@@ -476,6 +494,31 @@ mod tests {
                 limit: 3,
             }
         );
+    }
+
+    #[test]
+    fn read_takes_ids_under_the_name_topics_gives_them() {
+        // An agent that saw only the topics rows (`"id": "Taste.md:3-5"`), not
+        // kb_read's schema, passes `id`: it reads what `ids` reads.
+        let read = |ids: &[&str]| Tool::Read {
+            ids: ids.iter().map(|id| id.to_string()).collect(),
+        };
+        assert_eq!(
+            call("kb_read", json!({"id": "Taste.md:3-5"})).unwrap(),
+            read(&["Taste.md:3-5"])
+        );
+        assert_eq!(
+            call("kb_read", json!({"id": ["Food.md:3-6", "Car.md:1-2"]})).unwrap(),
+            read(&["Food.md:3-6", "Car.md:1-2"])
+        );
+        assert_eq!(
+            call("kb_read", json!({"ids": "Taste.md:3-5"})).unwrap(),
+            read(&["Taste.md:3-5"])
+        );
+        // The schema still names only `ids`.
+        let properties = tool("kb_read")["inputSchema"]["properties"].clone();
+        let names: Vec<&String> = properties.as_object().unwrap().keys().collect();
+        assert_eq!(names, ["ids"]);
     }
 
     #[test]
