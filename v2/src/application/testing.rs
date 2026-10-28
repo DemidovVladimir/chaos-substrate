@@ -7,8 +7,8 @@ use crate::domain::hash::Digest;
 use crate::domain::note::{Block, Location, Note};
 use crate::domain::path::NotePath;
 use crate::domain::{text, vector};
-use crate::ports::{Embedder, Hit, Index, Snapshot, Stale, Update, Vault};
-use anyhow::{Context, Result, bail};
+use crate::ports::{Edit, Embedder, Hit, Index, Snapshot, Stale, Update, Vault};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
@@ -35,6 +35,8 @@ pub fn note(path: &str, blocks: &[Spec]) -> Note {
 #[derive(Default)]
 pub struct MemVault {
     notes: RefCell<Vec<Note>>,
+    /// A note whose blocks [`Vault::remove`] refuses to remove.
+    pub refuse: RefCell<Option<String>>,
 }
 
 impl MemVault {
@@ -62,6 +64,61 @@ impl MemVault {
             .find(|n| n.path.as_str() == path)
             .cloned()
     }
+
+    /// The edit that turns `before` into `after`.
+    fn edit(before: Option<&Note>, after: &Note) -> Edit {
+        Edit {
+            note: after.path.clone(),
+            before: before.map(encode),
+            after: encode(after),
+            folders: Vec::new(),
+        }
+    }
+}
+
+/// A note as text, for [`Edit`]: blocks split by U+1D, their fields by U+1F.
+fn encode(note: &Note) -> String {
+    let block = |b: &Block| {
+        let lines = format!("{}\u{1f}{}", b.lines[0], b.lines[1]);
+        [
+            b.headings.join("\u{1e}"),
+            b.text.clone(),
+            b.source.clone(),
+            lines,
+        ]
+        .join("\u{1f}")
+    };
+    note.blocks
+        .iter()
+        .map(block)
+        .collect::<Vec<_>>()
+        .join("\u{1d}")
+}
+
+/// The note [`encode`] wrote.
+fn decode(path: &NotePath, text: &str) -> Note {
+    let block = |raw: &str| {
+        let f: Vec<&str> = raw.split('\u{1f}').collect();
+        Block {
+            headings: f[0]
+                .split('\u{1e}')
+                .filter(|h| !h.is_empty())
+                .map(str::to_string)
+                .collect(),
+            text: f[1].to_string(),
+            source: f[2].to_string(),
+            lines: [f[3].parse().unwrap(), f[4].parse().unwrap()],
+        }
+    };
+    let blocks = text
+        .split('\u{1d}')
+        .filter(|b| !b.is_empty())
+        .map(block)
+        .collect();
+    Note {
+        path: path.clone(),
+        blocks,
+    }
 }
 
 impl Vault for MemVault {
@@ -81,8 +138,9 @@ impl Vault for MemVault {
             .collect()
     }
 
-    fn append(&self, path: &NotePath, heading: Option<&str>, text: &str) -> Result<()> {
-        let mut note = self.note(path.as_str()).unwrap_or(Note {
+    fn append(&self, path: &NotePath, heading: Option<&str>, text: &str) -> Result<Edit> {
+        let before = self.note(path.as_str());
+        let mut note = before.clone().unwrap_or(Note {
             path: path.clone(),
             blocks: Vec::new(),
         });
@@ -93,12 +151,17 @@ impl Vault for MemVault {
             source: text.to_string(),
             lines: [line, line],
         });
+        let edit = MemVault::edit(before.as_ref(), &note);
         self.put(note);
-        Ok(())
+        Ok(edit)
     }
 
-    fn remove(&self, path: &NotePath, blocks: &[([u32; 2], Digest)]) -> Result<()> {
-        let mut note = self.note(path.as_str()).context("no such note")?;
+    fn remove(&self, path: &NotePath, blocks: &[([u32; 2], Digest)]) -> Result<Edit> {
+        if self.refuse.borrow().as_deref() == Some(path.as_str()) {
+            bail!("refusing to remove from {path}");
+        }
+        let before = self.note(path.as_str()).context("no such note")?;
+        let mut note = before.clone();
         for (lines, fingerprint) in blocks {
             let at = note.blocks.iter().position(|b| {
                 b.lines == *lines && text::fingerprint(&b.text).as_ref() == Some(fingerprint)
@@ -106,7 +169,23 @@ impl Vault for MemVault {
             note.blocks
                 .remove(at.context("those lines no longer hold that text")?);
         }
+        let edit = MemVault::edit(Some(&before), &note);
         self.put(note);
+        Ok(edit)
+    }
+
+    fn undo(&self, edit: &Edit) -> Result<()> {
+        let Some(now) = self.note(edit.note.as_str()) else {
+            ensure!(edit.before.is_none(), "{} is gone", edit.note);
+            return Ok(());
+        };
+        if encode(&now) != edit.after {
+            bail!("{} changed since", edit.note);
+        }
+        match &edit.before {
+            Some(before) => self.put(decode(&edit.note, before)),
+            None => self.notes.borrow_mut().retain(|n| n.path != edit.note),
+        }
         Ok(())
     }
 }
@@ -208,6 +287,8 @@ pub struct StubEmbedder {
     pub batches: RefCell<Vec<usize>>,
     pub queries: Cell<usize>,
     pub zero: Cell<bool>,
+    /// Every call fails, as an embedder that cannot be reached does.
+    pub down: Cell<bool>,
 }
 
 impl StubEmbedder {
@@ -218,6 +299,7 @@ impl StubEmbedder {
             batches: RefCell::new(Vec::new()),
             queries: Cell::new(0),
             zero: Cell::new(false),
+            down: Cell::new(false),
         }
     }
 
@@ -249,6 +331,9 @@ impl Embedder for StubEmbedder {
     }
 
     fn embed_documents(&self, passages: &[(&str, &str)]) -> Result<Vec<Vec<f32>>> {
+        if self.down.get() {
+            return Err(anyhow!("the embedder is down"));
+        }
         self.batches.borrow_mut().push(passages.len());
         Ok(passages
             .iter()
@@ -257,6 +342,9 @@ impl Embedder for StubEmbedder {
     }
 
     fn embed_query(&self, query: &str) -> Result<Vec<f32>> {
+        if self.down.get() {
+            return Err(anyhow!("the embedder is down"));
+        }
         self.queries.set(self.queries.get() + 1);
         Ok(self.vector(query))
     }

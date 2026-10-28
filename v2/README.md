@@ -166,7 +166,8 @@ embeds nothing. Ids the index no longer holds come back under `missing`: the not
 many it `embedded`. `remember` reports whether it `stored` the fact, or where
 the same words already sit (`known_at`). `forget` reports where the blocks it `removed` sat,
 and the blocks of the text stored nowhere (`not_found`). Both re-sync the index
-before they answer.
+before they answer. When the index cannot follow (Ollama is not running, say), they put the
+notes back and fail with an error that starts with `nothing was changed:`.
 
 The index lives at `<vault>/.chaos-kb/index.redb`. Obsidian ignores folders whose names start
 with a dot. Deleting the folder is safe, because `sync` rebuilds it from the notes. An index
@@ -231,7 +232,7 @@ Bring the index up to date with the vault: compare each note's hash with the sto
 
 ### `kb_remember` · `chaos-kb remember`
 
-Store one fact in the vault as Markdown and index it. Skipped when the same words are already stored anywhere in the vault
+Store one fact in the vault as Markdown and index it. Skipped when the same words are already stored anywhere in the vault. When the index cannot take it (the embedder is down, say), the note is put back and the error starts with `nothing was changed`
 
 | arg | type | default | description |
 |---|---|---|---|
@@ -241,7 +242,7 @@ Store one fact in the vault as Markdown and index it. Skipped when the same word
 
 ### `kb_forget` · `chaos-kb forget`
 
-Take a fact out of the vault and the index: every block with the same words, compared as fingerprints (case, spacing and punctuation aside), never a passage that only means the same. Reports where the removed blocks sat; nothing is removed when no block has these words
+Take a fact out of the vault and the index: every block with the same words, compared as fingerprints (case, spacing and punctuation aside), never a passage that only means the same. Reports where the removed blocks sat; nothing is removed when no block has these words. When the index cannot follow (the embedder is down, say), the notes are put back and the error starts with `nothing was changed`
 
 | arg | type | default | description |
 |---|---|---|---|
@@ -383,6 +384,11 @@ either way.
   `forget` refuses, changing nothing, when the note changed since it was read, or when the rest of
   the note would read differently without the block (an indented paragraph that would join the
   list item above it, for example).
+- **A failed sync puts the notes back.** `remember` and `forget` write the note first, then sync
+  the index. When that sync fails (Ollama not running, a missing model), each note is put back
+  byte for byte, and a note or folder the call created is removed again, so the vault and the
+  index still agree. The error starts with `nothing was changed:` and gives the cause. A note
+  edited by someone else in the meantime is left as it is, and the error names it instead.
 - **What `remember` refuses**: writing outside the vault or through a symlinked folder or note,
   changing a read-only note or one that is not valid UTF-8, and text that would change how the
   rest of the note reads (an unclosed code fence or HTML comment, or a heading that would take

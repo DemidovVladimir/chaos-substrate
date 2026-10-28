@@ -147,7 +147,7 @@
         <li>The text goes right under its heading's own text, before any subheading. Headings compare like fingerprints, so <code>oil</code> finds <code>## Oil:</code>. A missing heading is added at the end.</li>
         <li>The result must read like the old note plus the fact: every heading and block kept, in order. Otherwise nothing is written and the error names the line.</li>
         <li>The note goes to a hidden temporary file with its permissions, is flushed to disk and renamed over the note. Readers see the old note or the new one.</li>
-        <li>A second sync indexes the fact. <code>embedded</code> counts the chunks both syncs embedded.</li>
+        <li>A second sync indexes the fact. <code>embedded</code> counts the chunks both syncs embedded. If that sync fails (the embedder is down, say), the note is put back byte for byte, and the call fails with <code>nothing was changed:</code> and the cause.</li>
       </ol>
     </div>
   </figure>
@@ -255,6 +255,7 @@
     <li><span class="chip guard">moved</span><span><b>the note changed since it was read</b>Refused: those lines no longer hold the words. Nothing is written.</span></li>
     <li><span class="chip guard">reads</span><span><b>the rest would read differently</b>Refused, for example when an indented paragraph would join the list item above it. Nothing is written.</span></li>
     <li><span class="chip guard">file</span><span><b>a read-only note, or one that is not valid UTF-8</b>Refused, as for remember. Nothing is written.</span></li>
+    <li><span class="chip guard">undo</span><span><b>a later note refuses, or the index cannot follow</b>Every note already rewritten is put back, byte for byte, and the call fails with <code>nothing was changed:</code> and the cause.</span></li>
   </ul>
   <p class="note">Like remember, forget syncs before and after: the first sync makes your own edits count, the second takes the removal into the index. It holds the same <code>.chaos-kb/append.lock</code>, and the note is rewritten through a temporary file that keeps its permissions, then a rename. To correct a fact, forget it in its stored words, then remember the new one; the <a href="dashboard.html">dashboard</a>'s Replace does both.</p>
   <div class="term-wrap">
@@ -337,6 +338,7 @@
     <li><span><b>Existing text stays byte for byte.</b> remember inserts its text and one blank line around it; forget takes out only the removed blocks' own lines and one blank line each. Nothing else moves.</span></li>
     <li><span><b>The rest of the note reads the same.</b> Text that would hide or re-nest what follows, such as an unclosed code fence or HTML comment, or a heading that takes in later sections, is refused. So is a removal after which a kept block or heading would read differently.</span></li>
     <li><span><b>Only the same words go.</b> forget looks its text up by fingerprint and removes a block only while its lines still hold those words; a passage that only means the same is never touched.</span></li>
+    <li><span><b>A failed sync puts the notes back.</b> When the sync after a write fails, remember and forget put each note back byte for byte and remove a note or folder they created, so the vault and the index still agree. A note someone edited in the meantime is left as it is, and the error names it instead.</span></li>
     <li><span><b>Writers take turns.</b> Every append and every removal holds <code>.chaos-kb/append.lock</code>, so two agents writing at once keep both facts.</span></li>
     <li><span><b>Never half a note.</b> A write goes through a temporary file that has the note's permissions from the start, a flush to disk and a rename.</span></li>
     <li><span><b>Nothing outside the vault.</b> Paths are relative with visible segments; a symlinked folder or note, or a folder resolving outside the vault, is refused.</span></li>
@@ -374,7 +376,9 @@
 <span class="ln cmd"><span class="p">$ </span>chmod 444 Communication.md &amp;&amp; chaos-kb remember "Short answers please." --note Communication</span>
 <span class="ln o"><span class="er">error: refusing to write Communication.md: it is read-only</span></span>
 <span class="ln cmd"><span class="p">$ </span>chaos-kb remember "Fact." --note ../outside</span>
-<span class="ln o"><span class="er">error: note path segment ".." is not allowed (empty, `.`/`..`, hidden, or has `\`, `:` or a control character)</span></span></pre>
+<span class="ln o"><span class="er">error: note path segment ".." is not allowed (empty, `.`/`..`, hidden, or has `\`, `:` or a control character)</span></span>
+<span class="ln cmd"><span class="p">$ </span>chaos-kb --embed-url http://127.0.0.1:9/v1 remember "Blood pressure 120/80." --note Health/Allergies</span>
+<span class="ln o"><span class="er">error: nothing was changed: embeddings request to http://127.0.0.1:9/v1/embeddings failed: io: Connection refused (os error 61)</span></span></pre>
   </div>
   <p class="note">The latex fact went under <code># Allergies</code>, before its subheading <code>## Blood</code>, so it reads under Allergies alone. The unclosed fence would have turned <code>## Blood</code> on line 7 into code. In another run, four <code>remember</code> processes appended to one note at the same moment and all four facts were kept, under a single <code>## Facts</code>.</p>
 </section>
@@ -400,7 +404,7 @@
 </section>
 
 <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
-<p class="stamp-foot">Checked against the code on 2026-10-27.</p>
+<p class="stamp-foot">Checked against the code on 2026-10-28.</p>
 </article>
 </main>
 </div>

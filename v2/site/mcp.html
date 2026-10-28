@@ -144,7 +144,7 @@
     <div class="tabpanel" id="tab-init"><pre class="wrapjson"><span class="c">→ {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"example","version":"1"}}}</span>
 ← {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"tools":{"listChanged":false}},
    "instructions":<span class="s">"Personal knowledge base for agents: Markdown notes in, instant \"is this known?\" checks and similarity search out.\n\nBefore a task, list the topics the knowledge base holds near it, then read only the passages that would change how you do it (search returns the nearest passages' text in one step instead). Before asking the user something, check whether the knowledge base already knows it. When the user tells you a new fact, remember it, one fact per call. When a stored fact is wrong or no longer true, forget it in its stored words, then remember the correction. After editing notes in the vault, sync."</span>,
-   "protocolVersion":<span class="s">"2025-06-18"</span>,"serverInfo":{"name":"chaos-kb","version":"2.0.0"}}}</pre></div>
+   "protocolVersion":<span class="s">"2025-06-18"</span>,"serverInfo":{"name":"chaos-kb","version":"2.1.0"}}}</pre></div>
     <div class="tabpanel" id="tab-list" hidden><pre class="wrapjson"><span class="c">→ {"jsonrpc":"2.0","id":2,"method":"tools/list"}</span>
 ← {"id":2,"jsonrpc":"2.0","result":{"tools":[ <span class="c">… kb_sync, kb_remember, kb_forget, then:</span>
    {"description":<span class="s">"Is this already in the knowledge base? Exact words are answered from the stored block fingerprints without embedding; otherwise the nearest passages by cosine similarity decide. Returns where the knowledge sits"</span>,
@@ -173,10 +173,10 @@
 <span class="c">→ … "arguments":{"query":"winter tyres","limit":1,"vault":"/tmp"}</span>
 ← … <span class="s">"kb_search has no argument `vault`; it takes `query`, `limit`, `min_score`"</span> … "isError":<span class="n">true</span></pre></div>
     <div class="tabpanel" id="tab-rev" hidden><pre class="wrapjson"><span class="c">→ {"jsonrpc":"2.0","id":8,"method":"initialize","params":{"protocolVersion":"2099-01-01"}}</span>
-← {"id":8,"jsonrpc":"2.0","result":{ … "protocolVersion":<span class="s">"2025-11-25"</span>,"serverInfo":{"name":"chaos-kb","version":"2.0.0"}}}
+← {"id":8,"jsonrpc":"2.0","result":{ … "protocolVersion":<span class="s">"2025-11-25"</span>,"serverInfo":{"name":"chaos-kb","version":"2.1.0"}}}
 
 <span class="c">→ {"jsonrpc":"2.0","id":11,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}</span>
-← {"id":11,"jsonrpc":"2.0","result":{ … "protocolVersion":<span class="s">"2025-11-25"</span>,"serverInfo":{"name":"chaos-kb","version":"2.0.0"}}}</pre>
+← {"id":11,"jsonrpc":"2.0","result":{ … "protocolVersion":<span class="s">"2025-11-25"</span>,"serverInfo":{"name":"chaos-kb","version":"2.1.0"}}}</pre>
       <p class="note">2025-03-26 is not on the list: that revision requires accepting a JSON array of requests (a batch), and this server refuses batches.</p></div>
     <div class="tabpanel" id="tab-quiet" hidden><pre class="wrapjson"><span class="c">→ {"jsonrpc":"2.0","method":"notifications/initialized"}</span>
 <span class="c">→ {"jsonrpc":"2.0","id":"r1","result":{}}</span>
@@ -304,7 +304,7 @@
 </section>
 
 <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
-<p class="stamp-foot">Checked against the code on 2026-10-27.</p>
+<p class="stamp-foot">Checked against the code on 2026-10-28.</p>
 </article>
 </main>
 </div>

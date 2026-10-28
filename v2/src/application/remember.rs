@@ -1,6 +1,6 @@
 //! `remember`: add one fact to the vault and the index, unless every block of
 //! it is already stored word for word (looked up by fingerprint, without
-//! embedding).
+//! embedding). When the index cannot take it, the note is put back.
 
 use super::{Kb, nonblank};
 use crate::domain::note::Location;
@@ -42,8 +42,8 @@ impl Kb<'_> {
                 embedded: before.embedded,
             });
         }
-        self.vault.append(note, heading, text)?;
-        let after = self.sync(false)?;
+        let edit = self.vault.append(note, heading, text)?;
+        let after = self.sync_after(&[edit])?;
         Ok(RememberReport {
             stored: true,
             note: note.clone(),
@@ -55,10 +55,10 @@ impl Kb<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testing::World;
+    use super::super::testing::{World, sample_notes};
     use super::*;
     use crate::domain::text;
-    use crate::ports::Index;
+    use crate::ports::{Index, Vault};
 
     fn inbox() -> NotePath {
         NotePath::parse(INBOX).unwrap()
@@ -145,6 +145,25 @@ mod tests {
         let blocks = world.vault.note("Car/Maintenance.md").unwrap().blocks;
         assert_eq!(blocks[2].headings, ["Brakes"]);
         assert!(blocks[3].headings.is_empty());
+    }
+
+    #[test]
+    fn an_index_that_cannot_follow_puts_the_note_back() {
+        // The note is written before the index can fail; nothing may stay.
+        let world = World::synced();
+        let before = world.index.snapshot().unwrap();
+        world.embedder.down.set(true);
+        for note in [inbox(), NotePath::parse("Car/Maintenance").unwrap()] {
+            let err = world
+                .kb()
+                .remember("Brake fluid every two years.", &note, Some("Brakes"))
+                .unwrap_err();
+            let err = format!("{err:#}");
+            assert!(err.starts_with("nothing was changed: "), "{err}");
+            assert!(err.ends_with("the embedder is down"), "{err}");
+        }
+        assert_eq!(world.vault.notes().unwrap(), sample_notes());
+        assert_eq!(world.index.snapshot().unwrap(), before);
     }
 
     #[test]

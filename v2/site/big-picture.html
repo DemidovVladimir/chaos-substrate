@@ -201,7 +201,7 @@
     <table>
       <thead><tr><th>Port</th><th>What it does</th><th>Real adapter</th></tr></thead>
       <tbody>
-        <tr><td><code>Vault</code></td><td><code>notes()</code>: every note, parsed and sorted by path. <code>texts()</code>: read a snippet the way notes are read. <code>append()</code>: add text under a heading, never change how existing text reads. <code>remove()</code>: take out blocks by their lines while they still hold the same words, refused when the rest would read differently.</td><td><code>ObsidianVault</code></td></tr>
+        <tr><td><code>Vault</code></td><td><code>notes()</code>: every note, parsed and sorted by path. <code>texts()</code>: read a snippet the way notes are read. <code>append()</code>: add text under a heading, never change how existing text reads. <code>remove()</code>: take out blocks by their lines while they still hold the same words, refused when the rest would read differently. Both return the edit, and <code>undo()</code> puts the note back while it still holds what the edit wrote.</td><td><code>ObsidianVault</code></td></tr>
         <tr><td><code>Embedder</code></td><td><code>id()</code> names the vector space. <code>embed_documents()</code> for passages, <code>embed_query()</code> for questions.</td><td><code>HttpEmbedder</code></td></tr>
         <tr><td><code>Index</code></td><td><code>snapshot()</code>, <code>vector_keys()</code>, <code>replace()</code> (refused with <code>Stale</code> when another writer got in first), <code>exact()</code> by fingerprint, <code>nearest()</code> by vector.</td><td><code>RedbIndex</code></td></tr>
       </tbody>
@@ -308,7 +308,7 @@
 </section>
 
 <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
-<p class="stamp-foot">Checked against the code on 2026-10-27.</p>
+<p class="stamp-foot">Checked against the code on 2026-10-28.</p>
 </article>
 </main>
 </div>

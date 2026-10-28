@@ -15,8 +15,9 @@ pub mod topics;
 
 use crate::domain::note::Location;
 use crate::domain::{text, vector};
-use crate::ports::{Embedder, Hit, Index, Snapshot, Vault};
+use crate::ports::{Edit, Embedder, Hit, Index, Snapshot, Vault};
 use anyhow::{Context, Result, bail, ensure};
+use sync::SyncReport;
 
 /// The knowledge base: one vault, its index, one embedder.
 #[derive(Clone, Copy)]
@@ -71,6 +72,37 @@ impl Kb<'_> {
         found.sort();
         found.dedup();
         Ok((blocks > 0).then_some(found))
+    }
+
+    /// Sync after `edits`. When the index cannot follow (the embedder is
+    /// down, say), the notes are put back, so an error from `remember` or
+    /// `forget` always means nothing changed and the index still agrees with
+    /// the vault.
+    fn sync_after(&self, edits: &[Edit]) -> Result<SyncReport> {
+        self.sync(false).map_err(|e| self.put_back(edits, e))
+    }
+
+    /// `cause`, once the notes of `edits` are put back, newest first. With no
+    /// edits, nothing was written and `cause` says so on its own.
+    fn put_back(&self, edits: &[Edit], cause: anyhow::Error) -> anyhow::Error {
+        if edits.is_empty() {
+            return cause;
+        }
+        let stuck: Vec<String> = (edits.iter().rev())
+            .filter_map(|e| {
+                self.vault
+                    .undo(e)
+                    .err()
+                    .map(|u| format!("{} ({u:#})", e.note))
+            })
+            .collect();
+        if stuck.is_empty() {
+            return cause.context("nothing was changed");
+        }
+        cause.context(format!(
+            "could not put back {}: check those notes, then run `chaos-kb sync`",
+            stuck.join(", ")
+        ))
     }
 
     /// The `k` chunks nearest to `query` (embedded as a query, unit length).

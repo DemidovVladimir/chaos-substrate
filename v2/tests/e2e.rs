@@ -408,6 +408,58 @@ fn forget_takes_a_fact_out_and_the_note_back() {
     assert_eq!(parts.hashes(), after_out);
 }
 
+/// With the embedder out of reach, `remember` and `forget` change nothing:
+/// each note is put back, byte for byte, and the index still agrees with the
+/// vault.
+#[test]
+fn an_unreachable_embedder_changes_nothing() {
+    if !ollama_up() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    write_vault(dir.path());
+    let parts = Parts::new(dir.path());
+    parts.kb().sync(false).unwrap();
+    let first = parts.hashes();
+    let licences = dir.path().join("Licences.md");
+    let before = std::fs::read_to_string(&licences).unwrap();
+
+    let down = Parts {
+        embedder: HttpEmbedder::new("http://127.0.0.1:9/v1", MODEL, None),
+        ..Parts::new(dir.path())
+    };
+    let kb = down.kb();
+    let refused = |err: String| {
+        let cause = "nothing was changed: embeddings request to http://127.0.0.1:9/v1/embeddings";
+        assert!(err.starts_with(cause), "{err}");
+    };
+    let licence = NotePath::parse("Licences").unwrap();
+    refused(format!(
+        "{:#}",
+        kb.remember("Boat licence since 2022.", &licence, None)
+            .unwrap_err()
+    ));
+    let travel = NotePath::parse("Documents/Travel").unwrap();
+    refused(format!(
+        "{:#}",
+        kb.remember("Passport renewed in 2024.", &travel, None)
+            .unwrap_err()
+    ));
+    refused(format!(
+        "{:#}",
+        kb.forget("Motorcycle licence A2 since 2019.", None)
+            .unwrap_err()
+    ));
+
+    assert_eq!(std::fs::read_to_string(&licences).unwrap(), before);
+    assert!(
+        !dir.path().join("Documents").exists(),
+        "no new folder stays"
+    );
+    assert_eq!(parts.hashes(), first);
+    assert_eq!(parts.kb().sync(true).unwrap().changes, Changes::default());
+}
+
 /// Drive the real binary as an agent would: CLI sync, then an MCP session.
 #[test]
 fn binary_serves_cli_and_mcp() {

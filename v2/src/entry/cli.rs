@@ -110,7 +110,9 @@ pub enum Tool {
         dry_run: bool,
     },
     /// Store one fact in the vault as Markdown and index it. Skipped when the
-    /// same words are already stored anywhere in the vault.
+    /// same words are already stored anywhere in the vault. When the index cannot
+    /// take it (the embedder is down, say), the note is put back and the error
+    /// starts with `nothing was changed`.
     Remember {
         /// The fact, in plain words or Markdown. One fact per call.
         text: String,
@@ -124,7 +126,9 @@ pub enum Tool {
     /// Take a fact out of the vault and the index: every block with the same
     /// words, compared as fingerprints (case, spacing and punctuation aside),
     /// never a passage that only means the same. Reports where the removed
-    /// blocks sat; nothing is removed when no block has these words.
+    /// blocks sat; nothing is removed when no block has these words. When the
+    /// index cannot follow (the embedder is down, say), the notes are put back
+    /// and the error starts with `nothing was changed`.
     Forget {
         /// The fact in its stored words, as `read` or `search` return them.
         /// Each block of it is removed wherever it is stored.

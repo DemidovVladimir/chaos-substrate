@@ -1,6 +1,7 @@
 //! `forget`: take a fact out of the vault and the index. Every block with the
 //! same words goes, looked up by fingerprint as `remember` looks; a passage
-//! that only means the same is never touched.
+//! that only means the same is never touched. When one note refuses, or the
+//! index cannot follow, every note is put back.
 
 use super::{Kb, nonblank};
 use crate::domain::hash::Digest;
@@ -53,12 +54,16 @@ impl Kb<'_> {
                 embedded: before.embedded,
             });
         }
+        let mut edits = Vec::new();
         for group in places.chunk_by(|a, b| a.0.note == b.0.note) {
             let blocks: Vec<([u32; 2], Digest)> =
                 group.iter().map(|(at, fp)| (at.lines, *fp)).collect();
-            self.vault.remove(&group[0].0.note, &blocks)?;
+            match self.vault.remove(&group[0].0.note, &blocks) {
+                Ok(edit) => edits.push(edit),
+                Err(e) => return Err(self.put_back(&edits, e)),
+            }
         }
-        let after = self.sync(false)?;
+        let after = self.sync_after(&edits)?;
         Ok(ForgetReport {
             removed: places.into_iter().map(|(at, _)| at).collect(),
             not_found,
@@ -172,6 +177,51 @@ mod tests {
             .unwrap();
         assert_eq!(report.removed[0].note.as_str(), "Inbox.md");
         assert!(texts(&world, "Inbox.md").is_empty());
+    }
+
+    #[test]
+    fn an_index_that_cannot_follow_puts_the_note_back() {
+        // What is left of the passage needs a new vector, which never comes.
+        let plan = || {
+            vec![note(
+                "Plan.md",
+                &[(&["Plan"], "First."), (&["Plan"], "Second.")],
+            )]
+        };
+        let world = World::new(plan());
+        world.kb().sync(false).unwrap();
+        world.embedder.down.set(true);
+        let err = world.kb().forget("First.", None).unwrap_err();
+        let err = format!("{err:#}");
+        assert!(err.starts_with("nothing was changed: "), "{err}");
+        assert_eq!(world.vault.notes().unwrap(), plan());
+        let first = text::fingerprint("First.").unwrap();
+        assert_eq!(
+            world.index.exact(&first).unwrap().len(),
+            1,
+            "index and vault agree"
+        );
+    }
+
+    #[test]
+    fn a_refused_note_puts_back_the_notes_already_changed() {
+        let same = "Shared line.";
+        let world = World::new(vec![
+            note("a.md", &[(&[], same), (&[], "Keep me.")]),
+            note("b.md", &[(&[], same)]),
+        ]);
+        world.vault.refuse.replace(Some("b.md".into()));
+        let err = world.kb().forget(same, None).unwrap_err();
+        assert_eq!(
+            format!("{err:#}"),
+            "nothing was changed: refusing to remove from b.md"
+        );
+        assert_eq!(texts(&world, "a.md"), [same, "Keep me."]);
+        assert_eq!(texts(&world, "b.md"), [same]);
+
+        // Refused before anything was written: the refusal speaks for itself.
+        let err = world.kb().forget(same, Some(&path("b"))).unwrap_err();
+        assert_eq!(format!("{err:#}"), "refusing to remove from b.md");
     }
 
     #[test]

@@ -27,14 +27,34 @@ pub trait Vault {
     /// heading); without one, at the end of the note. Existing text is never
     /// changed: an append that would change how existing text reads is
     /// refused.
-    fn append(&self, note: &NotePath, heading: Option<&str>, text: &str) -> Result<()>;
+    fn append(&self, note: &NotePath, heading: Option<&str>, text: &str) -> Result<Edit>;
 
     /// Remove the blocks of `note` at these line ranges, each only while it
     /// still holds words with that fingerprint (otherwise the note changed
     /// since it was read). A removed block takes its lines with it, so its
     /// neighbours keep one blank line between them. Every other block and
     /// heading must read as before, or nothing is written.
-    fn remove(&self, note: &NotePath, blocks: &[([u32; 2], Digest)]) -> Result<()>;
+    fn remove(&self, note: &NotePath, blocks: &[([u32; 2], Digest)]) -> Result<Edit>;
+
+    /// Put `edit.note` back as it was before `edit`: its old text, or no note
+    /// (and none of the folders the edit created) when the edit created it.
+    /// Only while the note still holds `edit.after`; otherwise it changed
+    /// since, and nothing is written. A note the edit created and someone
+    /// deleted since is already put back; only its folders are left to go.
+    fn undo(&self, edit: &Edit) -> Result<()>;
+}
+
+/// One write of a note by [`Vault::append`] or [`Vault::remove`], with what
+/// [`Vault::undo`] needs to put the note back.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Edit {
+    pub note: NotePath,
+    /// The note's text before the write; `None` when the write created it.
+    pub before: Option<String>,
+    /// The note's text after the write.
+    pub after: String,
+    /// Folders the write created for the note, outermost first.
+    pub folders: Vec<String>,
 }
 
 /// Turns text into vectors. One embedder is one vector space.
