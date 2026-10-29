@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>The dashboard · chaos-kb</title>
-<meta name="description" content="chaos-kb dashboard: one web page on this machine that shows what the knowledge base holds and whether the index is up to date, adds, replaces and removes facts, re-syncs after every change, and keeps out other web pages.">
+<meta name="description" content="chaos-kb dashboard: one web page on this machine that shows what a knowledge base holds and whether the index is up to date, switches between knowledge bases, adds, replaces and removes facts, re-syncs after every change, and keeps out other web pages.">
 <script>try{var t=localStorage.getItem("tengu-tutorial-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -39,6 +39,7 @@
     <li>looks again every <b>4</b> s</li>
     <li><b>0</b> files loaded from the internet</li>
     <li><b>1</b> thread per connection</li>
+    <li>a <b>switch</b> when several knowledge bases are configured</li>
   </ul>
   <ul class="legend" aria-label="Colour key">
     <li><span class="chip brain"><span class="k">脳</span> notes</span> the vault on disk</li>
@@ -155,11 +156,12 @@
     <table>
       <thead><tr><th>On the page</th><th>What it says</th></tr></thead>
       <tbody>
+        <tr><td>Knowledge base</td><td>With more than one <code>--vault</code> only, a switch in the header lists every instance by name. The page starts on the one <code>--instance</code> names, else on the first <code>--vault</code>.</td></tr>
         <tr><td>Status</td><td>One line: in sync when every note's hash equals the one the index holds and the vectors were made by the model set now; otherwise what is behind.</td></tr>
         <tr><td>Counts</td><td>Notes on disk, facts, <b>passages</b> in the index (pieces of a note of at most 1200 characters, each embedded once), embeddings stored, and the embedding model.</td></tr>
         <tr><td>A note</td><td>Its path, its state, how many facts and passages it has, its hash, and the hash the index holds when that differs.</td></tr>
         <tr><td>A fact</td><td>The fact's section, lines, words and fingerprint, and whether the index holds it: <i>in the index</i> or <i>not in the index yet</i>.</td></tr>
-        <tr><td>Activity</td><td>Each change and sync made here, with the notes it changed.</td></tr>
+        <tr><td>Activity</td><td>Each change and sync made here, with the notes it changed; with several knowledge bases, also which one, as in <i>molecule: Added</i>.</td></tr>
       </tbody>
     </table>
   </div>
@@ -223,6 +225,10 @@
       <h3>Filter, expand</h3>
       <p>Narrow the list to notes and facts holding some words, or open every note at once. A note stays open across redraws.</p>
     </div>
+    <div class="card data">
+      <h3>Switch knowledge base</h3>
+      <p>Choosing another name in the header reads that knowledge base's overview (<code>GET /api/overview?instance=NAME</code>) and sends <code>instance</code> with every tool call from then on, so an added or removed fact lands in the vault shown. The page disables the switch while a change runs. <a href="chaos-kb.html#s-several">Several knowledge bases</a></p>
+    </div>
   </div>
   <p class="note">Replace puts the new text at the end of that heading's own text, as <code>remember</code> does, so the fact can move down a few lines. A fact above the first heading has no heading, so its new text goes at the end of the note.</p>
 </section>
@@ -255,15 +261,15 @@
     <li><span><b>Notes stay text.</b> Words from a note are put on the page as text, never read as HTML.</span></li>
     <li><span><b>One thread per connection.</b> Each connection carries one request and is closed after the answer. A connection silent for 10 s is dropped.</span></li>
     <li><span><b>Requests are bounded.</b> Headers up to 16 KiB (431), a body up to 1 MiB (413), and only with a <code>Content-Length</code> (501 for a chunked body).</span></li>
-    <li><span><b>Same locks as everyone.</b> Each request opens the knowledge base afresh, as a command does, so the dashboard, the CLI and an MCP server take turns on one vault.</span></li>
+    <li><span><b>Same locks as everyone.</b> Each request opens the knowledge base it names afresh, as a command does, so the dashboard, the CLI and an MCP server take turns on one vault.</span></li>
   </ul>
   <div class="table-wrap">
     <table>
       <thead><tr><th>Request</th><th>Answer</th></tr></thead>
       <tbody>
         <tr><td><code>GET /</code></td><td>the page</td></tr>
-        <tr><td><code>GET /api/overview</code></td><td><code>synced</code>, both models, what is pending, the counts, every note with its two hashes, state and facts; also the vault folder, the 0.38 line and the version</td></tr>
-        <tr><td><code>POST /api/tools/kb_&lt;tool&gt;</code></td><td>the tool's report, as an MCP call would give it; 400 for a bad argument, 404 for an unknown tool (<code>kb_dashboard</code> and <code>kb_mcp</code> are none), 500 when the tool fails</td></tr>
+        <tr><td><code>GET /api/overview?instance=NAME</code></td><td>for the instance named, or the default one without <code>?instance=</code>: <code>synced</code>, both models, what is pending, the counts, every note with its two hashes, state and facts; also the vault folder, <code>instance</code> (the one shown), <code>instances</code> (every one configured, as <code>kb_instances</code> lists them), the 0.38 line and the version. An unknown name is a 500 that lists the names</td></tr>
+        <tr><td><code>POST /api/tools/kb_&lt;tool&gt;</code></td><td>the tool's report, as an MCP call would give it, on the instance its <code>instance</code> argument names; 400 for a bad argument, 404 for an unknown tool (<code>kb_dashboard</code> and <code>kb_mcp</code> are none), 500 when the tool fails</td></tr>
         <tr><td>anything else</td><td>404, or 405 for the wrong method</td></tr>
       </tbody>
     </table>
@@ -298,6 +304,19 @@
 <span class="ln o"><span class="er">{"error":"tools answer this dashboard's own page only"} 403</span></span></pre>
   </div>
   <p class="note">Forgetting <code>Tea, no sugar.</code> embedded nothing: it was the only fact in <code>Inbox.md</code>, so that passage was simply dropped, and <code># Inbox</code> stayed. The edit made with <code>printf</code> showed up as <i>changed</i> before any sync; with the page open and auto-sync on, it would have been synced within 4 seconds. These commands assume <code>CHAOS_KB_VAULT</code> points at the vault and run inside it.</p>
+  <p class="note">With two knowledge bases, the overview and the tools take the instance by name. Another sample run, on two small vaults:</p>
+  <div class="term-wrap">
+<pre class="term" data-type><span class="ln cmd"><span class="p">$ </span>chaos-kb --vault personal=kb/personal --vault molecule=kb/molecule dashboard --port 7394 &amp;</span>
+<span class="ln o">chaos-kb dashboard: http://127.0.0.1:7394/ (Ctrl-C stops it)</span>
+<span class="ln cmd"><span class="p">$ </span>curl -s http://127.0.0.1:7394/api/overview | jq -c '{instance, instances: [.instances[] | {name, default}], notes: [.notes[].path]}'</span>
+<span class="ln o">{"instance":<span class="hl">"personal"</span>,"instances":[{"name":"personal","default":true},{"name":"molecule","default":false}],"notes":["Car.md","Inbox.md"]}</span>
+<span class="ln cmd"><span class="p">$ </span>curl -s 'http://127.0.0.1:7394/api/overview?instance=molecule' | jq -c '{instance, notes: [.notes[].path]}'</span>
+<span class="ln o">{"instance":<span class="hl">"molecule"</span>,"notes":["Lab.md"]}</span>
+<span class="ln cmd"><span class="p">$ </span>curl -s -H 'Content-Type: application/json' -d '{"dry_run":true,"instance":"molecule"}' http://127.0.0.1:7394/api/tools/kb_sync</span>
+<span class="ln o">{"added":[],"changed":[],"chunks":1,"dry_run":true,"embedded":0,"instance":<span class="hl">"molecule"</span>,"notes":1,"removed":[]}</span>
+<span class="ln cmd"><span class="p">$ </span>curl -s -w ' %{http_code}\n' 'http://127.0.0.1:7394/api/overview?instance=work'</span>
+<span class="ln o"><span class="er">{"error":"no instance is named `work`; the instances are `personal`, `molecule`"} 500</span></span></pre>
+  </div>
 </section>
 
 <section class="sec" aria-labelledby="s-where">
@@ -309,13 +328,13 @@
     <table>
       <thead><tr><th>File</th><th>Owns</th></tr></thead>
       <tbody>
-        <tr><td><code>src/entry/dashboard.rs</code></td><td>the server: <code>DEFAULT_PORT</code>, the three routes, the host, origin and JSON checks, the size limits, the response headers with the policy, one thread per connection</td></tr>
-        <tr><td><code>src/entry/dashboard.html</code></td><td>the page, built into the binary: the notes, the controls, the 4-second look and auto-sync, Try a question, Activity</td></tr>
+        <tr><td><code>src/entry/dashboard.rs</code></td><td>the server: <code>DEFAULT_PORT</code>, the three routes, the <code>?instance=</code> query, the host, origin and JSON checks, the size limits, the response headers with the policy, one thread per connection</td></tr>
+        <tr><td><code>src/entry/dashboard.html</code></td><td>the page, built into the binary: the instance switch, the notes, the controls, the 4-second look and auto-sync, Try a question, Activity</td></tr>
         <tr><td><code>src/application/overview.rs</code></td><td><code>overview</code>: <code>synced</code>, what is pending, every note with its state and both hashes, every fact and whether the index holds it; reads only, embeds nothing</td></tr>
         <tr><td><code>src/application/forget.rs</code></td><td><code>forget</code>: every block with the same words, in one note or all, with a sync before and after</td></tr>
         <tr><td><code>src/adapters/obsidian.rs</code></td><td><code>remove</code>: cutting blocks out of a note, the reads-the-same check, the atomic write</td></tr>
-        <tr><td><code>src/entry/tools.rs</code></td><td>turning the page's JSON arguments into a command line, as for MCP</td></tr>
-        <tr><td><code>src/entry/cli.rs</code></td><td>the <code>dashboard</code> command and <code>--port</code>; running one tool for the page as for the CLI</td></tr>
+        <tr><td><code>src/entry/tools.rs</code></td><td>turning the page's JSON arguments into a command line and the instance they name, as for MCP</td></tr>
+        <tr><td><code>src/entry/cli.rs</code></td><td>the <code>dashboard</code> command and <code>--port</code>; the instances; running one tool for the page as for the CLI</td></tr>
         <tr><td><code>README.md</code></td><td>the Dashboard section</td></tr>
       </tbody>
     </table>
@@ -323,7 +342,7 @@
 </section>
 
 <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
-<p class="stamp-foot">Checked against the code on 2026-10-28.</p>
+<p class="stamp-foot">Checked against the code on 2026-10-29.</p>
 </article>
 </main>
 </div>

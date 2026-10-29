@@ -1,14 +1,15 @@
 //! The dashboard: one web page served over HTTP on 127.0.0.1. `GET /` is the
-//! page, `GET /api/overview` what the knowledge base holds, and
-//! `POST /api/tools/kb_<tool>` runs a tool exactly as an MCP call does (the
-//! arguments as a JSON object, parsed by the clap definition). Every request
+//! page, `GET /api/overview?instance=NAME` what a knowledge base holds (the
+//! default one without the query), and `POST /api/tools/kb_<tool>` runs a
+//! tool exactly as an MCP call does (the arguments as a JSON object, parsed
+//! by the clap definition, `instance` among them). Every request
 //! must name this server as its host, which keeps out web pages that point a
 //! domain of theirs at 127.0.0.1. The tools also refuse a post from any other
 //! page's origin and any body that is not JSON, which a browser can only
 //! send to another site after asking, and this server never says yes.
 
-use super::cli::{self, Settings, Tool};
-use super::tools;
+use super::cli::{self, INSTANCE, Settings};
+use super::tools::{self, Run};
 use crate::domain::presence::DEFAULT_MIN_SCORE;
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
@@ -42,6 +43,8 @@ pub struct Request {
     pub method: String,
     /// The path, without its query.
     pub path: String,
+    /// The query, the text after `?`, when there is one.
+    pub query: Option<String>,
     pub host: Option<String>,
     pub origin: Option<String>,
     pub content_type: Option<String>,
@@ -59,7 +62,9 @@ pub struct Response {
 /// `127.0.0.1:<port>` until the process is stopped.
 pub fn serve(settings: &Settings, port: u16) -> Result<()> {
     // A missing vault fails now, not on the first page load.
-    cli::with_kb(settings, |_| Ok(()))?;
+    for instance in settings.instances()?.all() {
+        cli::with_kb(settings, instance, |_| Ok(()))?;
+    }
     let listener = TcpListener::bind(("127.0.0.1", port))
         .with_context(|| format!("listening on 127.0.0.1:{port}"))?;
     let port = listener.local_addr()?.port();
@@ -86,22 +91,29 @@ fn answer(mut stream: TcpStream, port: u16, settings: &Settings) {
     let _ = stream.set_read_timeout(Some(TIMEOUT));
     let _ = stream.set_write_timeout(Some(TIMEOUT));
     let response = match read_request(&mut stream) {
-        Ok(request) => respond(&request, port, &|| overview(settings), &|tool| {
-            cli::execute(settings, tool)
-        }),
+        Ok(request) => respond(
+            &request,
+            port,
+            &|instance| overview(settings, instance),
+            &|instance, tool| cli::execute(settings, instance, tool),
+        ),
         Err(refused) => refused,
     };
     // The browser may have gone; there is no one left to tell.
     let _ = write_response(&mut stream, &response);
 }
 
-/// The overview of the configured knowledge base, with its vault folder, the
-/// line `check` draws by default, and this build's version.
-fn overview(settings: &Settings) -> Result<Value> {
-    cli::with_kb(settings, |kb| {
+/// The overview of the knowledge base `instance` names (the default one
+/// when `None`), with its vault folder, every configured instance and which
+/// one this is, the line `check` draws by default, and this build's version.
+fn overview(settings: &Settings, instance: Option<&str>) -> Result<Value> {
+    let instances = settings.instances()?;
+    let shown = instances.get(instance)?;
+    cli::with_kb(settings, shown, |kb| {
         let mut overview = serde_json::to_value(kb.overview()?)?;
-        let vault = settings.vault.as_deref().map(|v| v.display().to_string());
-        overview["vault"] = json!(vault);
+        overview["vault"] = json!(shown.vault.display().to_string());
+        overview["instance"] = json!(shown.name);
+        overview["instances"] = instances.list();
         overview["min_score"] = json!(DEFAULT_MIN_SCORE);
         overview["version"] = json!(env!("CARGO_PKG_VERSION"));
         Ok(overview)
@@ -109,12 +121,12 @@ fn overview(settings: &Settings) -> Result<Value> {
 }
 
 /// Answer one request to the server listening on `port`. `overview` and
-/// `run` reach the knowledge base (stand-ins in tests).
+/// `run` reach the knowledge bases (stand-ins in tests).
 pub fn respond(
     request: &Request,
     port: u16,
-    overview: &dyn Fn() -> Result<Value>,
-    run: &dyn Fn(&Tool) -> Result<Value>,
+    overview: &dyn Fn(Option<&str>) -> Result<Value>,
+    run: &Run,
 ) -> Response {
     let hosts = [format!("127.0.0.1:{port}"), format!("localhost:{port}")];
     let host = request.host.as_deref().map(str::to_ascii_lowercase);
@@ -131,7 +143,9 @@ pub fn respond(
             content_type: "text/html; charset=utf-8",
             body: PAGE.as_bytes().to_vec(),
         },
-        "/api/overview" if method == "GET" => outcome(overview()),
+        "/api/overview" if method == "GET" => {
+            outcome(overview(param(request.query.as_deref(), INSTANCE)))
+        }
         "/" | "/api/overview" => failure(405, "use GET"),
         path => match path.strip_prefix("/api/tools/") {
             Some(name) if method == "POST" => tool(request, &hosts, name, run),
@@ -142,12 +156,7 @@ pub fn respond(
 }
 
 /// Run the tool `name` with the request's JSON arguments.
-fn tool(
-    request: &Request,
-    hosts: &[String; 2],
-    name: &str,
-    run: &dyn Fn(&Tool) -> Result<Value>,
-) -> Response {
+fn tool(request: &Request, hosts: &[String; 2], name: &str, run: &Run) -> Response {
     let ours = |origin: &str| hosts.iter().any(|h| origin == format!("http://{h}"));
     if request.origin.as_deref().is_some_and(|o| !ours(o)) {
         return failure(403, "tools answer this dashboard's own page only");
@@ -166,8 +175,15 @@ fn tool(
     match tools::command(name, &arguments) {
         None => failure(404, &format!("unknown tool: {name}")),
         Some(Err(e)) => failure(400, &format!("{e:#}")),
-        Some(Ok(tool)) => outcome(run(&tool)),
+        Some(Ok((tool, instance))) => outcome(run(instance.as_deref(), &tool)),
     }
+}
+
+/// The value of `key` in a query such as `a=1&key=value`. Not
+/// percent-decoded: an instance name is plain ASCII.
+fn param<'q>(query: Option<&'q str>, key: &str) -> Option<&'q str> {
+    let mut pairs = query?.split('&');
+    pairs.find_map(|pair| pair.strip_prefix(key)?.strip_prefix('='))
 }
 
 /// A report as `200`, or its error as `500`.
@@ -257,9 +273,14 @@ fn head_of(parsed: &httparse::Request) -> Result<(Request, usize), Response> {
         return Err(failure(413, "the request body is too large"));
     }
     let target = parsed.path.unwrap_or("/");
+    let (path, query) = match target.split_once('?') {
+        Some((path, query)) => (path, Some(query.to_string())),
+        None => (target, None),
+    };
     let request = Request {
         method: parsed.method.unwrap_or("").to_string(),
-        path: target.split('?').next().unwrap_or("/").to_string(),
+        path: path.to_string(),
+        query,
         host: header("host"),
         origin: header("origin"),
         content_type: header("content-type"),
@@ -299,21 +320,27 @@ fn write_response(out: &mut impl Write, response: &Response) -> std::io::Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entry::cli::Tool;
     use anyhow::anyhow;
     use std::path::PathBuf;
 
     const PORT: u16 = 7341;
 
-    fn untouched_overview() -> Result<Value> {
+    fn untouched_overview(_: Option<&str>) -> Result<Value> {
         panic!("must not read the overview")
     }
 
-    fn untouched(tool: &Tool) -> Result<Value> {
+    fn untouched(_: Option<&str>, tool: &Tool) -> Result<Value> {
         panic!("must not run {tool:?}")
     }
 
-    fn echo(tool: &Tool) -> Result<Value> {
-        Ok(json!({ "ran": format!("{tool:?}") }))
+    fn echo(instance: Option<&str>, tool: &Tool) -> Result<Value> {
+        Ok(json!({ "ran": format!("{tool:?}"), "instance": instance }))
+    }
+
+    /// An overview that says which instance it was asked for.
+    fn shown(instance: Option<&str>) -> Result<Value> {
+        Ok(json!({ "instance": instance }))
     }
 
     fn get(path: &str) -> Request {
@@ -351,6 +378,8 @@ mod tests {
         assert_eq!(page.content_type, "text/html; charset=utf-8");
         let html = String::from_utf8(page.body).unwrap();
         assert!(html.starts_with("<!doctype html>"), "{html}");
+        // The instance switch is there, hidden until a second instance shows.
+        assert!(html.contains(r#"<label class="switch" id="switch" hidden>"#));
         for outside in ["http://", "https://", "//cdn", "src=\"/"] {
             let found = html.match_indices(outside);
             let found = found.map(|(i, _)| html[i..].chars().take(40).collect::<String>());
@@ -381,11 +410,26 @@ mod tests {
     }
 
     #[test]
+    fn the_overview_shows_the_instance_the_query_names() {
+        let overview = |query: Option<&str>| {
+            let request = Request {
+                query: query.map(str::to_string),
+                ..get("/api/overview")
+            };
+            body(&respond(&request, PORT, &shown, &untouched))["instance"].clone()
+        };
+        assert_eq!(overview(None), Value::Null);
+        assert_eq!(overview(Some("instance=molecule")), "molecule");
+        assert_eq!(overview(Some("x=1&instance=work&y")), "work");
+        assert_eq!(overview(Some("instances=work")), Value::Null);
+    }
+
+    #[test]
     fn the_overview_is_json_and_its_failure_a_500() {
-        let fine = || Ok(json!({"synced": true}));
+        let fine = |_: Option<&str>| Ok(json!({"synced": true}));
         let done = respond(&get("/api/overview"), PORT, &fine, &untouched);
         assert_eq!((done.status, body(&done)), (200, json!({"synced": true})));
-        let broken = || Err(anyhow!("index is locked").context("reading the index"));
+        let broken = |_: Option<&str>| Err(anyhow!("index is locked").context("reading the index"));
         let failed = respond(&get("/api/overview"), PORT, &broken, &untouched);
         assert_eq!(failed.status, 500);
         assert_eq!(
@@ -407,11 +451,26 @@ mod tests {
             text: "Tea at 5".into(),
             note: Some("Habits".into()),
         };
-        assert_eq!(body(&done), echo(&forget).unwrap());
-        let broken = |_: &Tool| Err(anyhow!("the embedder is down"));
+        assert_eq!(body(&done), echo(None, &forget).unwrap());
+        let broken = |_: Option<&str>, _: &Tool| Err(anyhow!("the embedder is down"));
         let failed = respond(&post("kb_sync", "{}"), PORT, &untouched_overview, &broken);
         assert_eq!(failed.status, 500);
         assert_eq!(body(&failed), json!({"error": "the embedder is down"}));
+    }
+
+    #[test]
+    fn tools_run_on_the_instance_the_post_names() {
+        let post = post("kb_sync", r#"{"dry_run": true, "instance": "work"}"#);
+        let done = respond(&post, PORT, &untouched_overview, &echo);
+        assert_eq!(done.status, 200);
+        let sync = Tool::Sync { dry_run: true };
+        assert_eq!(body(&done), echo(Some("work"), &sync).unwrap());
+        let listed = respond(&post_instances(), PORT, &untouched_overview, &echo);
+        assert_eq!(body(&listed), echo(None, &Tool::Instances).unwrap());
+    }
+
+    fn post_instances() -> Request {
+        post("kb_instances", "{}")
     }
 
     #[test]
@@ -493,12 +552,14 @@ mod tests {
         let request = read(raw).unwrap();
         assert_eq!(request.method, "POST");
         assert_eq!(request.path, "/api/tools/kb_check");
+        assert_eq!(request.query.as_deref(), Some("x=1"));
         assert_eq!(request.host.as_deref(), Some("127.0.0.1:7341"));
         assert_eq!(request.origin.as_deref(), Some("http://127.0.0.1:7341"));
         assert_eq!(request.content_type.as_deref(), Some("application/json"));
         assert_eq!(request.body, b"{\"query\":\"tea\"}\n");
         let get = read("GET / HTTP/1.1\r\nHost: localhost:7341\r\n\r\n").unwrap();
         assert_eq!((get.path.as_str(), get.body.len()), ("/", 0));
+        assert_eq!(get.query, None);
     }
 
     #[test]
@@ -545,7 +606,8 @@ mod tests {
         let vault = tempfile::tempdir().unwrap();
         std::fs::write(vault.path().join("Car.md"), "# Car\n\nOil every 10k.\n").unwrap();
         let settings = Settings {
-            vault: Some(PathBuf::from(vault.path())),
+            vault: vec![PathBuf::from(vault.path())],
+            instance: None,
             index: None,
             embed_url: "http://127.0.0.1:9/v1".into(),
             embed_model: "none".into(),
@@ -578,6 +640,8 @@ mod tests {
         assert_eq!(overview["synced"], false);
         let shown = vault.path().display().to_string();
         assert_eq!(overview["vault"], shown);
+        assert_eq!(overview["instance"], "default");
+        assert_eq!(overview["instances"].as_array().map(Vec::len), Some(1));
 
         let evil = agent
             .post(format!("{base}/api/tools/kb_sync"))
@@ -595,5 +659,66 @@ mod tests {
         let report: Value = dry.body_mut().read_json().unwrap();
         assert_eq!(report["added"], json!(["Car.md"]));
         assert_eq!(report["added"], overview["pending"]["added"]);
+        // One instance: the report is the tool's alone, as over MCP.
+        assert!(report.get("instance").is_none(), "{report}");
+    }
+
+    #[test]
+    fn a_real_round_trip_through_two_instances() {
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::write(a.path().join("Car.md"), "# Car\n\nOil every 10k.\n").unwrap();
+        std::fs::write(b.path().join("Lab.md"), "# Lab\n\nAssay on Fridays.\n").unwrap();
+        let settings = Settings {
+            vault: vec![
+                PathBuf::from(format!("personal={}", a.path().display())),
+                PathBuf::from(format!("molecule={}", b.path().display())),
+            ],
+            instance: Some("molecule".into()),
+            index: None,
+            embed_url: "http://127.0.0.1:9/v1".into(),
+            embed_model: "none".into(),
+        };
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || run(listener, &settings));
+        let base = format!("http://127.0.0.1:{port}");
+        let agent = ureq::Agent::new_with_defaults();
+        let overview = |query: &str| -> Value {
+            let url = format!("{base}/api/overview{query}");
+            agent
+                .get(url)
+                .call()
+                .unwrap()
+                .body_mut()
+                .read_json()
+                .unwrap()
+        };
+
+        // It starts on the instance `--instance` names.
+        let first = overview("");
+        assert_eq!(first["instance"], "molecule");
+        assert_eq!(first["notes"][0]["path"], "Lab.md");
+        let names: Vec<&Value> = first["instances"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| &i["name"])
+            .collect();
+        assert_eq!(names, ["personal", "molecule"]);
+        assert_eq!(first["instances"][1]["default"], true);
+
+        let other = overview("?instance=personal");
+        assert_eq!(other["instance"], "personal");
+        assert_eq!(other["notes"][0]["path"], "Car.md");
+        assert_eq!(other["vault"], a.path().display().to_string());
+
+        let mut dry = agent
+            .post(format!("{base}/api/tools/kb_sync"))
+            .header("Content-Type", "application/json")
+            .send(r#"{"dry_run": true, "instance": "personal"}"#)
+            .unwrap();
+        let report: Value = dry.body_mut().read_json().unwrap();
+        assert_eq!(report["added"], json!(["Car.md"]));
+        assert_eq!(report["instance"], "personal");
     }
 }

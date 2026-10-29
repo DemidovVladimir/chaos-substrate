@@ -525,7 +525,8 @@ fn binary_serves_cli_and_mcp() {
             "kb_check",
             "kb_search",
             "kb_topics",
-            "kb_read"
+            "kb_read",
+            "kb_instances"
         ]
     );
 
@@ -578,6 +579,85 @@ fn binary_serves_cli_and_mcp() {
         "params": {"name": "kb_search", "arguments": {"query": "x", "limit": "many"}}}))
     .unwrap();
     assert_eq!(bad["result"]["isError"], true, "{bad}");
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+/// Two knowledge bases behind one binary: `--instance` on the CLI and
+/// `instance` in an MCP call pick one, and every report names the one that
+/// answered.
+#[test]
+fn binary_serves_several_instances() {
+    if !ollama_up() {
+        return;
+    }
+    let (personal, work) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    write_vault(personal.path());
+    let office = "# Office\n\nThe office opens at 8:30.\n";
+    std::fs::write(work.path().join("Office.md"), office).unwrap();
+    let bin = env!("CARGO_BIN_EXE_chaos-kb");
+    let vaults = [
+        "--vault".to_string(),
+        format!("personal={}", personal.path().display()),
+        "--vault".to_string(),
+        format!("work={}", work.path().display()),
+    ];
+    let cli = |args: &[&str]| -> Value {
+        let out = Command::new(bin).args(&vaults).args(args).output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{stderr}");
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let synced = cli(&["sync"]);
+    assert_eq!(synced["instance"], "personal", "{synced}");
+    assert_eq!(synced["notes"], VAULT.len());
+    let synced = cli(&["--instance", "work", "sync"]);
+    assert_eq!(synced["instance"], "work", "{synced}");
+    assert_eq!(synced["notes"], 1);
+    assert!(work.path().join(".chaos-kb/index.redb").is_file());
+
+    let mut child = Command::new(bin)
+        .args(&vaults)
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let mut call = |id: u64, name: &str, arguments: Value| -> Value {
+        let message = json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {"name": name, "arguments": arguments}});
+        writeln!(stdin, "{message}").unwrap();
+        let reply: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+        serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+    };
+
+    let listed = call(1, "kb_instances", json!({}));
+    let rows: Vec<(&Value, &Value)> = listed["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| (&i["name"], &i["default"]))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (&json!("personal"), &json!(true)),
+            (&json!("work"), &json!(false))
+        ]
+    );
+
+    let fact = "The office opens at 8:30.";
+    let at_work = call(2, "kb_check", json!({"query": fact, "instance": "work"}));
+    assert_eq!(at_work["instance"], "work", "{at_work}");
+    assert_eq!(at_work["presence"], "exact", "{at_work}");
+    assert_eq!(at_work["matches"][0]["note"], "Office.md");
+    let at_home = call(3, "kb_check", json!({"query": fact}));
+    assert_eq!(at_home["instance"], "personal", "{at_home}");
+    assert_ne!(at_home["presence"], "exact", "{at_home}");
 
     drop(stdin);
     assert!(child.wait().unwrap().success());

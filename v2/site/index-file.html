@@ -231,7 +231,7 @@
 <span class="ln cmd"><span class="p">$ </span>chaos-kb check "x" --index ./none.redb</span>
 <span class="ln o"><span class="er">error: the index is empty: run `chaos-kb sync` first</span></span></pre>
   </div>
-  <p class="note">Use <code>--index</code> or <code>CHAOS_KB_INDEX</code> to keep the file somewhere else; its lock file sits next to it. A missing file is not created by a read.</p>
+  <p class="note">Use <code>--index</code> or <code>CHAOS_KB_INDEX</code> to keep the file somewhere else; its lock file sits next to it. A missing file is not created by a read. That works with a single <code>--vault</code> only: with several, each instance keeps its own index at <code>&lt;vault&gt;/.chaos-kb/index.redb</code>, and <code>--index</code> is refused.</p>
 </section>
 
 <section class="sec" aria-labelledby="s-where">
@@ -246,7 +246,7 @@
         <tr><td><code>src/adapters/redb_index.rs</code></td><td><code>RedbIndex</code>: the tables, <code>FORMAT</code>, the lock file, the base check, the write, the row checks, the nearest scan, and <code>chunks</code> in reading order for <a href="topics.html">read</a></td></tr>
         <tr><td><code>src/ports/mod.rs</code></td><td>the <code>Index</code> trait, <code>Snapshot</code>, <code>Update</code> with its <code>base</code>, <code>Stale</code> and <code>Hit</code></td></tr>
         <tr><td><code>src/application/sync.rs</code></td><td><code>SYNC_ATTEMPTS</code>: starting over when another writer got in first</td></tr>
-        <tr><td><code>src/entry/cli.rs</code></td><td><code>--index</code> and its default under the vault</td></tr>
+        <tr><td><code>src/entry/cli.rs</code></td><td><code>--index</code> and its default under each vault</td></tr>
         <tr><td><code>README.md</code></td><td>§ Speed and § Your data, for users</td></tr>
       </tbody>
     </table>
@@ -254,7 +254,7 @@
 </section>
 
 <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
-<p class="stamp-foot">Checked against the code on 2026-10-28.</p>
+<p class="stamp-foot">Checked against the code on 2026-10-29.</p>
 </article>
 </main>
 </div>

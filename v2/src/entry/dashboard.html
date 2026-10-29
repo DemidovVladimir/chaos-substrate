@@ -35,7 +35,7 @@
   * { box-sizing: border-box; }
   html, body { margin: 0; }
   body { background: var(--paper); color: var(--ink); font: 15px/1.5 var(--sans); }
-  button, input, textarea { font: inherit; color: inherit; }
+  button, input, textarea, select { font: inherit; color: inherit; }
   code, .mono { font-family: var(--mono); }
   h2 { font-size: 1.05rem; margin: 0 0 .35rem; }
   h3 { font-size: .95rem; margin: 0 0 .3rem; }
@@ -66,6 +66,10 @@
   .pill.bad { background: var(--bad-soft); color: var(--bad); }
   .pill.busy::before { animation: pulse 1s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: .25; } }
+  .switch { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); }
+  .switch[hidden] { display: none; }
+  .switch select { padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font-weight: 600; }
+  .switch select:disabled { opacity: .5; cursor: progress; }
   .spacer { flex: 1; }
   .toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); cursor: pointer; }
 
@@ -200,6 +204,9 @@
     <span class="mark" aria-hidden="true">知</span>
     <div><b>chaos-kb dashboard</b><small id="vault">connecting…</small></div>
   </div>
+  <label class="switch" id="switch" hidden>Knowledge base
+    <select id="instance"></select>
+  </label>
   <span class="pill" id="state" role="status" aria-live="polite">Loading</span>
   <span class="spacer"></span>
   <label class="toggle" title="Edits made in Obsidian or any editor are synced as soon as the dashboard sees them">
@@ -341,12 +348,13 @@ async function api(path, body) {
   return data;
 }
 
-/** Run a tool exactly as an agent would (`kb_<name>`), arguments that are empty left out. */
+/** Run a tool exactly as an agent would (`kb_<name>`) on the instance shown, arguments that are empty left out. */
 function tool(name, args) {
   const given = {};
   for (const [key, value] of Object.entries(args || {})) {
     if (value !== undefined && value !== null && value !== "") given[key] = value;
   }
+  if (instance !== null) given.instance = instance;
   return api(`/api/tools/kb_${name}`, given);
 }
 
@@ -354,6 +362,8 @@ function tool(name, args) {
 
 let view = null;            // the last overview
 let viewText = "";          // its JSON, so an unchanged poll draws nothing
+let instance = null;        // the knowledge base shown, named in every request once the first overview said which
+let known = [];             // every configured knowledge base, from the last overview
 let busy = false;           // a change or sync is running
 let offline = null;         // why the server cannot be reached
 let autoFailedAt = null;    // the notes (paths and hashes) when an automatic sync last failed
@@ -367,7 +377,11 @@ const notesKey = (v) => v.notes.map((n) => `${n.path}:${n.hash}`).join("|");
 
 /** Read the overview; draw only when it, or reaching the server, changed. */
 async function refresh() {
-  const next = await api("/api/overview");
+  const asked = instance;
+  const next = await api(asked === null ? "/api/overview" : `/api/overview?instance=${encodeURIComponent(asked)}`);
+  if (instance !== asked) return view; // switched meanwhile: this one is for the other knowledge base
+  instance = next.instance;
+  known = next.instances;
   const text = JSON.stringify(next);
   if (text !== viewText || offline !== null) {
     offline = null;
@@ -424,8 +438,9 @@ function record(title, sentence, before, after, failed) {
   const log = $("log");
   if (log.firstElementChild && log.firstElementChild.classList.contains("muted")) log.firstElementChild.remove();
   const changed = after ? [...difference(before, after).notes] : [];
+  const where = known.length > 1 ? `${instance}: ` : "";
   log.prepend(el("li", { class: failed ? "bad" : "" },
-    el("time", {}, new Date().toLocaleTimeString()), el("b", {}, title), el("div", {}, sentence),
+    el("time", {}, new Date().toLocaleTimeString()), el("b", {}, where + title), el("div", {}, sentence),
     changed.length ? el("div", {}, "Notes changed: ", changed.join(", ")) : null));
   while (log.children.length > 40) log.lastElementChild.remove();
 }
@@ -441,6 +456,7 @@ const STATES = {
 
 function render() {
   drawTop();
+  drawSwitch();
   if (!view) return;
   drawStats();
   drawNotes();
@@ -498,6 +514,21 @@ function drawTop() {
     return;
   }
   banner.hidden = false;
+}
+
+/** The switch between knowledge bases, shown only when there are several. */
+function drawSwitch() {
+  const box = $("switch");
+  box.hidden = known.length < 2;
+  if (box.hidden) return;
+  const select = $("instance");
+  const names = known.map((i) => i.name).join("|");
+  if (select.dataset.names !== names) {
+    select.dataset.names = names;
+    select.replaceChildren(...known.map((i) => el("option", { value: i.name, title: i.vault }, i.name)));
+  }
+  select.value = instance;
+  select.disabled = busy;
 }
 
 function drawStats() {
@@ -624,6 +655,26 @@ const innermost = (section) => (section ? section.split(" > ").pop() : "");
 
 // ── actions ────────────────────────────────────────────────────────────────
 
+/** Show another knowledge base: read its overview, and name it in every tool call from now on. */
+async function switchTo(name) {
+  if (busy || name === instance) { drawSwitch(); return; }
+  instance = name;
+  view = null;
+  viewText = "";
+  open.clear();
+  focused = new Set();
+  editing = null;
+  flashed = { notes: new Set(), blocks: new Set() };
+  autoFailedAt = null;
+  for (const id of ["notes-list", "stats", "answer"]) $(id).replaceChildren();
+  $("add-result").textContent = "";
+  $("vault").textContent = "connecting…";
+  $("state").className = "pill busy";
+  $("state").textContent = "Loading";
+  render();
+  await tick();
+}
+
 async function syncNow(automatic) {
   try {
     await change(automatic ? "Automatic sync" : "Sync", async () => {
@@ -702,10 +753,12 @@ $("ask").addEventListener("submit", async (event) => {
   const query = $("ask-q").value.trim();
   const box = $("answer");
   box.replaceChildren(el("p", { class: "muted" }, "Asking…"));
+  const asked = instance;
   const [check, topics] = await Promise.allSettled([
     tool("check", { query }),
     tool("topics", { task: query, limit: 6 }),
   ]);
+  if (instance !== asked) return; // switched meanwhile
   const parts = [];
   if (check.status === "fulfilled") {
     const c = check.value;
@@ -761,6 +814,7 @@ function point(hit) {
 // ── controls and the poll ──────────────────────────────────────────────────
 
 $("sync").addEventListener("click", () => syncNow(false));
+$("instance").addEventListener("change", (event) => switchTo(event.target.value));
 $("filter").addEventListener("input", () => render());
 $("add-note").addEventListener("input", () => drawLists());
 $("expand").addEventListener("click", () => { for (const n of (view ? view.notes : [])) open.add(n.path); render(); });

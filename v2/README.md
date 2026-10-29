@@ -178,7 +178,7 @@ the next `sync` rebuilds it. That re-embeds every note.
 
 ### From an agent (MCP)
 
-`chaos-kb mcp` serves the same seven tools over MCP (stdio, newline-delimited JSON-RPC 2.0). For
+`chaos-kb mcp` serves the same eight tools over MCP (stdio, newline-delimited JSON-RPC 2.0). For
 Claude Code:
 
 ```sh
@@ -186,7 +186,32 @@ claude mcp add chaos-kb -- chaos-kb --vault ~/Knowledge mcp
 ```
 
 Other clients take the same command and arguments in their MCP config. When it starts, the
-server also tells the agent how to use the seven tools together.
+server also tells the agent how to use the eight tools together.
+
+### Several knowledge bases
+
+One chaos-kb can serve several vaults, such as your own and your company's. Name each one with
+`--vault NAME=PATH`:
+
+```sh
+claude mcp add chaos-kb -- chaos-kb --vault personal=~/Knowledge --vault molecule=~/development/molecule/molecule/knowledge mcp
+```
+
+The first vault is the default; `--instance NAME` (or `CHAOS_KB_INSTANCE`) makes another one the
+default. A name holds only ASCII letters, digits, `_` and `-`. When the text before the first `=`
+is not a name, the whole value is a path, so `/a/b=c` stays a path. A bare path gets the name
+`default`, so a single `--vault ~/Knowledge` works as before. A path may start with `~/` after
+`NAME=` too. The shell leaves `~` alone there, so chaos-kb reads it as your home folder itself.
+
+- `instances` lists each instance's `name`, `vault` folder and `index` file, with
+  `"default": true` on the default one. It opens nothing, so it works while Ollama is down.
+- Every other tool takes `instance`, which picks the knowledge base for that one call. On the
+  command line, the global `--instance` does the same: `chaos-kb --instance molecule check "…"`.
+- With more than one instance, every report names the one that answered or was written to, as
+  `"instance": "molecule"`. With one instance, reports carry no `instance`, as in the samples
+  above.
+- Each instance keeps its own index at `<vault>/.chaos-kb/index.redb`, so `--index` works only
+  with a single vault. `CHAOS_KB_VAULT` takes one value, in either form.
 
 ### Dashboard
 
@@ -210,10 +235,15 @@ change it:
   (Ollama not running, say), the page waits until the notes change again.
 - **Try a question** runs `check` and `topics`, as an agent would, and points at the facts they
   found.
+- **Several knowledge bases.** With more than one `--vault`, a switch in the header lists them by
+  name. The page starts on the default one; choosing another shows its notes, and every change
+  and question after that goes to that one. *Activity* names the knowledge base of each change.
+  With one vault there is no switch.
 
-The page calls the same tools as an agent (`POST /api/tools/kb_<tool>`, arguments as a JSON
-object, read by the same command-line definition), so the CLI, agents and the dashboard share one
-knowledge base and take the same locks. The server answers only requests addressed to
+The page calls the same tools as an agent with `POST /api/tools/kb_<tool>`, the arguments as a
+JSON object read by the same command-line definition, `instance` among them. It reads what a
+knowledge base holds from `GET /api/overview?instance=NAME`. So the CLI, agents and the dashboard
+share the same knowledge bases and take the same locks. The server answers only requests addressed to
 `127.0.0.1:<port>` or `localhost:<port>`, and its tools refuse posts from any other web page, so a
 site open in the same browser can neither read nor change your notes. The page loads nothing from
 the internet.
@@ -231,6 +261,7 @@ Bring the index up to date with the vault: compare each note's hash with the sto
 | arg | type | default | description |
 |---|---|---|---|
 | `dry_run` | boolean | `false` | Report what would change without embedding or writing anything |
+| `instance` | string |  | Knowledge base to use, by name; without it, the default. `instances` lists the names and marks the default |
 
 ### `kb_remember` · `chaos-kb remember`
 
@@ -240,6 +271,7 @@ Store one fact in the vault as Markdown and index it. Skipped when the same word
 |---|---|---|---|
 | `text` (required) | string |  | The fact, in plain words or Markdown. One fact per call |
 | `heading` | string |  | Section heading inside the note (added when missing) |
+| `instance` | string |  | Knowledge base to use, by name; without it, the default. `instances` lists the names and marks the default |
 | `note` | string | `Inbox.md` | Note to append to, relative to the vault (`.md` optional) |
 
 ### `kb_forget` · `chaos-kb forget`
@@ -249,6 +281,7 @@ Take a fact out of the vault and the index: every block with the same words, com
 | arg | type | default | description |
 |---|---|---|---|
 | `text` (required) | string |  | The fact in its stored words, as `read` or `search` return them. Each block of it is removed wherever it is stored |
+| `instance` | string |  | Knowledge base to use, by name; without it, the default. `instances` lists the names and marks the default |
 | `note` | string |  | Only remove it from this note (relative to the vault, `.md` optional) |
 
 ### `kb_check` · `chaos-kb check`
@@ -258,6 +291,7 @@ Is this already in the knowledge base? Exact words are answered from the stored 
 | arg | type | default | description |
 |---|---|---|---|
 | `query` (required) | string |  | A fact, topic or question |
+| `instance` | string |  | Knowledge base to use, by name; without it, the default. `instances` lists the names and marks the default |
 | `min_score` | number | `0.38` | Similarity from which a passage counts as covering the query |
 
 ### `kb_search` · `chaos-kb search`
@@ -267,6 +301,7 @@ Passages most similar to a question, best first, with note, section, line range 
 | arg | type | default | description |
 |---|---|---|---|
 | `query` (required) | string |  | A question or topic |
+| `instance` | string |  | Knowledge base to use, by name; without it, the default. `instances` lists the names and marks the default |
 | `limit` | integer ≥ 0 | `5` | Maximum passages returned |
 | `min_score` | number | `0.0` | Drop passages below this similarity |
 
@@ -277,6 +312,7 @@ What the knowledge base holds near a task, as a short list: one line per passage
 | arg | type | default | description |
 |---|---|---|---|
 | `task` (required) | string |  | The task or request, in the user's words |
+| `instance` | string |  | Knowledge base to use, by name; without it, the default. `instances` lists the names and marks the default |
 | `limit` | integer ≥ 0 | `8` | Maximum passages listed |
 
 ### `kb_read` · `chaos-kb read`
@@ -286,13 +322,19 @@ The passages behind ids from `topics`, with their text, in the order given. Embe
 | arg | type | default | description |
 |---|---|---|---|
 | `ids` (required), or `id` | list of strings |  | Passage ids from `topics` (`note:first-last`, like `Car.md:8-8`) |
+| `instance` | string |  | Knowledge base to use, by name; without it, the default. `instances` lists the names and marks the default |
+
+### `kb_instances` · `chaos-kb instances`
+
+The configured knowledge bases: each one's name, vault folder and index file, with `"default": true` on the one a call uses when it names no `instance`. Opens nothing, so it works while the embedder is down
 
 ### Settings
 
 | flag | env var | default | description |
 |---|---|---|---|
-| `--vault` | `CHAOS_KB_VAULT` |  | Folder of Markdown notes (an Obsidian vault) |
-| `--index` | `CHAOS_KB_INDEX` |  | Index file [default: &lt;vault>/.chaos-kb/index.redb] |
+| `--vault` | `CHAOS_KB_VAULT` |  | Folder of Markdown notes (an Obsidian vault), as PATH or NAME=PATH. Repeat it to serve several knowledge bases. A bare PATH gets the name `default`. Calls use the first vault unless `--instance` names another |
+| `--instance` | `CHAOS_KB_INSTANCE` |  | Knowledge base to use, by name; without it, the default. `instances` lists the names and marks the default |
+| `--index` | `CHAOS_KB_INDEX` |  | Index file, with a single `--vault` only [default: &lt;vault>/.chaos-kb/index.redb] |
 | `--embed-url` | `CHAOS_KB_EMBED_URL` | `http://localhost:11434/v1` | OpenAI-compatible embeddings base URL (Ollama, OpenRouter, OpenAI) |
 | `--embed-model` | `CHAOS_KB_EMBED_MODEL` | `embeddinggemma` | Embedding model |
 

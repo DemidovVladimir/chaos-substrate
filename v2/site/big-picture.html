@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>From notes to answers · chaos-kb</title>
-<meta name="description" content="How chaos-kb turns a folder of Markdown notes into fingerprints, note hashes and searchable passages in one index file, and the seven tools that use them.">
+<meta name="description" content="How chaos-kb turns a folder of Markdown notes into fingerprints, note hashes and searchable passages in one index file, and the eight tools that use them.">
 <script>try{var t=localStorage.getItem("tengu-tutorial-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -33,7 +33,7 @@
   <h1>From notes to answers</h1>
   <p class="lede">You keep what you know as Markdown notes in one folder. One <b>sync</b> turns them into fingerprints and searchable passages in one index file. Then an agent can ask: is this known, and what do my notes say?</p>
   <ul class="facts">
-    <li><b>7</b> tools: sync, remember, forget, check, search, topics, read</li>
+    <li><b>8</b> tools: sync, remember, forget, check, search, topics, read, instances</li>
     <li>passages of at most <b>1200</b> characters</li>
     <li>known from a score of <b>0.38</b></li>
     <li>index at <b>&lt;vault&gt;/.chaos-kb/index.redb</b></li>
@@ -42,7 +42,7 @@
     <li><span class="chip brain"><span class="k">脳</span> notes</span> your knowledge</li>
     <li><span class="chip jev"><span class="k">印</span> hash</span> fingerprints, note hashes</li>
     <li><span class="chip heart"><span class="k">心</span> model</span> the embedding model</li>
-    <li><span class="chip hands"><span class="k">手</span> tools</span> the seven tools</li>
+    <li><span class="chip hands"><span class="k">手</span> tools</span> the eight tools</li>
     <li><span class="chip guard"><span class="k">守</span> guard</span> checks and refusals</li>
     <li><span class="chip data">data</span> the index file</li>
   </ul>
@@ -148,9 +148,9 @@
 
 <section class="sec" aria-labelledby="s-tools">
   <div class="sec-head">
-    <span class="kicker">The seven tools</span>
-    <h2 id="s-tools">Three write, four read</h2>
-    <p>The same seven tools exist as commands (<code>chaos-kb sync</code>) and as MCP tools for agents (<code>kb_sync</code>). Every command prints JSON.</p>
+    <span class="kicker">The eight tools</span>
+    <h2 id="s-tools">Three write, four read, one lists</h2>
+    <p>The same eight tools exist as commands (<code>chaos-kb sync</code>) and as MCP tools for agents (<code>kb_sync</code>). Every command prints JSON.</p>
   </div>
   <div class="grid">
     <div class="card hands">
@@ -181,6 +181,10 @@
       <h3><span class="tool-name">read</span></h3>
       <p>The passages behind ids from <code>topics</code>, with their text, in the order asked. No model call. <a href="topics.html">Topics and read</a></p>
     </div>
+    <div class="card hands">
+      <h3><span class="tool-name">instances</span></h3>
+      <p>Lists the knowledge bases that <code>--vault NAME=PATH</code> names, each with its vault folder and index file, and marks the default. Opens nothing. Every other tool takes <code>instance</code> to use another one. <a href="chaos-kb.html#s-several">Several knowledge bases</a></p>
+    </div>
   </div>
 </section>
 
@@ -195,7 +199,7 @@
     <div class="card guard"><b>ports</b><small><code>Vault</code>, <code>Embedder</code>, <code>Index</code>, and the shapes they pass.</small><span class="uses">uses domain</span></div>
     <div class="card hands"><b>application</b><small>The seven use-cases on <code>Kb</code>, plus the dashboard's <code>overview</code>: one vault, one index, one embedder.</small><span class="uses">uses domain, ports</span></div>
     <div class="card data"><b>adapters</b><small>The Obsidian vault on disk, the redb index file, the HTTP embedder.</small><span class="uses">never application or entry</span></div>
-    <div class="card heart"><b>entry</b><small>The clap command line, the MCP server, the dashboard and the tool roster they share.</small><span class="uses">wires adapters in</span></div>
+    <div class="card heart"><b>entry</b><small>The clap command line, the MCP server, the dashboard, the tool roster they share, and the instances <code>--vault</code> names.</small><span class="uses">wires adapters in</span></div>
   </div>
   <div class="table-wrap">
     <table>
@@ -308,7 +312,7 @@
 </section>
 
 <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
-<p class="stamp-foot">Checked against the code on 2026-10-28.</p>
+<p class="stamp-foot">Checked against the code on 2026-10-29.</p>
 </article>
 </main>
 </div>

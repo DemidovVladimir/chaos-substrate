@@ -2,9 +2,10 @@
 //! one tool per [`Tool`] subcommand, named `kb_<subcommand>`, described by its
 //! doc comment, with a JSON Schema built from its arguments. Calls are turned
 //! back into argv and parsed by the same clap definition, so defaults and
-//! validation live in exactly one place.
+//! validation live in exactly one place. Every tool but `instances` also
+//! takes `instance`, defined once as the `--instance` setting.
 
-use super::cli::{Cli, Tool, api_key_note};
+use super::cli::{Cli, INSTANCE, Tool, api_key_note};
 use anyhow::{Context, Result, anyhow, bail};
 use clap::builder::StyledStr;
 use clap::{Arg, ArgAction, CommandFactory, Parser};
@@ -13,6 +14,11 @@ use std::any::TypeId;
 
 /// Prefix of every MCP tool name.
 pub const PREFIX: &str = "kb_";
+
+/// Runs a parsed tool on the instance a call names, or on the default one
+/// when it names none: the real knowledge bases in production, stand-ins in
+/// tests.
+pub type Run<'a> = dyn Fn(Option<&str>, &Tool) -> Result<Value> + 'a;
 
 /// What one MCP call may set: a tool, without the CLI's settings. Left
 /// unbuilt, its subcommands hold only their own arguments (no help flag).
@@ -28,17 +34,52 @@ pub fn tools() -> Vec<Value> {
 }
 
 /// Parse an MCP call (`kb_check`, `{"query": "…"}`) into a [`Tool`] through
-/// clap, exactly as the CLI would. `None` when no tool has that name; invalid
-/// arguments fail with clap's message.
-pub fn command(name: &str, arguments: &Value) -> Option<Result<Tool>> {
+/// clap, exactly as the CLI would, and the `instance` it names, if any.
+/// `None` when no tool has that name; invalid arguments fail with clap's
+/// message.
+pub fn command(name: &str, arguments: &Value) -> Option<Result<(Tool, Option<String>)>> {
     let call = Call::command();
     let sub = call.find_subcommand(name.strip_prefix(PREFIX)?)?;
-    let parsed = argv(call.get_name(), sub, arguments).and_then(|argv| {
-        Call::try_parse_from(argv)
-            .map(|call| call.tool)
-            .map_err(|e| anyhow!("{}", e.to_string().trim_end()))
+    let parsed = split(sub, arguments).and_then(|(given, instance)| {
+        let argv = argv(call.get_name(), sub, &given)?;
+        let call =
+            Call::try_parse_from(argv).map_err(|e| anyhow!("{}", e.to_string().trim_end()))?;
+        Ok((call.tool, instance))
     });
     Some(parsed)
+}
+
+/// A call's arguments without `instance`, and the instance it names: that
+/// picks the knowledge base, so clap never sees it.
+fn split(sub: &clap::Command, arguments: &Value) -> Result<(Map<String, Value>, Option<String>)> {
+    let name = sub.get_name();
+    let mut given = arguments
+        .as_object()
+        .with_context(|| format!("{PREFIX}{name} arguments must be a JSON object"))?
+        .clone();
+    if !takes_instance(sub) {
+        return Ok((given, None));
+    }
+    let instance = match given.remove(INSTANCE) {
+        None | Some(Value::Null) => None,
+        Some(Value::String(instance)) => Some(instance),
+        Some(_) => bail!("`{INSTANCE}` must be a string"),
+    };
+    Ok((given, instance))
+}
+
+/// Whether `sub` opens a knowledge base, and so takes `instance`: every tool
+/// but `instances`, which lists them.
+fn takes_instance(sub: &clap::Command) -> bool {
+    sub.get_name() != "instances"
+}
+
+/// The `--instance` setting, whose id and help are also the `instance`
+/// argument of every tool that takes it.
+fn instance_setting() -> Arg {
+    let cli = Cli::command();
+    let found = cli.get_arguments().find(|a| a.get_id() == INSTANCE);
+    found.expect("the --instance setting").clone()
 }
 
 /// The agent workflow guide: the CLI's about text.
@@ -63,12 +104,8 @@ pub fn markdown() -> String {
 /// `--long=value`, flags as `--long` when true, a list as one value per
 /// item, positionals after `--` in definition order and a list's items in
 /// their own order (so values starting with `-` stay values).
-fn argv(bin: &str, sub: &clap::Command, arguments: &Value) -> Result<Vec<String>> {
-    let name = sub.get_name();
-    let given = arguments
-        .as_object()
-        .with_context(|| format!("{PREFIX}{name} arguments must be a JSON object"))?;
-    let mut argv = vec![bin.to_string(), name.to_string()];
+fn argv(bin: &str, sub: &clap::Command, given: &Map<String, Value>) -> Result<Vec<String>> {
+    let mut argv = vec![bin.to_string(), sub.get_name().to_string()];
     let mut positionals = Vec::new();
     for (key, value) in given {
         let (position, arg) = sub
@@ -195,26 +232,31 @@ struct Param {
     description: String,
 }
 
-/// A tool's arguments, in definition order.
+/// A tool's arguments, in definition order, then `instance` when it takes
+/// one.
 fn params(sub: &clap::Command) -> Vec<Param> {
-    sub.get_arguments()
-        .map(|arg| {
-            let kind = Kind::of(arg);
-            Param {
-                id: arg.get_id().to_string(),
-                aliases: arg
-                    .get_all_aliases()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(str::to_string)
-                    .collect(),
-                kind,
-                required: arg.is_required_set(),
-                default: kind.default(arg),
-                description: help(arg.get_long_help(), arg.get_help()),
-            }
-        })
-        .collect()
+    let mut params: Vec<Param> = sub.get_arguments().map(param).collect();
+    if takes_instance(sub) {
+        params.push(param(&instance_setting()));
+    }
+    params
+}
+
+fn param(arg: &Arg) -> Param {
+    let kind = Kind::of(arg);
+    Param {
+        id: arg.get_id().to_string(),
+        aliases: arg
+            .get_all_aliases()
+            .unwrap_or_default()
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        kind,
+        required: arg.is_required_set(),
+        default: kind.default(arg),
+        description: help(arg.get_long_help(), arg.get_help()),
+    }
 }
 
 /// Whether `key` names `arg`: its id, or one of its aliases (left out of the
@@ -227,14 +269,15 @@ fn named(arg: &Arg, key: &str) -> bool {
 }
 
 fn unknown_key(sub: &clap::Command, key: &str) -> anyhow::Error {
-    let known: Vec<String> = sub
-        .get_arguments()
-        .map(|a| format!("`{}`", a.get_id()))
-        .collect();
-    anyhow!(
-        "{PREFIX}{} has no argument `{key}`; it takes {}",
-        sub.get_name(),
+    let known: Vec<String> = params(sub).iter().map(|p| format!("`{}`", p.id)).collect();
+    let takes = if known.is_empty() {
+        "none".to_string()
+    } else {
         known.join(", ")
+    };
+    anyhow!(
+        "{PREFIX}{} has no argument `{key}`; it takes {takes}",
+        sub.get_name()
     )
 }
 
@@ -377,7 +420,7 @@ mod tests {
     use crate::application::remember::INBOX;
     use crate::application::topics::DEFAULT_TOPICS;
     use crate::domain::presence::DEFAULT_MIN_SCORE;
-    use crate::entry::cli::Cli;
+    use crate::entry::cli::{Cli, INSTANCE};
     use clap::CommandFactory;
     use serde_json::json;
 
@@ -386,7 +429,17 @@ mod tests {
     }
 
     fn call(name: &str, arguments: Value) -> Result<Tool> {
-        command(name, &arguments).expect("a tool")
+        command(name, &arguments)
+            .expect("a tool")
+            .map(|(tool, _)| tool)
+    }
+
+    /// The `--instance` setting, whose id and help every tool but
+    /// `kb_instances` also takes.
+    fn setting() -> Arg {
+        let cli = Cli::command();
+        let found = cli.get_arguments().find(|a| a.get_id() == INSTANCE);
+        found.expect("the --instance setting").clone()
     }
 
     fn rejection(name: &str, arguments: Value) -> String {
@@ -405,14 +458,17 @@ mod tests {
                 "kb_check",
                 "kb_search",
                 "kb_topics",
-                "kb_read"
+                "kb_read",
+                "kb_instances"
             ]
         );
     }
 
     #[test]
     fn descriptions_are_the_cli_help() {
+        // Built, every subcommand's help shows the global settings too.
         let mut cli = Cli::command();
+        cli.build();
         for t in tools() {
             let name = t["name"].as_str().unwrap();
             let sub = cli.find_subcommand_mut(&name[PREFIX.len()..]).unwrap();
@@ -479,6 +535,63 @@ mod tests {
     }
 
     #[test]
+    fn every_tool_but_instances_takes_the_instance_setting() {
+        let setting = setting();
+        let description = setting.get_help().unwrap().to_string();
+        for t in tools() {
+            let properties = &t["inputSchema"]["properties"];
+            if t["name"] == "kb_instances" {
+                assert_eq!(properties, &json!({}), "{t}");
+                continue;
+            }
+            assert_eq!(
+                properties[INSTANCE],
+                json!({"type": "string", "description": description}),
+                "{t}"
+            );
+            let required = t["inputSchema"]["required"].as_array().cloned();
+            assert!(!required.unwrap_or_default().contains(&json!(INSTANCE)));
+        }
+    }
+
+    #[test]
+    fn the_instance_is_taken_out_before_clap_parses_the_tool() {
+        let parsed = |arguments: Value| command("kb_check", &arguments).unwrap();
+        let check = Tool::Check {
+            query: "tea".into(),
+            min_score: DEFAULT_MIN_SCORE,
+        };
+        assert_eq!(
+            parsed(json!({"query": "tea", "instance": "molecule"})).unwrap(),
+            (check.clone(), Some("molecule".to_string()))
+        );
+        assert_eq!(
+            parsed(json!({"query": "tea"})).unwrap(),
+            (check.clone(), None)
+        );
+        assert_eq!(
+            parsed(json!({"query": "tea", "instance": null})).unwrap(),
+            (check, None)
+        );
+        let e = rejection("kb_check", json!({"query": "tea", "instance": 3}));
+        assert!(e.contains("`instance` must be a string"), "{e}");
+        // A value that looks like a flag is still only a name.
+        let sync = command("kb_sync", &json!({"instance": "--dry-run"})).unwrap();
+        let expected = (Tool::Sync { dry_run: false }, Some("--dry-run".to_string()));
+        assert_eq!(sync.unwrap(), expected);
+    }
+
+    #[test]
+    fn instances_takes_no_argument_not_even_instance() {
+        assert_eq!(
+            command("kb_instances", &json!({})).unwrap().unwrap(),
+            (Tool::Instances, None)
+        );
+        let e = rejection("kb_instances", json!({"instance": "molecule"}));
+        assert_eq!(e, "kb_instances has no argument `instance`; it takes none");
+    }
+
+    #[test]
     fn a_list_keeps_the_order_given() {
         let ids = ["Food.md:3-6", "Car.md:1-2", "-dash.md:1-1"];
         assert_eq!(
@@ -515,10 +628,10 @@ mod tests {
             call("kb_read", json!({"ids": "Taste.md:3-5"})).unwrap(),
             read(&["Taste.md:3-5"])
         );
-        // The schema still names only `ids`.
+        // The schema still names `ids` and `instance` only, never the alias.
         let properties = tool("kb_read")["inputSchema"]["properties"].clone();
         let names: Vec<&String> = properties.as_object().unwrap().keys().collect();
-        assert_eq!(names, ["ids"]);
+        assert_eq!(names, ["ids", INSTANCE]);
     }
 
     #[test]
@@ -635,8 +748,10 @@ mod tests {
     #[test]
     fn unknown_keys_are_rejected_by_name() {
         let e = rejection("kb_check", json!({"query": "tea", "vault": "/notes"}));
-        assert!(e.contains("`vault`"), "{e}");
-        assert!(e.contains("query") && e.contains("min_score"), "{e}");
+        assert_eq!(
+            e,
+            "kb_check has no argument `vault`; it takes `query`, `min_score`, `instance`"
+        );
         let e = rejection("kb_check", json!({"query": "tea", "help": true}));
         assert!(e.contains("`help`"), "{e}");
     }
@@ -679,6 +794,19 @@ mod tests {
         }
         assert!(md.contains("| `query` (required) |"), "{md}");
         assert!(md.contains("| `--vault` | `CHAOS_KB_VAULT` |"), "{md}");
+        assert!(
+            md.contains("| `--instance` | `CHAOS_KB_INSTANCE` |"),
+            "{md}"
+        );
+        // One `instance` row per tool, kb_instances aside, which has no table.
+        let row = format!(
+            "| `instance` | string |  | {} |",
+            setting().get_help().unwrap()
+        );
+        assert_eq!(md.matches(&row).count(), tools().len() - 1, "{md}");
+        let instances = md.split_once("### `kb_instances`").unwrap().1;
+        let instances = instances.split_once("### ").unwrap().0;
+        assert!(!instances.contains("| arg |"), "{instances}");
         assert!(md.contains("`http://localhost:11434/v1`"), "{md}");
         assert!(
             !md.contains("<vault>"),

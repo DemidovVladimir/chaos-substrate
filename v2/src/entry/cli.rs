@@ -11,10 +11,10 @@ use crate::application::remember::INBOX;
 use crate::application::topics::DEFAULT_TOPICS;
 use crate::domain::path::NotePath;
 use crate::domain::presence::DEFAULT_MIN_SCORE;
-use anyhow::{Context, Result};
+use anyhow::{Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -28,6 +28,9 @@ use std::process::ExitCode;
 /// user tells you a new fact, remember it, one fact per call. When a stored
 /// fact is wrong or no longer true, forget it in its stored words, then
 /// remember the correction. After editing notes in the vault, sync.
+///
+/// Several knowledge bases may be configured, and instances lists them by
+/// name. Pass instance to any other tool to use one other than the default.
 #[derive(Debug, Parser)]
 #[command(name = "chaos-kb", version, after_help = api_key_note())]
 pub struct Cli {
@@ -40,10 +43,22 @@ pub struct Cli {
 /// Where the knowledge lives and which embedder reads it.
 #[derive(Debug, Clone, Args)]
 pub struct Settings {
-    /// Folder of Markdown notes (an Obsidian vault).
-    #[arg(long, env = "CHAOS_KB_VAULT", global = true)]
-    pub vault: Option<PathBuf>,
-    /// Index file [default: <vault>/.chaos-kb/index.redb].
+    /// Folder of Markdown notes (an Obsidian vault), as PATH or NAME=PATH.
+    /// Repeat it to serve several knowledge bases. A bare PATH gets the name
+    /// `default`. Calls use the first vault unless `--instance` names another.
+    #[arg(
+        long,
+        env = "CHAOS_KB_VAULT",
+        global = true,
+        value_name = "[NAME=]PATH"
+    )]
+    pub vault: Vec<PathBuf>,
+    /// Knowledge base to use, by name; without it, the default. `instances`
+    /// lists the names and marks the default.
+    #[arg(long, env = "CHAOS_KB_INSTANCE", global = true, value_name = "NAME")]
+    pub instance: Option<String>,
+    /// Index file, with a single `--vault` only [default:
+    /// <vault>/.chaos-kb/index.redb].
     #[arg(long, env = "CHAOS_KB_INDEX", global = true)]
     pub index: Option<PathBuf>,
     /// OpenAI-compatible embeddings base URL (Ollama, OpenRouter, OpenAI).
@@ -181,18 +196,162 @@ pub enum Tool {
         #[arg(required = true, alias = "id")]
         ids: Vec<String>,
     },
+    /// The configured knowledge bases: each one's name, vault folder and
+    /// index file, with `"default": true` on the one a call uses when it names
+    /// no `instance`. Opens nothing, so it works while the embedder is down.
+    Instances,
 }
 
-/// Open the configured knowledge base and hand it to `use_kb`. Fails when
-/// no vault is set or its folder is missing; nothing else is opened or
-/// contacted before `use_kb` asks for it.
-pub fn with_kb<T>(settings: &Settings, use_kb: impl FnOnce(Kb<'_>) -> Result<T>) -> Result<T> {
-    let root = settings
-        .vault
-        .as_deref()
-        .context("set --vault or CHAOS_KB_VAULT")?;
-    let vault = ObsidianVault::new(root)?;
-    let index = RedbIndex::new(&index_path(settings, root));
+/// The name of a vault given as a bare PATH.
+pub const DEFAULT_INSTANCE: &str = "default";
+
+/// The id of the `--instance` setting, which every tool but `instances` also
+/// takes as an argument.
+pub const INSTANCE: &str = "instance";
+
+/// One configured knowledge base: its name, vault folder and index file.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Instance {
+    pub name: String,
+    pub vault: PathBuf,
+    pub index: PathBuf,
+}
+
+/// The configured knowledge bases, in `--vault` order, and the one a call
+/// uses when it names none.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Instances {
+    all: Vec<Instance>,
+    default: usize,
+}
+
+impl Instances {
+    /// Every instance, in `--vault` order.
+    pub fn all(&self) -> &[Instance] {
+        &self.all
+    }
+
+    /// The instance called `name`, or the default one when `None`.
+    pub fn get(&self, name: Option<&str>) -> Result<&Instance> {
+        let at = match name {
+            Some(name) => self.position(name)?,
+            None => self.default,
+        };
+        Ok(&self.all[at])
+    }
+
+    /// Whether more than one knowledge base is configured.
+    pub fn several(&self) -> bool {
+        self.all.len() > 1
+    }
+
+    /// Each instance's name, vault folder and index file, with
+    /// `"default": true` on the default one.
+    pub fn list(&self) -> Value {
+        let rows = self.all.iter().enumerate().map(|(at, instance)| {
+            json!({
+                "name": instance.name,
+                "vault": instance.vault.display().to_string(),
+                "index": instance.index.display().to_string(),
+                "default": at == self.default,
+            })
+        });
+        Value::Array(rows.collect())
+    }
+
+    fn position(&self, name: &str) -> Result<usize> {
+        self.all.iter().position(|i| i.name == name).ok_or_else(|| {
+            let names: Vec<String> = self.all.iter().map(|i| format!("`{}`", i.name)).collect();
+            anyhow!(
+                "no instance is named `{name}`; the instances are {}",
+                names.join(", ")
+            )
+        })
+    }
+}
+
+impl Settings {
+    /// The knowledge bases `--vault`, `--instance` and `--index` configure.
+    /// Reads no file, so a wrong setting fails before anything is opened.
+    pub fn instances(&self) -> Result<Instances> {
+        if self.vault.is_empty() {
+            bail!("set --vault or CHAOS_KB_VAULT");
+        }
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let mut all: Vec<Instance> = Vec::new();
+        for value in &self.vault {
+            let (name, path) = named(value);
+            let name = name.unwrap_or(DEFAULT_INSTANCE);
+            if path.as_os_str().is_empty() {
+                bail!("--vault {} names no folder", value.display());
+            }
+            if all.iter().any(|i| i.name == name) {
+                bail!(
+                    "two vaults are named `{name}`: give each one its own name, as --vault NAME=PATH"
+                );
+            }
+            let vault = expand_home(path, home.as_deref());
+            all.push(Instance {
+                name: name.to_string(),
+                index: vault.join(".chaos-kb").join("index.redb"),
+                vault,
+            });
+        }
+        if let Some(index) = &self.index {
+            if all.len() > 1 {
+                bail!(
+                    "--index (CHAOS_KB_INDEX) takes a single --vault: with several, each \
+                     keeps its index at <vault>/.chaos-kb/index.redb"
+                );
+            }
+            all[0].index = index.clone();
+        }
+        let mut instances = Instances { all, default: 0 };
+        if let Some(name) = &self.instance {
+            instances.default = instances.position(name)?;
+        }
+        Ok(instances)
+    }
+}
+
+/// A `--vault` value as its name and folder: `NAME=PATH`, or a bare PATH
+/// with no name. When the text before the first `=` is not a name, the whole
+/// value is the path, so `/a/b=c` stays a path.
+fn named(value: &Path) -> (Option<&str>, &Path) {
+    let split = value.to_str().and_then(|v| v.split_once('='));
+    match split.filter(|(name, _)| is_name(name)) {
+        Some((name, path)) => (Some(name), Path::new(path)),
+        None => (None, value),
+    }
+}
+
+/// An instance name: ASCII letters, digits, `_` and `-`.
+fn is_name(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// `path` with a leading `~` read as the home folder: no shell expands it
+/// after `NAME=`, and an MCP client's config passes it on as it is.
+fn expand_home(path: &Path, home: Option<&Path>) -> PathBuf {
+    match (path.strip_prefix("~"), home) {
+        (Ok(rest), Some(home)) if rest.as_os_str().is_empty() => home.to_path_buf(),
+        (Ok(rest), Some(home)) => home.join(rest),
+        _ => path.to_path_buf(),
+    }
+}
+
+/// Open `instance` and hand it to `use_kb`. Fails when its vault folder is
+/// missing; nothing else is opened or contacted before `use_kb` asks for it.
+pub fn with_kb<T>(
+    settings: &Settings,
+    instance: &Instance,
+    use_kb: impl FnOnce(Kb<'_>) -> Result<T>,
+) -> Result<T> {
+    let vault = ObsidianVault::new(&instance.vault)?;
+    let index = RedbIndex::new(&instance.index);
     let api_key = std::env::var(API_KEY_ENV).ok();
     let embedder = HttpEmbedder::new(&settings.embed_url, &settings.embed_model, api_key);
     use_kb(Kb {
@@ -202,46 +361,48 @@ pub fn with_kb<T>(settings: &Settings, use_kb: impl FnOnce(Kb<'_>) -> Result<T>)
     })
 }
 
-/// Run one tool against the configured knowledge base.
-pub fn execute(settings: &Settings, tool: &Tool) -> Result<Value> {
-    with_kb(settings, |kb| run(kb, tool))
-}
-
-/// Run one tool on `kb`.
-fn run(kb: Kb<'_>, tool: &Tool) -> Result<Value> {
+/// Run one tool: `instances` from the settings alone, every other tool on
+/// the knowledge base `instance` names, or the default one when `None`. With
+/// several instances, a report that is a JSON object names the one that
+/// answered.
+pub fn execute(settings: &Settings, instance: Option<&str>, tool: &Tool) -> Result<Value> {
+    let instances = settings.instances()?;
+    let on = |use_kb: &dyn Fn(Kb<'_>) -> Result<Value>| -> Result<Value> {
+        let chosen = instances.get(instance)?;
+        let mut report = with_kb(settings, chosen, use_kb)?;
+        if instances.several()
+            && let Some(fields) = report.as_object_mut()
+        {
+            fields.insert(INSTANCE.into(), json!(chosen.name));
+        }
+        Ok(report)
+    };
     match tool {
-        Tool::Sync { dry_run } => json(kb.sync(*dry_run)),
+        Tool::Instances => Ok(json!({ "instances": instances.list() })),
+        Tool::Sync { dry_run } => on(&|kb| report(kb.sync(*dry_run))),
         Tool::Remember {
             text,
             note,
             heading,
-        } => json(kb.remember(text, &NotePath::parse(note)?, heading.as_deref())),
-        Tool::Forget { text, note } => {
+        } => on(&|kb| report(kb.remember(text, &NotePath::parse(note)?, heading.as_deref()))),
+        Tool::Forget { text, note } => on(&|kb| {
             let note = note.as_deref().map(NotePath::parse).transpose()?;
-            json(kb.forget(text, note.as_ref()))
-        }
-        Tool::Check { query, min_score } => json(kb.check(query, *min_score)),
+            report(kb.forget(text, note.as_ref()))
+        }),
+        Tool::Check { query, min_score } => on(&|kb| report(kb.check(query, *min_score))),
         Tool::Search {
             query,
             limit,
             min_score,
-        } => json(kb.search(query, *limit, *min_score)),
-        Tool::Topics { task, limit } => json(kb.topics(task, *limit)),
-        Tool::Read { ids } => json(kb.read(ids)),
+        } => on(&|kb| report(kb.search(query, *limit, *min_score))),
+        Tool::Topics { task, limit } => on(&|kb| report(kb.topics(task, *limit))),
+        Tool::Read { ids } => on(&|kb| report(kb.read(ids))),
     }
 }
 
 /// A use-case report as JSON.
-fn json(report: Result<impl Serialize>) -> Result<Value> {
+fn report(report: Result<impl Serialize>) -> Result<Value> {
     Ok(serde_json::to_value(report?)?)
-}
-
-/// `--index`, or `<vault>/.chaos-kb/index.redb`.
-fn index_path(settings: &Settings, vault: &Path) -> PathBuf {
-    settings
-        .index
-        .clone()
-        .unwrap_or_else(|| vault.join(".chaos-kb").join("index.redb"))
 }
 
 /// Parse the command line; `mcp` serves, every other command prints its
@@ -251,7 +412,7 @@ pub fn main() -> ExitCode {
     let outcome = match command {
         Command::Mcp => mcp::serve(&settings),
         Command::Dashboard { port } => dashboard::serve(&settings, port),
-        Command::Tool(tool) => execute(&settings, &tool).and_then(|report| {
+        Command::Tool(tool) => execute(&settings, None, &tool).and_then(|report| {
             println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())
         }),
@@ -271,13 +432,36 @@ mod tests {
     use clap::CommandFactory;
     use std::path::Path;
 
-    fn settings(vault: Option<&str>, index: Option<&str>) -> Settings {
+    fn settings(vaults: &[&str], instance: Option<&str>, index: Option<&str>) -> Settings {
         Settings {
-            vault: vault.map(PathBuf::from),
+            vault: vaults.iter().map(PathBuf::from).collect(),
+            instance: instance.map(str::to_string),
             index: index.map(PathBuf::from),
-            embed_url: "http://localhost:11434/v1".into(),
-            embed_model: "embeddinggemma".into(),
+            embed_url: "http://127.0.0.1:9/v1".into(),
+            embed_model: "none".into(),
         }
+    }
+
+    fn instances(vaults: &[&str]) -> Instances {
+        settings(vaults, None, None).instances().unwrap()
+    }
+
+    fn refusal(vaults: &[&str], instance: Option<&str>, index: Option<&str>) -> String {
+        format!(
+            "{:#}",
+            settings(vaults, instance, index).instances().unwrap_err()
+        )
+    }
+
+    /// `(name, vault, index)` of every instance.
+    fn rows(instances: &Instances) -> Vec<(String, PathBuf, PathBuf)> {
+        let rows = instances.all().iter();
+        rows.map(|i| (i.name.clone(), i.vault.clone(), i.index.clone()))
+            .collect()
+    }
+
+    fn row(name: &str, vault: &str, index: &str) -> (String, PathBuf, PathBuf) {
+        (name.into(), vault.into(), index.into())
     }
 
     #[test]
@@ -290,7 +474,15 @@ mod tests {
         let about = Cli::command().get_long_about().map(|a| a.to_string());
         let about = about.expect("a workflow paragraph after the summary");
         for step in [
-            "topics", "read", "check", "search", "remember", "forget", "sync",
+            "topics",
+            "read",
+            "check",
+            "search",
+            "remember",
+            "forget",
+            "sync",
+            "instances",
+            "instance",
         ] {
             assert!(about.contains(step), "{step}: {about}");
         }
@@ -308,21 +500,194 @@ mod tests {
     }
 
     #[test]
-    fn index_defaults_into_the_vault() {
-        let vault = Path::new("/notes");
+    fn vault_repeats_and_instance_picks_one() {
+        let cli = Cli::try_parse_from([
+            "chaos-kb",
+            "--vault",
+            "personal=/notes",
+            "--vault",
+            "/work",
+            "--instance",
+            "personal",
+            "sync",
+        ])
+        .unwrap();
+        let vaults = [PathBuf::from("personal=/notes"), PathBuf::from("/work")];
+        assert_eq!(cli.settings.vault, vaults);
+        assert_eq!(cli.settings.instance.as_deref(), Some("personal"));
+    }
+
+    #[test]
+    fn a_bare_path_is_named_default_and_keeps_its_index_inside() {
         assert_eq!(
-            index_path(&settings(None, None), vault),
-            Path::new("/notes/.chaos-kb/index.redb")
+            rows(&instances(&["/notes"])),
+            [row("default", "/notes", "/notes/.chaos-kb/index.redb")]
         );
+        let index = settings(&["/notes"], None, Some("/tmp/kb.redb"));
         assert_eq!(
-            index_path(&settings(None, Some("/tmp/kb.redb")), vault),
-            Path::new("/tmp/kb.redb")
+            rows(&index.instances().unwrap()),
+            [row("default", "/notes", "/tmp/kb.redb")]
         );
     }
 
     #[test]
+    fn name_eq_path_names_the_vault() {
+        assert_eq!(
+            rows(&instances(&[
+                "personal=/home/me/Knowledge",
+                "work_2-b=/srv/kb"
+            ])),
+            [
+                row(
+                    "personal",
+                    "/home/me/Knowledge",
+                    "/home/me/Knowledge/.chaos-kb/index.redb"
+                ),
+                row("work_2-b", "/srv/kb", "/srv/kb/.chaos-kb/index.redb"),
+            ]
+        );
+        // Only the first `=` splits.
+        assert_eq!(
+            rows(&instances(&["work=/a/b=c"])),
+            [row("work", "/a/b=c", "/a/b=c/.chaos-kb/index.redb")]
+        );
+    }
+
+    #[test]
+    fn text_before_the_first_eq_that_is_no_name_leaves_the_whole_path() {
+        for path in ["/a/b=c", "./x=y", "my notes=z", "a.b=c", "=x", "é=x"] {
+            let found = rows(&instances(&[path]));
+            let index = format!("{path}/.chaos-kb/index.redb");
+            assert_eq!(found, [row("default", path, &index)], "{path}");
+        }
+    }
+
+    #[test]
+    fn two_vaults_with_one_name_are_refused() {
+        let e = refusal(&["/a", "/b"], None, None);
+        assert!(e.contains("`default`") && e.contains("NAME=PATH"), "{e}");
+        let e = refusal(&["work=/a", "personal=/p", "work=/b"], None, None);
+        assert!(e.contains("`work`") && e.contains("NAME=PATH"), "{e}");
+        assert!(!e.contains("`personal`"), "{e}");
+    }
+
+    #[test]
+    fn a_name_without_a_folder_is_refused() {
+        let e = refusal(&["work="], None, None);
+        assert!(e.contains("work="), "{e}");
+    }
+
+    #[test]
+    fn index_takes_a_single_vault() {
+        let e = refusal(&["a=/a", "b=/b"], None, Some("/tmp/kb.redb"));
+        assert!(e.contains("--index"), "{e}");
+        assert!(e.contains("<vault>/.chaos-kb/index.redb"), "{e}");
+    }
+
+    #[test]
+    fn the_default_is_the_first_vault_or_the_one_instance_names() {
+        let vaults = ["personal=/p", "molecule=/m"];
+        let first = settings(&vaults, None, None).instances().unwrap();
+        assert_eq!(first.get(None).unwrap().name, "personal");
+        let chosen = settings(&vaults, Some("molecule"), None)
+            .instances()
+            .unwrap();
+        assert_eq!(chosen.get(None).unwrap().name, "molecule");
+        assert_eq!(chosen.get(Some("personal")).unwrap().name, "personal");
+        assert!(chosen.several());
+        assert!(!instances(&["/p"]).several());
+    }
+
+    #[test]
+    fn an_unknown_instance_is_refused_with_the_names_configured() {
+        let vaults = ["personal=/p", "molecule=/m"];
+        let e = refusal(&vaults, Some("nope"), None);
+        for name in ["`nope`", "`personal`", "`molecule`"] {
+            assert!(e.contains(name), "{name}: {e}");
+        }
+        let configured = settings(&vaults, None, None).instances().unwrap();
+        let e = format!("{:#}", configured.get(Some("nope")).unwrap_err());
+        for name in ["`nope`", "`personal`", "`molecule`"] {
+            assert!(e.contains(name), "{name}: {e}");
+        }
+    }
+
+    #[test]
+    fn a_leading_tilde_is_the_home_folder() {
+        let home = Some(Path::new("/home/me"));
+        let expand = |path: &str| expand_home(Path::new(path), home);
+        assert_eq!(expand("~/Knowledge"), Path::new("/home/me/Knowledge"));
+        assert_eq!(expand("~"), Path::new("/home/me"));
+        for kept in ["~other/x", "/a/~/b", "./~", "Knowledge"] {
+            assert_eq!(expand(kept), Path::new(kept), "{kept}");
+        }
+        let unset = expand_home(Path::new("~/Knowledge"), None);
+        assert_eq!(unset, Path::new("~/Knowledge"));
+    }
+
+    #[test]
     fn execute_needs_a_vault() {
-        let e = execute(&settings(None, None), &Tool::Sync { dry_run: true }).unwrap_err();
-        assert_eq!(e.to_string(), "set --vault or CHAOS_KB_VAULT");
+        let none = settings(&[], None, None);
+        for tool in [Tool::Sync { dry_run: true }, Tool::Instances] {
+            let e = execute(&none, None, &tool).unwrap_err();
+            assert_eq!(e.to_string(), "set --vault or CHAOS_KB_VAULT");
+        }
+    }
+
+    #[test]
+    fn instances_lists_every_vault_and_opens_none() {
+        // Neither folder exists, and the embedder is unreachable.
+        let configured = settings(
+            &["personal=/nowhere/p", "molecule=/nowhere/m"],
+            Some("molecule"),
+            None,
+        );
+        let report = execute(&configured, None, &Tool::Instances).unwrap();
+        assert_eq!(
+            report,
+            json!({"instances": [
+                {"name": "personal", "vault": "/nowhere/p",
+                 "index": "/nowhere/p/.chaos-kb/index.redb", "default": false},
+                {"name": "molecule", "vault": "/nowhere/m",
+                 "index": "/nowhere/m/.chaos-kb/index.redb", "default": true},
+            ]})
+        );
+        let one = execute(
+            &settings(&["/nowhere/p"], None, None),
+            None,
+            &Tool::Instances,
+        );
+        assert_eq!(one.unwrap()["instances"][0]["name"], "default");
+    }
+
+    #[test]
+    fn with_several_instances_a_report_names_the_one_that_answered() {
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::write(a.path().join("A.md"), "# A\n\nTea at five.\n").unwrap();
+        std::fs::write(b.path().join("B.md"), "# B\n\nCoffee at nine.\n").unwrap();
+        let (a, b) = (a.path().display(), b.path().display());
+        let two = settings(&[&format!("a={a}"), &format!("b={b}")], None, None);
+        let dry = Tool::Sync { dry_run: true };
+
+        let first = execute(&two, None, &dry).unwrap();
+        assert_eq!(
+            (&first["instance"], &first["added"]),
+            (&json!("a"), &json!(["A.md"]))
+        );
+        let named = execute(&two, Some("b"), &dry).unwrap();
+        assert_eq!(
+            (&named["instance"], &named["added"]),
+            (&json!("b"), &json!(["B.md"]))
+        );
+        let e = execute(&two, Some("c"), &dry).unwrap_err().to_string();
+        assert!(
+            e.contains("`c`") && e.contains("`a`") && e.contains("`b`"),
+            "{e}"
+        );
+
+        // With one instance the report is the use-case's alone.
+        let one = execute(&settings(&[&a.to_string()], None, None), None, &dry).unwrap();
+        assert_eq!(one["added"], json!(["A.md"]));
+        assert!(one.get("instance").is_none(), "{one}");
     }
 }

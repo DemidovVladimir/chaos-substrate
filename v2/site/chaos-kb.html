@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Install and run · chaos-kb</title>
-<meta name="description" content="How to install chaos-kb, give it a local embedding model and a folder of notes, connect it to Claude Code or Codex over MCP, open its dashboard, and keep it running day to day.">
+<meta name="description" content="How to install chaos-kb, give it a local embedding model and one or several folders of notes, connect it to Claude Code or Codex over MCP, open its dashboard, and keep it running day to day.">
 <script>try{var t=localStorage.getItem("tengu-tutorial-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -31,12 +31,13 @@
   <ul class="facts">
     <li>builds with Rust <b>1.91</b> or later</li>
     <li>model <b>embeddinggemma</b> on Ollama, <code>localhost:11434</code></li>
-    <li><b>7</b> tools for agents: kb_sync, kb_remember, kb_forget, kb_check, kb_search, kb_topics, kb_read</li>
+    <li><b>8</b> tools for agents: kb_sync, kb_remember, kb_forget, kb_check, kb_search, kb_topics, kb_read, kb_instances</li>
+    <li>one vault or <b>several</b>, each by name</li>
     <li>index in <code>&lt;vault&gt;/.chaos-kb/</code>, <b>safe to delete</b></li>
   </ul>
   <ul class="legend" aria-label="Colour key">
     <li><span class="chip brain">notes</span> your vault, the only copy of your knowledge</li>
-    <li><span class="chip hands"><span class="k">手</span> tools</span> chaos-kb and its seven tools</li>
+    <li><span class="chip hands"><span class="k">手</span> tools</span> chaos-kb and its eight tools</li>
     <li><span class="chip heart"><span class="k">心</span> model</span> the local embedding model</li>
     <li><span class="chip data">data</span> the index file</li>
   </ul>
@@ -165,7 +166,7 @@
     </div>
     <div class="tabpanel" id="tab-claude"><pre class="wrapjson">$ claude mcp add --scope user chaos-kb -- chaos-kb --vault ~/Knowledge mcp
 $ claude mcp list</pre>
-      <p class="note"><code>--scope user</code> makes the server available in every project; without it, only in the current one. Everything after <code>--</code> is the command Claude Code runs. Inside a session, <code>/mcp</code> shows the server and its seven tools.</p></div>
+      <p class="note"><code>--scope user</code> makes the server available in every project; without it, only in the current one. Everything after <code>--</code> is the command Claude Code runs. Inside a session, <code>/mcp</code> shows the server and its eight tools.</p></div>
     <div class="tabpanel" id="tab-codex" hidden><pre class="wrapjson">$ codex mcp add chaos-kb -- chaos-kb --vault /Users/you/Knowledge mcp
 Added global MCP server 'chaos-kb'.</pre>
       <p class="note">That command writes these lines to <code>~/.codex/config.toml</code> (example path), so you can also add them by hand:</p>
@@ -182,7 +183,65 @@ args = ["--vault", "/Users/you/Knowledge", "mcp"]</pre></div>
 }</pre>
       <p class="note">Most desktop clients take this shape (example paths). An app started from the Dock may not see your shell's <code>PATH</code>, so give the full path to the binary. Settings such as <code>CHAOS_KB_EMBED_MODEL</code> go in the client's <code>env</code> block.</p></div>
   </div>
-  <p class="note">When the server starts, it tells the agent how to use the tools: list the topics before a task and read only what matters, check before asking the user, remember one fact per call, forget a wrong fact in its stored words before remembering the correction, and sync after notes are edited.</p>
+  <p class="note">When the server starts, it tells the agent how to use the tools: list the topics before a task and read only what matters, check before asking the user, remember one fact per call, forget a wrong fact in its stored words before remembering the correction, and sync after notes are edited. It also says that several knowledge bases may be configured, that <code>instances</code> lists them, and that <code>instance</code> picks one for a call.</p>
+</section>
+
+<section class="sec" aria-labelledby="s-several">
+  <div class="sec-head">
+    <span class="kicker">Personal and work</span>
+    <h2 id="s-several">Several knowledge bases, one server</h2>
+    <p>Repeat <code>--vault</code> as <code>NAME=PATH</code>, once per folder of notes. The first one is the default; <code>--instance NAME</code> makes another one the default. Each keeps its own index inside its own folder.</p>
+  </div>
+  <div class="term-wrap">
+<pre class="term" data-type><span class="ln cmd"><span class="p">$ </span>claude mcp add --scope user chaos-kb -- chaos-kb --vault personal=~/Knowledge --vault molecule=~/development/molecule/molecule/knowledge mcp</span>
+<span class="ln cmd"><span class="p">$ </span>chaos-kb --vault personal=/Users/you/Knowledge --vault molecule=/Users/you/development/molecule/molecule/knowledge instances</span>
+<span class="ln o">{
+  "instances": [
+    {
+      "default": true,
+      "index": "/Users/you/Knowledge/.chaos-kb/index.redb",
+      "name": "personal",
+      "vault": "/Users/you/Knowledge"
+    },
+    {
+      "default": false,
+      "index": "/Users/you/development/molecule/molecule/knowledge/.chaos-kb/index.redb",
+      "name": "molecule",
+      "vault": "/Users/you/development/molecule/molecule/knowledge"
+    }
+  ]
+}</span>
+<span class="ln cmd"><span class="p">$ </span>chaos-kb --vault personal=~/Knowledge --vault molecule=~/development/molecule/molecule/knowledge --instance molecule check "the assay runs on fridays"</span>
+<span class="ln o">{
+  "instance": "molecule",
+  "known": true,
+  "matches": [
+    {
+      "lines": [
+        3,
+        3
+      ],
+      "note": "Lab.md",
+      "section": "Lab"
+    }
+  ],
+  "presence": "exact"
+}</span></pre>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>You write</th><th>chaos-kb reads</th></tr></thead>
+      <tbody>
+        <tr><td><code>--vault ~/Knowledge</code></td><td>one knowledge base, named <code>default</code>: the same as before there were names</td></tr>
+        <tr><td><code>--vault personal=~/Knowledge</code></td><td><code>personal</code>, in your home folder's <code>Knowledge</code>. The shell leaves <code>~</code> alone after <code>=</code>, and so does an MCP client's config, so chaos-kb reads it as your home folder</td></tr>
+        <tr><td><code>--vault /a/b=c</code></td><td>one path, because <code>/a/b</code> is not a name. A name holds only letters, digits, <code>_</code> and <code>-</code></td></tr>
+        <tr><td>two <code>--vault</code> without names</td><td>refused: both would be named <code>default</code></td></tr>
+        <tr><td><code>--index</code> with two vaults</td><td>refused: each keeps <code>&lt;vault&gt;/.chaos-kb/index.redb</code></td></tr>
+        <tr><td><code>CHAOS_KB_VAULT</code></td><td>one value, in either form</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note">The paths are examples. <code>instances</code> opens no folder, so it works while Ollama is down. Every other tool takes <code>instance</code> to use another knowledge base for one call; on the command line the global <code>--instance</code> does that. With more than one instance, every report says which one answered or was written to, as <code>"instance": "molecule"</code> above; with one, reports carry no <code>instance</code>. The <a href="dashboard.html">dashboard</a> shows a switch between them.</p>
 </section>
 
 <section class="sec" aria-labelledby="s-daily">
@@ -200,6 +259,8 @@ args = ["--vault", "/Users/you/Knowledge", "mcp"]</pre></div>
         <tr><td>What do my notes say?</td><td><code>chaos-kb search "…"</code></td><td>The best passages with note, section, lines and text; 5 by default.</td></tr>
         <tr><td>A new fact to keep</td><td class="wrap"><code>chaos-kb remember "…" --note Health --heading Blood</code></td><td>Appended under that heading and indexed; skipped when the same words are stored. Without <code>--note</code> it goes to <code>Inbox.md</code>.</td></tr>
         <tr><td>A stored fact is wrong</td><td class="wrap"><code>chaos-kb forget "…" --note Health</code></td><td>Every block with the same words is removed from the note and the index; then <code>remember</code> the correction. Without <code>--note</code>, from every note.</td></tr>
+        <tr><td>Which knowledge bases are there?</td><td><code>chaos-kb instances</code></td><td>Each one's name, vault folder and index file, with the default marked. Opens nothing.</td></tr>
+        <tr><td>Ask another knowledge base</td><td class="wrap"><code>chaos-kb --instance molecule check "…"</code></td><td>Any tool, on the instance named; an agent passes <code>instance</code> instead.</td></tr>
         <tr><td>You want to see what is stored</td><td><code>chaos-kb dashboard</code></td><td>A page at <code>http://127.0.0.1:7341</code> (<code>--port</code> picks another): your notes next to the index, with add, replace and remove. See <a href="dashboard.html">The dashboard</a>.</td></tr>
         <tr><td>You switched the model</td><td><code>chaos-kb sync</code></td><td>Everything is embedded again; vectors of two models are never compared.</td></tr>
         <tr><td>You updated chaos-kb</td><td><code>cargo install --path v2</code></td><td>The new binary replaces the old one. An index of an older layout is rebuilt by the next sync.</td></tr>
@@ -219,8 +280,9 @@ args = ["--vault", "/Users/you/Knowledge", "mcp"]</pre></div>
     <table>
       <thead><tr><th>Flag</th><th>Environment</th><th>Default</th></tr></thead>
       <tbody>
-        <tr><td><code>--vault</code></td><td><code>CHAOS_KB_VAULT</code></td><td>none: required</td></tr>
-        <tr><td><code>--index</code></td><td><code>CHAOS_KB_INDEX</code></td><td><code>&lt;vault&gt;/.chaos-kb/index.redb</code></td></tr>
+        <tr><td><code>--vault</code>, as <code>PATH</code> or <code>NAME=PATH</code>, repeatable</td><td><code>CHAOS_KB_VAULT</code>, one value</td><td>none: required</td></tr>
+        <tr><td><code>--instance</code></td><td><code>CHAOS_KB_INSTANCE</code></td><td>the first <code>--vault</code></td></tr>
+        <tr><td><code>--index</code>, with one <code>--vault</code> only</td><td><code>CHAOS_KB_INDEX</code></td><td><code>&lt;vault&gt;/.chaos-kb/index.redb</code></td></tr>
         <tr><td><code>--embed-url</code></td><td><code>CHAOS_KB_EMBED_URL</code></td><td><code>http://localhost:11434/v1</code></td></tr>
         <tr><td><code>--embed-model</code></td><td><code>CHAOS_KB_EMBED_MODEL</code></td><td><code>embeddinggemma</code></td></tr>
         <tr><td>none</td><td><code>CHAOS_KB_EMBED_API_KEY</code></td><td>unset; only for an embeddings API that needs a key</td></tr>
@@ -242,6 +304,9 @@ args = ["--vault", "/Users/you/Knowledge", "mcp"]</pre></div>
       <tbody>
         <tr><td class="wrap"><code>error: set --vault or CHAOS_KB_VAULT</code></td><td>Export <code>CHAOS_KB_VAULT</code>, or pass <code>--vault</code> before the command.</td></tr>
         <tr><td class="wrap"><code>error: vault folder Nowhere not found: No such file or directory (os error 2)</code></td><td>Create the folder, or fix the path.</td></tr>
+        <tr><td class="wrap"><code>error: two vaults are named `default`: give each one its own name, as --vault NAME=PATH</code></td><td>Write <code>--vault personal=~/Knowledge --vault molecule=…</code>.</td></tr>
+        <tr><td class="wrap"><code>error: no instance is named `work`; the instances are `personal`, `molecule`</code></td><td>Use one of the names listed, in <code>--instance</code> or in a call's <code>instance</code>.</td></tr>
+        <tr><td class="wrap"><code>error: --index (CHAOS_KB_INDEX) takes a single --vault: with several, each keeps its index at &lt;vault&gt;/.chaos-kb/index.redb</code></td><td>Drop <code>--index</code> (and unset <code>CHAOS_KB_INDEX</code>).</td></tr>
         <tr><td class="wrap"><code>error: the index is empty: run `chaos-kb sync` first</code></td><td>Run <code>chaos-kb sync</code>.</td></tr>
         <tr><td class="wrap"><code>error: embeddings request to http://127.0.0.1:9/v1/embeddings failed: io: Connection refused (os error 61)</code></td><td>Nothing listens at the embeddings URL (here a closed port). Start Ollama: open the app, or run <code>ollama serve</code>.</td></tr>
         <tr><td class="wrap"><code>error: embeddings API returned HTTP 404: {"error":{"message":"model \"no-such-model\" not found, try pulling it first","type":"not_found_error","param":null,"code":null}}</code></td><td>Pull the model (<code>ollama pull embeddinggemma</code>), or fix <code>--embed-model</code>.</td></tr>
@@ -276,7 +341,7 @@ args = ["--vault", "/Users/you/Knowledge", "mcp"]</pre></div>
     <li><span><b>Local by default.</b> Embeddings go to Ollama on <code>localhost</code>, and proxy settings are never used for this machine.</span></li>
     <li><span><b>Your notes change only through remember and forget.</b> remember appends and refuses to change existing text; forget removes blocks with the same words and refuses when the rest would read differently. Both write through a temporary file and a rename.</span></li>
     <li><span><b>The server starts instantly.</b> <code>chaos-kb mcp</code> opens nothing until a tool is called, so it starts before the vault or Ollama is ready.</span></li>
-    <li><span><b>An agent cannot move it.</b> Vault, index, embeddings URL and model are not tool arguments.</span></li>
+    <li><span><b>An agent cannot move it.</b> Vault folders, index, embeddings URL and model are not tool arguments. <code>instance</code> only picks one of the vaults you configured.</span></li>
     <li><span><b>The CLI, the server and the dashboard can run together.</b> They take turns on lock files instead of failing.</span></li>
     <li><span><b>The index is derived.</b> Delete <code>.chaos-kb/</code> and <code>sync</code> rebuilds it from the notes.</span></li>
   </ul>
@@ -357,7 +422,7 @@ args = ["--vault", "/Users/you/Knowledge", "mcp"]</pre></div>
 <span class="ln o">Dentist: Dr. Weber, every six months.</span>
 <span class="ln cmd"><span class="p">$ </span>claude mcp add --scope user chaos-kb -- chaos-kb --vault ~/Knowledge mcp</span></pre>
   </div>
-  <p class="note">The question about explaining scored 0.3630710244178772, just under the line, so <code>check</code> said <code>absent</code>; <code>search</code> found the answer in <code>Style.md</code> at the same score. Every report carries the vault's <code>root</code> hash: when it is unchanged, nothing in your notes changed.</p>
+  <p class="note">The question about explaining scored 0.3630710244178772, just under the line, so <code>check</code> said <code>absent</code>; <code>search</code> found the answer in <code>Style.md</code> at the same score.</p>
 </section>
 
 <section class="sec" aria-labelledby="s-where">
@@ -370,7 +435,7 @@ args = ["--vault", "/Users/you/Knowledge", "mcp"]</pre></div>
     <table>
       <thead><tr><th>File</th><th>Owns</th></tr></thead>
       <tbody>
-        <tr><td><code>v2/src/entry/cli.rs</code></td><td>every command and setting, with its default</td></tr>
+        <tr><td><code>v2/src/entry/cli.rs</code></td><td>every command and setting, with its default, and the instances that <code>--vault</code>, <code>--instance</code> and <code>--index</code> configure</td></tr>
         <tr><td><code>v2/src/entry/mcp.rs</code></td><td>the MCP server on stdin and stdout</td></tr>
         <tr><td><code>v2/src/entry/dashboard.rs</code></td><td>the dashboard server on 127.0.0.1, serving the page <code>v2/src/entry/dashboard.html</code></td></tr>
         <tr><td><code>v2/src/adapters/embedder.rs</code></td><td>the calls to Ollama or any OpenAI-compatible embeddings API</td></tr>
@@ -382,7 +447,7 @@ args = ["--vault", "/Users/you/Knowledge", "mcp"]</pre></div>
 </section>
 
 <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
-<p class="stamp-foot">Checked against the code on 2026-10-28.</p>
+<p class="stamp-foot">Checked against the code on 2026-10-29.</p>
 </article>
 </main>
 </div>
