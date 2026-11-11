@@ -6,6 +6,7 @@
 .env.*
 chaos-substrate.toml
 *.dump
+.cloudflare/
 
 # Generated, regenerable pages (rebuilt by feature/compose/correlations)
 /docs/features_memory/

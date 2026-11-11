@@ -28,8 +28,10 @@ The six tools (CLI subcommand / MCP tool):
   chaos reindex      [--repo] [--force]                        chaos_reindex
   chaos add          [--repo] [--since <ref>]                  chaos_add
   chaos feature "<question>" [--repo] [--budget N]
-                     [--no-persist] [--json]                   chaos_feature
-  chaos compose      [--repo] [--out <dir>] [--limit N]        chaos_compose
+                     [--no-persist] [--json]
+                     [--repos a b | --all-repos]               chaos_feature
+  chaos compose      [--repo] [--out <dir>] [--limit N]
+                     [--repos a b | --all-repos]               chaos_compose
   chaos correlations [--project <chaos.toml>] [--repos a b]
                      [--min-confidence 0.5]                    chaos_correlations
 
@@ -296,10 +298,15 @@ CLAUDE
     usage
     ;;
   -*)
-    # Caller passed their own flags (e.g. --config) — forward verbatim,
-    # without injecting the wrapper's config a second time.
+    # Global flags before the subcommand (`chaos --repo X feature ...`).
+    # Inject this repo's config unless the caller passed their own --config.
     ensure_binary
-    exec "$BIN" "$cmd" "$@"
+    for arg in "$cmd" "$@"; do
+      case "$arg" in
+        --config|--config=*) exec "$BIN" "$cmd" "$@" ;;
+      esac
+    done
+    exec "$BIN" --config "$CONFIG" "$cmd" "$@"
     ;;
   *)
     # Pass-through: index, reindex, add, feature, compose, correlations,

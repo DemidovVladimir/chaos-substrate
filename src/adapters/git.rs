@@ -57,7 +57,7 @@ fn parse_name_status(text: &str) -> Vec<Change> {
     out
 }
 
-/// Parse `git status --porcelain=v1 -uall` output (XY<space>path[ -> new]).
+/// Parse `git status --porcelain=v1 -uall` output (`XY<space>path[ -> new]`).
 fn parse_porcelain(text: &str) -> Vec<Change> {
     let mut out = Vec::new();
     for line in text.lines().filter(|l| l.len() > 3) {

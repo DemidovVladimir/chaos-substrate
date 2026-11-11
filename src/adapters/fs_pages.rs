@@ -286,7 +286,7 @@ const FEATURE_JS: &str = r#"
  if(ex.length)body.push(sec("Feature map","Retrieved symbols (solid) and their 1-hop neighbours (dashed), columns by call depth. Hover to trace, click a solid box to open its excerpt.",[featureMap([{key:lane,label:lane,excerpts:ex,edges:edges}],[],function(l,i){jump("ex-0-"+i)})]));
  body.push(sec("Code excerpts","Verbatim source the answer is grounded in.",ex.map(function(e,i){return excerptCard(e,"ex-0-"+i,true)})));
  body.push(sec("Graph edges","Typed relations between the symbols above.",edges.length?[table(["From","Kind","To"],edges,function(e){return [h("code",{text:str(e.from)}),h("span",{class:"chip k",text:str(e.kind)}),h("code",{text:str(e.to)})]})]:[]));
- body.push(sec("User surfaces","Routes, commands, env vars and GraphQL fields the feature exposes.",surf.length?[table(["Kind","Surface","Where"],surf,function(s){return [h("span",{class:"chip",text:str(s.kind)}),h("code",{text:str(s.value||s.name)}),str(s.path)]})]:[]));
+ body.push(sec("User surfaces","Routes, MCP tools, commands, env vars and GraphQL fields the feature exposes.",surf.length?[table(["Kind","Surface","Where"],surf,function(s){return [h("span",{class:"chip",text:str(s.kind)}),h("code",{text:str(s.value||s.name)}),str(s.path)]})]:[]));
  mount(hero("Feature",str(M.title||M.question||"Feature"),str(M.repo?"Repository: "+str(M.repo).split("/").pop():"")),[summaryBand(str(M.answer||M.summary))].concat(body));
 })();
 "#;

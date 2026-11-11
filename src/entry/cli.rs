@@ -91,7 +91,7 @@ pub enum Command {
     /// Write the feature website of a repository (index + per-feature pages);
     /// with --repos/--all-repos, every member's site plus the project hub.
     Compose {
-        /// Output directory (default: <repo>/docs/features_memory/site).
+        /// Output directory (default: the repo's docs/features_memory/site).
         #[arg(long)]
         out: Option<PathBuf>,
         /// Max feature pages (largest communities first).

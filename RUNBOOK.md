@@ -91,8 +91,8 @@ is `chaos index --repo <alias>` per member.
 Answering and pages:
 
 ```sh
-chaos feature "how are embeddings reused on reindex" [--repo R] [--budget 6000] [--no-persist] [--json]
-chaos compose [--repo R] [--out DIR] [--limit N]
+chaos feature "how are embeddings reused on reindex" [--repo R] [--budget 6000] [--no-persist] [--json] [--repos a b | --all-repos]
+chaos compose [--repo R] [--out DIR] [--limit N] [--repos a b | --all-repos]
 chaos correlations [--project chaos.toml] [--repos api web] [--min-confidence 0.5]
 ```
 
@@ -102,6 +102,8 @@ chaos correlations [--project chaos.toml] [--repos api web] [--min-confidence 0.
 | --- | --- |
 | `feature` answer | `<repo>/docs/features_memory/<slug-of-question>.html` |
 | `compose` site | `<repo>/docs/features_memory/site/index.html` + `features/<slug>.html` (or `--out`) |
+| `feature --repos`/`--all-repos` answer | `<project dir>/docs/features_memory/<slug-of-question>.html` |
+| `compose --repos`/`--all-repos` hub | `<project dir>/docs/features_memory/index.html`, plus each repo's site and the `correlations` report |
 | `correlations` report | `<project dir>/docs/features_memory/correlations.html`; without a project, inside the first repo |
 
 Each page embeds its manifest as `<script type="application/json" id="chaos-manifest">` and is
@@ -151,5 +153,13 @@ of that exact root path; run `chaos index --repo <path>` first.
 
 **`reindex` did nothing.** It returned `skipped: true` because HEAD is the indexed commit and the
 worktree is clean. Use `add` for uncommitted edits or `reindex --force`.
+
+**Entry points or other new metadata missing after an upgrade.** `add` re-extracts only files
+whose content changed, so an extractor change does not reach unchanged files. Run
+`chaos reindex --force` on each repo. Chunk text stays the same, so nothing is embedded again.
+
+**A page keeps its old layout after an upgrade.** The page hash covers the page's data, not the
+renderer. Delete the generated page (or the whole `docs/features_memory/site/` folder) and run
+`compose` again.
 
 **Legacy schema detected.** `chaos migrate --reset`, then re-index every repository.

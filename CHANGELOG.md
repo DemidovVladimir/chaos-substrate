@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.1 — 2026-11-11
+
+- The `chaos` wrapper injects its config when global flags come before the subcommand
+  (`chaos --repo X feature ...` failed with "DATABASE_URL is required"). A caller's own
+  `--config` still wins.
+- Docs: the wrapper help and RUNBOOK list `--repos`/`--all-repos` for `feature` and `compose`
+  and the project hub's location; RUNBOOK covers `reindex --force` after an extractor upgrade
+  and deleting a page to pick up a new layout. Feature pages name MCP tools among user surfaces.
+
 ## 1.3.0 — 2026-11-11
 
 A whole project on one page.
