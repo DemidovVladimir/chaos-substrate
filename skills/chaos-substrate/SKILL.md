@@ -1,6 +1,6 @@
 ---
 name: chaos-substrate
-description: Use when installing, indexing, updating, or asking feature questions with Chaos Substrate in any Rust, Solidity, TypeScript, JavaScript, Python, or GraphQL repository (Markdown context included); Postgres+pgvector persistence, real Ollama/OpenAI embedders, CLI, MCP stdio, generated feature websites, and cross-repo correlations.
+description: Use when installing, indexing, updating, or asking feature questions with Chaos Substrate in any Rust, Solidity, TypeScript, JavaScript, Python, or GraphQL repository (Markdown and .srt/.vtt transcripts included); Postgres+pgvector persistence, real Ollama/OpenAI embedders, CLI, MCP stdio, generated feature websites, and cross-repo correlations.
 ---
 
 # Chaos Substrate
@@ -58,7 +58,7 @@ agent guide with no config or database.
 1. `index` once per repository.
 2. `add` after every edit (content-hash drift vs the index, or `--since <ref>` for a git range).
 3. `feature "<question>"` to answer; read the returned excerpts, not the files.
-4. `compose` to write the clickable feature website.
+4. `compose` to write the clickable feature website (`--all-repos`: every repo + the project hub).
 5. `correlations` to link features within a repo and across the project's repos.
 6. `reindex` only when the index looks stale — it is a no-op when HEAD is indexed and clean.
 
@@ -134,31 +134,72 @@ UI → docs). Name the key identifiers in the question: they pull their files in
 Return fields: `features[]` (`id`, `label`, `score`, `summary`, `files`), `excerpts[]` (`path`,
 `lines [start, end]`, `symbol`, `kind`, `score`, `why` = semantic/keyword/literal/graph, `code`,
 `code_truncated`), `graph[]` (`from`, `kind`, `to`, `from_path`, `to_path`), `surfaces[]` (env
-vars, HTTP routes), `page`, `page_cached`, `content_hash`, `tokens_used`, `warnings`,
+vars, HTTP routes, MCP tools), `page`, `page_cached`, `content_hash`, `tokens_used`, `warnings`,
 `provenance`. Across repos: `question`, `project`, `repos[]` (`alias` + the fields above),
 `links[]` (`from_repo`, `from`, `from_path`, `to_repo`, `to`, `to_path`, `term`), `page`
 (absolute), `page_cached`, `content_hash`, `tokens_used`. The CLI prints Markdown by default;
 `--json` prints the payload.
 
-### compose — `chaos compose [--out <dir>] [--limit N]` / `chaos_compose`
+### compose — `chaos compose [--out <dir>] [--limit N] [--repos a b | --all-repos]` / `chaos_compose`
 
-Write the feature website of a repository: an index page listing every feature community plus one
-drill-down page per feature (members, files, relations to other features, summary). Content-hash
-gated per page.
+Write the feature website of a repository: an index page listing every feature community and the
+repository's entry points, plus one drill-down page per feature (members, files, relations to other
+features, summary). Content-hash gated per page.
+
+With `repos` or `all_repos`: every selected project repo's site, the `correlations` report, and ONE
+project hub at `<project dir>/docs/features_memory/index.html` — what was indexed per repo
+(commit, files, symbols, edges, chunks, features, languages), a feature graph across the repos
+(features as nodes coloured by dominant language; call/import weight between features of one repo
+and the cross-repo links as edges; click a node for its summary, entry points and connections),
+the entry points of the whole project, every feature, the cross-repo links with evidence, and the
+project feature (question) pages already in that directory. Use it to show a whole project; run
+`feature --all-repos` first for the flows you want listed as questions.
+
+ENTRY POINTS — where someone comes in from outside, per content type (one filter over all of them):
+
+| Category | What is listed | Detected from |
+|---|---|---|
+| GraphQL API | every root field once, in the repo that owns the schema (most root fields), with its one-line header (arguments, auth directives) and every operation in the project that calls it | SDL fields + operations' `root_fields` |
+| Smart contracts | every public/external function per contract and interface: read/write (`mutability`), `modifiers`, header; events | Solidity metadata; deploy scripts (`*.s.sol`, `script/`), tests, libraries excluded |
+| MCP tools | tool name, title/description, file:line, registering function | TS `server.registerTool(NAME, {title, description})`, `server.tool(NAME, "desc", …)`, `server.addTool({name})` (`NAME` a string or a same-file `const`); Python `@x.tool(...)` (name from `name=` or the function, detail from the docstring) and `Tool(name=…)`; Rust rmcp `#[tool(…)]` |
+| HTTP routes | method + path, file:line | express/fastify/hono/NestJS/Flask/FastAPI/axum/actix (existing surfaces) and Next.js route handlers: `export function GET` in `app/**/route.ts` → `GET /path` (route groups and slots dropped), default export in `pages/api/**` → `ANY /api/…` |
+| Client hooks | React `use*` functions wrapping a data hook: reads/writes/listens, which hooks, the GraphQL fields their calls reach (≤ 3 resolved call hops; a call through an SDK object such as `sdk.labs.update()` is not followed) | `useQuery`, `useMutation`, `useSuspenseQuery`, `useInfiniteQuery`, Apollo/urql, SWR, wagmi `useReadContract`/`useWriteContract`, tRPC `x.useQuery` → `metadata.hook` |
+| Document plan | each document's title and chapters, in file order | repos whose files are mostly Markdown (hidden folders such as `.github/` left out): the one H1 is the title (else the front matter's `title:`, else the file name) and the next level down are chapters; several H1s are chapters |
+| Timeline | transcript timestamps with their first words | `.srt`/`.vtt` files (language `transcript`); Markdown sections that are mostly `[12:30] text` lines; headings that open with a timestamp (`## 12:30 Setup`) |
+
+Transcripts are cut into time segments (a new one every 2 minutes or 2,400 bytes); each segment is
+a `Section` named by its start time, so `feature` answers point at a moment. Features holding an
+API field, contract function, MCP tool or route are always drawn on the hub (dotted ring; hooks
+ring too). Body-level checks (`require`) are not modifiers and are not shown. Test, fixture and
+mock files are left out.
 
 | arg | type | notes |
 |---|---|---|
 | `repo` | string | optional |
-| `out` | string | output directory; default `<repo>/docs/features_memory/site` |
-| `limit` | integer | max feature pages, largest communities first |
+| `out` | string | output directory (one repository only); default `<repo>/docs/features_memory/site` |
+| `limit` | integer | max feature pages per repository, largest communities first |
+| `repos` | string[] | compose these project repos and the hub (CLI `--repos`) |
+| `all_repos` | boolean | compose every project repo and the hub (CLI `--all-repos`) |
+| `project` | string | chaos.toml for `repos`/`all_repos` (CLI global `--project`) |
 
-Returns `out`, `pages_written`, `pages_cached`, `communities`, `omitted`, provenance.
+Returns `out`, `pages_written`, `pages_cached`, `communities`, `omitted`, `entry_points` (count
+per category, non-empty only: `graphql_fields`, `contract_functions`, `mcp_tools`, `http_routes`,
+`client_hooks`, `documents`, `timeline_entries`), provenance. Across repos: `page`,
+`page_written`, `content_hash`, `repos[]` (`alias`, `site`, `pages_written`, `pages_cached`,
+`features`), `features`, `graph_nodes`, `cross_links`, `entry_points`, `correlations_page`,
+provenance. Re-index (`reindex --force`) a repo indexed before this version to fill what the entry
+points read (Solidity `visibility`/`mutability`/`modifiers`/`header`, GraphQL field `header`,
+operation `root_fields`, `metadata.hook`, `mcp_tool` nodes, Next.js routes, transcript segments);
+only new transcript segments are embedded.
 
 ### correlations — `chaos correlations [--repos a b] [--min-confidence 0.5]` / `chaos_correlations`
 
 Feature correlations. Intra-repo: pairs of features sharing files or symbols. Cross-repo (project
 from chaos.toml): consumer -> provider links by `package_dep` (one repo imports a package another
-publishes) and `http_route` (a client call path matches a route another repo registers). Writes
+publishes), `http_route` (a client call path matches a route another repo registers) and
+`graphql_field` (a GraphQL operation calls a root field such as `Mutation.createLab`; the provider
+is the field's schema owner — the repo, among those defining it, that defines the most root
+fields — so a client's schema copy never inverts the link). Writes
 `correlations.html` under `docs/features_memory` of the project directory (or of the single repo).
 
 | arg | type | notes |

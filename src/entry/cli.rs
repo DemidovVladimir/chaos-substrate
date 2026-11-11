@@ -14,7 +14,7 @@ use crate::application::{
     index::{identify, IndexOptions},
     tools::{mcp_name, tools, TOOL_NAMES},
 };
-use crate::ports::{embedder::Embedder, index_store::IndexStore};
+use crate::ports::{embedder::Embedder, index_store::IndexStore, pages::PageStore};
 use anyhow::{bail, Context, Result};
 use clap::{ArgAction, Parser, Subcommand};
 use serde_json::{json, Value};
@@ -88,7 +88,8 @@ pub enum Command {
         #[arg(long)]
         all_repos: bool,
     },
-    /// Write the feature website of a repository (index + per-feature pages).
+    /// Write the feature website of a repository (index + per-feature pages);
+    /// with --repos/--all-repos, every member's site plus the project hub.
     Compose {
         /// Output directory (default: <repo>/docs/features_memory/site).
         #[arg(long)]
@@ -96,6 +97,12 @@ pub enum Command {
         /// Max feature pages (largest communities first).
         #[arg(long)]
         limit: Option<usize>,
+        /// Compose these project repos (aliases/paths) and the project hub.
+        #[arg(long, num_args = 1..)]
+        repos: Vec<String>,
+        /// Compose every repo of the project (chaos.toml) and the project hub.
+        #[arg(long)]
+        all_repos: bool,
     },
     /// Intra- and cross-repo feature correlations for the project.
     Correlations {
@@ -286,6 +293,15 @@ impl Services {
                 Ok(serde_json::to_value(answer)?)
             }
             "compose" => {
+                let only = string_list(args, "repos");
+                let all_repos = args
+                    .get("all_repos")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if all_repos || !only.is_empty() {
+                    let report = self.compose_project(args, &only, all_repos).await?;
+                    return Ok(serde_json::to_value(report)?);
+                }
                 let root = self.resolve_root(repo_arg)?;
                 let repo = self.indexed_repo(&root).await?;
                 let out = args.get("out").and_then(Value::as_str).map(PathBuf::from);
@@ -319,6 +335,68 @@ impl Services {
                 TOOL_NAMES.join(", ")
             ),
         }
+    }
+
+    /// `compose` across project members: each member's feature site, the
+    /// correlations report, then the project hub page.
+    async fn compose_project(
+        &self,
+        args: &Value,
+        only: &[String],
+        all_repos: bool,
+    ) -> Result<application::project_compose::ProjectComposeReport> {
+        if args.get("out").is_some_and(|o| !o.is_null()) {
+            bail!("`out` applies to one repository; across repos each site goes to <repo>/docs/features_memory/site and the hub to <project>/docs/features_memory");
+        }
+        let limit = args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .map(|l| l as usize);
+        let (project, project_dir) = self.project_arg(args)?;
+        if all_repos && project.is_none() {
+            bail!("`all_repos` needs a project: no chaos.toml found (pass `project`)");
+        }
+        let selected = select_members(project.as_ref(), only)?;
+        let mut members = Vec::with_capacity(selected.len());
+        for (alias, root) in &selected {
+            let repo = self.indexed_repo(root).await?;
+            let deps = application::compose::Deps {
+                store: &self.store,
+                communities: &self.store,
+                search: &self.store,
+                pages: &self.pages,
+            };
+            let site = application::compose::compose(deps, &repo, root, None, limit).await?;
+            members.push(application::project_compose::Member {
+                alias: alias.clone(),
+                repo,
+                root: root.clone(),
+                site,
+            });
+        }
+        let correlations = self
+            .correlations(project.clone(), project_dir.clone(), only, 0.5)
+            .await?;
+        let out_dir = features_dir(project_dir.as_deref(), &selected[0].1);
+        let questions = question_pages(&self.pages, &out_dir);
+        let name = project
+            .as_ref()
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| selected[0].0.clone());
+        let deps = application::project_compose::Deps {
+            store: &self.store,
+            communities: &self.store,
+            pages: &self.pages,
+        };
+        application::project_compose::compose_project(
+            deps,
+            &name,
+            &members,
+            &correlations,
+            &questions,
+            &out_dir,
+        )
+        .await
     }
 
     /// The project named by the `project` argument, else the one resolved at startup.
@@ -370,6 +448,27 @@ impl Services {
         application::correlations::correlations(&deps, &repos, &manifests, &out_dir, min_confidence)
             .await
     }
+}
+
+/// Project feature pages (one question across repos) directly in `dir`.
+fn question_pages(
+    pages: &dyn PageStore,
+    dir: &Path,
+) -> Vec<application::project_compose::QuestionPage> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<_> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "html"))
+        .filter_map(|path| {
+            let manifest = pages.read_manifest(&path)?;
+            let (title, repos) = application::project_compose::question_page(&manifest)?;
+            Some(application::project_compose::QuestionPage { title, path, repos })
+        })
+        .collect();
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
 }
 
 /// A JSON string-array argument (missing or malformed → empty).
@@ -599,8 +698,8 @@ pub fn agent_guide() -> String {
          1. `index` a repository once (needs Postgres + a real embedder; `doctor` checks both).\n\
          2. After every edit run `add` — only changed files are re-extracted and re-embedded.\n\
          3. Ask `feature \"<question>\"` to answer from the index; read the returned excerpts instead of source files.\n\
-         4. `compose` writes the clickable feature website (index + one page per feature, hash-gated).\n\
-         5. `correlations` links features across the repos listed in chaos.toml (package_dep / http_route).\n\
+         4. `compose` writes the clickable feature website (index with the entry points + one page per feature, hash-gated); `--all-repos` adds the project hub.\n\
+         5. `correlations` links features across the repos listed in chaos.toml (package_dep / http_route / graphql_field).\n\
          6. `reindex` only when the index looks stale; it is a no-op when HEAD is indexed and the worktree is clean.\n",
     );
     s
@@ -927,9 +1026,15 @@ async fn run_command(cli: Cli) -> Result<()> {
                 Ok(())
             }
         }
-        Command::Compose { out, limit } => {
+        Command::Compose {
+            out,
+            limit,
+            repos,
+            all_repos,
+        } => {
             let services = Services::connect(config_path, project_path).await?;
-            let args = json!({"repo": cli.repo, "out": out.map(|p| p.to_string_lossy().into_owned()), "limit": limit});
+            let args = json!({"repo": cli.repo, "out": out.map(|p| p.to_string_lossy().into_owned()), "limit": limit,
+                "repos": repos, "all_repos": all_repos});
             let v = services.call_tool("compose", &args).await?;
             print_json(&v)
         }

@@ -37,6 +37,8 @@ pub enum Language {
     Solidity,
     GraphQL,
     Markdown,
+    /// Timestamped subtitles (`.srt`, `.vtt`): a video or podcast transcript.
+    Transcript,
 }
 
 impl_str_conversions!(Language {
@@ -47,6 +49,7 @@ impl_str_conversions!(Language {
     Solidity => "solidity",
     GraphQL => "graphql",
     Markdown => "markdown",
+    Transcript => "transcript",
 });
 
 impl Language {
@@ -61,6 +64,7 @@ impl Language {
             "sol" => Self::Solidity,
             "graphql" | "gql" | "graphqls" => Self::GraphQL,
             "md" | "mdx" => Self::Markdown,
+            "srt" | "vtt" => Self::Transcript,
             _ => return None,
         })
     }
@@ -93,6 +97,8 @@ pub enum NodeKind {
     EnvVar,
     /// User-surface: HTTP route registered by a file.
     HttpRoute,
+    /// User-surface: MCP tool a server registers (`tools/list` name).
+    McpTool,
 }
 
 impl_str_conversions!(NodeKind {
@@ -111,6 +117,7 @@ impl_str_conversions!(NodeKind {
     Section => "section",
     EnvVar => "env_var",
     HttpRoute => "http_route",
+    McpTool => "mcp_tool",
 });
 
 impl NodeKind {

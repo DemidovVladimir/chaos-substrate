@@ -4,7 +4,7 @@
 > (chaos-kb, a personal knowledge base) with its own rules in `v2/AGENTS.md`.
 
 Chaos Substrate (1.0) is a Rust crate that indexes repositories (Rust, TS, JS, Python, Solidity,
-GraphQL, Markdown) into a Postgres + pgvector knowledge graph so agents answer feature questions
+GraphQL, Markdown, `.srt`/`.vtt` transcripts) into a Postgres + pgvector knowledge graph so agents answer feature questions
 from the index — with code excerpts — instead of re-reading source.
 
 ## Hard rules
@@ -24,8 +24,8 @@ from the index — with code excerpts — instead of re-reading source.
 | `reindex [--force]` | Full re-run; no-op when HEAD is indexed and the worktree is clean. Embeddings reused by content hash. |
 | `add [--since <ref>]` | Index only git-changed files; purge deleted ones. Use after every edit. |
 | `feature "<q>" [--budget N] [--no-persist] [--json]` | Answer one question from the index: feature summaries, excerpts with line ranges, 1-hop graph, env vars/routes. Writes `docs/features_memory/<slug>.html`. |
-| `compose [--out <dir>] [--limit N]` | Feature website (`docs/features_memory/site/`): index + one page per feature, hash-gated. |
-| `correlations [--repos ...] [--min-confidence 0.5]` | Features sharing files/symbols; cross-repo `package_dep` / `http_route` links across a `chaos.toml` project. |
+| `compose [--out <dir>] [--limit N] [--repos a b \| --all-repos]` | Feature website (`docs/features_memory/site/`): index with the repo's entry points (GraphQL, contracts, MCP tools, HTTP routes, React hooks, document plan, transcript timestamps) + one page per feature, hash-gated; across repos also one project hub. |
+| `correlations [--repos ...] [--min-confidence 0.5]` | Features sharing files/symbols; cross-repo `package_dep` / `http_route` / `graphql_field` links across a `chaos.toml` project. |
 
 CLI-only: `migrate [--reset]`, `doctor`, `mcp`, `help`. Global flags: `--config`, `--project`, `--repo`, `-v`.
 

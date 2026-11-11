@@ -29,7 +29,12 @@ target/release/chaos feature --repo /absolute/path/to/repo "how are embeddings r
 `chaos help` prints the agent guide (tools + workflow) and needs no database or config.
 
 Supported languages: Rust, TypeScript, JavaScript, Python, Solidity, GraphQL (schemas,
-operations, and `gql` documents embedded in TS/JS/Python), plus Markdown.
+operations, and `gql` documents embedded in TS/JS/Python), plus Markdown and `.srt`/`.vtt`
+transcripts (cut into timestamped segments).
+
+Entry points, per content type: GraphQL root fields, public contract functions, MCP tools, HTTP
+routes (Next.js route handlers included), React data hooks, and for text the document plan and
+transcript timestamps. `compose` lists them on every site index and on the project hub.
 
 ## The six tools
 
@@ -42,7 +47,7 @@ directory.
 | `index` | Full index: extraction → import/call resolution → contextual chunks → embeddings → feature communities → summaries. Run once per repo. | `repo`, `--dry-run` (CLI only) |
 | `reindex` | Re-run a full index. No-op when git HEAD equals the indexed commit and the worktree is clean. Unchanged chunks keep their embeddings. | `repo`, `force` |
 | `add` | Incremental index of what changed since the last index (content-hash drift; plus everything git reports with `--since REF`). Files gone from disk are purged; only new chunks are embedded. Use after every edit. | `repo`, `since` |
-| `feature` | Answer one feature question from the index, without reading source. Returns feature summaries, code excerpts with line ranges, a 1-hop graph, env vars / HTTP routes involved. Persists the answer as a page with a visual feature map. With `repos`/`all_repos`, answers across the project's repos on one page with cross-repo links. | `question`, `repo`, `repos`, `all_repos`, `project`, `budget_tokens` (1000–16000, default 6000; across repos, split evenly between them), `persist` |
+| `feature` | Answer one feature question from the index, without reading source. Returns feature summaries, code excerpts with line ranges, a 1-hop graph, env vars / HTTP routes / MCP tools involved. Persists the answer as a page with a visual feature map. With `repos`/`all_repos`, answers across the project's repos on one page with cross-repo links. | `question`, `repo`, `repos`, `all_repos`, `project`, `budget_tokens` (1000–16000, default 6000; across repos, split evenly between them), `persist` |
 | `compose` | Write the feature website of a repo: an index page plus one page per feature community. Hash-gated per page. | `repo`, `out`, `limit` |
 | `correlations` | Feature correlations. Intra-repo: features sharing files or symbols. Cross-repo (from `chaos.toml`): `package_dep` and `http_route` links, consumer → provider, with evidence and confidence. | `project`, `repos`, `min_confidence` (default 0.5) |
 

@@ -87,7 +87,12 @@ static SPEC: LangSpec = LangSpec {
         "field_declaration_list",
         "enum_variant_list",
     ],
-    extras: &[impl_relations, packages, super::surface::rust],
+    extras: &[
+        impl_relations,
+        packages,
+        super::surface::rust,
+        super::entry::rust,
+    ],
 };
 
 /// The Rust language specification.

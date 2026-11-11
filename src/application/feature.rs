@@ -642,7 +642,7 @@ pub async fn feature(
         deps.search
             .surfaces(
                 repo.id,
-                &[NodeKind::EnvVar, NodeKind::HttpRoute],
+                &[NodeKind::EnvVar, NodeKind::HttpRoute, NodeKind::McpTool],
                 Some(&surface_scope),
             )
             .await

@@ -2,9 +2,12 @@
 //!
 //! `walker` is the generic cursor walk; `lang` is the table-driven spec each
 //! language module fills in (`rust`, `typescript`, `python`, `solidity`,
-//! `graphql`); `markdown` is a heading-based extractor (not tree-sitter);
-//! `surface` provides user-surface passes (env vars, HTTP routes).
+//! `graphql`); `markdown` is a heading-based extractor and `transcript` a
+//! subtitle/timestamp scanner (neither is tree-sitter); `surface` provides
+//! user-surface passes (env vars, HTTP routes) and `entry` the entry-point
+//! passes (MCP tools, Next.js route handlers, React data hooks).
 
+pub mod entry;
 pub mod graphql;
 pub mod lang;
 pub mod markdown;
@@ -12,6 +15,7 @@ pub mod python;
 pub mod rust;
 pub mod solidity;
 pub mod surface;
+pub mod transcript;
 pub mod typescript;
 pub mod walker;
 
@@ -26,8 +30,10 @@ pub struct TreeSitterExtractor;
 
 impl SourceExtractor for TreeSitterExtractor {
     fn extract(&self, file: &FileInput) -> FileExtraction {
-        if file.language == Language::Markdown {
-            return markdown::extract(file);
+        match file.language {
+            Language::Markdown => return markdown::extract(file),
+            Language::Transcript => return transcript::extract(file),
+            _ => {}
         }
         match lang::spec_for(file.language, &file.path) {
             Some(spec) => walker::extract(spec, file),

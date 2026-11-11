@@ -16,13 +16,13 @@ use super::walker::{enclosing_symbol, text};
 use crate::ports::extractor::{FileExtraction, FileInput, Surface, SurfaceKind};
 use tree_sitter::{Node, Tree};
 
-const METHODS: &[&str] = &["get", "post", "put", "delete", "patch", "head", "options"];
+pub(super) const METHODS: &[&str] = &["get", "post", "put", "delete", "patch", "head", "options"];
 
-fn is_method(s: &str) -> bool {
+pub(super) fn is_method(s: &str) -> bool {
     METHODS.contains(&s.to_ascii_lowercase().as_str())
 }
 
-fn walk(tree: &Tree, mut f: impl FnMut(Node)) {
+pub(super) fn walk(tree: &Tree, mut f: impl FnMut(Node)) {
     let mut stack = vec![tree.root_node()];
     while let Some(n) = stack.pop() {
         f(n);
@@ -32,19 +32,19 @@ fn walk(tree: &Tree, mut f: impl FnMut(Node)) {
     }
 }
 
-fn named_child<'t>(n: Node<'t>, kind: &str) -> Option<Node<'t>> {
+pub(super) fn named_child<'t>(n: Node<'t>, kind: &str) -> Option<Node<'t>> {
     let mut cursor = n.walk();
     let found = n.named_children(&mut cursor).find(|c| c.kind() == kind);
     found
 }
 
-fn first_named(n: Node) -> Option<Node> {
+pub(super) fn first_named(n: Node) -> Option<Node> {
     n.named_child(0)
 }
 
 /// Literal value of a plain string node (Rust `string_literal`, TS/JS `string`
 /// or substitution-free `template_string`, Python `string`); `None` otherwise.
-fn string_value(n: Node, src: &str) -> Option<String> {
+pub(super) fn string_value(n: Node, src: &str) -> Option<String> {
     match n.kind() {
         "string_literal" => Some(
             named_child(n, "string_content")
@@ -89,7 +89,7 @@ fn strip_quotes(raw: &str) -> String {
 }
 
 /// First string argument of an `arguments` / `argument_list` / `token_tree` node.
-fn first_string_arg<'t>(args: Node<'t>, src: &str) -> Option<(String, Node<'t>)> {
+pub(super) fn first_string_arg<'t>(args: Node<'t>, src: &str) -> Option<(String, Node<'t>)> {
     let mut cursor = args.walk();
     let found = args
         .named_children(&mut cursor)
@@ -97,24 +97,28 @@ fn first_string_arg<'t>(args: Node<'t>, src: &str) -> Option<(String, Node<'t>)>
     found
 }
 
-fn route_name(method: &str, path: &str) -> String {
+pub(super) fn route_name(method: &str, path: &str) -> String {
     let path = if path.is_empty() { "/" } else { path };
     format!("{} {}", method.to_ascii_uppercase(), path)
 }
 
-struct Collector<'a> {
-    file: &'a FileInput,
-    out: Vec<Surface>,
+pub(super) struct Collector<'a> {
+    pub(super) file: &'a FileInput,
+    pub(super) out: Vec<Surface>,
 }
 
 impl Collector<'_> {
-    fn owner(&self, symbols: &[crate::ports::extractor::Symbol], at: usize) -> Option<String> {
+    pub(super) fn owner(
+        &self,
+        symbols: &[crate::ports::extractor::Symbol],
+        at: usize,
+    ) -> Option<String> {
         let id = enclosing_symbol(symbols, &self.file.path, at);
         (!id.starts_with("file:")).then_some(id)
     }
 
     /// Byte offset used to attribute a decorator/attribute: the declaration it precedes.
-    fn decorated_at(n: Node) -> usize {
+    pub(super) fn decorated_at(n: Node) -> usize {
         let mut next = n.next_named_sibling();
         while let Some(s) = next {
             if !matches!(
@@ -129,6 +133,18 @@ impl Collector<'_> {
     }
 
     fn push(&mut self, kind: SurfaceKind, name: String, node: Node, owner: Option<String>) {
+        self.push_detail(kind, name, node, owner, None);
+    }
+
+    /// `push` with a one-line `detail` (e.g. an MCP tool's title).
+    pub(super) fn push_detail(
+        &mut self,
+        kind: SurfaceKind,
+        name: String,
+        node: Node,
+        owner: Option<String>,
+        detail: Option<String>,
+    ) {
         if name.trim().is_empty() {
             return;
         }
@@ -137,6 +153,7 @@ impl Collector<'_> {
             name,
             line: node.start_position().row as u32 + 1,
             owner,
+            detail,
         };
         if !self
             .out
@@ -147,7 +164,7 @@ impl Collector<'_> {
         }
     }
 
-    fn finish(mut self, out: &mut FileExtraction) {
+    pub(super) fn finish(mut self, out: &mut FileExtraction) {
         self.out.sort_by_key(|s| s.line);
         for s in self.out {
             if !out

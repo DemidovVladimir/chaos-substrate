@@ -123,6 +123,58 @@ fn signature(node: Node, src: &str) -> String {
     first.chars().take(MAX_SIGNATURE).collect()
 }
 
+/// Text of `node` without its `description` children, whitespace collapsed.
+fn without_descriptions(node: Node, src: &str) -> String {
+    let mut out = String::new();
+    let mut cursor = node.walk();
+    let kids: Vec<Node> = node.named_children(&mut cursor).collect();
+    let mut at = node.start_byte();
+    for k in kids.iter().filter(|k| k.kind() == "description") {
+        out.push_str(&src[at..k.start_byte()]);
+        at = k.end_byte();
+    }
+    out.push_str(&src[at..node.end_byte()]);
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// One-line header of an SDL field: `name(arg: Type = default, …): Type
+/// @directives`, descriptions dropped — what a client sees of the field.
+fn field_header(field: Node, src: &str) -> String {
+    let mut cursor = field.walk();
+    let mut out = String::new();
+    for c in field.named_children(&mut cursor) {
+        match c.kind() {
+            "name" => out.push_str(text(c, src).trim()),
+            "arguments_definition" => {
+                let mut ac = c.walk();
+                let args: Vec<String> = c
+                    .named_children(&mut ac)
+                    .filter(|a| a.kind() == "input_value_definition")
+                    .map(|a| without_descriptions(a, src))
+                    .collect();
+                out.push('(');
+                out.push_str(&args.join(", "));
+                out.push(')');
+            }
+            "type" => {
+                out.push_str(": ");
+                out.push_str(&text(c, src).split_whitespace().collect::<String>());
+            }
+            "directives" => {
+                out.push(' ');
+                out.push_str(
+                    &text(c, src)
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                );
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// A document being extracted: its text, the host path and where it sits.
 #[derive(Clone, Copy)]
 struct Doc<'a> {
@@ -217,7 +269,7 @@ fn collect(tree: &Tree, doc: Doc, sdl: bool, sink: &mut Sink) {
                                 continue;
                             };
                             let qualified = format!("{name}.{fname}");
-                            let sym = make_symbol(
+                            let mut sym = make_symbol(
                                 doc,
                                 sink,
                                 f,
@@ -226,6 +278,7 @@ fn collect(tree: &Tree, doc: Doc, sdl: bool, sink: &mut Sink) {
                                 Some(parent_id.clone()),
                                 None,
                             );
+                            sym.metadata = serde_json::json!({ "header": field_header(f, src) });
                             sink.symbols.push(sym);
                         }
                     }
@@ -252,26 +305,35 @@ fn collect(tree: &Tree, doc: Doc, sdl: bool, sink: &mut Sink) {
                     None,
                     selection,
                 );
-                sym.metadata = serde_json::json!({ "operation_type": op_type });
                 let root = match op_type.as_str() {
                     "mutation" => "Mutation",
                     "subscription" => "Subscription",
                     _ => "Query",
                 };
+                // Root fields are also kept on the node: a `Queries` edge only
+                // resolves inside one repo, while cross-repo correlation needs
+                // the field names an operation calls on another repo's schema.
+                let mut root_fields: Vec<String> = Vec::new();
                 if let Some(sel) = selection {
                     for s in children_of_type(sel, "selection") {
                         let Some(field) = child_of_type(s, "field") else {
                             continue;
                         };
                         if let Some(fname) = name_of(field, src) {
+                            let qualified = format!("{root}.{fname}");
+                            if !root_fields.contains(&qualified) {
+                                root_fields.push(qualified.clone());
+                            }
                             sink.relations.push(Relation {
                                 source: sym.stable_id.clone(),
                                 kind: EdgeKind::Queries,
-                                target_name: format!("{root}.{fname}"),
+                                target_name: qualified,
                             });
                         }
                     }
                 }
+                sym.metadata =
+                    serde_json::json!({ "operation_type": op_type, "root_fields": root_fields });
                 sink.symbols.push(sym);
                 continue;
             }
@@ -578,6 +640,21 @@ type Mutation {
     }
 
     #[test]
+    fn field_header_is_one_line_without_descriptions() {
+        let src = "type Mutation {\n  \"Create a lab.\"\n  createLab(\n    \"The lab's on-chain id.\"\n    oclId: ID!\n    \"Optional title.\"\n    title: String = \"x\"\n  ): Lab!\n    @aws_lambda @aws_api_key\n}\n";
+        let x = gql("schema.graphql", src);
+        let f = x
+            .symbols
+            .iter()
+            .find(|s| s.qualified_name == "Mutation.createLab")
+            .unwrap();
+        assert_eq!(
+            f.metadata["header"],
+            "createLab(oclId: ID!, title: String = \"x\"): Lab! @aws_lambda @aws_api_key"
+        );
+    }
+
+    #[test]
     fn operations_and_queries_relations() {
         let src = "query GetUser($id: ID!) {\n  user(id: $id) { ...UserFields }\n  users { id }\n}\n\nmutation { createUser(input: {name: \"a\"}) { id } }\n\nfragment UserFields on User { id name }\n\n{ users { id } }\n";
         let x = gql("ops/user.graphql", src);
@@ -597,6 +674,14 @@ type Mutation {
         );
         assert_eq!(x.symbols[1].metadata["operation_type"], "mutation");
         assert_eq!(x.symbols[3].metadata["operation_type"], "query");
+        assert_eq!(
+            x.symbols[0].metadata["root_fields"],
+            serde_json::json!(["Query.user", "Query.users"])
+        );
+        assert_eq!(
+            x.symbols[1].metadata["root_fields"],
+            serde_json::json!(["Mutation.createUser"])
+        );
         let rels: Vec<(&str, &str)> = x
             .relations
             .iter()

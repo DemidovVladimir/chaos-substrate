@@ -232,11 +232,19 @@ pub fn analyze_with(
             doc: None,
             line_start: Some(1),
             line_end: Some(x.line_count.max(1) as i32),
-            metadata: json!({
-                "language": language.as_str(),
-                "packages": x.packages,
-                "line_count": x.line_count,
-            }),
+            metadata: match &x.title {
+                Some(t) => json!({
+                    "language": language.as_str(),
+                    "packages": x.packages,
+                    "line_count": x.line_count,
+                    "title": t,
+                }),
+                None => json!({
+                    "language": language.as_str(),
+                    "packages": x.packages,
+                    "line_count": x.line_count,
+                }),
+            },
         });
         edges.push(repo_id, repo_node, node_id, EdgeKind::Contains, 1.0);
     }
@@ -285,6 +293,7 @@ pub fn analyze_with(
             let (tag, kind) = match surf.kind {
                 SurfaceKind::EnvVar => ("env", NodeKind::EnvVar),
                 SurfaceKind::HttpRoute => ("route", NodeKind::HttpRoute),
+                SurfaceKind::McpTool => ("mcp_tool", NodeKind::McpTool),
             };
             let stable_id = format!("{}:{}:{}", input.path, tag, surf.name);
             let id = node_id_of(&stable_id);
@@ -300,7 +309,12 @@ pub fn analyze_with(
                     doc: None,
                     line_start: Some(surf.line as i32),
                     line_end: Some(surf.line as i32),
-                    metadata: json!({"path": input.path, "language": language.as_str()}),
+                    metadata: match &surf.detail {
+                        Some(d) => {
+                            json!({"path": input.path, "language": language.as_str(), "detail": d})
+                        }
+                        None => json!({"path": input.path, "language": language.as_str()}),
+                    },
                 });
                 edges.push(repo_id, file_nodes[fi], id, EdgeKind::Defines, 1.0);
             }
@@ -571,7 +585,11 @@ fn known_views<'a>(g: &'a Graph, changed: &[(FileInput, FileExtraction)]) -> Vec
 fn is_symbol_kind(kind: NodeKind) -> bool {
     !matches!(
         kind,
-        NodeKind::Repository | NodeKind::File | NodeKind::EnvVar | NodeKind::HttpRoute
+        NodeKind::Repository
+            | NodeKind::File
+            | NodeKind::EnvVar
+            | NodeKind::HttpRoute
+            | NodeKind::McpTool
     )
 }
 
@@ -849,7 +867,7 @@ fn resolve_import(
         Language::Solidity => resolve_solidity(specifier, cur_path, paths)
             .into_iter()
             .collect(),
-        Language::GraphQL | Language::Markdown => Vec::new(),
+        Language::GraphQL | Language::Markdown | Language::Transcript => Vec::new(),
     }
 }
 
@@ -1411,18 +1429,21 @@ mod tests {
                 name: "DATABASE_URL".into(),
                 line: 3,
                 owner: Some("typescript:src/a.ts:function:boot".into()),
+                detail: None,
             },
             Surface {
                 kind: SurfaceKind::EnvVar,
                 name: "DATABASE_URL".into(),
                 line: 9,
                 owner: None,
+                detail: None,
             },
             Surface {
                 kind: SurfaceKind::HttpRoute,
                 name: "GET /users/:id".into(),
                 line: 5,
                 owner: None,
+                detail: None,
             },
         ];
         let mut b_ts = file("src/b.ts", "", vec![]);
@@ -1431,6 +1452,7 @@ mod tests {
             name: "DATABASE_URL".into(),
             line: 1,
             owner: None,
+            detail: None,
         }];
         let a = analyze(repo(), &[a_ts, b_ts]);
         let env_a = node_by_stable(&a, "src/a.ts:env:DATABASE_URL");

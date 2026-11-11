@@ -51,7 +51,8 @@ pub struct LangSpec {
 }
 
 /// Resolve the spec for a language/path. `None` = file-level extraction only.
-/// `Language::Markdown` is not tree-sitter and is dispatched in `mod.rs`.
+/// `Language::Markdown` and `Language::Transcript` are not tree-sitter and are
+/// dispatched in `mod.rs`.
 pub fn spec_for(lang: Language, path: &str) -> Option<&'static LangSpec> {
     match lang {
         Language::Rust => Some(rust::spec()),
@@ -59,7 +60,7 @@ pub fn spec_for(lang: Language, path: &str) -> Option<&'static LangSpec> {
         Language::Python => python::spec(),
         Language::Solidity => solidity::spec(),
         Language::GraphQL => graphql::spec(),
-        Language::Markdown => None,
+        Language::Markdown | Language::Transcript => None,
     }
 }
 

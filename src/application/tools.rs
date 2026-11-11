@@ -47,7 +47,7 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "feature",
-            description: "Answer ONE feature question from the index WITHOUT reading source: routes to the matching feature communities, retrieves the relevant code chunks (semantic + keyword + literal), expands one hop over call/import edges, and returns a token-bounded payload — feature summaries, code excerpts with exact line ranges, the 1-hop graph, and the env vars / HTTP routes involved. Persists the answer as a page with a visual feature map (hash-gated). With `repos` or `all_repos` the question is answered in each selected repo of the project (chaos.toml) and joined by cross-repo links (an excerpt's symbol name found verbatim in another repo's excerpt) on ONE page under the project's docs/features_memory. Read the returned `excerpts[].code` instead of opening files.",
+            description: "Answer ONE feature question from the index WITHOUT reading source: routes to the matching feature communities, retrieves the relevant code chunks (semantic + keyword + literal), expands one hop over call/import edges, and returns a token-bounded payload — feature summaries, code excerpts with exact line ranges, the 1-hop graph, and the env vars / HTTP routes / MCP tools involved. Persists the answer as a page with a visual feature map (hash-gated). With `repos` or `all_repos` the question is answered in each selected repo of the project (chaos.toml) and joined by cross-repo links (an excerpt's symbol name found verbatim in another repo's excerpt) on ONE page under the project's docs/features_memory. Read the returned `excerpts[].code` instead of opening files.",
             input_schema: json!({"type": "object", "properties": {
                 "question": {"type": "string", "description": "What you want to understand, e.g. 'how are embeddings reused on reindex'."},
                 "repo": repo_prop(),
@@ -60,12 +60,19 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "compose",
-            description: "Write the feature website of a repository: an index page listing every feature community plus one drill-down page per feature (members, files, relations to other features, summary). Content-hash gated per page — the return reports written vs cached counts; cached pages must not be re-read.",
-            input_schema: json!({"type": "object", "properties": {"repo": repo_prop(), "out": {"type": "string", "description": "Output directory. Default: <repo>/docs/features_memory/site"}, "limit": {"type": "integer", "description": "Max feature pages (largest communities first)."}}, "required": []}),
+            description: "Write the feature website of a repository: an index page listing every feature community and the repository's entry points (GraphQL root fields with their callers, public contract functions, MCP tools, HTTP routes, React data hooks; for text, the document plan and transcript timestamps), plus one drill-down page per feature (members, files, relations to other features, summary). With `repos` or `all_repos`: every selected project repo's site, the correlations report, and ONE project hub (<project>/docs/features_memory/index.html) — what was indexed per repo, a feature graph across repos (features as nodes; call/import weight and cross-repo links as edges), the entry points of the whole project, every feature, and links to all pages. Content-hash gated per page — the return reports written vs cached counts and entry points per category; cached pages must not be re-read.",
+            input_schema: json!({"type": "object", "properties": {
+                "repo": repo_prop(),
+                "out": {"type": "string", "description": "Output directory (one repository only). Default: <repo>/docs/features_memory/site"},
+                "limit": {"type": "integer", "description": "Max feature pages per repository (largest communities first)."},
+                "repos": {"type": "array", "items": {"type": "string"}, "description": "Compose these project repos (aliases/paths) and the project hub."},
+                "all_repos": {"type": "boolean", "default": false, "description": "Compose every repo of the project and the project hub."},
+                "project": {"type": "string", "description": "Path to chaos.toml for `repos`/`all_repos`. Default: nearest ancestor of the current directory."}
+            }, "required": []}),
         },
         ToolSpec {
             name: "correlations",
-            description: "Feature correlations. Intra-repo: pairs of features sharing files or symbols. Cross-repo (project from chaos.toml): consumer→provider links by `package_dep` (one repo imports a package another publishes) and `http_route` (a client call path matches a route another repo registers). Writes a report page and returns a compact list with evidence and confidence.",
+            description: "Feature correlations. Intra-repo: pairs of features sharing files or symbols. Cross-repo (project from chaos.toml): consumer→provider links by `package_dep` (one repo imports a package another publishes), `http_route` (a client call path matches a route another repo registers) and `graphql_field` (a GraphQL operation calls a root field defined in the schema of the repo that owns it). Writes a report page and returns a compact list with evidence and confidence.",
             input_schema: json!({"type": "object", "properties": {
                 "project": {"type": "string", "description": "Path to chaos.toml. Default: nearest ancestor of the current directory."},
                 "repos": {"type": "array", "items": {"type": "string"}, "description": "Restrict to these aliases/paths."},

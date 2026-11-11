@@ -84,6 +84,7 @@ const EXTRAS: &[super::lang::ExtraPass] = &[
     heritage_relations,
     packages,
     super::surface::typescript,
+    super::entry::typescript,
     super::graphql::embedded_ts,
 ];
 

@@ -11,6 +11,9 @@
 //!   matches a call path recorded on a consumer File node under
 //!   `metadata.http_calls` (analyze must populate it from fetch/axios/reqwest
 //!   string literals; absent metadata simply yields no links).
+//! - `graphql_field`: a consumer GraphQL `Operation` whose `metadata.root_fields`
+//!   names a root field (`Mutation.createLab`) defined in the SDL of the
+//!   field's schema owner (see [`graphql_field_links`]).
 //!
 //! Everything is resolved from the persisted index through the ports; the
 //! report page is hash-gated on the sorted link keys.
@@ -33,6 +36,7 @@ pub const MAX_CROSS: usize = 100;
 pub const MAX_EVIDENCE_FILES: usize = 5;
 pub const PACKAGE_DEP_CONFIDENCE: f32 = 0.9;
 pub const HTTP_ROUTE_CONFIDENCE: f32 = 0.75;
+pub const GRAPHQL_FIELD_CONFIDENCE: f32 = 0.8;
 
 /// A member repository of the correlation run.
 #[derive(Debug, Clone)]
@@ -366,6 +370,105 @@ fn package_dep_links(consumer: &RepoView, provider: &RepoView, published: &[Stri
         .collect()
 }
 
+/// Whether a GraphQL field's qualified name sits on a root operation type.
+pub fn is_root_field(qualified: &str) -> bool {
+    ["Query.", "Mutation.", "Subscription."]
+        .iter()
+        .any(|p| qualified.starts_with(p))
+}
+
+/// `graphql_field` links: a consumer `Operation` node calling a root field
+/// (`metadata.root_fields`, e.g. `Mutation.createLab`) → the community that
+/// defines that field in the schema OWNER's SDL.
+///
+/// Several repos may carry the same field (a client keeps a copy of the API
+/// schema for codegen). The owner of a field is the repo, among those defining
+/// it, that defines the most root fields overall (tie: earlier repo in the
+/// project). Links go only from a repo to that owner, so a schema copy never
+/// turns the API repo into a consumer of its own client.
+fn graphql_field_links(views: &[RepoView]) -> Vec<Link> {
+    // field → [(repo index, defining community)]
+    let mut defs: BTreeMap<String, Vec<(usize, Uuid)>> = BTreeMap::new();
+    let mut root_count = vec![0usize; views.len()];
+    for (vi, v) in views.iter().enumerate() {
+        for node in v.nodes.iter().filter(|n| n.kind == NodeKind::Field) {
+            let Some(q) = node.metadata["qualified_name"].as_str() else {
+                continue;
+            };
+            if !is_root_field(q) || node.metadata["language"].as_str() != Some("graphql") {
+                continue;
+            }
+            let cid = v
+                .node_community
+                .get(&node.id)
+                .copied()
+                .or_else(|| node.file_id.and_then(|f| v.community_of_file(f)));
+            let Some(cid) = cid else { continue };
+            root_count[vi] += 1;
+            let entry = defs.entry(q.to_string()).or_default();
+            if !entry.contains(&(vi, cid)) {
+                entry.push((vi, cid));
+            }
+        }
+    }
+    let owner = |field: &str| -> Option<usize> {
+        defs.get(field)?
+            .iter()
+            .map(|(vi, _)| *vi)
+            .max_by(|a, b| root_count[*a].cmp(&root_count[*b]).then_with(|| b.cmp(a)))
+    };
+    // (consumer repo, consumer community, provider repo, provider community) → evidence
+    let mut grouped: BTreeMap<(usize, Uuid, usize, Uuid), BTreeSet<String>> = BTreeMap::new();
+    for (ci, consumer) in views.iter().enumerate() {
+        for node in consumer
+            .nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Operation)
+        {
+            let fields = string_list(&node.metadata["root_fields"]);
+            if fields.is_empty() {
+                continue;
+            }
+            let Some(ccid) = consumer
+                .node_community
+                .get(&node.id)
+                .copied()
+                .or_else(|| node.file_id.and_then(|f| consumer.community_of_file(f)))
+            else {
+                continue;
+            };
+            let path = node
+                .file_id
+                .and_then(|f| consumer.file_paths.get(&f))
+                .cloned()
+                .unwrap_or_default();
+            for field in fields {
+                let Some(oi) = owner(&field).filter(|oi| *oi != ci) else {
+                    continue;
+                };
+                for (_, pcid) in defs[&field].iter().filter(|(vi, _)| *vi == oi) {
+                    grouped
+                        .entry((ci, ccid, oi, *pcid))
+                        .or_default()
+                        .insert(format!("{field} <- {} ({path})", node.name));
+                }
+            }
+        }
+    }
+    grouped
+        .into_iter()
+        .map(|((ci, ccid, oi, pcid), evidence)| Link {
+            consumer_repo: views[ci].alias.clone(),
+            consumer_feature: views[ci].feature(ccid),
+            provider_repo: views[oi].alias.clone(),
+            provider_feature: views[oi].feature(pcid),
+            kind: "graphql_field".into(),
+            evidence: evidence.into_iter().take(MAX_EVIDENCE_FILES).collect(),
+            confidence: GRAPHQL_FIELD_CONFIDENCE,
+        })
+        .collect()
+}
+
 const STATIC_EXTS: &[&str] = &[
     "js", "mjs", "cjs", "css", "map", "png", "jpg", "jpeg", "gif", "svg", "ico", "webp", "woff",
     "woff2", "ttf", "html", "json", "txt", "xml", "pdf",
@@ -579,6 +682,7 @@ pub async fn correlations(
             cross.extend(http_route_links(consumer, provider));
         }
     }
+    cross.extend(graphql_field_links(&views));
     let before = cross.len();
     cross.retain(|l| l.confidence >= min_confidence);
     cross.sort_by(|x, y| {
@@ -596,7 +700,7 @@ pub async fn correlations(
     crumbs.push(Breadcrumb::new(
         source::GRAPH,
         "link",
-        format!("{} cross-repo links kept of {before} (package_dep via File metadata.packages × published names; http_route via metadata.http_calls × HttpRoute nodes; min_confidence {min_confidence})", cross.len()),
+        format!("{} cross-repo links kept of {before} (package_dep via File metadata.packages × published names; http_route via metadata.http_calls × HttpRoute nodes; graphql_field via Operation metadata.root_fields × the schema owner's root Field nodes; min_confidence {min_confidence})", cross.len()),
     ));
 
     let mut keys: Vec<String> = cross.iter().map(link_key).collect();
@@ -967,6 +1071,104 @@ mod tests {
             members: HashMap::from([(client, client_members), (api, api_members)]),
         };
         (store, vec![repo_ref("client"), repo_ref("api")])
+    }
+
+    /// One repo view: every node in one community `<alias>-main`.
+    fn gql_view(alias: &str, nodes: Vec<(NodeKind, &str, Value)>) -> RepoView {
+        let repo = id(alias);
+        let f = file(repo, "schema.graphql");
+        let c = community(repo, &format!("{alias}-main"), &[]);
+        let nodes: Vec<Node> = nodes
+            .into_iter()
+            .map(|(kind, name, meta)| node(repo, Some(f.id), kind, name, name, meta))
+            .collect();
+        RepoView {
+            alias: alias.into(),
+            communities: vec![CommunityView {
+                id: c.id,
+                label: c.label.clone(),
+                member_count: nodes.len(),
+                files: BTreeSet::new(),
+                symbols: BTreeSet::new(),
+                file_node_counts: HashMap::from([(f.id, nodes.len())]),
+            }],
+            node_community: nodes.iter().map(|n| (n.id, c.id)).collect(),
+            file_paths: HashMap::from([(f.id, f.path.clone())]),
+            nodes,
+        }
+    }
+
+    #[test]
+    fn graphql_field_links_point_at_the_schema_owner() {
+        fn field(q: &'static str) -> (NodeKind, &'static str, Value) {
+            (
+                NodeKind::Field,
+                q.rsplit('.').next().unwrap(),
+                json!({"qualified_name": q, "language": "graphql"}),
+            )
+        }
+        let op = |name: &'static str, fields: &[&str]| {
+            (
+                NodeKind::Operation,
+                name,
+                json!({"operation_type": "mutation", "root_fields": fields}),
+            )
+        };
+        // `api` owns the schema (3 root fields); `client` keeps a 1-field copy
+        // and calls it; `agent` calls it plus a field nobody defines.
+        let api = gql_view(
+            "api",
+            vec![
+                field("Mutation.createLab"),
+                field("Query.lab"),
+                field("Query.labs"),
+                op("InternalLab", &["Query.lab"]),
+            ],
+        );
+        let client = gql_view(
+            "client",
+            vec![
+                field("Mutation.createLab"),
+                op("CreateLab", &["Mutation.createLab"]),
+            ],
+        );
+        let agent = gql_view(
+            "agent",
+            vec![op("AgentCreate", &["Mutation.createLab", "Query.unknown"])],
+        );
+        // A Solidity event is a Field too, but never a GraphQL root field.
+        let chain = gql_view(
+            "chain",
+            vec![(
+                NodeKind::Field,
+                "createLab",
+                json!({"qualified_name": "Mutation.createLab", "language": "solidity"}),
+            )],
+        );
+        let links = graphql_field_links(&[client, api, agent, chain]);
+        let got: Vec<(&str, &str, &str)> = links
+            .iter()
+            .map(|l| {
+                (
+                    l.consumer_repo.as_str(),
+                    l.provider_repo.as_str(),
+                    l.kind.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("client", "api", "graphql_field"),
+                ("agent", "api", "graphql_field")
+            ]
+        );
+        assert_eq!(
+            links[1].evidence,
+            ["Mutation.createLab <- AgentCreate (schema.graphql)"]
+        );
+        assert_eq!(links[0].provider_feature.label, "api-main");
+        assert!((links[0].confidence - GRAPHQL_FIELD_CONFIDENCE).abs() < f32::EPSILON);
     }
 
     #[tokio::test]

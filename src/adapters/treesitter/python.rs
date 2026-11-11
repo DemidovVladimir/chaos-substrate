@@ -55,6 +55,7 @@ static SPEC: LangSpec = LangSpec {
         merge_imports,
         packages,
         super::surface::python,
+        super::entry::python,
         super::graphql::embedded_python,
     ],
 };

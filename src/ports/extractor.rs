@@ -80,9 +80,11 @@ pub struct Relation {
 pub enum SurfaceKind {
     EnvVar,
     HttpRoute,
+    McpTool,
 }
 
-/// A user-facing surface found in the file (env var read, HTTP route registered).
+/// A user-facing surface found in the file (env var read, HTTP route
+/// registered, MCP tool registered).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Surface {
     pub kind: SurfaceKind,
@@ -91,6 +93,10 @@ pub struct Surface {
     pub line: u32,
     /// stable_id of the enclosing symbol, if any.
     pub owner: Option<String>,
+    /// One line a reader needs next to the name (an MCP tool's title or
+    /// description); never embedded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -110,6 +116,10 @@ pub struct FileExtraction {
     pub free_ranges: Vec<(usize, usize)>,
     /// Non-fatal parse problems (file still indexed at file level).
     pub warnings: Vec<String>,
+    /// The document's own title when it declares one (Markdown front matter
+    /// `title:`); stored on the File node as `metadata.title`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 pub trait SourceExtractor: Send + Sync {

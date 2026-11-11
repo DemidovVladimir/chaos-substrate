@@ -6,7 +6,8 @@
 Chaos Substrate (1.0) is a small Rust crate that builds a persistent knowledge graph of one or
 more code repositories so an agent can answer feature questions with code excerpts from the index
 instead of re-reading source. Languages: Rust, TypeScript, JavaScript, Python, Solidity, GraphQL
-(SDL, operations, and `gql`-embedded documents in TS/JS/Python), plus Markdown. Storage is
+(SDL, operations, and `gql`-embedded documents in TS/JS/Python), plus Markdown and `.srt`/`.vtt`
+transcripts. Storage is
 Postgres + pgvector; the memory survives process restarts.
 
 ## Hard rules
@@ -14,7 +15,8 @@ Postgres + pgvector; the memory survives process restarts.
 - No mock embedders, fake vectors, or random vectors. If the embedder is unavailable, indexing fails.
 - Persistence stays Postgres + pgvector (`migrations/001_init.sql`). Never swap in in-memory storage.
 - MCP stays on stdio with newline-delimited JSON-RPC 2.0.
-- Runtime implementation is Rust only. All language extraction is tree-sitter in Rust — no Node or
+- Runtime implementation is Rust only. All code extraction is tree-sitter in Rust (Markdown uses
+  pulldown-cmark, transcripts a line scanner: neither has a tree-sitter grammar) — no Node or
   Python sidecars.
 - On an indexed TARGET repository, answer feature questions with chaos tools only: no `rg`/`grep`/
   `ls` and no generated scripts against that repo. A missing capability is a chaos feature request.
@@ -42,10 +44,15 @@ argument schemas live in one place: `src/application/tools.rs`.
   `docs/features_memory/<slug>.html` (hash-gated). Read `excerpts[].code` instead of opening files.
   With `--repos`/`--all-repos` it answers in each repo of the project (budget split between them)
   and links them where a symbol name from one repo appears verbatim in another's code, on one page.
-- `compose [--out <dir>] [--limit N]` — write the feature website (`docs/features_memory/site/`):
-  an index plus one page per feature, content-hash gated. Cached pages must not be re-read.
+- `compose [--out <dir>] [--limit N] [--repos a b | --all-repos]` — write the feature website
+  (`docs/features_memory/site/`): an index with the repo's entry points (GraphQL fields, contract
+  functions, MCP tools, HTTP routes, React hooks; for text the document plan and transcript
+  timestamps) plus one page per feature, content-hash gated. Across repos it also writes one
+  project hub with a feature graph and the whole project's entry points. Cached pages must not be
+  re-read.
 - `correlations [--repos a b] [--min-confidence 0.5]` — intra-repo pairs of features sharing files
-  or symbols, and cross-repo consumer->provider links (`package_dep`, `http_route`) across the
+  or symbols, and cross-repo consumer->provider links (`package_dep`, `http_route`,
+  `graphql_field`) across the
   repos of a project. Writes `correlations.html`.
 
 CLI-only plumbing: `migrate [--reset]`, `doctor`, `mcp`, `help` (no config or DB needed).

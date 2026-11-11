@@ -10,6 +10,7 @@
 /// (from community, to community, edge kind, direction) → (count, example symbol pairs).
 type QuotientMap = BTreeMap<(Uuid, Uuid, &'static str, &'static str), (usize, Vec<String>)>;
 
+use crate::application::entry_points::{entry_points, RepoIndex};
 use crate::domain::hash::sha256_hex;
 use crate::domain::model::{Node, NodeKind, Repo};
 use crate::domain::provenance::{source, Breadcrumb};
@@ -48,6 +49,8 @@ pub struct ComposeReport {
     pub communities: usize,
     /// Communities listed without a drill-down page (`limit` cut them off).
     pub omitted: usize,
+    /// Entry points on the index page, per category (non-empty only).
+    pub entry_points: BTreeMap<String, usize>,
     pub provenance: Vec<Breadcrumb>,
 }
 
@@ -101,7 +104,7 @@ fn unique_slug(base: &str, taken: &mut HashSet<String>) -> String {
 
 /// A page's `content_hash`: the hash of the data the page shows. Provenance and
 /// the commit stamp are left out, so they alone never rewrite a page.
-fn page_hash(manifest: &Value) -> String {
+pub(crate) fn page_hash(manifest: &Value) -> String {
     let mut shown = manifest.clone();
     if let Some(fields) = shown.as_object_mut() {
         fields.remove("provenance");
@@ -110,7 +113,7 @@ fn page_hash(manifest: &Value) -> String {
     sha256_hex(&shown.to_string())
 }
 
-fn snippet(summary: Option<&str>) -> String {
+pub(crate) fn snippet(summary: Option<&str>) -> String {
     let text = summary
         .unwrap_or("")
         .split_whitespace()
@@ -255,7 +258,11 @@ pub async fn compose(
 
     let surface_nodes = deps
         .search
-        .surfaces(repo.id, &[NodeKind::EnvVar, NodeKind::HttpRoute], None)
+        .surfaces(
+            repo.id,
+            &[NodeKind::EnvVar, NodeKind::HttpRoute, NodeKind::McpTool],
+            None,
+        )
         .await
         .context("load surfaces")?;
     let surfaces_by_file: HashMap<Uuid, Vec<&Node>> = surface_nodes
@@ -385,6 +392,16 @@ pub async fn compose(
         }
     }
 
+    // Entry points of this repository alone (the project hub joins repos).
+    let entries = {
+        let index = [RepoIndex::new(&repo.name, &graph, &members)];
+        entry_points(&index)
+    };
+    provenance.push(Breadcrumb::new(
+        source::GRAPH,
+        "entry_points",
+        entries.provenance(),
+    ));
     let mut index_manifest = json!({
         "title": format!("{} — features", repo.name),
         "repo": repo.name,
@@ -399,6 +416,7 @@ pub async fn compose(
             "summary": snippet(c.summary.as_deref()),
         })).collect::<Vec<_>>(),
         "omitted": omitted,
+        "entry_points": entries.to_json(),
         "provenance": provenance,
     });
     index_manifest["content_hash"] = json!(page_hash(&index_manifest));
@@ -428,6 +446,7 @@ pub async fn compose(
         pages_cached: cached,
         communities: total,
         omitted,
+        entry_points: entries.counts(),
         provenance,
     })
 }

@@ -35,9 +35,14 @@ help, the MCP `tools/list` roster, and a test that both stay in sync.
    `indexing.skip_dirs`; files over 2 MiB are skipped.
 2. **Extract** (`adapters/treesitter`). Per file, in parallel, tree-sitter for Rust, TS/JS,
    Python, Solidity and GraphQL (plus `gql` documents embedded in TS/JS/Python); a heading-based
-   extractor for Markdown. Output is file-local: symbols with byte/line ranges, doc comments,
-   unresolved import and call candidates, and user surfaces (env vars read, HTTP routes
-   registered) found by node-shape walks, never regex.
+   extractor for Markdown; a line scanner for `.srt`/`.vtt` transcripts (subtitles have no
+   grammar). Output is file-local: symbols with byte/line ranges, doc comments, unresolved
+   import and call candidates, and user surfaces (env vars read, HTTP routes and MCP tools
+   registered) found by node-shape walks, never regex. Entry-point passes
+   (`treesitter/entry.rs`) add MCP tools, Next.js route handlers (routes from the file path) and
+   `metadata.hook` on React hooks that wrap a data hook. Transcripts, and Markdown sections that
+   are mostly timestamped lines, are cut into time segments (`treesitter/transcript.rs`): one
+   `Section` per segment, named by its start time.
 3. **Analyze** (`application/analyze.rs`). Builds the L0 graph and resolves relations
    project-wide, never fuzzily. Imports become `Imports` edges between file nodes (confidence
    1.0). A call becomes a `Calls` edge only when unambiguous: one definition in the same file
@@ -147,7 +152,10 @@ overlap, capped at 50 per repo. Cross-repo, for every ordered pair of project me
 provider publishes per its `package.json`/`Cargo.toml`; confidence 0.9) and `http_route` (a
 provider `HttpRoute` node such as `GET /users/:id` matches a call path recorded on a consumer
 file under `metadata.http_calls`, parameters normalized; confidence 0.75). Links below
-`min_confidence` are dropped; at most 100 cross links, 5 evidence files each. The report page
+`min_confidence` are dropped; and `graphql_field` (a consumer GraphQL operation's
+`metadata.root_fields` names a root field defined in the SDL of the schema owner — the repo
+defining the most root fields; confidence 0.8). At most 100 cross links, 5 evidence files each.
+The report page
 `correlations.html` is hash-gated on the sorted link keys. Package names are read from manifests
 by the entry layer; use-cases never touch the filesystem.
 
@@ -158,6 +166,16 @@ a self-contained HTML file embedding the manifest (`<script type="application/js
 id="chaos-manifest">`) and a small renderer. Writing the same `content_hash` over an existing
 page is a no-op; `compose` reports written vs cached counts so an agent never re-reads cached
 pages.
+
+## Entry points
+
+`application/entry_points.rs` derives, from the index alone, where someone comes in from outside:
+GraphQL root fields (in the schema owner, with every calling operation), public/external contract
+functions, MCP tools, HTTP routes, React hooks (with the GraphQL fields their calls reach within
+three hops), the document plan of a repo that is mostly Markdown, and transcript timelines. Test,
+fixture and mock files are left out. Every repo's site index lists its own; the project hub
+(`compose --all-repos`, `application/project_compose.rs`) lists the whole project's next to a
+feature graph across the repos. One renderer (`ENTRY_JS`) draws both.
 
 ## Provenance
 

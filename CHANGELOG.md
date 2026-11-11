@@ -1,5 +1,55 @@
 # Changelog
 
+## 1.3.0 — 2026-11-11
+
+A whole project on one page.
+
+- `compose --repos a b` / `--all-repos` composes every selected repo's site, runs
+  `correlations`, and writes a project hub (`<project>/docs/features_memory/index.html`): what was
+  indexed per repo, a feature graph across the repos (features as nodes, coloured by dominant
+  language; call/import weight inside a repo and cross-repo links as edges; a detail panel per
+  feature), every feature with a filter, the cross-repo links with evidence, and the project
+  feature pages in that directory.
+- `correlations` links GraphQL across repos (`graphql_field`): a GraphQL operation (in a
+  `.graphql` file or embedded in TS/Python) → the feature defining the root field it calls in the
+  schema owner's SDL. Operations record their root fields in `metadata.root_fields`; re-index a
+  consumer repo to fill it.
+- Generated pages follow the viewer's dark theme (token-level light and dark palettes).
+- The project hub lists the entry points: GraphQL root fields in the schema owner's repo (one-line
+  header with arguments and auth directives, plus every calling operation) and every
+  public/external Solidity function per contract and interface (read/write, modifiers). Features
+  holding entry points are always drawn and carry a dotted ring.
+- Solidity functions record `metadata.visibility`, `mutability`, `modifiers` and a one-line
+  `header`; GraphQL SDL fields record a one-line `header` without descriptions. The first-line
+  `signature` (used in chunk text) is unchanged, so no re-embedding is needed — `reindex --force`
+  fills the metadata.
+
+Entry points for every kind of content.
+
+- Entry points are found per content type and listed on the project hub AND on every repo's site
+  index, with one filter: the GraphQL API, smart-contract functions, MCP tools, HTTP routes,
+  client hooks, the document plan, and transcript timelines. One module
+  (`application::entry_points`) derives them from the index for both pages.
+- MCP tools are a new surface (`mcp_tool` nodes, with a one-line `detail`): TS
+  `server.registerTool` / `server.tool` / `server.addTool` (a tool name held in a same-file
+  `const` is resolved), Python `@x.tool(...)` and `Tool(name=…)`, Rust rmcp `#[tool(...)]`. They
+  also show in `feature` answers and on feature pages.
+- Next.js route handlers are HTTP routes: `export function GET` in `app/**/route.ts` →
+  `GET /path`, a default export in `pages/api/**` → `ANY /api/…`.
+- React hooks that wrap a data hook (`useQuery`, `useMutation`, Apollo, urql, SWR, wagmi, tRPC)
+  record `metadata.hook` (`kinds`, `wraps`); the entry points add the GraphQL fields their calls
+  reach.
+- Transcripts: `.srt` / `.vtt` files are indexed (language `transcript`), and a Markdown section
+  that is mostly timestamped lines is too: both are cut into time segments, each a section named
+  by its start time. A heading that opens with a timestamp is a chapter mark.
+- A repository whose files are mostly Markdown gets a document plan: each file's title and
+  chapters.
+- Fix: YAML front matter (`---` … `---` at the top of a Markdown file) is one block. Its
+  `title: x` line followed by `---` was read as a heading, and its `# comments` as H1 sections.
+  Its `title:` is kept on the File node (`metadata.title`) and names the document in the plan.
+- `compose` returns `entry_points` (count per category) instead of `graphql_fields` /
+  `contract_functions`.
+
 ## 1.2.0 — 2026-10-27
 
 Simpler: the Merkle tree is gone.

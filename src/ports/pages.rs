@@ -18,6 +18,9 @@ pub enum PageKind {
     SitePage,
     /// Correlation report (intra + cross-repo).
     Correlations,
+    /// Project hub: what was indexed per repo, the feature graph across the
+    /// project's repos, every feature, cross-repo links and question pages.
+    ProjectIndex,
 }
 
 /// The element id of the embedded manifest block in every generated page.

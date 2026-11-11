@@ -184,10 +184,50 @@ fn preceding_comments(node: Node, src: &str) -> Option<String> {
     (!doc.is_empty()).then(|| doc.chars().take(1000).collect())
 }
 
-/// `metadata.library/modifier/event` flags and `is A, B` → `Extends` relations.
+/// `metadata.library/modifier/event` flags, function access
+/// (`visibility`, `mutability`, `modifiers` — what makes a function part of a
+/// contract's public ABI and who may call it) and `is A, B` → `Extends`.
 fn metadata_and_inheritance(tree: &Tree, file: &FileInput, out: &mut FileExtraction) {
     let src = file.content.as_str();
     walk(tree, |n| {
+        if n.kind() == "function_definition" {
+            if let Some(idx) = symbol_at(out, n) {
+                // One-line header up to the body: multi-line parameter lists
+                // are cut by the generic first-line signature.
+                let end = n
+                    .child_by_field_name("body")
+                    .map_or(n.end_byte(), |b| b.start_byte());
+                let header = src[n.start_byte()..end]
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .trim_end_matches(';')
+                    .trim()
+                    .to_string();
+                let meta = &mut out.symbols[idx].metadata;
+                meta["header"] = serde_json::json!(header);
+                let mut modifiers: Vec<String> = Vec::new();
+                let mut cursor = n.walk();
+                for c in n.named_children(&mut cursor) {
+                    let t = text(c, src).trim().to_string();
+                    match c.kind() {
+                        "visibility" => meta["visibility"] = serde_json::json!(t),
+                        "state_mutability" => meta["mutability"] = serde_json::json!(t),
+                        "modifier_invocation" => {
+                            let name = t.split('(').next().unwrap_or("").trim().to_string();
+                            if !name.is_empty() {
+                                modifiers.push(name);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if !modifiers.is_empty() {
+                    meta["modifiers"] = serde_json::json!(modifiers);
+                }
+            }
+            return;
+        }
         let flag = match n.kind() {
             "library_declaration" => "library",
             "modifier_definition" => "modifier",
@@ -407,6 +447,26 @@ function freeHelper(uint256 x) pure returns (uint256) {
         );
         let ev = find(&x, "solidity:contracts/Token.sol:field:Token::Transfer");
         assert_eq!(ev.metadata["event"], true);
+        let transfer = find(&x, "solidity:contracts/Token.sol:method:Token::transfer");
+        assert_eq!(transfer.metadata["visibility"], "public");
+        assert_eq!(
+            transfer.metadata["modifiers"],
+            serde_json::json!(["onlyPositive"])
+        );
+        assert!(transfer.metadata.get("mutability").is_none());
+        let min = find(&x, "solidity:contracts/Token.sol:method:MathLib::min");
+        assert_eq!(min.metadata["visibility"], "internal");
+        assert_eq!(min.metadata["mutability"], "pure");
+        let deposit = find(&x, "solidity:contracts/Token.sol:method:IVault::deposit");
+        assert_eq!(deposit.metadata["visibility"], "external");
+        assert_eq!(
+            transfer.metadata["header"],
+            "function transfer(address to, uint256 amount) public onlyPositive(amount) returns (bool)"
+        );
+        assert_eq!(
+            deposit.metadata["header"],
+            "function deposit(uint256 amount) external"
+        );
         assert_eq!(ev.doc.as_deref(), Some("Emitted on transfer."));
     }
 
