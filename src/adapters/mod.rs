@@ -1,6 +1,7 @@
 //! Adapters: concrete implementations of the ports.
 pub mod config;
 pub mod embedding;
+pub mod foundry;
 pub mod fs_pages;
 pub mod git;
 pub mod postgres;

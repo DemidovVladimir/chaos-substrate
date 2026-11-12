@@ -113,6 +113,7 @@ details.card>summary::before{content:"\25B8  ";color:var(--ink-200)}details.card
 a:focus-visible,button:focus-visible,input:focus-visible,summary:focus-visible,.gn:focus-visible{outline:2px solid var(--blue-600);outline-offset:2px}
 .l-typescript{--lc:var(--lang-typescript)}.l-solidity{--lc:var(--lang-solidity)}.l-python{--lc:var(--lang-python)}.l-graphql{--lc:var(--lang-graphql)}
 .l-markdown{--lc:var(--lang-markdown)}.l-javascript{--lc:var(--lang-javascript)}.l-rust{--lc:var(--lang-rust)}.l-other{--lc:var(--lang-other)}
+.l-abi{--lc:var(--lang-solidity)}
 .sw{display:inline-block;flex:none;width:9px;height:9px;border-radius:50%;background:var(--lc,var(--lang-other))}
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:10px;margin:4px 0 8px}
 .stat{background:var(--surface-0);border:1px solid var(--border);border-radius:10px;padding:12px 14px}
@@ -120,8 +121,9 @@ a:focus-visible,button:focus-visible,input:focus-visible,summary:focus-visible,.
 .stat .sl{font-size:11.5px;color:var(--ink-200);text-transform:uppercase;letter-spacing:.07em;margin-top:2px}
 .n{display:block;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .sha{font-size:11.5px;word-break:break-all}.path{overflow-wrap:anywhere;font-size:12px}
-.gqt table td:nth-child(2){min-width:300px}.gqt table td:nth-child(3),.gqt table td:nth-child(4){min-width:220px}
-.ctt table td:nth-child(4){min-width:320px}.ctt table td:nth-child(1){min-width:140px}
+.gqt table td:nth-child(2){min-width:300px}.gqt table td:nth-child(3),.gqt table td:nth-child(4),.gqt table td:nth-child(5){min-width:220px}
+.ctt table td:nth-child(5){min-width:320px}.ctt table td:nth-child(1){min-width:140px}
+.ctt table td:nth-child(6){min-width:260px}.ccl{margin:6px 0 0;font-size:12.5px}.ccl>span{color:var(--ink-500)}
 .langs{display:flex;flex-wrap:wrap;gap:2px 10px}.lchip{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--ink-500);white-space:nowrap}
 .rchip{display:inline-flex;align-items:center;gap:6px;padding:2px 9px;border-radius:999px;background:var(--surface-3);color:var(--ink-700);font:600 12px var(--mono);margin:0 6px 4px 0}
 .hub{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:12px;align-items:start}
@@ -246,6 +248,7 @@ function featureMap(lanes,links,pick){
   p.appendChild(sv("title",{},[e.cross?a.lane+" \u00b7 "+a.sym+"  \u2192  "+b.lane+" \u00b7 "+b.sym+"\nname '"+e.term+"' appears in its code":a.sym+"  "+e.kind+"  "+b.sym]));
   e.el=p;eg.appendChild(p);});
  var KT={function:"fn",method:"fn",type:"type",interface:"ifc",enum:"enum",type_alias:"type",field:"field",operation:"op",fragment:"frag",section:"\u00a7",file:"file",module:"mod"};
+ KT.abi="abi";
  function clip(s,n){return s.length>n?s.slice(0,n-1)+"\u2026":s}
  function label(n){var max=KT[n.kind]?20:25,s=n.sym;
   if(n.kind==="section"&&n.path){var stem=n.path.split("/").pop().replace(/\.mdx?$/,""),t=s.split(" > ").pop();
@@ -265,9 +268,22 @@ function featureMap(lanes,links,pick){
  var kinds={};E.forEach(function(e){kinds[cls(e)]=1});
  var lg=[h("span",{class:"ex",text:"retrieved excerpt"}),h("span",{class:"nb",text:"1-hop neighbour"})];
  if(kinds.calls)lg.push(h("span",{class:"calls",text:"calls"}));if(kinds.imports)lg.push(h("span",{class:"imports",text:"imports"}));
- if(kinds.other)lg.push(h("span",{class:"other",text:"extends / implements / defines / queries"}));if(kinds.cross)lg.push(h("span",{class:"cross",text:"cross-repo: name appears verbatim in the other repo's code"}));
+ if(kinds.other)lg.push(h("span",{class:"other",text:"extends / implements / defines / queries / binds / resolves"}));if(kinds.cross)lg.push(h("span",{class:"cross",text:"cross-repo: name appears verbatim in the other repo's code"}));
  return h("div",{},[h("div",{class:"mapwrap"},[svg]),h("div",{class:"legend"},lg)]);
 }
+/* GraphQL entry anchor: schema, registration, resolver, calls, callers. */
+function entryTrace(en,multi){
+ var rows=[];function where(x,p,l){return (multi&&x.repo?str(x.repo)+" \u00b7 ":"")+str(p)+(l?":"+l:"")}
+ arr(en.sdl).forEach(function(s){rows.push(["schema",h("code",{text:str(s.coordinate)+": "+str(s.header)}),where(s,s.path,num(s.line))])});
+ if(arr(en.sdl_repos).length)rows.push(["schema",h("span",{class:"muted",text:"SDL in "+arr(en.sdl_repos).join(", ")}),""]);
+ arr(en.bindings).forEach(function(b){var le=arr(b.lambda_entries);rows.push(["registered",h("code",{text:str(b.symbol)}),where(b,b.path,num(b.line))+(le.length?" \u2192 "+le.join(", "):"")])});
+ if(!arr(en.resolvers).length)rows.push(["resolver",h("span",{class:"muted",text:"no resolver found"}),"bound at deploy time, or in another repository"]);
+ arr(en.resolvers).forEach(function(r){var l=arr(r.lines);rows.push(["resolver",h("code",{text:str(r.symbol)}),where(r,r.path,num(l[0])+"-"+num(l[1]))+" \u00b7 confidence "+num(r.confidence).toFixed(1)])});
+ arr(en.trace).forEach(function(t){rows.push(["calls \u00b7 hop "+num(t.hop),h("code",{text:str(t.from)+" \u2192 "+str(t.to)}),str(t.to_path)])});
+ arr(en.callers).forEach(function(c){var hk=arr(c.hooks);rows.push(["called by",h("code",{text:str(c.op)}),where(c,c.path,num(c.line))+(hk.length?" \u00b7 hooks "+hk.join(", "):"")])});
+ return table(["Step","Symbol","Where"],rows,function(r){return [h("span",{class:"chip k",text:r[0]}),r[1],r[2]]});
+}
+var ENTRY_INTRO="The GraphQL field the question names, followed from the schema through its registration and resolver into the code, and back to the operations that call it.";
 "#;
 
 /// Feature answer: question, features, excerpts, graph edges, surfaces.
@@ -275,6 +291,7 @@ const FEATURE_JS: &str = r#"
 (function(){
  var feats=arr(M.features),ex=arr(M.excerpts),edges=arr(M.edges),surf=arr(M.surfaces);
  var body=[];
+ if(M.entry)body.push(sec("Entry: "+arr(M.entry.coordinates).join(", "),ENTRY_INTRO,[entryTrace(M.entry,false)]));
  body.push(sec("Features involved",feats.length+" feature(s) matched by meaning and graph proximity.",feats.map(function(f){
   var c=h("div",{class:"card"},[h("h3",{text:str(f.label)})]);
   if(f.summary)c.appendChild(h("p",{text:str(f.summary)}));
@@ -301,6 +318,9 @@ const PROJECT_FEATURE_JS: &str = r#"
  var body=[summaryBand(repos.length+" repositories \u00b7 "+nEx+" excerpts \u00b7 "+nEd+" graph edges \u00b7 "+links.length+" cross-repo links. Each repository answered the question from its own index; a cross-repo link means a symbol retrieved in one repository is named verbatim in code retrieved from another.")];
  body.push(sec("Feature map","One lane per repository; columns follow call depth (callers left). Solid boxes are retrieved excerpts, dashed boxes 1-hop neighbours, dashed orange lines cross-repo links. Hover to trace, click a solid box to open its excerpt.",[featureMap(lanes,links,function(l,i){jump("ex-"+idx[l]+"-"+i)})]));
  function side(r,sym,path){return h("div",{},[h("span",{class:"chip f",text:str(r)}),h("code",{text:str(sym)}),h("div",{class:"muted",text:str(path)})])}
+ if(M.entry){var el=arr(M.entry_links),ek=[entryTrace(M.entry,true)];
+  if(el.length)ek.push(table(["Called from","Field","Resolved in"],el,function(l){return [side(l.from_repo,l.from,l.from_path),h("span",{class:"chip k",text:str(l.term)}),side(l.to_repo,l.to,l.to_path)]}));
+  body.splice(1,0,sec("Entry: "+arr(M.entry.coordinates).join(", "),ENTRY_INTRO+" "+el.length+" link(s) join a calling operation in one repository to the resolver in another.",ek))}
  body.push(sec("Cross-repo links",links.length+" link(s): the symbol on the left is named verbatim in the code on the right.",links.length?[table(["Defined in","Name","Mentioned in"],links,function(l){return [side(l.from_repo,l.from,l.from_path),h("span",{class:"chip k",text:str(l.term)}),side(l.to_repo,l.to,l.to_path)]})]:[]));
  repos.forEach(function(r,ri){
   var feats=arr(r.features),ex=arr(r.excerpts),surf=arr(r.surfaces),kids=[];
@@ -361,7 +381,7 @@ const CORRELATIONS_JS: &str = r#"
 /// helpers both use and `entryPoints(block, repos)`, which turns a manifest's
 /// `entry_points` block into page sections.
 const ENTRY_JS: &str = r##"
-var LANGS=["typescript","solidity","python","graphql","markdown","javascript","rust"];
+var LANGS=["typescript","solidity","python","graphql","markdown","javascript","rust","abi"];
 function lk(l){return LANGS.indexOf(str(l))>=0?str(l):"other"}
 function fmt(n){return num(n).toLocaleString("en-US")}
 function sw(l){return h("i",{class:"sw l-"+lk(l)})}
@@ -387,13 +407,15 @@ function entryPoints(EP,repos){
  TL.forEach(function(t){n.timeline+=arr(t.entries).length});
 
  GQ.forEach(function(g){add(g.feature,"GraphQL field",str(g.field))});
- part("GraphQL API",GQ.length+" root fields, each listed once in the repository that owns the schema, with every operation in "+(multi?"this project":"this repository")+" that calls it. Directives such as @aws_lambda or @aws_api_key in the signature name the auth mode.",
+ function resolvedBy(g){var rs=arr(g.resolvers),bs=arr(g.bindings);if(!rs.length&&!bs.length)return h("span",{class:"muted",text:"no resolver found"});
+  return h("div",{class:"evl"},rs.map(function(r){return h("div",{},[h("code",{text:str(r.symbol)}),at(r.path,r.line)])}).concat(bs.map(function(b){return h("div",{class:"muted",text:"registered in "+str(b.path)+(b.line?":"+num(b.line):"")+(arr(b.lambda).length?" \u2192 "+arr(b.lambda).join(", "):"")})})))}
+ part("GraphQL API",GQ.length+" root fields, each listed once in the repository that owns the schema, with the code that resolves it where the index can follow the registration, and every operation in "+(multi?"this project":"this repository")+" that calls it (tests left out). Directives such as @aws_lambda or @aws_api_key in the signature name the auth mode.",
   ["Mutation","Query","Subscription"].map(function(root){var rs=GQ.filter(function(g){return str(g.root)===root});if(!rs.length)return null;
-   var t=table(["Field","Signature","Defined in","Called by"],rs,function(g){return [h("code",{class:"epn",text:str(g.name)}),h("code",{class:"sig",text:str(g.signature)}),
-    h("div",{},(multi?[repoChip(g.repo)]:[]).concat(arr(g.files).map(function(p){return pathEl(p)}))),
+   var t=table(["Field","Signature","Defined in","Resolved by","Called by"],rs,function(g){return [h("code",{class:"epn",text:str(g.name)}),h("code",{class:"sig",text:str(g.signature)}),
+    h("div",{},(multi?[repoChip(g.repo)]:[]).concat(arr(g.files).map(function(p){return pathEl(p)}))),resolvedBy(g),
     arr(g.callers).length?h("div",{class:"evl"},arr(g.callers).map(function(c){return h("div",{},[multi?h("span",{class:"rchip",text:str(c.repo)}):null,h("code",{text:str(c.op)}),pathEl(c.path)])})):h("span",{class:"muted",text:"no caller found"})]});
    t.classList.add("gqt");var d=grp(root,rs.length+" fields",true,[t]);
-   trs(t).forEach(function(tr,i){var g=rs[i];track(tr,str(g.field)+" "+str(g.signature)+" "+arr(g.files).join(" ")+" "+arr(g.callers).map(function(c){return c.repo+" "+c.op+" "+c.path}).join(" "),d)});
+   trs(t).forEach(function(tr,i){var g=rs[i];track(tr,str(g.field)+" "+str(g.signature)+" "+arr(g.files).join(" ")+" "+arr(g.resolvers).map(function(r){return str(r.symbol)+" "+str(r.path)}).join(" ")+" "+arr(g.callers).map(function(c){return c.repo+" "+c.op+" "+c.path}).join(" "),d)});
    return d}));
 
  MC.forEach(function(x){add(x.feature,"MCP tool",str(x.name))});
@@ -406,23 +428,32 @@ function entryPoints(EP,repos){
   perRepo(RT).map(function(g){var t=table(["Method","Path","Defined in"],g.rows,function(x){return [h("span",{class:"mth",text:str(x.method)}),h("code",{class:"epn",text:str(x.route)}),h("div",{},[at(x.path,x.line),x.owner?h("div",{class:"muted",text:"in "+str(x.owner)}):null])]});
    t.classList.add("rtt");var d=grp(g.alias,g.rows.length+" routes",true,[t]);trs(t).forEach(function(tr,i){var x=g.rows[i];track(tr,str(x.method)+" "+str(x.route)+" "+str(x.path),d)});return d}));
 
- part("Smart contracts",n.functions+" public or external functions in "+CT.length+" contracts and interfaces. Anyone can call these directly on-chain, with no server in between. The Modifiers column lists only modifiers such as onlyOwner; checks written inside a function body (require, revert) are not shown, so an empty cell does not mean the function is unguarded. Deploy scripts, tests and libraries are left out.",
+ function ccall(x){return h("div",{},[multi?h("span",{class:"rchip",text:str(x.repo)}):null,x.member?h("code",{text:str(x.member)+" ·"}):null,h("code",{text:str(x.owner||x.via)}),x.abi?h("span",{class:"muted",text:"ABI "+str(x.abi)}):null,at(x.path,x.line),h("span",{class:"chip f",text:str(x.tier)})])}
+ function chay(xs){return arr(xs).map(function(x){return str(x.repo)+" "+str(x.path)+" "+str(x.owner)+" "+str(x.via)+" "+str(x.abi)+" "+str(x.member)}).join(" ")}
+ function ccl(label,xs){return arr(xs).length?h("div",{class:"ccl"},[h("span",{text:label}),h("div",{class:"evl"},arr(xs).map(ccall))]):null}
+ part("Smart contracts",n.functions+" public or external functions in "+CT.length+" contracts and interfaces, public state variables included as their read-only getters. Anyone can call these directly on-chain, with no server in between. The Selector is the 4-byte function id derived from the source signature; it is blank when a parameter type comes from code outside the index. The Modifiers column lists modifiers such as onlyOwner, and Reverts lists the custom errors a function raises (revert or require with an error). A require with a plain message is not shown, so an empty cell does not mean the function is unguarded. Callers are the code, in "+(multi?"any repository of this project":"this repository")+", that calls a function through its ABI; the chip says how the call was tied to the contract (named: the ABI names the contract; overlap or unique: its functions match one contract; inherited: the contract inherits the function from a base that is not indexed). Deploy scripts, tests and libraries are left out.",
   perRepo(CT).map(function(g){var cs=g.rows,nf=0;cs.forEach(function(c){nf+=arr(c.functions).length});
    var d=grp(g.alias,cs.length+" contracts and interfaces · "+nf+" public functions",true,[]);
-   cs.forEach(function(c){var fns=arr(c.functions);
+   cs.forEach(function(c){var fns=arr(c.functions),cl=fns.some(function(fn){return arr(fn.callers).length>0});
     d.appendChild(h("div",{class:"ctr"},[h("strong",{text:str(c.name)}),h("span",{class:"chip f",text:str(c.kind)}),pathEl(c.path,"span")]));
-    var t=table(["Function","Access","Modifiers","Signature"],fns,function(fn){return [h("code",{class:"epn",text:str(fn.name)}),accChip(fn),arr(fn.modifiers).length?h("code",{text:arr(fn.modifiers).join(", ")}):h("span",{class:"muted",text:"none"}),h("code",{class:"sig",text:str(fn.signature)})]});
+    var t=table(["Function","Access","Modifiers","Selector","Signature"].concat(cl?["Callers"]:[]),fns,function(fn){return [h("div",{},[h("code",{class:"epn",text:str(fn.name)}),fn.notice?h("div",{class:"muted evs",text:str(fn.notice)}):null]),accChip(fn),arr(fn.modifiers).length?h("code",{text:arr(fn.modifiers).join(", ")}):h("span",{class:"muted",text:"none"}),
+     fn.selector?h("code",{title:str(fn.abi_signature),text:str(fn.selector)}):h("span",{class:"muted",text:"none"}),
+     h("div",{},[h("code",{class:"sig",text:str(fn.signature)}),arr(fn.reverts).length?h("div",{class:"muted evs",text:"Reverts: "+arr(fn.reverts).join(", ")}):null,arr(fn.emits).length?h("div",{class:"muted evs",text:"Emits: "+arr(fn.emits).join(", ")}):null])]
+     .concat(cl?[arr(fn.callers).length?h("div",{class:"evl"},arr(fn.callers).map(ccall)):h("span",{class:"muted",text:"none found"})]:[])});
     t.classList.add("ctt");d.appendChild(t);
-    trs(t).forEach(function(tr,i){var fn=fns[i];track(tr,str(c.name)+" "+str(fn.name)+" "+str(fn.signature)+" "+arr(fn.modifiers).join(" ")+" "+access(fn)+" "+str(c.path),d)});
-    if(arr(c.events).length)d.appendChild(h("p",{class:"muted evs",text:"Events: "+arr(c.events).join(", ")}))});
+    trs(t).forEach(function(tr,i){var fn=fns[i];track(tr,str(c.name)+" "+str(fn.name)+" "+str(fn.notice)+" "+str(fn.signature)+" "+str(fn.selector)+" "+str(fn.abi_signature)+" "+arr(fn.modifiers).join(" ")+" "+arr(fn.reverts).join(" ")+" "+arr(fn.emits).join(" ")+" "+access(fn)+" "+str(c.path)+" "+chay(fn.callers),d)});
+    if(arr(c.events).length)d.appendChild(h("p",{class:"muted evs",text:"Events: "+arr(c.events).join(", ")}));
+    if(arr(c.errors).length)d.appendChild(h("p",{class:"muted evs",text:"Errors: "+arr(c.errors).join(", ")}));
+    var ec=c.event_callers||{},el=[];Object.keys(ec).sort().forEach(function(k){arr(ec[k]).forEach(function(x){el.push(Object.assign({},x,{member:k}))})});
+    [ccl("Event listeners:",el),ccl("Calls to inherited functions:",c.inherited_callers),ccl("ABI users:",c.abi_users)].forEach(function(b){if(b){d.appendChild(b);track(b,str(c.name)+" "+chay(el)+" "+chay(c.inherited_callers)+" "+chay(c.abi_users),d)}})});
    return d}));
 
  HK.forEach(function(x){add(x.feature,"client hook",str(x.name))});
  function reach(x){return arr(x.reaches).length>0}
  part("Client hooks",HK.length+" React hooks the app's screens use to load or change data. A hook that wraps useQuery reads; one that wraps useMutation writes."+(HK.some(reach)?" Reaches lists the GraphQL fields its calls lead to, where the index can follow the calls.":""),
-  perRepo(HK).map(function(g){var rch=g.rows.some(reach);var t=table(["Hook","Does"].concat(rch?["Reaches"]:[]).concat(["Defined in"]),g.rows,function(x){return [h("code",{class:"epn",text:str(x.name)}),h("div",{},[hookChips(x.kinds),h("div",{class:"muted",text:arr(x.wraps).join(", ")})])]
+  perRepo(HK).map(function(g){var rch=g.rows.some(reach);var t=table(["Hook","Does"].concat(rch?["Reaches"]:[]).concat(["Defined in"]),g.rows,function(x){return [h("code",{class:"epn",text:str(x.name)}),h("div",{},[hookChips(x.kinds),h("div",{class:"muted",text:arr(x.wraps).join(", ")}),arr(x.contract_calls).length?h("div",{class:"muted",text:"Contract calls: "+arr(x.contract_calls).join(", ")}):null])]
     .concat(rch?[reach(x)?h("div",{class:"evl"},arr(x.reaches).map(function(f){return h("code",{text:str(f)})})):h("span",{class:"muted",text:"none found"})]:[]).concat([at(x.path,x.line)])});
-   t.classList.add(rch?"hkt":"hkn");var d=grp(g.alias,g.rows.length+" hooks",g.rows.length<=30,[t]);trs(t).forEach(function(tr,i){var x=g.rows[i];track(tr,str(x.name)+" "+arr(x.kinds).join(" ")+" "+arr(x.wraps).join(" ")+" "+arr(x.reaches).join(" ")+" "+str(x.path),d)});return d}));
+   t.classList.add(rch?"hkt":"hkn");var d=grp(g.alias,g.rows.length+" hooks",g.rows.length<=30,[t]);trs(t).forEach(function(tr,i){var x=g.rows[i];track(tr,str(x.name)+" "+arr(x.kinds).join(" ")+" "+arr(x.wraps).join(" ")+" "+arr(x.reaches).join(" ")+" "+arr(x.contract_calls).join(" ")+" "+str(x.path),d)});return d}));
 
  part("Document plan",DC.length+" documents in "+(multi?"repositories that are":"a repository that is")+" mostly text, in file order: each document's title and its chapters.",
   perRepo(DC).map(function(g){var d=grp(g.alias,g.rows.length+" documents",g.rows.length<=12,[]);
@@ -770,6 +801,22 @@ mod tests {
             let html = render_page(kind, &m);
             assert_eq!(html.contains("function entryPoints("), entry, "{kind:?}");
         }
+    }
+
+    #[test]
+    fn entry_anchor_renders_on_feature_pages_only() {
+        let m = json!({"content_hash":"h","question":"Mutation.createLab"});
+        for (kind, entry) in [
+            (PageKind::Feature, true),
+            (PageKind::ProjectFeature, true),
+            (PageKind::SiteIndex, false),
+            (PageKind::ProjectIndex, false),
+        ] {
+            let html = render_page(kind, &m);
+            assert_eq!(html.contains("function entryTrace("), entry, "{kind:?}");
+        }
+        assert!(render_page(PageKind::Feature, &m).contains("entryTrace(M.entry,false)"));
+        assert!(render_page(PageKind::ProjectFeature, &m).contains("arr(M.entry_links)"));
     }
 
     #[test]

@@ -11,7 +11,8 @@ An agent working on a large project burns most of its tokens re-discovering the 
 grepping, opening files, reading whole modules to answer "how does X work?". Chaos Substrate
 does that discovery once, persists it, and answers later questions from the persisted index with
 a token-bounded payload (feature summaries + exact code excerpts + a one-hop call/import graph).
-After every edit, `add` re-indexes only the changed files, so the memory stays current cheaply.
+After every edit, commit or checkout, `add` re-reads only the git delta since its last run (committed
+and uncommitted), so the memory stays current cheaply.
 
 ## Quick start
 
@@ -28,12 +29,24 @@ target/release/chaos feature --repo /absolute/path/to/repo "how are embeddings r
 
 `chaos help` prints the agent guide (tools + workflow) and needs no database or config.
 
-Supported languages: Rust, TypeScript, JavaScript, Python, Solidity, GraphQL (schemas,
-operations, and `gql` documents embedded in TS/JS/Python), plus Markdown and `.srt`/`.vtt`
-transcripts (cut into timestamped segments).
+Supported languages: Rust, TypeScript, JavaScript, Python, Solidity, contract ABIs, GraphQL
+(schemas, operations, and `gql` documents embedded in TS/JS/Python), plus Markdown and
+`.srt`/`.vtt` transcripts (cut into timestamped segments).
 
-Entry points, per content type: GraphQL root fields, public contract functions, MCP tools, HTTP
-routes (Next.js route handlers included), React data hooks, and for text the document plan and
+- Solidity: contracts, functions, modifiers, events, custom errors, state variables and
+  file-level constants, with selectors computed from source and `emits` / `reverts` edges.
+  Imports resolve through Foundry remappings (`remappings.txt`, `foundry.toml`); the Foundry
+  dependency directories (`libs`, default `lib/`) are not indexed.
+- Contract ABIs are found by path only: `*.abi`, `*.abi.json`, and `.json` files under a
+  directory named `abi` or `abis`. ABI constants in TS/JS count too, and a viem/wagmi contract
+  call is linked to the ABI it names (`uses_abi`).
+- GraphQL: a `case "<field>":` of a `switch (fieldName)` in TS/JS (an AppSync resolver Lambda)
+  is a `resolver` node that `resolves` its SDL field; a `{typeName, fieldName}` registration
+  `binds` it.
+
+Entry points, per content type: GraphQL root fields (with their resolvers), public contract
+functions and getters (with selectors and the code that calls them), MCP tools, HTTP routes
+(Next.js route handlers included), React data hooks, and for text the document plan and
 transcript timestamps. `compose` lists them on every site index and on the project hub.
 
 ## The six tools
@@ -45,11 +58,11 @@ directory.
 | Tool | What it does | Key arguments |
 | --- | --- | --- |
 | `index` | Full index: extraction → import/call resolution → contextual chunks → embeddings → feature communities → summaries. Run once per repo. | `repo`, `--dry-run` (CLI only) |
-| `reindex` | Re-run a full index. No-op when git HEAD equals the indexed commit and the worktree is clean. Unchanged chunks keep their embeddings. | `repo`, `force` |
-| `add` | Incremental index of what changed since the last index (content-hash drift; plus everything git reports with `--since REF`). Files gone from disk are purged; only new chunks are embedded. Use after every edit. | `repo`, `since` |
-| `feature` | Answer one feature question from the index, without reading source. Returns feature summaries, code excerpts with line ranges, a 1-hop graph, env vars / HTTP routes / MCP tools involved. Persists the answer as a page with a visual feature map. With `repos`/`all_repos`, answers across the project's repos on one page with cross-repo links. | `question`, `repo`, `repos`, `all_repos`, `project`, `budget_tokens` (1000–16000, default 6000; across repos, split evenly between them), `persist` |
+| `reindex` | Bring the index up to HEAD: the same git delta as `add` plus the files that import or reference a changed file. No-op when HEAD is the stamped commit and nothing is uncommitted. `force` runs a full index. Unchanged chunks keep their embeddings. | `repo`, `force` |
+| `add` | Incremental index of the git delta since the last stamped run: the diff from the stamped commit to HEAD, files uncommitted now, and files uncommitted at the stamp (`--since REF` adds REF..HEAD). Content-equal files are skipped, removed ones purged, only new chunks embedded. Use after every edit, commit, pull or checkout. | `repo`, `since` |
+| `feature` | Answer one feature question from the index, without reading source. Returns feature summaries, code excerpts with line ranges, a 1-hop graph, env vars / HTTP routes / MCP tools involved. Persists the answer as a page with a visual feature map. With `repos`/`all_repos`, answers across the project's repos on one page with cross-repo links. A question naming a GraphQL field (`Mutation.createLab`), or the `entry` argument, starts the answer at that field: SDL, registration, resolver, the calls behind it, and its callers. | `question`, `repo`, `repos`, `all_repos`, `project`, `budget_tokens` (1000–16000, default 6000; across repos, split evenly between them), `persist`, `entry` |
 | `compose` | Write the feature website of a repo: an index page plus one page per feature community. Hash-gated per page. | `repo`, `out`, `limit` |
-| `correlations` | Feature correlations. Intra-repo: features sharing files or symbols. Cross-repo (from `chaos.toml`): `package_dep` and `http_route` links, consumer → provider, with evidence and confidence. | `project`, `repos`, `min_confidence` (default 0.5) |
+| `correlations` | Feature correlations. Intra-repo: features sharing files or symbols. Cross-repo (from `chaos.toml`): `package_dep`, `http_route`, `graphql_field` and `contract_abi` links, consumer → provider, with evidence and confidence. | `project`, `repos`, `min_confidence` (default 0.5) |
 
 CLI-only plumbing: `migrate [--reset]`, `doctor`, `mcp`, `help`.
 
@@ -118,7 +131,8 @@ statements into segments of at least 400 characters; adjacent segments are embed
 configured encoder and merged while their cosine similarity is at least 0.82 and the merge stays
 under 4500 characters, so parts follow meaning rather than a fixed line count. If the embedder
 fails, the unit falls back to a plain line split. Each file also gets one `file_head` chunk for
-imports and top-level statements no symbol owns.
+imports and top-level statements no symbol owns; a head over 1500 characters becomes `part i/n`
+chunks (a test file keeps only the first).
 
 ## Generated pages
 

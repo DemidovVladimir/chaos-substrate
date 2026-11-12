@@ -1,6 +1,6 @@
 ---
 name: chaos-substrate
-description: Use when installing, indexing, updating, or asking feature questions with Chaos Substrate in any Rust, Solidity, TypeScript, JavaScript, Python, or GraphQL repository (Markdown and .srt/.vtt transcripts included); Postgres+pgvector persistence, real Ollama/OpenAI embedders, CLI, MCP stdio, generated feature websites, and cross-repo correlations.
+description: Use when installing, indexing, updating, or asking feature questions with Chaos Substrate in any Rust, Solidity, TypeScript, JavaScript, Python, or GraphQL repository (contract ABIs, Markdown and .srt/.vtt transcripts included); Postgres+pgvector persistence, real Ollama/OpenAI embedders, CLI, MCP stdio, generated feature websites, and cross-repo correlations.
 ---
 
 # Chaos Substrate
@@ -56,11 +56,13 @@ agent guide with no config or database.
 ## Workflow
 
 1. `index` once per repository.
-2. `add` after every edit (content-hash drift vs the index, or `--since <ref>` for a git range).
+2. `add` after every edit, commit, pull or checkout (the git delta since its last run).
 3. `feature "<question>"` to answer; read the returned excerpts, not the files.
 4. `compose` to write the clickable feature website (`--all-repos`: every repo + the project hub).
 5. `correlations` to link features within a repo and across the project's repos.
-6. `reindex` only when the index looks stale — it is a no-op when HEAD is indexed and clean.
+6. `reindex` only when the index looks stale — the `add` delta plus its dependents; a no-op when
+   HEAD is the stamp and nothing is uncommitted. After upgrading Chaos, `reindex --force` every
+   repo: the delta never re-extracts unchanged files.
 
 Prefer MCP tools when available; the CLI subcommands take the same arguments.
 
@@ -85,8 +87,10 @@ chunks, `chunks_embedded`, `chunks_reused`, communities, `summaries_recomputed`,
 
 ### reindex — `chaos reindex [--force]` / `chaos_reindex`
 
-Re-run a full index. No-op when git HEAD equals the indexed commit and the worktree is clean
-(unless `force`). Unchanged chunks keep their embeddings (content-hash reuse).
+Bring the index up to HEAD: the same git delta as `add` plus the unchanged files one hop upstream
+of each change, so their edges reach new symbols. No-op when HEAD is the stamped commit, the
+worktree is clean and nothing was uncommitted at the last run. Without a usable stamp, or with
+`force`, it runs the full index. Unchanged chunks keep their embeddings (content-hash reuse).
 
 | arg | type | notes |
 |---|---|---|
@@ -95,19 +99,23 @@ Re-run a full index. No-op when git HEAD equals the indexed commit and the workt
 
 ### add — `chaos add [--since <ref>]` / `chaos_add`
 
-Incrementally index what changed since the last index: drifted files re-extracted against the persisted graph, deleted and
-renamed-away files purged, only new chunks embedded, communities rebuilt and a summary embedded
-again only where its text changed. Use after every edit instead of `reindex`.
+Incrementally index the git delta since the last stamped run: files changed between the stamped
+commit and HEAD, files uncommitted now and files uncommitted at the stamp. Content-equal files
+are skipped; the rest are re-extracted against the persisted graph; deleted, renamed-away and
+no-longer-listed files are purged; only new chunks are embedded; communities are rebuilt and a
+summary embedded again only where its text changed. Without a usable stamp (none yet, a failed
+run, other indexing rules, commit not in this clone) it reconciles every file by content hash
+once; `delta.fallback` says why. Use after every edit, commit, pull or checkout.
 
 | arg | type | notes |
 |---|---|---|
 | `repo` | string | optional |
-| `since` | string | optional git ref: also re-index everything changed since it (e.g. `HEAD~1`); hash drift is always detected |
+| `since` | string | optional git ref: also re-check every file changed between it and HEAD (e.g. `HEAD~3`), on top of the stamp delta; must name a commit |
 
 Returns `changed`, `purged`, nodes, chunks, `chunks_embedded`, `communities_changed`,
 `summaries_recomputed`, warnings, provenance.
 
-### feature — `chaos feature "<question>" [--budget N] [--no-persist] [--json] [--repos a b | --all-repos]` / `chaos_feature`
+### feature — `chaos feature "<question>" [--budget N] [--no-persist] [--json] [--repos a b | --all-repos] [--entry <field>]` / `chaos_feature`
 
 Answer ONE feature question from the index without reading source: routes to the matching feature
 communities, retrieves the relevant chunks (literal identifiers named in the question over the
@@ -121,6 +129,14 @@ chars) found as a whole word in another repo's excerpt — on ONE page under
 `<project dir>/docs/features_memory/`. Use it for features that span repos (contract → indexer →
 UI → docs). Name the key identifiers in the question: they pull their files into scope.
 
+To follow a GraphQL field, name it: `Mutation.createLab` in the question always anchors, a bare
+root field (`createLab`) anchors next to a word such as query, mutation, subscription, resolver,
+graphql or field, and `entry` anchors on its own. The answer then leads with `entry`: the SDL,
+the registration (AppSync `getResolvers()` entry and the Lambda it deploys), the resolver (a
+`switch (fieldName)` case), its calls up to 3 hops, and the operations and hooks that call the
+field (tests left out), trimmed to a quarter of the budget. A field registered only when the
+CDK app runs shows no resolver; it is never guessed.
+
 | arg | type | notes |
 |---|---|---|
 | `question` | string | required, e.g. "how are embeddings reused on reindex" |
@@ -130,15 +146,18 @@ UI → docs). Name the key identifiers in the question: they pull their files in
 | `project` | string | chaos.toml for `repos`/`all_repos` (CLI global `--project`) |
 | `budget_tokens` | integer | default 6000, min 1000, max 16000; across repos, split evenly (≥ 1000 each) (CLI `--budget`) |
 | `persist` | boolean | default `true` (CLI `--no-persist`) |
+| `entry` | string | GraphQL field to start from: `Mutation.createLab` or `createLab` (CLI `--entry`) |
 
 Return fields: `features[]` (`id`, `label`, `score`, `summary`, `files`), `excerpts[]` (`path`,
-`lines [start, end]`, `symbol`, `kind`, `score`, `why` = semantic/keyword/literal/graph, `code`,
-`code_truncated`), `graph[]` (`from`, `kind`, `to`, `from_path`, `to_path`), `surfaces[]` (env
-vars, HTTP routes, MCP tools), `page`, `page_cached`, `content_hash`, `tokens_used`, `warnings`,
-`provenance`. Across repos: `question`, `project`, `repos[]` (`alias` + the fields above),
-`links[]` (`from_repo`, `from`, `from_path`, `to_repo`, `to`, `to_path`, `term`), `page`
-(absolute), `page_cached`, `content_hash`, `tokens_used`. The CLI prints Markdown by default;
-`--json` prints the payload.
+`lines [start, end]`, `symbol`, `kind`, `score`, `why` = entry/semantic/keyword/literal/graph,
+`code`, `code_truncated`), `graph[]` (`from`, `kind`, `to`, `from_path`, `to_path`), `surfaces[]`
+(env vars, HTTP routes, MCP tools), `entry` when anchored (`coordinates`, `sdl[]`, `bindings[]`,
+`resolvers[]`, `trace[]`, `callers[]`), `page`, `page_cached`, `content_hash`, `tokens_used`,
+`warnings`, `provenance`. Across repos: `question`, `project`, `repos[]` (`alias` + the fields
+above), `links[]` (`from_repo`, `from`, `from_path`, `to_repo`, `to`, `to_path`, `term`), `entry`
+(the members' anchors joined, rows tagged with `repo`) and `entry_links[]` (a calling operation
+in one repo → the resolver in another), `page` (absolute), `page_cached`, `content_hash`,
+`tokens_used`. The CLI prints Markdown by default; `--json` prints the payload.
 
 ### compose — `chaos compose [--out <dir>] [--limit N] [--repos a b | --all-repos]` / `chaos_compose`
 
@@ -159,11 +178,11 @@ ENTRY POINTS — where someone comes in from outside, per content type (one filt
 
 | Category | What is listed | Detected from |
 |---|---|---|
-| GraphQL API | every root field once, in the repo that owns the schema (most root fields), with its one-line header (arguments, auth directives) and every operation in the project that calls it | SDL fields + operations' `root_fields` |
-| Smart contracts | every public/external function per contract and interface: read/write (`mutability`), `modifiers`, header; events | Solidity metadata; deploy scripts (`*.s.sol`, `script/`), tests, libraries excluded |
+| GraphQL API | every root field once, in the repo that owns the schema (most root fields), with its one-line header (arguments, auth directives), the resolver that implements it and where it is registered, and every operation in the project that calls it (tests left out) | SDL fields + operations' `root_fields` + `resolves` / `binds` edges |
+| Smart contracts | every public/external function and public getter per contract and interface: read/write (`mutability`), `modifiers`, `selector`, header, NatSpec notice, the events it emits and errors it reverts with, and its callers in the project with their tier (named/overlap/unique/inherited); per contract its events, custom errors, event listeners and ABI users | Solidity metadata, `emits` / `reverts` edges, `contract_calls` through `uses_abi`; deploy scripts (`*.s.sol`, `script/`), tests, libraries excluded |
 | MCP tools | tool name, title/description, file:line, registering function | TS `server.registerTool(NAME, {title, description})`, `server.tool(NAME, "desc", …)`, `server.addTool({name})` (`NAME` a string or a same-file `const`); Python `@x.tool(...)` (name from `name=` or the function, detail from the docstring) and `Tool(name=…)`; Rust rmcp `#[tool(…)]` |
 | HTTP routes | method + path, file:line | express/fastify/hono/NestJS/Flask/FastAPI/axum/actix (existing surfaces) and Next.js route handlers: `export function GET` in `app/**/route.ts` → `GET /path` (route groups and slots dropped), default export in `pages/api/**` → `ANY /api/…` |
-| Client hooks | React `use*` functions wrapping a data hook: reads/writes/listens, which hooks, the GraphQL fields their calls reach (≤ 3 resolved call hops; a call through an SDK object such as `sdk.labs.update()` is not followed) | `useQuery`, `useMutation`, `useSuspenseQuery`, `useInfiniteQuery`, Apollo/urql, SWR, wagmi `useReadContract`/`useWriteContract`, tRPC `x.useQuery` → `metadata.hook` |
+| Client hooks | React `use*` functions wrapping a data hook: reads/writes/listens, which hooks, the GraphQL fields their calls reach (≤ 3 resolved call hops; a call through an SDK object such as `sdk.labs.update()` is not followed) and the contract calls (`{abi}.{member}`) they make or reach | `useQuery`, `useMutation`, `useSuspenseQuery`, `useInfiniteQuery`, Apollo/urql, SWR, wagmi `useReadContract`/`useWriteContract`, tRPC `x.useQuery` → `metadata.hook` |
 | Document plan | each document's title and chapters, in file order | repos whose files are mostly Markdown (hidden folders such as `.github/` left out): the one H1 is the title (else the front matter's `title:`, else the file name) and the next level down are chapters; several H1s are chapters |
 | Timeline | transcript timestamps with their first words | `.srt`/`.vtt` files (language `transcript`); Markdown sections that are mostly `[12:30] text` lines; headings that open with a timestamp (`## 12:30 Setup`) |
 
@@ -183,23 +202,29 @@ mock files are left out.
 | `project` | string | chaos.toml for `repos`/`all_repos` (CLI global `--project`) |
 
 Returns `out`, `pages_written`, `pages_cached`, `communities`, `omitted`, `entry_points` (count
-per category, non-empty only: `graphql_fields`, `contract_functions`, `mcp_tools`, `http_routes`,
-`client_hooks`, `documents`, `timeline_entries`), provenance. Across repos: `page`,
-`page_written`, `content_hash`, `repos[]` (`alias`, `site`, `pages_written`, `pages_cached`,
-`features`), `features`, `graph_nodes`, `cross_links`, `entry_points`, `correlations_page`,
-provenance. Re-index (`reindex --force`) a repo indexed before this version to fill what the entry
-points read (Solidity `visibility`/`mutability`/`modifiers`/`header`, GraphQL field `header`,
-operation `root_fields`, `metadata.hook`, `mcp_tool` nodes, Next.js routes, transcript segments);
-only new transcript segments are embedded.
+per category, non-empty only: `graphql_fields`, `graphql_fields_resolved`, `contract_functions`,
+`contract_callers`, `mcp_tools`, `http_routes`, `client_hooks`, `documents`, `timeline_entries`),
+provenance. Across repos: `page`, `page_written`, `content_hash`, `repos[]` (`alias`, `site`,
+`pages_written`, `pages_cached`, `features`), `features`, `graph_nodes`, `cross_links`,
+`entry_points`, `correlations_page`, provenance. Re-index (`reindex --force`) every repo indexed before 1.4.0 to fill what the entry
+points read (Solidity getters, errors, `selector`, `natspec`, `bases`, `emits`/`reverts` edges;
+`abi` nodes, `contract_calls` and `uses_abi` edges; `resolver` nodes, `binds`/`resolves` edges);
+only chunks whose text changed are embedded.
 
 ### correlations — `chaos correlations [--repos a b] [--min-confidence 0.5]` / `chaos_correlations`
 
 Feature correlations. Intra-repo: pairs of features sharing files or symbols. Cross-repo (project
 from chaos.toml): consumer -> provider links by `package_dep` (one repo imports a package another
-publishes), `http_route` (a client call path matches a route another repo registers) and
-`graphql_field` (a GraphQL operation calls a root field such as `Mutation.createLab`; the provider
-is the field's schema owner — the repo, among those defining it, that defines the most root
-fields — so a client's schema copy never inverts the link). Writes
+publishes), `http_route` (a client call path matches a route another repo registers),
+`graphql_field` (a GraphQL operation outside tests calls a root field such as
+`Mutation.createLab`; the provider is the field's schema owner — the repo, among those defining
+it, that defines the most root fields — so a client's schema copy never inverts the link; the
+link lands on the resolver's feature when the owner has one, and the evidence names it) and
+`contract_abi` (a viem/wagmi contract call, or a Solidity interface one repo keeps of another
+repo's contract, reaches a public function, getter or event of a Solidity contract in another
+repo: named 0.85, overlap 0.7, unique 0.6, inherited from an unindexed base such as OpenZeppelin
+`ERC721` 0.6 unless another indexed contract declares the member; signatures must agree; tests
+left out). Writes
 `correlations.html` under `docs/features_memory` of the project directory (or of the single repo).
 
 | arg | type | notes |

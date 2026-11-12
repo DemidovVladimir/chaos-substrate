@@ -22,6 +22,8 @@ base_url = "http://localhost:11434"
 [indexing]
 # Directory basenames skipped while walking a repository. This is the
 # built-in default; add your own generated/vendored folders.
+# Foundry dependency folders need no entry: every directory a foundry.toml
+# names in `libs` (lib/ when it names none) is skipped by path.
 skip_dirs = [".git", "target", "node_modules", ".venv", "dist", "build", ".next", "coverage"]
 
 # Environment overrides (applied after the file is read):

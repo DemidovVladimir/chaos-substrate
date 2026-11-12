@@ -56,15 +56,22 @@ pub enum Command {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Re-run a full index (no-op when HEAD is indexed and the worktree is clean).
+    /// Bring the index up to HEAD: the git delta since the stamped run plus the
+    /// files importing or referencing what changed (no-op when HEAD is the
+    /// stamp, nothing is or was uncommitted and the indexing rules are
+    /// unchanged; full index if the stamp is missing, incomplete, from other
+    /// rules or its commit is not in this clone).
     Reindex {
-        /// Re-index even when nothing changed.
+        /// Run the full index even when nothing changed (needed after a Chaos
+        /// upgrade that changes extraction).
         #[arg(long)]
         force: bool,
     },
-    /// Incrementally index the files changed in git.
+    /// Incrementally index the git delta since the stamped run: committed
+    /// since the stamped commit, uncommitted now, uncommitted at the stamp,
+    /// each kept only when the full listing would have it.
     Add {
-        /// Git ref to diff against (default: working tree vs HEAD).
+        /// Also re-check every file changed between this git ref and HEAD.
         #[arg(long)]
         since: Option<String>,
     },
@@ -87,6 +94,9 @@ pub enum Command {
         /// Answer across every repo of the project (chaos.toml).
         #[arg(long)]
         all_repos: bool,
+        /// GraphQL field to start from: `Mutation.createLab` or `createLab`.
+        #[arg(long)]
+        entry: Option<String>,
     },
     /// Write the feature website of a repository (index + per-feature pages);
     /// with --repos/--all-repos, every member's site plus the project hub.
@@ -173,6 +183,15 @@ impl Services {
         opts
     }
 
+    /// [`Self::index_options`] plus the repository's Foundry layout (import
+    /// remappings, vendored `libs` skipped by path).
+    fn index_options_for(&self, root: &Path) -> IndexOptions {
+        let mut opts = self.index_options();
+        opts.solidity = crate::adapters::foundry::read_layout(root, &opts.skip_dirs);
+        opts.skip_paths = opts.solidity.skip_paths();
+        opts
+    }
+
     fn index_deps(&self) -> application::index::Deps<'_> {
         application::index::Deps {
             store: &self.store,
@@ -214,7 +233,7 @@ impl Services {
         match name {
             "index" => {
                 let root = self.resolve_root(repo_arg)?;
-                let mut opts = self.index_options();
+                let mut opts = self.index_options_for(&root);
                 opts.dry_run = args
                     .get("dry_run")
                     .and_then(Value::as_bool)
@@ -224,7 +243,7 @@ impl Services {
             }
             "reindex" => {
                 let root = self.resolve_root(repo_arg)?;
-                let mut opts = self.index_options();
+                let mut opts = self.index_options_for(&root);
                 opts.force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
                 let report = application::index::reindex(self.index_deps(), &root, opts).await?;
                 Ok(serde_json::to_value(report)?)
@@ -235,9 +254,8 @@ impl Services {
                     .get("since")
                     .and_then(Value::as_str)
                     .filter(|s| !s.trim().is_empty());
-                let report =
-                    application::add::add(self.index_deps(), &root, since, self.index_options())
-                        .await?;
+                let opts = self.index_options_for(&root);
+                let report = application::add::add(self.index_deps(), &root, since, opts).await?;
                 Ok(serde_json::to_value(report)?)
             }
             "feature" => {
@@ -254,6 +272,12 @@ impl Services {
                 if let Some(p) = args.get("persist").and_then(Value::as_bool) {
                     req.persist = p;
                 }
+                req.entry = args
+                    .get("entry")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|e| !e.is_empty())
+                    .map(str::to_string);
                 let deps = application::feature::Deps {
                     search: &self.store,
                     communities: &self.store,
@@ -696,11 +720,11 @@ pub fn agent_guide() -> String {
     s.push_str(
         "Workflow:\n\
          1. `index` a repository once (needs Postgres + a real embedder; `doctor` checks both).\n\
-         2. After every edit run `add` — only changed files are re-extracted and re-embedded.\n\
-         3. Ask `feature \"<question>\"` to answer from the index; read the returned excerpts instead of source files.\n\
+         2. After every edit, commit, pull or checkout run `add` — it re-reads only the git delta since the last stamped run.\n\
+         3. Ask `feature \"<question>\"` to answer from the index; read the returned excerpts instead of source files. To follow a GraphQL field, name it (`Mutation.createLab`) or pass `entry` (CLI `--entry`).\n\
          4. `compose` writes the clickable feature website (index with the entry points + one page per feature, hash-gated); `--all-repos` adds the project hub.\n\
-         5. `correlations` links features across the repos listed in chaos.toml (package_dep / http_route / graphql_field).\n\
-         6. `reindex` only when the index looks stale; it is a no-op when HEAD is indexed and the worktree is clean.\n",
+         5. `correlations` links features across the repos listed in chaos.toml (package_dep / http_route / graphql_field / contract_abi).\n\
+         6. `reindex` re-reads that delta plus the files that import or reference it; a no-op when HEAD is the stamp and nothing is uncommitted; `--force` for a full run. After upgrading Chaos, `reindex --force` every repo: the delta never re-extracts files whose content did not change.\n",
     );
     s
 }
@@ -760,10 +784,38 @@ project: {}  ·  repos: {}  ·  tokens: {}",
         ));
     }
     out.push_str("\n\n");
+    if let Some(e) = answer.get("entry").filter(|e| e.is_object()) {
+        out.push_str(&entry_markdown(e));
+        let links = answer
+            .get("entry_links")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for l in &links {
+            out.push_str(&format!(
+                "- {} `{}` ({}) → {} `{}` ({}) — field `{}`\n",
+                s(l, "from_repo"),
+                s(l, "from"),
+                s(l, "from_path"),
+                s(l, "to_repo"),
+                s(l, "to"),
+                s(l, "to_path"),
+                s(l, "term")
+            ));
+        }
+        if !links.is_empty() {
+            out.push('\n');
+        }
+    }
     for r in &repos {
-        let body = feature_markdown(r);
+        // The joined entry above replaces each member's own.
+        let mut r = r.clone();
+        if let Some(o) = r.as_object_mut() {
+            o.remove("entry");
+        }
+        let body = feature_markdown(&r);
         let body = body.split_once('\n').map(|(_, rest)| rest).unwrap_or("");
-        out.push_str(&format!("---\n\n# [{}]\n{body}\n", s(r, "alias")));
+        out.push_str(&format!("---\n\n# [{}]\n{body}\n", s(&r, "alias")));
     }
     out.push_str("## Cross-repo links\n\n");
     if links.is_empty() {
@@ -781,6 +833,103 @@ project: {}  ·  repos: {}  ·  tokens: {}",
             s(l, "term")
         ));
     }
+    out
+}
+
+/// `## Entry: <coordinates>` block of a GraphQL-anchored answer: schema,
+/// registration, resolver, call trace, callers. Rows of a project answer
+/// carry their member as `[repo]`.
+fn entry_markdown(entry: &Value) -> String {
+    let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let n = |v: &Value, k: &str| v.get(k).and_then(Value::as_i64).unwrap_or(0);
+    let list = |v: &Value, k: &str| {
+        v.get(k)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let words = |v: &Value, k: &str| -> Vec<String> {
+        list(v, k)
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect()
+    };
+    let repo = |v: &Value| match s(v, "repo") {
+        r if r.is_empty() => String::new(),
+        r => format!("[{r}] "),
+    };
+    let mut out = format!("## Entry: {}\n\n", words(entry, "coordinates").join(", "));
+    for f in list(entry, "sdl") {
+        out.push_str(&format!(
+            "- schema: `{}: {}` — {}:{}\n",
+            s(&f, "coordinate"),
+            s(&f, "header"),
+            s(&f, "path"),
+            n(&f, "line")
+        ));
+    }
+    let sdl_repos = words(entry, "sdl_repos");
+    if !sdl_repos.is_empty() {
+        out.push_str(&format!("- schema: SDL in {}\n", sdl_repos.join(", ")));
+    }
+    for b in list(entry, "bindings") {
+        let lambda = words(&b, "lambda_entries");
+        out.push_str(&format!(
+            "- registered: {}`{}` — {}:{}{}\n",
+            repo(&b),
+            s(&b, "symbol"),
+            s(&b, "path"),
+            n(&b, "line"),
+            if lambda.is_empty() {
+                String::new()
+            } else {
+                format!(" → {}", lambda.join(", "))
+            }
+        ));
+    }
+    let resolvers = list(entry, "resolvers");
+    if resolvers.is_empty() {
+        out.push_str("- resolver: _none found_ (bound at deploy time, or in another repository)\n");
+    }
+    for r in &resolvers {
+        let lines = list(r, "lines");
+        let at = |i: usize| lines.get(i).and_then(Value::as_i64).unwrap_or(0);
+        out.push_str(&format!(
+            "- resolver: {}`{}` — {}:{}-{} (confidence {:.1})\n",
+            repo(r),
+            s(r, "symbol"),
+            s(r, "path"),
+            at(0),
+            at(1),
+            r.get("confidence").and_then(Value::as_f64).unwrap_or(0.0)
+        ));
+    }
+    for t in list(entry, "trace") {
+        out.push_str(&format!(
+            "- calls (hop {}): `{}` → `{}` ({})\n",
+            n(&t, "hop"),
+            s(&t, "from"),
+            s(&t, "to"),
+            s(&t, "to_path")
+        ));
+    }
+    for c in list(entry, "callers") {
+        let hooks = words(&c, "hooks");
+        out.push_str(&format!(
+            "- called by: {}`{}` — {}:{}{}\n",
+            repo(&c),
+            s(&c, "op"),
+            s(&c, "path"),
+            n(&c, "line"),
+            if hooks.is_empty() {
+                String::new()
+            } else {
+                format!(" (hooks {})", hooks.join(", "))
+            }
+        ));
+    }
+    out.push('\n');
     out
 }
 
@@ -810,7 +959,11 @@ pub fn feature_markdown(answer: &Value) -> String {
             }
         ));
     }
-    out.push_str("\n\n## Features\n\n");
+    out.push_str("\n\n");
+    if let Some(e) = answer.get("entry").filter(|e| e.is_object()) {
+        out.push_str(&entry_markdown(e));
+    }
+    out.push_str("## Features\n\n");
     let features = answer
         .get("features")
         .and_then(Value::as_array)
@@ -1011,10 +1164,11 @@ async fn run_command(cli: Cli) -> Result<()> {
             json: as_json,
             repos,
             all_repos,
+            entry,
         } => {
             let services = Services::connect(config_path, project_path).await?;
             let args = json!({"repo": cli.repo, "question": question, "budget_tokens": budget,
-                "persist": !no_persist, "repos": repos, "all_repos": all_repos});
+                "persist": !no_persist, "repos": repos, "all_repos": all_repos, "entry": entry});
             let v = services.call_tool("feature", &args).await?;
             if as_json {
                 print_json(&v)
@@ -1096,6 +1250,8 @@ mod tests {
             "2000",
             "--no-persist",
             "--json",
+            "--entry",
+            "Mutation.createLab",
         ])
         .unwrap();
         assert_eq!(cli.repo.as_deref(), Some("api"));
@@ -1105,11 +1261,13 @@ mod tests {
                 budget,
                 no_persist,
                 json,
+                entry,
                 ..
             } => {
                 assert_eq!(question, "how?");
                 assert_eq!(budget, 2000);
                 assert!(no_persist && json);
+                assert_eq!(entry.as_deref(), Some("Mutation.createLab"));
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -1207,5 +1365,63 @@ mod tests {
         assert!(md.contains("### src/a.rs:1-3 — f (function) [semantic]"));
         assert!(md.contains("```rust\nfn f() {}\n```"));
         assert!(md.contains("- **Storage** (0.50) — s"));
+        assert!(!md.contains("## Entry"));
+    }
+
+    #[test]
+    fn feature_markdown_renders_entry() {
+        let v = json!({
+            "question": "Mutation.createLab", "repo": "desci-infra", "tokens_used": 12,
+            "features": [], "excerpts": [], "graph": [], "surfaces": [], "warnings": [],
+            "entry": {
+                "coordinates": ["Mutation.createLab"],
+                "sdl": [{"coordinate": "Mutation.createLab", "path": "src/appsync/labs.graphql", "line": 40,
+                         "header": "createLab(input: CreateLabInput!): Lab!"}],
+                "bindings": [{"coordinate": "Mutation.createLab", "symbol": "AppSyncLabsLambdaConfig::getResolvers",
+                              "path": "lib/labs/config.ts", "line": 666,
+                              "lambda_entries": ["lambda/appsync-resolver-labs-lambda/index.ts"]}],
+                "resolvers": [{"coordinate": "Mutation.createLab", "symbol": "originalHandler::createLab",
+                               "path": "lambda/appsync-resolver-labs-lambda/index.ts", "lines": [13, 20], "confidence": 0.9}],
+                "trace": [{"from": "originalHandler::createLab", "kind": "calls", "to": "DataRoomResolvers::handleCreateLab",
+                           "from_path": "lambda/appsync-resolver-labs-lambda/index.ts",
+                           "to_path": "lambda/appsync-resolver-labs-lambda/resolvers.ts", "hop": 1, "confidence": 1.0}],
+                "callers": []
+            }
+        });
+        let md = feature_markdown(&v);
+        let entry = md
+            .find("## Entry: Mutation.createLab")
+            .expect("entry heading");
+        assert!(entry < md.find("## Features").unwrap(), "the anchor leads");
+        assert!(md.contains(
+            "- registered: `AppSyncLabsLambdaConfig::getResolvers` — lib/labs/config.ts:666 → lambda/appsync-resolver-labs-lambda/index.ts"
+        ));
+        assert!(md.contains(
+            "- resolver: `originalHandler::createLab` — lambda/appsync-resolver-labs-lambda/index.ts:13-20 (confidence 0.9)"
+        ));
+        assert!(md.contains(
+            "- calls (hop 1): `originalHandler::createLab` → `DataRoomResolvers::handleCreateLab`"
+        ));
+        // Project answers render the joined entry once, with members and links.
+        let p = json!({
+            "question": "Mutation.createLab", "project": "molecule", "tokens_used": 1,
+            "repos": [{"alias": "web", "question": "q", "repo": "web", "entry": {"coordinates": ["Mutation.createLab"]}}],
+            "links": [],
+            "entry": {"coordinates": ["Mutation.createLab"], "sdl_repos": ["api"], "bindings": [], "resolvers": [],
+                      "callers": [{"repo": "web", "coordinate": "Mutation.createLab", "op": "CreateLab",
+                                   "path": "apps/web/hooks/useCreateLab.ts", "line": 4, "hooks": ["useCreateLab"]}]},
+            "entry_links": [{"from_repo": "web", "from": "CreateLab", "from_path": "apps/web/hooks/useCreateLab.ts",
+                             "to_repo": "api", "to": "originalHandler::createLab",
+                             "to_path": "lambda/appsync-resolver-labs-lambda/index.ts", "term": "Mutation.createLab"}]
+        });
+        let md = project_feature_markdown(&p);
+        assert_eq!(md.matches("## Entry:").count(), 1);
+        assert!(md.contains("- resolver: _none found_"));
+        assert!(md.contains(
+            "- called by: [web] `CreateLab` — apps/web/hooks/useCreateLab.ts:4 (hooks useCreateLab)"
+        ));
+        assert!(md.contains(
+            "- web `CreateLab` (apps/web/hooks/useCreateLab.ts) → api `originalHandler::createLab`"
+        ));
     }
 }

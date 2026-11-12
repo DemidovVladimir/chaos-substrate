@@ -480,7 +480,13 @@ mod tests {
         async fn list_repos(&self) -> Result<Vec<Repo>> {
             unimplemented!()
         }
-        async fn set_repo_commit(&self, _: Uuid, _: Option<&str>) -> Result<()> {
+        async fn set_repo_stamp(
+            &self,
+            _: Uuid,
+            _: Option<&str>,
+            _: &[String],
+            _: &str,
+        ) -> Result<()> {
             unimplemented!()
         }
         async fn replace_repo(&self, _: Uuid, _: &IndexBundle) -> Result<()> {
@@ -589,6 +595,12 @@ mod tests {
                 .collect())
         }
         async fn file_paths(&self, _: &[Uuid]) -> Result<Vec<(Uuid, String)>> {
+            unimplemented!()
+        }
+        async fn graphql_fields(&self, _: Uuid, _: &[String]) -> Result<Vec<Node>> {
+            unimplemented!()
+        }
+        async fn operations_selecting(&self, _: Uuid, _: &[String]) -> Result<Vec<Node>> {
             unimplemented!()
         }
     }
@@ -730,6 +742,8 @@ mod tests {
             name: "demo".into(),
             root_path: "/r".into(),
             commit_sha: Some("abc".into()),
+            worktree_paths: Some(Vec::new()),
+            listing_rules: None,
         }
     }
 

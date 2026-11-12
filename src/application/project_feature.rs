@@ -8,8 +8,16 @@
 //! whole word in the code of an excerpt retrieved from repo B. The chunk
 //! header lines that describe the chunk itself (`// file:`, `// in:`,
 //! `// module:`, `// kind:`) are never evidence.
+//!
+//! When the question anchors on a GraphQL field (see
+//! [`super::graphql_entry`]), the members' traces are joined into one
+//! [`ProjectEntry`]: the repos with the SDL, the resolvers and registrations,
+//! and the calling operations, each tagged with its repo. An entry link joins
+//! a calling operation in one repo to a resolver of the same coordinate in
+//! another (graph evidence, not a name match).
 
 use super::feature::{self, Deps, FeatureAnswer, FeatureRequest};
+use super::graphql_entry::{EntryBinding, EntryCaller, EntryResolver};
 use crate::domain::hash;
 use crate::domain::model::Repo;
 use crate::domain::provenance::{source, Breadcrumb};
@@ -53,12 +61,106 @@ pub struct CrossLink {
     pub term: String,
 }
 
+/// One row of a joined [`ProjectEntry`], tagged with its member repo.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct InRepo<T> {
+    pub repo: String,
+    #[serde(flatten)]
+    pub item: T,
+}
+
+/// The members' GraphQL entry traces joined (module docs).
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
+pub struct ProjectEntry {
+    pub coordinates: Vec<String>,
+    /// Members holding an SDL copy of the fields.
+    pub sdl_repos: Vec<String>,
+    pub resolvers: Vec<InRepo<EntryResolver>>,
+    pub bindings: Vec<InRepo<EntryBinding>>,
+    pub callers: Vec<InRepo<EntryCaller>>,
+}
+
+/// Join the members' entry traces; `None` when no member anchored.
+pub fn join_entries(repos: &[RepoAnswer]) -> Option<ProjectEntry> {
+    let mut out = ProjectEntry::default();
+    let mut any = false;
+    for r in repos {
+        let Some(e) = &r.answer.entry else { continue };
+        any = true;
+        for c in &e.coordinates {
+            if !out.coordinates.contains(c) {
+                out.coordinates.push(c.clone());
+            }
+        }
+        if !e.sdl.is_empty() && !out.sdl_repos.contains(&r.alias) {
+            out.sdl_repos.push(r.alias.clone());
+        }
+        out.resolvers.extend(tagged(&r.alias, &e.resolvers));
+        out.bindings.extend(tagged(&r.alias, &e.bindings));
+        out.callers.extend(tagged(&r.alias, &e.callers));
+    }
+    any.then_some(out)
+}
+
+fn tagged<T: Clone>(repo: &str, items: &[T]) -> Vec<InRepo<T>> {
+    items
+        .iter()
+        .map(|item| InRepo {
+            repo: repo.to_string(),
+            item: item.clone(),
+        })
+        .collect()
+}
+
+/// Tokens the joined entry and its links add on top of the members' answers
+/// (they repeat member rows, so they are charged again).
+pub fn joined_entry_tokens(entry: Option<&ProjectEntry>, links: &[CrossLink]) -> usize {
+    let chars = entry
+        .and_then(|e| serde_json::to_string(e).ok())
+        .map_or(0, |j| j.len())
+        + if links.is_empty() {
+            0
+        } else {
+            serde_json::to_string(links).map_or(0, |j| j.len())
+        };
+    chars.div_ceil(crate::domain::budget::CHARS_PER_TOKEN)
+}
+
+/// Calling operation in one member → resolver of the same coordinate in
+/// another; sorted, deduplicated, capped at [`MAX_LINKS`].
+pub fn entry_links(entry: &ProjectEntry) -> Vec<CrossLink> {
+    let mut out = BTreeSet::new();
+    for c in &entry.callers {
+        for r in &entry.resolvers {
+            if r.repo == c.repo || r.item.coordinate != c.item.coordinate {
+                continue;
+            }
+            out.insert(CrossLink {
+                from_repo: c.repo.clone(),
+                from: c.item.op.clone(),
+                from_path: c.item.path.clone(),
+                to_repo: r.repo.clone(),
+                to: r.item.symbol.clone(),
+                to_path: r.item.path.clone(),
+                term: c.item.coordinate.clone(),
+            });
+        }
+    }
+    out.into_iter().take(MAX_LINKS).collect()
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectFeatureAnswer {
     pub question: String,
     pub project: String,
     pub repos: Vec<RepoAnswer>,
     pub links: Vec<CrossLink>,
+    /// The joined GraphQL entry trace, when the question anchors on a field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry: Option<ProjectEntry>,
+    /// Calling operation → resolver links across members ([`entry_links`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub entry_links: Vec<CrossLink>,
     /// Absolute page path (when persisted).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub page: Option<String>,
@@ -216,6 +318,27 @@ pub async fn project_feature(
             links.len()
         ),
     ));
+    let entry = join_entries(&repos);
+    let entry_links = entry.as_ref().map(entry_links).unwrap_or_default();
+    if let Some(e) = &entry {
+        provenance.push(Breadcrumb::new(
+            source::GRAPH,
+            "entry",
+            format!(
+                "{}: SDL in {}; {} resolvers, {} bindings, {} callers; {} operation → resolver links across repos",
+                e.coordinates.join(", "),
+                if e.sdl_repos.is_empty() {
+                    "no member".to_string()
+                } else {
+                    e.sdl_repos.join(", ")
+                },
+                e.resolvers.len(),
+                e.bindings.len(),
+                e.callers.len(),
+                entry_links.len()
+            ),
+        ));
+    }
     let content_hash = hash::sha256_hex(&format!(
         "{question}\n{}",
         repos
@@ -224,12 +347,16 @@ pub async fn project_feature(
             .collect::<Vec<_>>()
             .join("\n")
     ));
+    let tokens_used = repos.iter().map(|r| r.answer.tokens_used).sum::<usize>()
+        + joined_entry_tokens(entry.as_ref(), &entry_links);
     let mut answer = ProjectFeatureAnswer {
         question: question.clone(),
         project: project.to_string(),
-        tokens_used: repos.iter().map(|r| r.answer.tokens_used).sum(),
+        tokens_used,
         repos,
         links,
+        entry,
+        entry_links,
         page: None,
         page_cached: false,
         content_hash,
@@ -306,6 +433,7 @@ mod tests {
                 excerpts,
                 graph: vec![],
                 surfaces: vec![],
+                entry: None,
                 page: None,
                 page_cached: false,
                 content_hash: "h".into(),
@@ -314,6 +442,76 @@ mod tests {
                 provenance: vec![],
             },
         }
+    }
+
+    #[test]
+    fn project_entry_joins_resolvers_and_callers_across_repos() {
+        use crate::application::graphql_entry::EntryTrace;
+        let trace = |resolvers, callers| EntryTrace {
+            coordinates: vec!["Mutation.createLab".into()],
+            sdl: vec![],
+            bindings: vec![],
+            resolvers,
+            trace: vec![],
+            callers,
+        };
+        let mut api = repo("api", vec![]);
+        api.answer.entry = Some(trace(
+            vec![EntryResolver {
+                coordinate: "Mutation.createLab".into(),
+                symbol: "originalHandler::createLab".into(),
+                path: "lambda/appsync-resolver-labs-lambda/index.ts".into(),
+                lines: [13, 20],
+                confidence: 0.9,
+            }],
+            vec![],
+        ));
+        let mut web = repo("web", vec![]);
+        web.answer.entry = Some(trace(
+            vec![],
+            vec![EntryCaller {
+                coordinate: "Mutation.createLab".into(),
+                op: "CreateLab".into(),
+                path: "apps/web/hooks/useCreateLab.ts".into(),
+                line: 4,
+                hooks: vec!["useCreateLab".into()],
+            }],
+        ));
+        let plain = repo("docs", vec![]);
+        let repos = vec![api, web, plain];
+        let joined = join_entries(&repos).expect("two members anchored");
+        assert_eq!(joined.coordinates, vec!["Mutation.createLab"]);
+        assert_eq!(joined.resolvers.len(), 1);
+        assert_eq!(joined.resolvers[0].repo, "api");
+        assert_eq!(joined.callers.len(), 1);
+        assert_eq!(joined.callers[0].repo, "web");
+        assert!(joined.sdl_repos.is_empty());
+        assert_eq!(
+            entry_links(&joined),
+            vec![CrossLink {
+                from_repo: "web".into(),
+                from: "CreateLab".into(),
+                from_path: "apps/web/hooks/useCreateLab.ts".into(),
+                to_repo: "api".into(),
+                to: "originalHandler::createLab".into(),
+                to_path: "lambda/appsync-resolver-labs-lambda/index.ts".into(),
+                term: "Mutation.createLab".into(),
+            }]
+        );
+        // Flattened rows serialize with their repo.
+        let v = serde_json::to_value(&joined).unwrap();
+        assert_eq!(v["callers"][0]["repo"], "web");
+        assert_eq!(v["callers"][0]["op"], "CreateLab");
+        assert!(join_entries(&repos[2..]).is_none());
+        // The joined rows repeat member rows and are charged on top of them.
+        let links = entry_links(&joined);
+        let chars = serde_json::to_string(&joined).unwrap().len()
+            + serde_json::to_string(&links).unwrap().len();
+        assert_eq!(
+            joined_entry_tokens(Some(&joined), &links),
+            chars.div_ceil(4)
+        );
+        assert_eq!(joined_entry_tokens(None, &[]), 0);
     }
 
     #[test]

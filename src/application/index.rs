@@ -5,20 +5,24 @@
 //! (IndexStore::replace_repo, embeddings preserved by content hash) → embed
 //! only the chunks the store reports missing → rebuild the hierarchy
 //! (Louvain communities → summaries, embedded only when their text changed)
-//! → stamp the repo with `commit_sha`.
+//! → stamp the repo with the HEAD read at the start and the paths that were
+//! uncommitted then (`commit_sha` + `worktree_paths`), only once it succeeded.
+//! `reindex` re-reads the git delta from that stamp (see `delta`).
 //!
 //! Everything here depends on `domain` + `ports` only.
 
+use crate::application::delta::{self, DeltaSummary, Stored};
 use crate::application::{analyze, chunk};
 use crate::domain::community::{detect, to_communities};
-use crate::domain::model::{Community, IndexBundle, Language, Node, NodeKind, Repo};
+use crate::domain::model::{listing_rules, Community, IndexBundle, Language, Node, NodeKind, Repo};
 use crate::domain::provenance::{source, Breadcrumb};
+use crate::domain::solidity::SolidityLayout;
 use crate::domain::{hash, summary};
 use crate::ports::community_store::CommunityStore;
 use crate::ports::embedder::Embedder;
 use crate::ports::extractor::{FileExtraction, FileInput, SourceExtractor};
 use crate::ports::index_store::{Graph, IndexStore};
-use crate::ports::vcs::Vcs;
+use crate::ports::vcs::{Change, Vcs};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -52,6 +56,12 @@ pub struct IndexOptions {
     pub split_cos: f32,
     pub dry_run: bool,
     pub force: bool,
+    /// Foundry projects of the repository (remappings, libs): Solidity import
+    /// resolution reads it.
+    pub solidity: SolidityLayout,
+    /// Repo-relative directories skipped by path (component prefix), e.g. the
+    /// Foundry `libs` of every project; unlike `skip_dirs`, never by basename.
+    pub skip_paths: Vec<String>,
 }
 
 impl Default for IndexOptions {
@@ -61,7 +71,76 @@ impl Default for IndexOptions {
             split_cos: crate::domain::chunking::DEFAULT_SPLIT_COS,
             dry_run: false,
             force: false,
+            solidity: SolidityLayout::default(),
+            skip_paths: Vec::new(),
         }
+    }
+}
+
+impl IndexOptions {
+    /// The listing rules this run stamps: `skip_dirs`, `skip_paths` and the
+    /// indexable languages ([`listing_rules`]).
+    pub fn listing_rules(&self) -> String {
+        listing_rules(&self.skip_dirs, &self.skip_paths)
+    }
+}
+
+/// `listed` minus every path under one of `skip_paths` (whole components:
+/// `lib` drops `lib/dep/A.sol`, never `src/lib/A.sol`).
+pub fn drop_skipped_paths(listed: &mut Vec<PathBuf>, skip_paths: &[String]) {
+    listed.retain(|p| !skip_paths.iter().any(|s| p.starts_with(s)));
+}
+
+/// The VCS as `index`, `add` and `reindex` see it: every listing, the full one
+/// (`list_files`) and the one restricted to the delta (`list_paths`), drops
+/// `skip_paths`. The full index and the git delta therefore agree on vendored
+/// code, including a Foundry `lib/` submodule git reports as one directory.
+pub(crate) struct SkipPathsVcs<'a> {
+    inner: &'a dyn Vcs,
+    skip_paths: &'a [String],
+}
+
+impl<'a> SkipPathsVcs<'a> {
+    pub(crate) fn new(inner: &'a dyn Vcs, skip_paths: &'a [String]) -> Self {
+        Self { inner, skip_paths }
+    }
+
+    /// `deps` with this listing in place of its VCS.
+    pub(crate) fn deps(&'a self, deps: Deps<'a>) -> Deps<'a> {
+        Deps { vcs: self, ..deps }
+    }
+}
+
+impl Vcs for SkipPathsVcs<'_> {
+    fn head_sha(&self, root: &Path) -> Result<Option<String>> {
+        self.inner.head_sha(root)
+    }
+    fn is_clean(&self, root: &Path) -> Result<bool> {
+        self.inner.is_clean(root)
+    }
+    fn worktree_changes(&self, root: &Path) -> Result<Vec<Change>> {
+        self.inner.worktree_changes(root)
+    }
+    fn diff_commits(&self, root: &Path, base: &str, head: &str) -> Result<Vec<Change>> {
+        self.inner.diff_commits(root, base, head)
+    }
+    fn resolve_commit(&self, root: &Path, rev: &str) -> Result<Option<String>> {
+        self.inner.resolve_commit(root, rev)
+    }
+    fn list_files(&self, root: &Path, skip_dirs: &[String]) -> Result<Vec<PathBuf>> {
+        let mut listed = self.inner.list_files(root, skip_dirs)?;
+        drop_skipped_paths(&mut listed, self.skip_paths);
+        Ok(listed)
+    }
+    fn list_paths(
+        &self,
+        root: &Path,
+        paths: &[String],
+        skip_dirs: &[String],
+    ) -> Result<Vec<String>> {
+        let mut listed = self.inner.list_paths(root, paths, skip_dirs)?;
+        listed.retain(|p| !self.skip_paths.iter().any(|s| Path::new(p).starts_with(s)));
+        Ok(listed)
     }
 }
 
@@ -83,6 +162,9 @@ pub struct IndexReport {
     pub provenance: Vec<Breadcrumb>,
     pub skipped: bool,
     pub dry_run: bool,
+    /// `reindex` only: the git delta it re-read, or why it ran in full.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delta: Option<DeltaSummary>,
 }
 
 /// Result of [`rebuild_hierarchy`] — shared with `add`.
@@ -197,6 +279,7 @@ pub async fn extract_and_analyze(
     repo_id: Uuid,
     inputs: Vec<FileInput>,
     known: Option<&Graph>,
+    solidity: &SolidityLayout,
     split_cos: f32,
     warnings: &mut Vec<String>,
     omitted: &mut usize,
@@ -220,7 +303,7 @@ pub async fn extract_and_analyze(
         ),
     ));
     let pairs: Vec<(FileInput, FileExtraction)> = inputs.into_iter().zip(extractions).collect();
-    let analyzed = analyze::analyze_with(repo_id, &pairs, known);
+    let analyzed = analyze::analyze_with(repo_id, &pairs, known, solidity);
     let contents: Vec<(String, String)> = pairs
         .iter()
         .map(|(i, _)| (i.path.clone(), i.content.clone()))
@@ -516,13 +599,22 @@ impl<'a> SummaryContext<'a> {
 
 /// Full index of `root`.
 pub async fn index(deps: Deps<'_>, root: &Path, opts: IndexOptions) -> Result<IndexReport> {
+    let skip_paths = opts.skip_paths.clone();
+    let vcs = SkipPathsVcs::new(deps.vcs, &skip_paths);
+    let deps = vcs.deps(deps);
     let ident = identify(root)?;
     let mut warnings = Vec::new();
     let mut omitted = 0usize;
     let mut provenance = Vec::new();
     tracing::info!(repo = %ident.root_path, dry_run = opts.dry_run, "index start");
 
+    // The stamp is taken before anything is read: a commit or an edit made
+    // during the run shows up in the next delta instead of being lost.
     let head_sha = deps.vcs.head_sha(&ident.root).unwrap_or(None);
+    let uncommitted = match head_sha {
+        Some(_) => deps.vcs.worktree_changes(&ident.root).unwrap_or_default(),
+        None => Vec::new(),
+    };
     let listed = deps.vcs.list_files(&ident.root, &opts.skip_dirs)?;
     provenance.push(
         Breadcrumb::new(
@@ -555,6 +647,7 @@ pub async fn index(deps: Deps<'_>, root: &Path, opts: IndexOptions) -> Result<In
         ident.id,
         inputs,
         None,
+        &opts.solidity,
         opts.split_cos,
         &mut warnings,
         &mut omitted,
@@ -578,11 +671,23 @@ pub async fn index(deps: Deps<'_>, root: &Path, opts: IndexOptions) -> Result<In
         return Ok(report);
     }
 
+    let indexed: Stored = bundle
+        .files
+        .iter()
+        .map(|f| (f.path.clone(), f.content_hash.clone()))
+        .collect();
+    let worktree_paths = delta::stamp_paths(&uncommitted, &ident.root, &opts.skip_dirs, &indexed);
+    let rules = opts.listing_rules();
+    // Unstamped until the run succeeds: an interrupted index leaves no stamp,
+    // so the next `add` reconciles every file and finishes embedding and the
+    // hierarchy instead of trusting a delta.
     let repo = Repo {
         id: ident.id,
         name: ident.name.clone(),
         root_path: ident.root_path.clone(),
-        commit_sha: head_sha.clone(),
+        commit_sha: None,
+        worktree_paths: None,
+        listing_rules: None,
     };
     deps.store.upsert_repo(&repo).await?;
     deps.store.replace_repo(ident.id, &bundle).await?;
@@ -606,12 +711,16 @@ pub async fn index(deps: Deps<'_>, root: &Path, opts: IndexOptions) -> Result<In
     report.summaries_recomputed = hier.summaries_recomputed;
     provenance.extend(hier.provenance);
     deps.store
-        .set_repo_commit(ident.id, head_sha.as_deref())
+        .set_repo_stamp(ident.id, head_sha.as_deref(), &worktree_paths, &rules)
         .await?;
     provenance.push(Breadcrumb::new(
         source::POSTGRES,
-        "set_repo_commit",
-        format!("commit {}", head_sha.as_deref().unwrap_or("none")),
+        "set_repo_stamp",
+        format!(
+            "commit {}, {} uncommitted paths",
+            head_sha.as_deref().unwrap_or("none"),
+            worktree_paths.len()
+        ),
     ));
 
     report.warnings = finish_warnings(warnings, omitted);
@@ -626,31 +735,73 @@ pub async fn index(deps: Deps<'_>, root: &Path, opts: IndexOptions) -> Result<In
     Ok(report)
 }
 
-/// Re-run a full index unless the repo is already indexed at the current HEAD
-/// with a clean worktree (`force` overrides).
+/// Bring the index up to HEAD. A no-op when HEAD is the stamped commit, the
+/// worktree is clean, nothing was uncommitted at the stamp and the listing
+/// rules are the stamped ones. Otherwise the git delta from the stamp is
+/// re-read like `add` does, plus the unchanged files one hop upstream of each
+/// change (imports into a changed file, calls / extends / implements /
+/// queries into its nodes), so their edges to new symbols resolve. A full
+/// index runs with `force`, on a first run, or when the stamp cannot be used
+/// (missing or incomplete, other listing rules, commit not in this clone; the
+/// report says why).
 pub async fn reindex(deps: Deps<'_>, root: &Path, opts: IndexOptions) -> Result<IndexReport> {
     let ident = identify(root)?;
-    if !opts.force {
-        if let Some(existing) = deps.store.find_repo(&ident.root_path).await? {
-            let head = deps.vcs.head_sha(&ident.root).unwrap_or(None);
-            let clean = deps.vcs.is_clean(&ident.root).unwrap_or(false);
-            if head.is_some() && head == existing.commit_sha && clean {
-                tracing::info!(repo = %ident.root_path, "reindex skipped: HEAD unchanged and worktree clean");
-                return Ok(IndexReport {
-                    repo: ident.root_path.clone(),
-                    skipped: true,
-                    dry_run: opts.dry_run,
-                    provenance: vec![Breadcrumb::new(
-                        source::GIT,
-                        "head_sha",
-                        format!("HEAD {} equals indexed commit and worktree is clean; nothing to do (use force)", head.unwrap_or_default()),
-                    )],
-                    ..Default::default()
-                });
-            }
+    if opts.force || opts.dry_run {
+        return index(deps, root, opts).await;
+    }
+    let Some(existing) = deps.store.find_repo(&ident.root_path).await? else {
+        return index(deps, root, opts).await;
+    };
+    let head = deps.vcs.head_sha(&ident.root).unwrap_or(None);
+    let clean = deps.vcs.is_clean(&ident.root).unwrap_or(false);
+    let rules = opts.listing_rules();
+    if head.is_some()
+        && head == existing.commit_sha
+        && clean
+        && existing.worktree_paths.as_ref().is_some_and(Vec::is_empty)
+        && existing.listing_rules.as_deref() == Some(rules.as_str())
+    {
+        tracing::info!(repo = %ident.root_path, "reindex skipped: HEAD is the stamp and nothing is uncommitted");
+        return Ok(IndexReport {
+            repo: ident.root_path.clone(),
+            skipped: true,
+            provenance: vec![Breadcrumb::new(
+                source::GIT,
+                "head_sha",
+                format!(
+                    "HEAD {} equals the stamped commit, the worktree is clean, nothing was uncommitted at the stamp and the indexing rules (skip_dirs, languages) are unchanged; nothing to do (after a Chaos upgrade that changes extraction, use force)",
+                    head.unwrap_or_default()
+                ),
+            )],
+            ..Default::default()
+        });
+    }
+    let skip_paths = opts.skip_paths.clone();
+    let vcs = SkipPathsVcs::new(deps.vcs, &skip_paths);
+    match crate::application::add::reindex_delta(vcs.deps(deps), &ident, &existing, &opts).await? {
+        Ok(report) => Ok(report),
+        Err(why) => {
+            tracing::warn!(repo = %ident.root_path, %why, "reindex: git delta unavailable, full index");
+            let base = existing.commit_sha.clone();
+            let mut report = index(deps, root, opts).await?;
+            report.provenance.insert(
+                0,
+                Breadcrumb::new(
+                    source::GIT,
+                    "delta",
+                    format!("fallback to a full index: {why}"),
+                )
+                .with_locator(ident.root_path.clone()),
+            );
+            report.delta = Some(DeltaSummary {
+                base,
+                head,
+                fallback: Some(why),
+                ..Default::default()
+            });
+            Ok(report)
         }
     }
-    index(deps, root, opts).await
 }
 
 #[cfg(test)]
@@ -658,7 +809,7 @@ pub(crate) mod fakes {
     //! Scripted in-memory fakes of the ports, shared by the `index` and `add`
     //! use-case tests. Not mocks of the embedder in runtime code: test-only.
     use super::*;
-    use crate::domain::model::{Chunk, Edge, ModelRef};
+    use crate::domain::model::{Chunk, Edge, ModelRef, SourceFile};
     use crate::ports::index_store::Graph;
     use crate::ports::vcs::Change;
     use async_trait::async_trait;
@@ -672,6 +823,14 @@ pub(crate) mod fakes {
         pub missing: Mutex<Vec<Chunk>>,
         pub saved_embeddings: Mutex<Vec<(Uuid, String)>>,
         pub purged: Mutex<Vec<String>>,
+        /// Paths of the files every `merge_files` bundle carried (re-read files).
+        pub merged: Mutex<Vec<String>>,
+        /// Every `set_repo_stamp` payload (commit, uncommitted paths), in order.
+        pub stamps: Mutex<Vec<(Option<String>, Vec<String>)>>,
+        /// Every repository `upsert_repo` received, in order.
+        pub upserts: Mutex<Vec<Repo>>,
+        /// `replace_repo` fails.
+        pub fail_replace: bool,
     }
 
     impl FakeStore {
@@ -684,6 +843,7 @@ pub(crate) mod fakes {
     impl IndexStore for FakeStore {
         async fn upsert_repo(&self, repo: &Repo) -> Result<()> {
             self.log("upsert_repo");
+            self.upserts.lock().unwrap().push(repo.clone());
             *self.repo.lock().unwrap() = Some(repo.clone());
             Ok(())
         }
@@ -698,11 +858,25 @@ pub(crate) mod fakes {
         async fn list_repos(&self) -> Result<Vec<Repo>> {
             Ok(self.repo.lock().unwrap().clone().into_iter().collect())
         }
-        async fn set_repo_commit(&self, _repo_id: Uuid, _commit_sha: Option<&str>) -> Result<()> {
-            self.log("set_repo_commit");
+        async fn set_repo_stamp(
+            &self,
+            _repo_id: Uuid,
+            commit_sha: Option<&str>,
+            worktree_paths: &[String],
+            listing_rules: &str,
+        ) -> Result<()> {
+            self.log("set_repo_stamp");
+            let stamp = (commit_sha.map(str::to_string), worktree_paths.to_vec());
+            if let Some(r) = self.repo.lock().unwrap().as_mut() {
+                r.commit_sha = stamp.0.clone();
+                r.worktree_paths = Some(stamp.1.clone());
+                r.listing_rules = Some(listing_rules.to_string());
+            }
+            self.stamps.lock().unwrap().push(stamp);
             Ok(())
         }
         async fn replace_repo(&self, _repo_id: Uuid, bundle: &IndexBundle) -> Result<()> {
+            anyhow::ensure!(!self.fail_replace, "replace_repo: scripted failure");
             self.log(format!("replace_repo:{}", bundle.files.len()));
             Ok(())
         }
@@ -721,6 +895,10 @@ pub(crate) mod fakes {
                 .lock()
                 .unwrap()
                 .extend(purge_paths.iter().cloned());
+            self.merged
+                .lock()
+                .unwrap()
+                .extend(bundle.files.iter().map(|f| f.path.clone()));
             Ok(())
         }
         async fn load_graph(&self, _repo_id: Uuid) -> Result<Graph> {
@@ -832,6 +1010,8 @@ pub(crate) mod fakes {
     #[derive(Default)]
     pub struct FakeEmbedder {
         pub calls: Mutex<Vec<usize>>,
+        /// Every call fails, like an unreachable embedding server.
+        pub fail: bool,
     }
 
     #[async_trait]
@@ -846,11 +1026,13 @@ pub(crate) mod fakes {
             3
         }
         async fn embed(&self, input: &str) -> Result<Vec<f32>> {
+            anyhow::ensure!(!self.fail, "embedding failed: scripted");
             self.calls.lock().unwrap().push(1);
             let l = input.len() as f32;
             Ok(vec![1.0, l, 1.0 / (l + 1.0)])
         }
         async fn embed_batch(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>> {
+            anyhow::ensure!(!self.fail, "embedding failed: scripted");
             self.calls.lock().unwrap().push(inputs.len());
             Ok(inputs
                 .iter()
@@ -876,12 +1058,39 @@ pub(crate) mod fakes {
         }
     }
 
+    /// Scripted git: every commit resolves to itself unless listed in
+    /// `missing`; calls are recorded so tests can assert what ran.
     #[derive(Default)]
     pub struct FakeVcs {
         pub head: Option<String>,
         pub clean: bool,
+        /// `list_files` of the repository root.
         pub files: Vec<PathBuf>,
+        /// Paths (and directories) `list_paths` treats as ignored, like a
+        /// `.gitignore` entry would.
+        pub ignored: Vec<String>,
+        /// `worktree_changes`.
         pub changes: Vec<Change>,
+        /// `diff_commits(base, _)` by base.
+        pub diffs: HashMap<String, Vec<Change>>,
+        /// Commits this clone does not have.
+        pub missing: Vec<String>,
+        /// `diff_commits` and `worktree_changes` fail.
+        pub broken: bool,
+        pub calls: Mutex<Vec<String>>,
+    }
+
+    impl FakeVcs {
+        fn call(&self, s: String) {
+            self.calls.lock().unwrap().push(s);
+        }
+        pub fn called(&self, prefix: &str) -> bool {
+            self.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| c.starts_with(prefix))
+        }
     }
 
     impl Vcs for FakeVcs {
@@ -891,11 +1100,89 @@ pub(crate) mod fakes {
         fn is_clean(&self, _root: &Path) -> Result<bool> {
             Ok(self.clean)
         }
-        fn changes(&self, _root: &Path, _since: Option<&str>) -> Result<Vec<Change>> {
+        fn worktree_changes(&self, _root: &Path) -> Result<Vec<Change>> {
+            self.call("worktree_changes".into());
+            anyhow::ensure!(!self.broken, "git status: scripted failure");
             Ok(self.changes.clone())
         }
-        fn list_files(&self, _root: &Path, _skip_dirs: &[String]) -> Result<Vec<PathBuf>> {
+        fn diff_commits(&self, _root: &Path, base: &str, head: &str) -> Result<Vec<Change>> {
+            self.call(format!("diff_commits:{base}..{head}"));
+            anyhow::ensure!(!self.broken, "git diff: scripted failure");
+            Ok(self.diffs.get(base).cloned().unwrap_or_default())
+        }
+        fn resolve_commit(&self, _root: &Path, rev: &str) -> Result<Option<String>> {
+            Ok((!self.missing.iter().any(|m| m == rev)).then(|| rev.to_string()))
+        }
+        fn list_files(&self, root: &Path, _skip_dirs: &[String]) -> Result<Vec<PathBuf>> {
+            self.call(format!("list_files:{}", root.display()));
             Ok(self.files.clone())
+        }
+        /// The disk below each scope: regular files only (no symlink, also
+        /// none on the way), indexable, not in `ignored`.
+        fn list_paths(
+            &self,
+            root: &Path,
+            paths: &[String],
+            skip_dirs: &[String],
+        ) -> Result<Vec<String>> {
+            self.call(format!("list_paths:{}", paths.join(",")));
+            fn walk(root: &Path, rel: &str, out: &mut std::collections::BTreeSet<String>) {
+                let abs = root.join(rel);
+                let Ok(meta) = std::fs::symlink_metadata(&abs) else {
+                    return;
+                };
+                if meta.is_file() {
+                    out.insert(rel.to_string());
+                } else if meta.is_dir() {
+                    for e in std::fs::read_dir(&abs).into_iter().flatten().flatten() {
+                        let name = e.file_name().to_string_lossy().into_owned();
+                        let child = if rel.is_empty() {
+                            name
+                        } else {
+                            format!("{rel}/{name}")
+                        };
+                        walk(root, &child, out);
+                    }
+                }
+            }
+            let through_symlink = |rel: &str| {
+                let mut cur = rel;
+                while let Some((parent, _)) = cur.rsplit_once('/') {
+                    if std::fs::symlink_metadata(root.join(parent)).is_ok_and(|m| !m.is_dir()) {
+                        return true;
+                    }
+                    cur = parent;
+                }
+                false
+            };
+            let mut out = std::collections::BTreeSet::new();
+            for scope in paths {
+                let scope = scope.trim_matches('/');
+                if !through_symlink(scope) {
+                    walk(root, scope, &mut out);
+                }
+            }
+            let ignored = |p: &str| {
+                self.ignored
+                    .iter()
+                    .any(|i| p == i || p.starts_with(&format!("{i}/")))
+            };
+            Ok(out
+                .into_iter()
+                .filter(|p| Language::indexable(p, skip_dirs).is_some() && !ignored(p))
+                .collect())
+        }
+    }
+
+    /// An indexed file holding `content`.
+    pub fn stored_file(repo: Uuid, path: &str, content: &str) -> SourceFile {
+        SourceFile {
+            id: hash::scoped_id(repo, &format!("source_file:{path}")),
+            repo_id: repo,
+            path: path.to_string(),
+            language: Language::from_path(path).unwrap_or(Language::Markdown),
+            content_hash: hash::sha256_hex(content),
+            line_count: content.lines().count() as i32,
         }
     }
 
@@ -948,6 +1235,8 @@ pub(crate) mod fakes {
 mod tests {
     use super::fakes::*;
     use super::*;
+    use crate::domain::model::{listing_rules, SourceFile};
+    use crate::ports::vcs::{Change, ChangeStatus};
 
     fn deps<'a>(
         s: &'a FakeStore,
@@ -1008,6 +1297,53 @@ mod tests {
         assert!(comms.writes.lock().unwrap().is_empty());
         assert_eq!(report.chunks_embedded, 0);
         assert!(report.provenance.iter().any(|b| b.source == source::GIT));
+    }
+
+    /// onchainlabs foundry.toml `libs = ["dependencies"]`: the vendored
+    /// OpenZeppelin copy is skipped by path; `script/lib/` stays (a basename
+    /// match would drop it).
+    #[tokio::test]
+    async fn foundry_libs_are_skipped_by_path() {
+        let dir = tempfile::tempdir().unwrap();
+        for p in [
+            "src/OnChainLab.sol",
+            "script/lib/Create2DeployLib.sol",
+            "dependencies/@openzeppelin-contracts-5.6.0/token/ERC20/ERC20.sol",
+        ] {
+            std::fs::create_dir_all(dir.path().join(p).parent().unwrap()).unwrap();
+            std::fs::write(dir.path().join(p), "contract A {}\n").unwrap();
+        }
+        let store = FakeStore::default();
+        let comms = FakeCommunities::default();
+        let emb = FakeEmbedder::default();
+        let ext = FakeExtractor;
+        let vcs = FakeVcs {
+            files: vec![
+                "src/OnChainLab.sol".into(),
+                "script/lib/Create2DeployLib.sol".into(),
+                "dependencies/@openzeppelin-contracts-5.6.0/token/ERC20/ERC20.sol".into(),
+            ],
+            ..Default::default()
+        };
+        let opts = IndexOptions {
+            dry_run: true,
+            skip_paths: vec!["dependencies".into()],
+            ..Default::default()
+        };
+        let report = index(deps(&store, &comms, &emb, &ext, &vcs), dir.path(), opts)
+            .await
+            .unwrap();
+        assert_eq!(report.files, 2);
+        let mut listed: Vec<PathBuf> = vec![
+            "lib/forge-std/src/Test.sol".into(),
+            "src/lib/X.sol".into(),
+            "libs/Y.sol".into(),
+        ];
+        drop_skipped_paths(&mut listed, &["lib".to_string()]);
+        assert_eq!(
+            listed,
+            vec![PathBuf::from("src/lib/X.sol"), PathBuf::from("libs/Y.sol")]
+        );
     }
 
     #[tokio::test]
@@ -1073,7 +1409,7 @@ mod tests {
             writes.iter().any(|w| w == "save_embeddings:2"),
             "{writes:?}"
         );
-        assert_eq!(writes.last().unwrap(), "set_repo_commit");
+        assert_eq!(writes.last().unwrap(), "set_repo_stamp");
         assert_eq!(
             store
                 .repo
@@ -1087,17 +1423,303 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn reindex_skips_when_clean_and_sha_matches() {
-        let dir = tmp_repo();
-        let store = FakeStore::default();
-        let ident = identify(dir.path()).unwrap();
+    fn stamped(dir: &Path, store: &FakeStore, commit: &str, prev: &[&str]) -> Uuid {
+        let ident = identify(dir).unwrap();
         *store.repo.lock().unwrap() = Some(Repo {
             id: ident.id,
             name: ident.name.clone(),
             root_path: ident.root_path.clone(),
-            commit_sha: Some("abc".into()),
+            commit_sha: Some(commit.into()),
+            worktree_paths: Some(prev.iter().map(|p| p.to_string()).collect()),
+            // The rules of `IndexOptions::default()`.
+            listing_rules: Some(listing_rules(&[], &[])),
         });
+        ident.id
+    }
+
+    #[tokio::test]
+    async fn index_stamps_head_and_uncommitted_paths() {
+        let dir = tmp_repo();
+        let store = FakeStore::default();
+        let comms = FakeCommunities::default();
+        let emb = FakeEmbedder::default();
+        let ext = FakeExtractor;
+        let vcs = FakeVcs {
+            head: Some("abc".into()),
+            files: vec!["src/lib.rs".into(), "README.md".into()],
+            changes: vec![
+                Change {
+                    path: "src/lib.rs".into(),
+                    status: ChangeStatus::Modified,
+                },
+                Change {
+                    path: "Cargo.lock".into(),
+                    status: ChangeStatus::Modified,
+                },
+            ],
+            ..Default::default()
+        };
+        index(
+            deps(&store, &comms, &emb, &ext, &vcs),
+            dir.path(),
+            IndexOptions::default(),
+        )
+        .await
+        .unwrap();
+        // Unstamped while running, stamped once it succeeded.
+        let writes = store.writes.lock().unwrap().clone();
+        assert_eq!(writes[0], "upsert_repo");
+        assert_eq!(writes.last().unwrap(), "set_repo_stamp");
+        let upserted = store.upserts.lock().unwrap().clone();
+        assert_eq!(upserted.len(), 1);
+        assert_eq!(
+            (
+                &upserted[0].commit_sha,
+                &upserted[0].worktree_paths,
+                &upserted[0].listing_rules
+            ),
+            (&None, &None, &None),
+            "the first write carries no stamp"
+        );
+        assert_eq!(
+            store.stamps.lock().unwrap().as_slice(),
+            &[(Some("abc".to_string()), vec!["src/lib.rs".to_string()])]
+        );
+        let repo = store.repo.lock().unwrap().clone().unwrap();
+        assert_eq!(repo.listing_rules, Some(listing_rules(&[], &[])));
+    }
+
+    #[tokio::test]
+    async fn a_failed_index_leaves_no_stamp() {
+        let dir = tmp_repo();
+        let comms = FakeCommunities::default();
+        let ext = FakeExtractor;
+        let vcs = FakeVcs {
+            head: Some("abc".into()),
+            files: vec!["src/lib.rs".into()],
+            ..Default::default()
+        };
+        // replace_repo fails …
+        let store = FakeStore {
+            fail_replace: true,
+            ..Default::default()
+        };
+        let emb = FakeEmbedder::default();
+        let err = index(
+            deps(&store, &comms, &emb, &ext, &vcs),
+            dir.path(),
+            IndexOptions::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("replace_repo"), "{err}");
+        assert!(store.stamps.lock().unwrap().is_empty());
+        assert_eq!(
+            store.repo.lock().unwrap().clone().unwrap().worktree_paths,
+            None
+        );
+        // … or the embedder does, after the index was replaced.
+        let store = FakeStore::default();
+        *store.missing.lock().unwrap() = vec![chunk(Uuid::nil(), "x")];
+        let emb = FakeEmbedder {
+            fail: true,
+            ..Default::default()
+        };
+        let err = index(
+            deps(&store, &comms, &emb, &ext, &vcs),
+            dir.path(),
+            IndexOptions::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("embedding failed"), "{err}");
+        assert!(store
+            .writes
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|w| w.starts_with("replace_repo")));
+        assert!(store.stamps.lock().unwrap().is_empty());
+        let repo = store.repo.lock().unwrap().clone().unwrap();
+        assert_eq!((repo.commit_sha, repo.worktree_paths), (None, None));
+    }
+
+    #[tokio::test]
+    async fn reindex_noop_rule() {
+        let dir = tmp_repo();
+        let store = FakeStore::default();
+        stamped(dir.path(), &store, "abc", &[]);
+        let comms = FakeCommunities::default();
+        let emb = FakeEmbedder::default();
+        let ext = FakeExtractor;
+        let root = dir.path();
+        let run = |vcs: FakeVcs, force: bool| {
+            let (store, comms, emb, ext) = (&store, &comms, &emb, &ext);
+            async move {
+                let report = reindex(
+                    deps(store, comms, emb, ext, &vcs),
+                    root,
+                    IndexOptions {
+                        force,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+                (report, vcs)
+            }
+        };
+        let clean = || FakeVcs {
+            head: Some("abc".into()),
+            clean: true,
+            files: vec!["src/lib.rs".into()],
+            ..Default::default()
+        };
+        // HEAD is the stamp, clean, nothing uncommitted at the stamp: no-op.
+        let (report, vcs) = run(clean(), false).await;
+        assert!(report.skipped);
+        assert!(store.writes.lock().unwrap().is_empty());
+        assert!(!vcs.called("diff_commits") && !vcs.called("worktree_changes"));
+
+        // Dirty worktree → the delta runs (not a full index).
+        let dirty = FakeVcs {
+            clean: false,
+            changes: vec![Change {
+                path: "src/lib.rs".into(),
+                status: ChangeStatus::Modified,
+            }],
+            ..clean()
+        };
+        let (report, vcs) = run(dirty, false).await;
+        assert!(!report.skipped);
+        assert_eq!(report.files, 1);
+        assert!(report.delta.as_ref().unwrap().fallback.is_none());
+        assert!(!vcs.called("list_files"));
+        let writes = store.writes.lock().unwrap().clone();
+        assert!(
+            !writes.iter().any(|w| w.starts_with("replace_repo")),
+            "{writes:?}"
+        );
+        assert!(
+            writes.iter().any(|w| w.starts_with("merge_files:0:1")),
+            "{writes:?}"
+        );
+
+        // Clean, HEAD is the stamp, but a path was uncommitted at the stamp:
+        // not a no-op (the file may have been reverted since).
+        store.writes.lock().unwrap().clear();
+        let (report, _) = run(clean(), false).await;
+        assert!(!report.skipped);
+        assert_eq!(
+            store.stamps.lock().unwrap().last().unwrap(),
+            &(Some("abc".to_string()), vec![])
+        );
+        // … and once that is stamped away, the next one is a no-op again.
+        store.writes.lock().unwrap().clear();
+        assert!(run(clean(), false).await.0.skipped);
+
+        // Clean + same sha but force → full run.
+        let (report, vcs) = run(clean(), true).await;
+        assert!(!report.skipped);
+        assert!(report.delta.is_none());
+        assert!(vcs.called("list_files"));
+    }
+
+    #[tokio::test]
+    async fn reindex_rereads_dependents_of_changed_files() {
+        let dir = tmp_repo();
+        std::fs::write(dir.path().join("src/a.rs"), "use crate::b;\n").unwrap();
+        std::fs::write(dir.path().join("src/b.rs"), "pub fn b2() {}\n").unwrap();
+        std::fs::write(dir.path().join("src/gen.rs"), "use crate::b;\n").unwrap();
+        let store = FakeStore::default();
+        let repo_id = stamped(dir.path(), &store, "abc", &[]);
+        let files: Vec<_> = [
+            ("src/a.rs", "use crate::b;\n"),
+            ("src/b.rs", "pub fn b() {}\n"),
+            ("src/lib.rs", "pub fn a() {}\npub fn b() { a() }\n"),
+            ("src/gen.rs", "use crate::b;\n"),
+        ]
+        .iter()
+        .map(|(p, c)| stored_file(repo_id, p, c))
+        .collect();
+        let file_node = |f: &SourceFile| Node {
+            file_id: Some(f.id),
+            ..node(repo_id, &format!("file:{}", f.path), NodeKind::File, None)
+        };
+        let (fa, fb, flib, fgen) = (
+            file_node(&files[0]),
+            file_node(&files[1]),
+            file_node(&files[2]),
+            file_node(&files[3]),
+        );
+        *store.graph.lock().unwrap() = Graph {
+            edges: vec![
+                edge(
+                    repo_id,
+                    fa.id,
+                    fb.id,
+                    crate::domain::model::EdgeKind::Imports,
+                ),
+                edge(
+                    repo_id,
+                    fgen.id,
+                    fb.id,
+                    crate::domain::model::EdgeKind::Imports,
+                ),
+            ],
+            nodes: vec![fa, fb, flib, fgen],
+            files,
+        };
+        let comms = FakeCommunities::default();
+        let emb = FakeEmbedder::default();
+        let ext = FakeExtractor;
+        let vcs = FakeVcs {
+            head: Some("def".into()),
+            clean: true,
+            diffs: [(
+                "abc".to_string(),
+                vec![Change {
+                    path: "src/b.rs".into(),
+                    status: ChangeStatus::Modified,
+                }],
+            )]
+            .into_iter()
+            .collect(),
+            // Indexed by an older run, gitignored since: the full listing
+            // no longer has it.
+            ignored: vec!["src/gen.rs".into()],
+            ..Default::default()
+        };
+        let report = reindex(
+            deps(&store, &comms, &emb, &ext, &vcs),
+            dir.path(),
+            IndexOptions::default(),
+        )
+        .await
+        .unwrap();
+        let delta = report.delta.unwrap();
+        assert_eq!((delta.committed, delta.dependents), (1, 2));
+        assert_eq!(report.files, 2);
+        // b.rs changed; a.rs imports it and is re-read; gen.rs imports it
+        // but is no longer listed, so it is purged; lib.rs is untouched.
+        assert_eq!(
+            store.merged.lock().unwrap().as_slice(),
+            &["src/a.rs", "src/b.rs"]
+        );
+        assert_eq!(
+            store.purged.lock().unwrap().as_slice(),
+            &["src/a.rs", "src/b.rs", "src/gen.rs"]
+        );
+        assert!(vcs.called("list_paths:src/a.rs,src/gen.rs"));
+        assert_eq!(
+            store.stamps.lock().unwrap().as_slice(),
+            &[(Some("def".to_string()), vec![])]
+        );
+        assert!(report.provenance.iter().any(|b| b.method == "dependents"));
+    }
+
+    #[tokio::test]
+    async fn reindex_runs_in_full_on_an_incomplete_stamp_or_other_rules() {
         let comms = FakeCommunities::default();
         let emb = FakeEmbedder::default();
         let ext = FakeExtractor;
@@ -1107,52 +1729,82 @@ mod tests {
             files: vec!["src/lib.rs".into()],
             ..Default::default()
         };
-        let report = reindex(
-            deps(&store, &comms, &emb, &ext, &vcs),
-            dir.path(),
-            IndexOptions::default(),
-        )
-        .await
-        .unwrap();
-        assert!(report.skipped);
-        assert!(store.writes.lock().unwrap().is_empty());
+        type Spoil = fn(&mut Repo);
+        let cases: [(&str, Spoil); 3] = [
+            // A run died after its first write (or the row predates 1.4).
+            ("the stamp is incomplete", |r| r.worktree_paths = None),
+            // skip_dirs changed, or a language was added.
+            ("indexing rules changed", |r| {
+                r.listing_rules = Some(listing_rules(&["tests".into()], &[]))
+            }),
+            ("indexing rules changed", |r| r.listing_rules = None),
+        ];
+        for (why, spoil) in cases {
+            let dir = tmp_repo();
+            let store = FakeStore::default();
+            stamped(dir.path(), &store, "abc", &[]);
+            spoil(store.repo.lock().unwrap().as_mut().unwrap());
+            // HEAD is the stamp and the worktree is clean: not a no-op.
+            let report = reindex(
+                deps(&store, &comms, &emb, &ext, &vcs),
+                dir.path(),
+                IndexOptions::default(),
+            )
+            .await
+            .unwrap();
+            assert!(!report.skipped, "{why}");
+            let fallback = report.delta.unwrap().fallback.unwrap();
+            assert!(fallback.contains(why), "{fallback}");
+            assert!(store
+                .writes
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|w| w.starts_with("replace_repo")));
+            let repo = store.repo.lock().unwrap().clone().unwrap();
+            assert_eq!(repo.worktree_paths, Some(Vec::new()));
+            assert_eq!(repo.listing_rules, Some(listing_rules(&[], &[])));
+        }
+    }
 
-        // Dirty worktree → runs.
+    #[tokio::test]
+    async fn reindex_falls_back_to_a_full_index_when_the_base_is_gone() {
+        let dir = tmp_repo();
+        let store = FakeStore::default();
+        stamped(dir.path(), &store, "gcd", &[]);
+        let comms = FakeCommunities::default();
+        let emb = FakeEmbedder::default();
+        let ext = FakeExtractor;
         let vcs = FakeVcs {
-            head: Some("abc".into()),
-            clean: false,
-            files: vec!["src/lib.rs".into()],
-            ..Default::default()
-        };
-        let report = reindex(
-            deps(&store, &comms, &emb, &ext, &vcs),
-            dir.path(),
-            IndexOptions::default(),
-        )
-        .await
-        .unwrap();
-        assert!(!report.skipped);
-        assert!(!store.writes.lock().unwrap().is_empty());
-
-        // Clean + same sha but force → runs.
-        store.writes.lock().unwrap().clear();
-        let vcs = FakeVcs {
-            head: Some("abc".into()),
+            head: Some("def".into()),
             clean: true,
+            missing: vec!["gcd".into()],
             files: vec!["src/lib.rs".into()],
             ..Default::default()
         };
         let report = reindex(
             deps(&store, &comms, &emb, &ext, &vcs),
             dir.path(),
-            IndexOptions {
-                force: true,
-                ..Default::default()
-            },
+            IndexOptions::default(),
         )
         .await
         .unwrap();
-        assert!(!report.skipped);
+        let why = report.delta.as_ref().unwrap().fallback.clone().unwrap();
+        assert!(
+            why.contains("gcd") && why.contains("not in this clone"),
+            "{why}"
+        );
+        assert_eq!(report.provenance[0].method, "delta");
+        assert!(store
+            .writes
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|w| w.starts_with("replace_repo")));
+        assert_eq!(
+            store.stamps.lock().unwrap().as_slice(),
+            &[(Some("def".to_string()), vec![])]
+        );
     }
 
     /// Five connected functions in two files (Louvain yields ≥ 1 community),

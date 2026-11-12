@@ -11,15 +11,24 @@
 //!   matches a call path recorded on a consumer File node under
 //!   `metadata.http_calls` (analyze must populate it from fetch/axios/reqwest
 //!   string literals; absent metadata simply yields no links).
-//! - `graphql_field`: a consumer GraphQL `Operation` whose `metadata.root_fields`
-//!   names a root field (`Mutation.createLab`) defined in the SDL of the
-//!   field's schema owner (see [`graphql_field_links`]).
+//! - `graphql_field`: a consumer GraphQL `Operation` (outside tests) whose
+//!   `metadata.root_fields` names a root field (`Mutation.createLab`) defined
+//!   in the SDL of the field's schema owner; when the owner has a `Resolver`
+//!   that `resolves` the field, the link lands on the resolver's feature and
+//!   names it (see [`graphql_field_links`]).
+//! - `contract_abi`: a consumer contract call (File `metadata.contract_calls`
+//!   through its `UsesAbi` edge) or consumer-side Solidity interface → the
+//!   community of the Solidity contract member it reaches, by tier: named
+//!   0.85, overlap 0.7, unique 0.6, inherited from an unindexed base 0.6
+//!   (see [`crate::application::contract_abi`] and [`contract_abi_links`]).
 //!
 //! Everything is resolved from the persisted index through the ports; the
 //! report page is hash-gated on the sorted link keys.
 
+use crate::application::contract_abi::{contract_links, RepoGraph};
+use crate::application::entry_points::is_test_path;
 use crate::domain::hash;
-use crate::domain::model::{Node, NodeKind, Repo};
+use crate::domain::model::{Edge, EdgeKind, Node, NodeKind, Repo};
 use crate::domain::provenance::{source, Breadcrumb};
 use crate::ports::community_store::CommunityStore;
 use crate::ports::index_store::IndexStore;
@@ -102,6 +111,18 @@ struct RepoView {
     /// file id → path.
     file_paths: HashMap<Uuid, String>,
     nodes: Vec<Node>,
+    edges: Vec<Edge>,
+    /// GraphQL coordinate → the `Resolver`s that `resolves` it.
+    resolvers: BTreeMap<String, Vec<ResolverRef>>,
+}
+
+/// A `Resolver` node with the confidence of its `resolves` edge.
+struct ResolverRef {
+    node: Uuid,
+    file: Option<Uuid>,
+    confidence: f32,
+    /// `originalHandler::createLab`.
+    symbol: String,
 }
 
 struct CommunityView {
@@ -250,12 +271,36 @@ async fn load_repo(deps: &Deps<'_>, r: &RepoRef, crumbs: &mut Vec<Breadcrumb>) -
             view.symbols.insert(node.name.clone());
         }
     }
+    let mut resolvers: BTreeMap<String, Vec<ResolverRef>> = BTreeMap::new();
+    for e in graph.edges.iter().filter(|e| e.kind == EdgeKind::Resolves) {
+        let (Some(src), Some(field)) = (by_id.get(&e.source_node_id), by_id.get(&e.target_node_id))
+        else {
+            continue;
+        };
+        let Some(q) = field.metadata["qualified_name"].as_str() else {
+            continue;
+        };
+        resolvers
+            .entry(q.to_string())
+            .or_default()
+            .push(ResolverRef {
+                node: src.id,
+                file: src.file_id,
+                confidence: e.confidence,
+                symbol: src.metadata["qualified_name"]
+                    .as_str()
+                    .unwrap_or(&src.name)
+                    .to_string(),
+            });
+    }
     Ok(RepoView {
         alias: r.alias.clone(),
         communities: views.into_values().collect(),
         node_community,
         file_paths,
         nodes: graph.nodes,
+        resolvers,
+        edges: graph.edges,
     })
 }
 
@@ -386,6 +431,12 @@ pub fn is_root_field(qualified: &str) -> bool {
 /// it, that defines the most root fields overall (tie: earlier repo in the
 /// project). Links go only from a repo to that owner, so a schema copy never
 /// turns the API repo into a consumer of its own client.
+///
+/// When the owner has `Resolver`s for the field (a `resolves` edge), the
+/// provider is each resolver's feature instead of the SDL's (the SDL's when
+/// the resolver has none), the evidence names the resolver, and the
+/// confidence is [`GRAPHQL_FIELD_CONFIDENCE`] capped by the edge's (0.7 for a
+/// name-only resolver). Operations in test files are not consumers.
 fn graphql_field_links(views: &[RepoView]) -> Vec<Link> {
     // field → [(repo index, defining community)]
     let mut defs: BTreeMap<String, Vec<(usize, Uuid)>> = BTreeMap::new();
@@ -417,8 +468,10 @@ fn graphql_field_links(views: &[RepoView]) -> Vec<Link> {
             .map(|(vi, _)| *vi)
             .max_by(|a, b| root_count[*a].cmp(&root_count[*b]).then_with(|| b.cmp(a)))
     };
-    // (consumer repo, consumer community, provider repo, provider community) → evidence
-    let mut grouped: BTreeMap<(usize, Uuid, usize, Uuid), BTreeSet<String>> = BTreeMap::new();
+    // (consumer repo, consumer community, provider repo, provider community)
+    // → (evidence, confidence)
+    type Pair = (usize, Uuid, usize, Uuid);
+    let mut grouped: BTreeMap<Pair, (BTreeSet<String>, f32)> = BTreeMap::new();
     for (ci, consumer) in views.iter().enumerate() {
         for node in consumer
             .nodes
@@ -442,29 +495,120 @@ fn graphql_field_links(views: &[RepoView]) -> Vec<Link> {
                 .and_then(|f| consumer.file_paths.get(&f))
                 .cloned()
                 .unwrap_or_default();
+            if is_test_path(&path) {
+                continue;
+            }
             for field in fields {
                 let Some(oi) = owner(&field).filter(|oi| *oi != ci) else {
                     continue;
                 };
-                for (_, pcid) in defs[&field].iter().filter(|(vi, _)| *vi == oi) {
-                    grouped
-                        .entry((ci, ccid, oi, *pcid))
-                        .or_default()
-                        .insert(format!("{field} <- {} ({path})", node.name));
+                let sdl: Vec<Uuid> = defs[&field]
+                    .iter()
+                    .filter(|(vi, _)| *vi == oi)
+                    .map(|(_, c)| *c)
+                    .collect();
+                let used = format!("{field} <- {} ({path})", node.name);
+                let mut add = |pcid: Uuid, evidence: String, confidence: f32| {
+                    let g = grouped
+                        .entry((ci, ccid, oi, pcid))
+                        .or_insert_with(|| (BTreeSet::new(), 0.0));
+                    g.0.insert(evidence);
+                    g.1 = g.1.max(confidence);
+                };
+                match views[oi].resolvers.get(&field) {
+                    Some(rs) if !rs.is_empty() => {
+                        for r in rs {
+                            let pcid =
+                                views[oi].node_community.get(&r.node).copied().or_else(|| {
+                                    r.file.and_then(|f| views[oi].community_of_file(f))
+                                });
+                            let evidence = format!("{used} => {}", r.symbol);
+                            let confidence = GRAPHQL_FIELD_CONFIDENCE.min(r.confidence);
+                            match pcid {
+                                Some(pcid) => add(pcid, evidence, confidence),
+                                None => {
+                                    for pcid in &sdl {
+                                        add(*pcid, evidence.clone(), confidence);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        for pcid in &sdl {
+                            add(*pcid, used.clone(), GRAPHQL_FIELD_CONFIDENCE);
+                        }
+                    }
                 }
             }
         }
     }
     grouped
         .into_iter()
-        .map(|((ci, ccid, oi, pcid), evidence)| Link {
+        .map(|((ci, ccid, oi, pcid), (evidence, confidence))| Link {
             consumer_repo: views[ci].alias.clone(),
             consumer_feature: views[ci].feature(ccid),
             provider_repo: views[oi].alias.clone(),
             provider_feature: views[oi].feature(pcid),
             kind: "graphql_field".into(),
             evidence: evidence.into_iter().take(MAX_EVIDENCE_FILES).collect(),
-            confidence: GRAPHQL_FIELD_CONFIDENCE,
+            confidence,
+        })
+        .collect()
+}
+
+/// `contract_abi` links: every cross-repo contract use
+/// ([`contract_links`] with same-repo uses left out), grouped by (consumer
+/// feature, provider feature). The consumer feature is the call owner's (the
+/// interface's), else its file's; the provider feature is the member's, else
+/// the contract's. Confidence is the group's best tier.
+fn contract_abi_links(views: &[RepoView]) -> Vec<Link> {
+    let graphs: Vec<RepoGraph> = views
+        .iter()
+        .map(|v| RepoGraph {
+            nodes: &v.nodes,
+            edges: &v.edges,
+        })
+        .collect();
+    let community = |v: &RepoView, node: Option<Uuid>, file: Option<Uuid>| {
+        node.and_then(|n| v.node_community.get(&n).copied())
+            .or_else(|| file.and_then(|f| v.community_of_file(f)))
+    };
+    // (consumer view, consumer community, provider view, provider community)
+    // → (evidence, max confidence).
+    type Group = (usize, Uuid, usize, Uuid);
+    let mut grouped: BTreeMap<Group, (BTreeSet<String>, f32)> = BTreeMap::new();
+    for l in contract_links(&graphs, false) {
+        let (cv, pv) = (&views[l.consumer], &views[l.provider]);
+        let Some(ccid) = community(cv, l.consumer_node, l.consumer_file) else {
+            continue;
+        };
+        let container_file = pv
+            .nodes
+            .iter()
+            .find(|n| n.id == l.container)
+            .and_then(|n| n.file_id);
+        let pcid = l
+            .member_node
+            .and_then(|m| pv.node_community.get(&m).copied())
+            .or_else(|| community(pv, Some(l.container), container_file));
+        let Some(pcid) = pcid else { continue };
+        let e = grouped
+            .entry((l.consumer, ccid, l.provider, pcid))
+            .or_insert_with(|| (BTreeSet::new(), 0.0));
+        e.0.insert(l.evidence());
+        e.1 = e.1.max(l.confidence);
+    }
+    grouped
+        .into_iter()
+        .map(|((ci, ccid, pi, pcid), (evidence, confidence))| Link {
+            consumer_repo: views[ci].alias.clone(),
+            consumer_feature: views[ci].feature(ccid),
+            provider_repo: views[pi].alias.clone(),
+            provider_feature: views[pi].feature(pcid),
+            kind: "contract_abi".into(),
+            evidence: evidence.into_iter().take(MAX_EVIDENCE_FILES).collect(),
+            confidence,
         })
         .collect()
 }
@@ -683,6 +827,7 @@ pub async fn correlations(
         }
     }
     cross.extend(graphql_field_links(&views));
+    cross.extend(contract_abi_links(&views));
     let before = cross.len();
     cross.retain(|l| l.confidence >= min_confidence);
     cross.sort_by(|x, y| {
@@ -700,7 +845,7 @@ pub async fn correlations(
     crumbs.push(Breadcrumb::new(
         source::GRAPH,
         "link",
-        format!("{} cross-repo links kept of {before} (package_dep via File metadata.packages × published names; http_route via metadata.http_calls × HttpRoute nodes; graphql_field via Operation metadata.root_fields × the schema owner's root Field nodes; min_confidence {min_confidence})", cross.len()),
+        format!("{} cross-repo links kept of {before} (package_dep via File metadata.packages × published names; http_route via metadata.http_calls × HttpRoute nodes; graphql_field via Operation metadata.root_fields outside tests × the schema owner's root Field nodes, landing on the owner's resolver feature where a resolves edge exists; contract_abi via File metadata.contract_calls and UsesAbi × Solidity contract surfaces, named/overlap/unique/inherited tiers; min_confidence {min_confidence})", cross.len()),
     ));
 
     let mut keys: Vec<String> = cross.iter().map(link_key).collect();
@@ -786,7 +931,13 @@ mod tests {
         async fn list_repos(&self) -> Result<Vec<Repo>> {
             unimplemented!()
         }
-        async fn set_repo_commit(&self, _: Uuid, _: Option<&str>) -> Result<()> {
+        async fn set_repo_stamp(
+            &self,
+            _: Uuid,
+            _: Option<&str>,
+            _: &[String],
+            _: &str,
+        ) -> Result<()> {
             unimplemented!()
         }
         async fn replace_repo(&self, _: Uuid, _: &IndexBundle) -> Result<()> {
@@ -927,6 +1078,8 @@ mod tests {
                 name: alias.into(),
                 root_path: format!("/{alias}"),
                 commit_sha: None,
+                worktree_paths: Some(Vec::new()),
+                listing_rules: None,
             },
         }
     }
@@ -1095,6 +1248,8 @@ mod tests {
             node_community: nodes.iter().map(|n| (n.id, c.id)).collect(),
             file_paths: HashMap::from([(f.id, f.path.clone())]),
             nodes,
+            resolvers: BTreeMap::new(),
+            edges: vec![],
         }
     }
 
@@ -1169,6 +1324,294 @@ mod tests {
         );
         assert_eq!(links[0].provider_feature.label, "api-main");
         assert!((links[0].confidence - GRAPHQL_FIELD_CONFIDENCE).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn graphql_field_links_reach_the_resolver_feature() {
+        let api_field = (
+            NodeKind::Field,
+            "createLab",
+            json!({"qualified_name": "Mutation.createLab", "language": "graphql"}),
+        );
+        let mut api = gql_view("api", vec![api_field]);
+        // The resolver lives in its own `lambda` feature.
+        let repo = id("api");
+        let lambda_file = file(repo, "lambda/appsync-resolver-labs-lambda/index.ts");
+        let lambda = community(repo, "lambda", &[]);
+        let resolver = node(
+            repo,
+            Some(lambda_file.id),
+            NodeKind::Resolver,
+            "typescript:lambda/appsync-resolver-labs-lambda/index.ts:resolver:originalHandler::createLab",
+            "createLab",
+            json!({"qualified_name": "originalHandler::createLab"}),
+        );
+        api.communities.push(CommunityView {
+            id: lambda.id,
+            label: lambda.label.clone(),
+            member_count: 1,
+            files: BTreeSet::new(),
+            symbols: BTreeSet::new(),
+            file_node_counts: HashMap::from([(lambda_file.id, 1)]),
+        });
+        api.node_community.insert(resolver.id, lambda.id);
+        let with_edge = |mut v: RepoView, confidence: f32| {
+            v.resolvers.insert(
+                "Mutation.createLab".into(),
+                vec![ResolverRef {
+                    node: resolver.id,
+                    file: resolver.file_id,
+                    confidence,
+                    symbol: "originalHandler::createLab".into(),
+                }],
+            );
+            v
+        };
+        let client = || {
+            let mut v = gql_view(
+                "client",
+                vec![(
+                    NodeKind::Operation,
+                    "CreateLab",
+                    json!({"root_fields": ["Mutation.createLab"]}),
+                )],
+            );
+            // A test file selecting the field is not a consumer.
+            let repo = id("client");
+            let t = file(repo, "src/__tests__/createLab.test.ts");
+            v.file_paths.insert(t.id, t.path.clone());
+            let op = node(
+                repo,
+                Some(t.id),
+                NodeKind::Operation,
+                "test:CreateLabFixture",
+                "CreateLabFixture",
+                json!({"root_fields": ["Mutation.createLab"]}),
+            );
+            let main = v.communities[0].id;
+            v.node_community.insert(op.id, main);
+            v.nodes.push(op);
+            v
+        };
+        let api_bound = with_edge(api, 0.9);
+        let links = graphql_field_links(&[client(), api_bound]);
+        assert_eq!(links.len(), 1, "{links:?}");
+        assert_eq!(links[0].kind, "graphql_field");
+        assert_eq!(links[0].provider_feature.label, "lambda");
+        assert_eq!(
+            links[0].evidence,
+            ["Mutation.createLab <- CreateLab (schema.graphql) => originalHandler::createLab"]
+        );
+        assert!((links[0].confidence - 0.8).abs() < f32::EPSILON);
+        // A name-only resolver (0.7) caps the link.
+        let mut api = gql_view(
+            "api",
+            vec![(
+                NodeKind::Field,
+                "createLab",
+                json!({"qualified_name": "Mutation.createLab", "language": "graphql"}),
+            )],
+        );
+        api.communities.push(CommunityView {
+            id: lambda.id,
+            label: lambda.label.clone(),
+            member_count: 1,
+            files: BTreeSet::new(),
+            symbols: BTreeSet::new(),
+            file_node_counts: HashMap::new(),
+        });
+        api.node_community.insert(resolver.id, lambda.id);
+        let links = graphql_field_links(&[client(), with_edge(api, 0.7)]);
+        assert!((links[0].confidence - 0.7).abs() < f32::EPSILON);
+    }
+
+    /// A chain repo with `LabNFT` (accountOf, getter mintFeeWei, base ERC721)
+    /// and a web repo calling it through `LabNftAbi`; `web` also calls
+    /// `extra` on its own chain contract `Local`.
+    fn contract_repos() -> (Graph, Graph) {
+        let chain = id("chain");
+        let cf = file(chain, "src/NFT/LabNFT.sol");
+        let sol = |q: &str, extra: Value| {
+            let mut m =
+                json!({"language": "solidity", "path": "src/NFT/LabNFT.sol", "qualified_name": q});
+            if let (Value::Object(a), Value::Object(b)) = (&mut m, extra) {
+                a.extend(b);
+            }
+            m
+        };
+        let chain_nodes = vec![
+            node(
+                chain,
+                Some(cf.id),
+                NodeKind::Type,
+                "solidity:src/NFT/LabNFT.sol:type:LabNFT",
+                "LabNFT",
+                sol("LabNFT", json!({"bases": ["ERC721"]})),
+            ),
+            node(
+                chain,
+                Some(cf.id),
+                NodeKind::Method,
+                "solidity:src/NFT/LabNFT.sol:method:LabNFT::accountOf",
+                "accountOf",
+                sol(
+                    "LabNFT::accountOf",
+                    json!({"visibility": "external", "abi_signature": "accountOf(uint256)"}),
+                ),
+            ),
+            node(
+                chain,
+                Some(cf.id),
+                NodeKind::Field,
+                "solidity:src/NFT/LabNFT.sol:field:LabNFT::mintFeeWei",
+                "mintFeeWei",
+                sol(
+                    "LabNFT::mintFeeWei",
+                    json!({"getter": true, "abi_signature": "mintFeeWei()"}),
+                ),
+            ),
+        ];
+        let web = id("web");
+        let wf = file(web, "src/abis.ts");
+        let wf2 = file(web, "src/use-lab.ts");
+        let abi = node(
+            web,
+            Some(wf.id),
+            NodeKind::Abi,
+            "typescript:src/abis.ts:abi:LabNftAbi",
+            "LabNftAbi",
+            json!({"language": "typescript", "path": "src/abis.ts", "qualified_name": "LabNftAbi",
+                   "abi": {"functions": ["accountOf(uint256)", "mintFeeWei()", "ownerOf(uint256)"], "events": []}}),
+        );
+        let calls = json!([
+            {"member": "accountOf", "kind": "function", "abi": "LabNftAbi", "scope": "object", "via": "useReadContract", "line": 3},
+            {"member": "ownerOf", "kind": "function", "abi": "LabNftAbi", "scope": "object", "via": "readContract", "line": 9},
+        ]);
+        let wfile = node(
+            web,
+            Some(wf2.id),
+            NodeKind::File,
+            "file:src/use-lab.ts",
+            "src/use-lab.ts",
+            json!({"language": "typescript", "contract_calls": calls}),
+        );
+        let uses = Edge {
+            id: hash::edge_id(wfile.id, abi.id, "uses_abi"),
+            repo_id: web,
+            source_node_id: wfile.id,
+            target_node_id: abi.id,
+            kind: crate::domain::model::EdgeKind::UsesAbi,
+            confidence: 0.7,
+        };
+        (
+            Graph {
+                files: vec![cf],
+                nodes: chain_nodes,
+                edges: vec![],
+            },
+            Graph {
+                files: vec![wf, wf2],
+                nodes: vec![abi, wfile],
+                edges: vec![uses],
+            },
+        )
+    }
+
+    fn view_of(alias: &str, g: Graph) -> RepoView {
+        let repo = id(alias);
+        let c = community(repo, &format!("{alias}-main"), &[]);
+        RepoView {
+            alias: alias.into(),
+            communities: vec![CommunityView {
+                id: c.id,
+                label: c.label.clone(),
+                member_count: g.nodes.len(),
+                files: BTreeSet::new(),
+                symbols: BTreeSet::new(),
+                file_node_counts: HashMap::new(),
+            }],
+            node_community: g.nodes.iter().map(|n| (n.id, c.id)).collect(),
+            file_paths: g.files.iter().map(|f| (f.id, f.path.clone())).collect(),
+            nodes: g.nodes,
+            edges: g.edges,
+            resolvers: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn contract_abi_links_group_by_feature_and_take_max_confidence() {
+        use crate::application::contract_abi::CONTRACT_ABI_NAMED_CONFIDENCE;
+        let (chain, web) = contract_repos();
+        let links = contract_abi_links(&[view_of("web", web), view_of("chain", chain)]);
+        assert_eq!(links.len(), 1, "{links:?}");
+        let l = &links[0];
+        assert_eq!(
+            (
+                l.consumer_repo.as_str(),
+                l.provider_repo.as_str(),
+                l.kind.as_str()
+            ),
+            ("web", "chain", "contract_abi")
+        );
+        assert_eq!(l.provider_feature.label, "chain-main");
+        assert_eq!(l.confidence, CONTRACT_ABI_NAMED_CONFIDENCE);
+        assert_eq!(
+            l.evidence,
+            [
+                "LabNFT.accountOf <- useReadContract (src/use-lab.ts:3) via LabNftAbi [named]",
+                "LabNFT.ownerOf <- readContract (src/use-lab.ts:9) via LabNftAbi [inherited from unindexed base: ERC721]",
+            ]
+        );
+    }
+
+    #[test]
+    fn contract_abi_skips_same_repo() {
+        let (chain, web) = contract_repos();
+        let mut merged = chain;
+        merged.files.extend(web.files);
+        merged.nodes.extend(web.nodes);
+        merged.edges.extend(web.edges);
+        assert!(contract_abi_links(&[view_of("mono", merged)]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn contract_abi_min_confidence_filter() {
+        let (chain, mut web) = contract_repos();
+        // Keep only the inherited ownerOf call (0.6).
+        if let Some(f) = web.nodes.iter_mut().find(|n| n.kind == NodeKind::File) {
+            f.metadata["contract_calls"] = json!([{"member": "ownerOf", "kind": "function", "abi": "LabNftAbi", "scope": "object", "line": 9}]);
+        }
+        let mut graphs = HashMap::new();
+        let mut communities = HashMap::new();
+        let mut members = HashMap::new();
+        for (alias, g) in [("chain", chain), ("web", web)] {
+            let repo = id(alias);
+            let c = community(repo, &format!("{alias}-main"), &[]);
+            members.insert(repo, g.nodes.iter().map(|n| (c.id, n.id)).collect());
+            communities.insert(repo, vec![c]);
+            graphs.insert(repo, g);
+        }
+        let store = FakeStore {
+            graphs,
+            communities,
+            members,
+        };
+        let pages = FakePages::default();
+        let deps = Deps {
+            store: &store,
+            communities: &store,
+            pages: &pages,
+        };
+        let repos = vec![repo_ref("chain"), repo_ref("web")];
+        let low = correlations(&deps, &repos, &[], Path::new("/out"), 0.5)
+            .await
+            .unwrap();
+        assert_eq!(low.cross.len(), 1);
+        assert_eq!(low.cross[0].kind, "contract_abi");
+        let high = correlations(&deps, &repos, &[], Path::new("/out2"), 0.7)
+            .await
+            .unwrap();
+        assert!(high.cross.is_empty());
     }
 
     #[tokio::test]

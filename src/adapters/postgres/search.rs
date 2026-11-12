@@ -1,6 +1,8 @@
 //! `SearchStore` on Postgres: the three retrieval channels (semantic via
 //! pgvector cosine, keyword via `websearch_to_tsquery`, literal via `ilike`),
-//! community routing and the graph lookups the feature use-case expands with.
+//! community routing, the graph lookups the feature use-case expands with,
+//! and the GraphQL entry lookups (SDL field copies by coordinate, operations
+//! by `metadata.root_fields`), served by `nodes_repo_kind_idx`.
 
 use super::{
     row_to_chunk, row_to_community, row_to_edge, row_to_node, vector_literal, Postgres, CHUNK_COLS,
@@ -256,6 +258,47 @@ impl SearchStore for Postgres {
             .fetch_all(&self.pool)
             .await?;
         Ok(rows.iter().map(|r| (r.get("id"), r.get("path"))).collect())
+    }
+
+    async fn graphql_fields(&self, repo_id: Uuid, coordinates: &[String]) -> Result<Vec<Node>> {
+        if coordinates.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"
+            select id, repo_id, file_id, kind, stable_id, name, signature, doc, line_start, line_end, metadata from nodes
+            where repo_id = $1 and kind = 'field' and metadata->>'language' = 'graphql'
+              and metadata->>'qualified_name' = any($2)
+            order by stable_id
+            "#,
+        )
+        .bind(repo_id)
+        .bind(coordinates)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_node).collect()
+    }
+
+    async fn operations_selecting(
+        &self,
+        repo_id: Uuid,
+        coordinates: &[String],
+    ) -> Result<Vec<Node>> {
+        if coordinates.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"
+            select id, repo_id, file_id, kind, stable_id, name, signature, doc, line_start, line_end, metadata from nodes
+            where repo_id = $1 and kind = 'operation' and metadata->'root_fields' ?| $2
+            order by stable_id
+            "#,
+        )
+        .bind(repo_id)
+        .bind(coordinates)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_node).collect()
     }
 }
 

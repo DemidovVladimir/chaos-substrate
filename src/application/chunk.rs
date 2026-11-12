@@ -1,12 +1,15 @@
 //! Chunk construction over an [`Analyzed`] repository: one `unit` chunk per
 //! code-bearing symbol (context header + body), contextual `part` chunks for
 //! oversize units (semantic merge when an embedder is available, line split
-//! otherwise) and one `file_head` chunk per file for the bytes no symbol owns.
+//! otherwise) and `file_head` chunks for the bytes no symbol owns (one per
+//! file, or `part i/n` chunks when they exceed [`FILE_HEAD_MAX_CHARS`]; a
+//! test file keeps only its first part).
 //!
 //! Deterministic for a fixed embedder + content (embedding reuse relies on it):
 //! chunk ids derive from `content_hash + stable_id + part`.
 
 use crate::application::analyze::{file_stable_id, Analyzed, Unit};
+use crate::application::entry_points::is_test_path;
 use crate::domain::chunking::{
     self, HeaderInput, FILE_HEAD_MAX_CHARS, MAX_CHUNK_CHARS, TARGET_CHUNK_CHARS,
 };
@@ -79,6 +82,7 @@ pub async fn build_chunks(
             uses: &unit.uses,
             calls: &unit.calls,
             doc: sym.doc.as_deref(),
+            abi: unit.abi.as_deref(),
         });
 
         if header.len() + 1 + body.len() <= MAX_CHUNK_CHARS {
@@ -161,45 +165,60 @@ pub async fn build_chunks(
         let Some(content) = by_path.get(file.path.as_str()) else {
             continue;
         };
-        let Some((body, line_start, line_end)) = file_head_body(content, &head.free_ranges) else {
-            continue;
-        };
+        let mut parts = file_head_parts(content, &head.free_ranges, FILE_HEAD_MAX_CHARS);
+        // A test file's top level is test bodies, not a file head: one part,
+        // so dozens of parts do not crowd real code out of retrieval.
+        if is_test_path(&file.path) {
+            parts.truncate(1);
+        }
         let imports: Vec<String> = head
             .imports
             .iter()
             .take(HEAD_IMPORTS_CAP)
             .cloned()
             .collect();
-        let header = chunking::render_header(&HeaderInput {
-            path: &file.path,
-            language: file.language.as_str(),
-            line_start,
-            line_end,
-            container: None,
-            module: Some(&module_of(&file.path)),
-            kind: ChunkKind::FileHead.as_str(),
-            name: &file.path,
-            uses: &imports,
-            calls: &[],
-            doc: None,
-        });
         let stable_id = file_stable_id(&file.path);
-        let content_hash = chunking::content_hash(&header, &body);
-        let id = hash::scoped_id(repo_id, &format!("{content_hash}:{stable_id}:0"));
-        chunks.push(Chunk {
-            id,
-            repo_id,
-            file_id: Some(file.id),
-            node_id: Some(hash::scoped_id(repo_id, &stable_id)),
-            kind: ChunkKind::FileHead,
-            header,
-            body,
-            content_hash,
-            line_start: Some(line_start as i32),
-            line_end: Some(line_end as i32),
-            metadata: json!({"imports": head.imports.len(), "ranges": head.free_ranges.len()}),
-        });
-        stats.file_heads += 1;
+        let n = parts.len();
+        for (i, (body, line_start, line_end)) in parts.into_iter().enumerate() {
+            let header = chunking::render_header(&HeaderInput {
+                path: &file.path,
+                language: file.language.as_str(),
+                line_start,
+                line_end,
+                container: None,
+                module: Some(&module_of(&file.path)),
+                kind: ChunkKind::FileHead.as_str(),
+                name: &file.path,
+                uses: &imports,
+                calls: &[],
+                doc: None,
+                abi: None,
+            });
+            // One part keeps the historical id and metadata; parts are `1..=n`.
+            let (header, part, metadata) = if n == 1 {
+                let meta = json!({"imports": head.imports.len(), "ranges": head.free_ranges.len()});
+                (header, 0, meta)
+            } else {
+                let meta = json!({"imports": head.imports.len(), "ranges": head.free_ranges.len(), "part": i + 1, "parts": n});
+                (chunking::part_header(&header, i + 1, n), i + 1, meta)
+            };
+            let content_hash = chunking::content_hash(&header, &body);
+            let id = hash::scoped_id(repo_id, &format!("{content_hash}:{stable_id}:{part}"));
+            chunks.push(Chunk {
+                id,
+                repo_id,
+                file_id: Some(file.id),
+                node_id: Some(hash::scoped_id(repo_id, &stable_id)),
+                kind: ChunkKind::FileHead,
+                header,
+                body,
+                content_hash,
+                line_start: Some(line_start as i32),
+                line_end: Some(line_end as i32),
+                metadata,
+            });
+            stats.file_heads += 1;
+        }
     }
 
     stats.max_chars = chunks
@@ -305,49 +324,76 @@ fn enforce_cap(body: &str, segments: &[(usize, usize)], cap: usize) -> Vec<(usiz
     out
 }
 
-/// Join the free ranges of a file (`\n…\n` between non-adjacent ones), capped at
-/// [`FILE_HEAD_MAX_CHARS`]. `None` when there is nothing but whitespace.
-fn file_head_body(content: &str, free_ranges: &[(usize, usize)]) -> Option<(String, usize, usize)> {
+/// Join the free ranges of a file (`\n…\n` between non-adjacent ones) into
+/// `file_head` parts of at most `max` bytes each, in source order, so no
+/// top-level text is lost: a part is flushed when the next range would not
+/// fit, and a single range longer than `max` is line-split. Each part is
+/// `(body, line_start, line_end)`. A file whose head fits in `max` yields
+/// exactly one part, identical to the historical single `file_head`. Empty
+/// when there is nothing but whitespace.
+fn file_head_parts(
+    content: &str,
+    free_ranges: &[(usize, usize)],
+    max: usize,
+) -> Vec<(String, usize, usize)> {
     let mut ranges: Vec<(usize, usize)> = free_ranges
         .iter()
         .map(|&(s, e)| (s.min(content.len()), e.min(content.len())))
         .filter(|(s, e)| e > s)
         .collect();
     ranges.sort_unstable();
-    let mut body = String::new();
-    let mut prev_end: Option<usize> = None;
-    let mut first_start = None;
-    let mut last_end = 0;
+    let lines = |start: usize, end: usize| {
+        let line_start = 1 + count_newlines(&content[..start]);
+        let line_end = 1 + count_newlines(content[..end].trim_end());
+        (line_start, line_end.max(line_start))
+    };
+    let mut parts: Vec<(String, usize, usize)> = Vec::new();
+    // The open part: (body, first byte, end byte of its last range).
+    let mut cur: Option<(String, usize, usize)> = None;
+    let flush = |cur: &mut Option<(String, usize, usize)>,
+                 parts: &mut Vec<(String, usize, usize)>| {
+        if let Some((body, first, last)) = cur.take() {
+            if !body.trim().is_empty() {
+                let (ls, le) = lines(first, last);
+                parts.push((body, ls, le));
+            }
+        }
+    };
     for (s, e) in ranges {
         let text = slice(content, s, e);
         if text.trim().is_empty() {
             continue;
         }
-        if let Some(pe) = prev_end {
-            body.push_str(if pe == s { "\n" } else { RANGE_GAP });
-        }
-        body.push_str(text.trim_end_matches('\n'));
-        prev_end = Some(e);
-        first_start.get_or_insert(s);
-        last_end = e;
-        if body.len() >= FILE_HEAD_MAX_CHARS {
-            break;
+        let text = text.trim_end_matches('\n');
+        let joined_len = cur.as_ref().map(|(body, _, last)| {
+            body.len() + if *last == s { 1 } else { RANGE_GAP.len() } + text.len()
+        });
+        match joined_len {
+            Some(len) if len <= max => {
+                let (body, _, last) = cur.as_mut().expect("checked above");
+                body.push_str(if *last == s { "\n" } else { RANGE_GAP });
+                body.push_str(text);
+                *last = e;
+            }
+            _ => {
+                flush(&mut cur, &mut parts);
+                if text.len() <= max {
+                    cur = Some((text.to_string(), s, e));
+                } else {
+                    for (ps, pe) in chunking::line_split(text, max) {
+                        let piece = &text[ps..pe];
+                        if piece.trim().is_empty() {
+                            continue;
+                        }
+                        let (ls, le) = lines(s + ps, s + pe);
+                        parts.push((piece.trim_end_matches('\n').to_string(), ls, le));
+                    }
+                }
+            }
         }
     }
-    let first_start = first_start?;
-    if body.len() > FILE_HEAD_MAX_CHARS {
-        let mut cut = FILE_HEAD_MAX_CHARS;
-        while cut > 0 && !body.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        body.truncate(cut);
-    }
-    if body.trim().is_empty() {
-        return None;
-    }
-    let line_start = 1 + count_newlines(&content[..first_start]);
-    let line_end = 1 + count_newlines(content[..last_end].trim_end());
-    Some((body, line_start, line_end.max(line_start)))
+    flush(&mut cur, &mut parts);
+    parts
 }
 
 #[cfg(test)]
@@ -357,6 +403,7 @@ mod tests {
     use crate::domain::model::{Language, NodeKind};
     use crate::ports::extractor::{FileExtraction, FileInput, ImportRef, Symbol};
     use async_trait::async_trait;
+    use std::collections::HashSet;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Scripted embedder for use-case tests: topic-A segments map to one axis,
@@ -650,22 +697,212 @@ mod tests {
     }
 
     #[test]
-    fn file_head_joins_ranges_and_caps() {
+    fn file_head_joins_ranges_and_splits() {
         let content = "import a;\nimport b;\n\nconst x = 1;\nfunction f() {}\nconst y = 2;\n";
         let f = content.find("function").unwrap();
         let y = content.find("const y").unwrap();
-        let (body, ls, le) = file_head_body(content, &[(0, f), (y, content.len())]).unwrap();
+        let parts = file_head_parts(content, &[(0, f), (y, content.len())], FILE_HEAD_MAX_CHARS);
         assert_eq!(
-            body,
-            "import a;\nimport b;\n\nconst x = 1;\n…\nconst y = 2;"
+            parts,
+            vec![(
+                "import a;\nimport b;\n\nconst x = 1;\n…\nconst y = 2;".to_string(),
+                1,
+                6
+            )]
         );
-        assert_eq!((ls, le), (1, 6));
-        assert!(file_head_body(content, &[(20, 21)]).is_none());
-        let huge = "x".repeat(5000);
-        let (body, _, _) = file_head_body(&huge, &[(0, 5000)]).unwrap();
-        assert_eq!(body.len(), FILE_HEAD_MAX_CHARS);
+        assert!(file_head_parts(content, &[(20, 21)], FILE_HEAD_MAX_CHARS).is_empty());
+        // One range past the cap is line-split, never truncated.
+        let huge: String = (0..250).map(|i| format!("let v{i:03} = {i};\n")).collect();
+        let parts = file_head_parts(&huge, &[(0, huge.len())], FILE_HEAD_MAX_CHARS);
+        assert!(parts.len() > 1);
+        assert!(parts.iter().all(|(b, _, _)| b.len() <= FILE_HEAD_MAX_CHARS));
+        assert_eq!(parts[0].1, 1);
+        assert_eq!(parts.last().unwrap().2, 250);
+        for w in parts.windows(2) {
+            assert_eq!(w[0].2 + 1, w[1].1, "contiguous lines");
+        }
+        let joined: String = parts.iter().map(|(b, _, _)| format!("{b}\n")).collect();
+        assert_eq!(joined, huge);
         assert_eq!(module_of("src/a/b.rs"), "src::a::b");
         assert_eq!(module_of("README.md"), "README");
         let _ = FileHead::default();
+    }
+
+    /// A 45-constant file modelled on onchainlabs src/types/Constants.sol
+    /// (the Solidity extractor puts every file-level constant, with its doc
+    /// comment, into the free ranges): every constant lands in exactly one
+    /// `file_head` part, each part fits the cap, and two runs are identical.
+    /// A test file's top-level bodies are not a file head: it keeps one
+    /// `file_head` chunk (historical id, no part header) however long.
+    #[tokio::test]
+    async fn test_file_head_keeps_one_part() {
+        let mut src = String::new();
+        let mut free_ranges = Vec::new();
+        for i in 0..60 {
+            let start = src.len();
+            src.push_str(&format!(
+                "it(\"maps contact {i} to the CRM record\", async () => {{ expect(await sync({i})).toEqual({{ id: {i} }}); }});\n"
+            ));
+            free_ranges.push((start, src.len() - 1));
+        }
+        let path = "packages/tracking/src/crm/attio-provider.test.ts";
+        let x = FileExtraction {
+            path: path.into(),
+            language: Some(Language::TypeScript),
+            content_hash: hash::sha256_hex(&src),
+            line_count: src.lines().count() as u32,
+            free_ranges: free_ranges.clone(),
+            ..Default::default()
+        };
+        let input = FileInput {
+            path: path.into(),
+            language: Language::TypeScript,
+            content: src.clone(),
+        };
+        let analyzed = analyze(repo(), &[(input, x)]);
+        let contents = vec![(path.to_string(), src.clone())];
+        let (chunks, stats) = build_chunks(repo(), &analyzed, &contents, None, 0.82)
+            .await
+            .unwrap();
+        let heads: Vec<&Chunk> = chunks
+            .iter()
+            .filter(|c| c.kind == ChunkKind::FileHead)
+            .collect();
+        assert_eq!(heads.len(), 1);
+        assert_eq!(stats.file_heads, 1);
+        assert!(!heads[0].header.contains("// part "), "{}", heads[0].header);
+        assert!(heads[0].metadata.get("part").is_none());
+        assert!(heads[0].body.len() <= FILE_HEAD_MAX_CHARS);
+        assert!(heads[0].body.starts_with("it(\"maps contact 0 "));
+        // The same body outside a test path splits.
+        assert!(file_head_parts(&src, &free_ranges, FILE_HEAD_MAX_CHARS).len() > 1);
+    }
+
+    #[tokio::test]
+    async fn solidity_file_head_splits_without_loss() {
+        let mut src = String::from("// SPDX-License-Identifier: MIT\npragma solidity ^0.8.33;\n\nimport {CallType} from \"./Types.sol\";\n\n");
+        let mut free_ranges = vec![(0, src.len() - 1)];
+        for i in 0..45 {
+            let start = src.len();
+            src.push_str(&format!(
+                "/// @dev Typehash number {i} of the DID registry link request.\nbytes32 constant DID_REGISTRY_TYPEHASH_{i:02} = keccak256(\"LinkDidRequest{i}(bytes32 oclId,bytes32 provider)\");\n"
+            ));
+            free_ranges.push((start, src.len() - 1));
+            src.push('\n');
+        }
+        let start = src.len();
+        src.push_str("uint256 constant MAX_LAB_MINT_FEE_WEI = 1 ether;\n");
+        free_ranges.push((start, src.len() - 1));
+        let x = FileExtraction {
+            path: "src/types/Constants.sol".into(),
+            language: Some(Language::Solidity),
+            content_hash: hash::sha256_hex(&src),
+            line_count: src.lines().count() as u32,
+            free_ranges,
+            ..Default::default()
+        };
+        let input = FileInput {
+            path: "src/types/Constants.sol".into(),
+            language: Language::Solidity,
+            content: src.clone(),
+        };
+        let analyzed = analyze(repo(), &[(input, x)]);
+        let contents = vec![("src/types/Constants.sol".to_string(), src.clone())];
+        let (chunks, stats) = build_chunks(repo(), &analyzed, &contents, None, 0.82)
+            .await
+            .unwrap();
+        let heads: Vec<&Chunk> = chunks
+            .iter()
+            .filter(|c| c.kind == ChunkKind::FileHead)
+            .collect();
+        assert!(heads.len() > 1, "{}", heads.len());
+        assert_eq!(stats.file_heads, heads.len());
+        for i in 0..45 {
+            let name = format!("constant DID_REGISTRY_TYPEHASH_{i:02} ");
+            assert_eq!(
+                heads.iter().filter(|c| c.body.contains(&name)).count(),
+                1,
+                "{name}"
+            );
+        }
+        assert!(heads
+            .last()
+            .unwrap()
+            .body
+            .contains("uint256 constant MAX_LAB_MINT_FEE_WEI = 1 ether;"));
+        for (i, h) in heads.iter().enumerate() {
+            assert!(h.header.len() + 1 + h.body.len() <= MAX_CHUNK_CHARS);
+            assert!(h.body.len() <= FILE_HEAD_MAX_CHARS);
+            assert!(h
+                .header
+                .ends_with(&format!("// part {}/{}", i + 1, heads.len())));
+            assert_eq!(h.metadata["part"], i + 1);
+            assert_eq!(h.metadata["parts"], heads.len());
+        }
+        let ids: HashSet<Uuid> = heads.iter().map(|c| c.id).collect();
+        assert_eq!(ids.len(), heads.len());
+        let (again, _) = build_chunks(repo(), &analyzed, &contents, None, 0.82)
+            .await
+            .unwrap();
+        assert_eq!(chunks, again);
+    }
+
+    /// A head that fits keeps the historical single-chunk id
+    /// (`{content_hash}:file:{path}:0`), whatever the language.
+    #[tokio::test]
+    async fn single_part_file_head_id_unchanged() {
+        let src = "use std::fmt;\nstatic X: u8 = 1;\n";
+        let x = FileExtraction {
+            path: "src/s.rs".into(),
+            language: Some(Language::Rust),
+            content_hash: hash::sha256_hex(src),
+            line_count: 2,
+            free_ranges: vec![(0, 13), (14, 31)],
+            ..Default::default()
+        };
+        let files = vec![(
+            FileInput {
+                path: "src/s.rs".into(),
+                language: Language::Rust,
+                content: src.into(),
+            },
+            x,
+        )];
+        let analyzed = analyze(repo(), &files);
+        let contents = vec![("src/s.rs".to_string(), src.to_string())];
+        let (chunks, _) = build_chunks(repo(), &analyzed, &contents, None, 0.82)
+            .await
+            .unwrap();
+        assert_eq!(chunks.len(), 1);
+        let c = &chunks[0];
+        assert_eq!(c.body, "use std::fmt;\n…\nstatic X: u8 = 1;");
+        assert!(!c.header.contains("// part"));
+        assert_eq!(
+            c.id,
+            hash::scoped_id(
+                repo(),
+                &format!(
+                    "{}:file:src/s.rs:0",
+                    chunking::content_hash(&c.header, &c.body)
+                )
+            )
+        );
+        assert_eq!(c.metadata, json!({"imports": 0, "ranges": 2}));
+    }
+
+    /// Every language splits a long head instead of cutting it at the cap.
+    #[test]
+    fn long_rust_file_head_splits_too() {
+        let src: String = (0..200)
+            .map(|i| format!("static S{i:03}: u32 = {i};\n"))
+            .collect();
+        let ranges: Vec<(usize, usize)> = src
+            .match_indices("static")
+            .map(|(i, _)| (i, i + src[i..].find('\n').unwrap()))
+            .collect();
+        let parts = file_head_parts(&src, &ranges, FILE_HEAD_MAX_CHARS);
+        assert!(parts.len() > 1);
+        assert!(parts.last().unwrap().0.contains("static S199: u32 = 199;"));
+        assert!(parts.iter().all(|(b, _, _)| b.len() <= FILE_HEAD_MAX_CHARS));
     }
 }

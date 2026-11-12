@@ -7,7 +7,7 @@
 //! surfaces, relations) with mutable access to the extraction — so new
 //! language behaviour never touches `walker.rs`.
 
-use super::{graphql, python, rust, solidity, typescript};
+use super::{abi, graphql, python, rust, solidity, typescript};
 use crate::domain::model::{Language, NodeKind};
 use crate::ports::extractor::{FileExtraction, FileInput};
 
@@ -60,6 +60,7 @@ pub fn spec_for(lang: Language, path: &str) -> Option<&'static LangSpec> {
         Language::Python => python::spec(),
         Language::Solidity => solidity::spec(),
         Language::GraphQL => graphql::spec(),
+        Language::Abi => abi::json_spec(),
         Language::Markdown | Language::Transcript => None,
     }
 }

@@ -92,7 +92,7 @@ fn one_line(s: &str) -> Option<String> {
     })
 }
 
-fn named_children(n: Node) -> Vec<Node> {
+pub(super) fn named_children(n: Node) -> Vec<Node> {
     let mut cursor = n.walk();
     let kids: Vec<Node> = n
         .named_children(&mut cursor)
@@ -107,7 +107,7 @@ fn named_children(n: Node) -> Vec<Node> {
 
 /// A TS/JS string expression: a literal, a substitution-free template, `a + b`
 /// of those, `x as const`, or an identifier naming a known constant.
-fn ts_string(n: Node, src: &str, consts: &HashMap<String, String>) -> Option<String> {
+pub(super) fn ts_string(n: Node, src: &str, consts: &HashMap<String, String>) -> Option<String> {
     match n.kind() {
         "string" | "template_string" => string_value(n, src),
         "binary_expression" => {
@@ -128,7 +128,7 @@ fn ts_string(n: Node, src: &str, consts: &HashMap<String, String>) -> Option<Str
 }
 
 /// Top-level `const NAME = "…"` (exported or not) of this file.
-fn ts_consts(root: Node, src: &str) -> HashMap<String, String> {
+pub(super) fn ts_consts(root: Node, src: &str) -> HashMap<String, String> {
     let mut out = HashMap::new();
     for stmt in named_children(root) {
         let decl = if stmt.kind() == "export_statement" {
@@ -159,7 +159,7 @@ fn ts_consts(root: Node, src: &str) -> HashMap<String, String> {
 }
 
 /// Value of property `key` in an object literal.
-fn ts_prop<'t>(obj: Node<'t>, key: &str, src: &str) -> Option<Node<'t>> {
+pub(super) fn ts_prop<'t>(obj: Node<'t>, key: &str, src: &str) -> Option<Node<'t>> {
     if obj.kind() != "object" {
         return None;
     }

@@ -64,4 +64,14 @@ pub trait SearchStore: Send + Sync {
     ) -> Result<Vec<Node>>;
     /// Path lookup for file ids.
     async fn file_paths(&self, file_ids: &[Uuid]) -> Result<Vec<(Uuid, String)>>;
+    /// Every GraphQL SDL `Field` copy whose `metadata.qualified_name` is one of
+    /// `coordinates` (`Mutation.createLab`), ordered by stable_id.
+    async fn graphql_fields(&self, repo_id: Uuid, coordinates: &[String]) -> Result<Vec<Node>>;
+    /// GraphQL `Operation` nodes whose `metadata.root_fields` names one of
+    /// `coordinates`, ordered by stable_id.
+    async fn operations_selecting(
+        &self,
+        repo_id: Uuid,
+        coordinates: &[String],
+    ) -> Result<Vec<Node>>;
 }

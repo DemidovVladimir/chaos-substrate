@@ -2,16 +2,22 @@
 //!
 //! `walker` is the generic cursor walk; `lang` is the table-driven spec each
 //! language module fills in (`rust`, `typescript`, `python`, `solidity`,
-//! `graphql`); `markdown` is a heading-based extractor and `transcript` a
-//! subtitle/timestamp scanner (neither is tree-sitter); `surface` provides
-//! user-surface passes (env vars, HTTP routes) and `entry` the entry-point
-//! passes (MCP tools, Next.js route handlers, React data hooks).
+//! `graphql`, and `abi` for ABI JSON files); `markdown` is a heading-based
+//! extractor and `transcript` a subtitle/timestamp scanner (neither is
+//! tree-sitter); `surface` provides user-surface passes (env vars, HTTP
+//! routes), `entry` the entry-point passes (MCP tools, Next.js route handlers,
+//! React data hooks), `resolvers` the GraphQL resolver passes
+//! (`switch (fieldName)` dispatch cases, AppSync `{typeName, fieldName}`
+//! registrations, Lambda `entry:`) and `abi` the contract passes (TS/JS ABI
+//! constants and contract call sites).
 
+pub mod abi;
 pub mod entry;
 pub mod graphql;
 pub mod lang;
 pub mod markdown;
 pub mod python;
+pub mod resolvers;
 pub mod rust;
 pub mod solidity;
 pub mod surface;

@@ -133,16 +133,21 @@ impl IndexStore for Postgres {
     async fn upsert_repo(&self, repo: &Repo) -> Result<()> {
         sqlx::query(
             r#"
-            insert into repositories (id, name, root_path, commit_sha, indexed_at)
-            values ($1, $2, $3, $4, now())
+            insert into repositories
+                (id, name, root_path, commit_sha, worktree_paths, listing_rules, indexed_at)
+            values ($1, $2, $3, $4, $5, $6, now())
             on conflict (root_path) do update set
-                name = excluded.name, commit_sha = excluded.commit_sha, indexed_at = now()
+                name = excluded.name, commit_sha = excluded.commit_sha,
+                worktree_paths = excluded.worktree_paths,
+                listing_rules = excluded.listing_rules, indexed_at = now()
             "#,
         )
         .bind(repo.id)
         .bind(&repo.name)
         .bind(&repo.root_path)
         .bind(&repo.commit_sha)
+        .bind(repo.worktree_paths.as_ref().map(|p| serde_json::json!(p)))
+        .bind(&repo.listing_rules)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -150,7 +155,7 @@ impl IndexStore for Postgres {
 
     async fn find_repo(&self, root_path: &str) -> Result<Option<Repo>> {
         let row = sqlx::query(
-            "select id, name, root_path, commit_sha from repositories where root_path = $1",
+            "select id, name, root_path, commit_sha, worktree_paths, listing_rules from repositories where root_path = $1",
         )
         .bind(root_path)
         .fetch_optional(&self.pool)
@@ -160,19 +165,29 @@ impl IndexStore for Postgres {
 
     async fn list_repos(&self) -> Result<Vec<Repo>> {
         let rows = sqlx::query(
-            "select id, name, root_path, commit_sha from repositories order by root_path",
+            "select id, name, root_path, commit_sha, worktree_paths, listing_rules from repositories order by root_path",
         )
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.iter().map(row_to_repo).collect())
     }
 
-    async fn set_repo_commit(&self, repo_id: Uuid, commit_sha: Option<&str>) -> Result<()> {
-        sqlx::query("update repositories set commit_sha = $2, indexed_at = now() where id = $1")
-            .bind(repo_id)
-            .bind(commit_sha)
-            .execute(&self.pool)
-            .await?;
+    async fn set_repo_stamp(
+        &self,
+        repo_id: Uuid,
+        commit_sha: Option<&str>,
+        worktree_paths: &[String],
+        listing_rules: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "update repositories set commit_sha = $2, worktree_paths = $3, listing_rules = $4, indexed_at = now() where id = $1",
+        )
+        .bind(repo_id)
+        .bind(commit_sha)
+        .bind(serde_json::json!(worktree_paths))
+        .bind(listing_rules)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -384,6 +399,17 @@ impl IndexStore for Postgres {
             nodes: nodes.iter().map(row_to_node).collect::<Result<_>>()?,
             edges: edges.iter().map(row_to_edge).collect::<Result<_>>()?,
         })
+    }
+
+    async fn file_hashes(&self, repo_id: Uuid) -> Result<Vec<(String, String)>> {
+        let rows = sqlx::query("select path, content_hash from files where repo_id = $1")
+            .bind(repo_id)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get("path"), r.get("content_hash")))
+            .collect())
     }
 
     async fn chunks_missing_embeddings(

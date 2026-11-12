@@ -331,19 +331,28 @@ fn build_community(
     let id = hash::scoped_id(repo_id, &format!("community:{min_stable_id}"));
 
     let mut ranked = sorted.clone();
-    // Symbols before files/modules (a File node's Contains fan-out would
-    // otherwise always win), then by weighted degree.
-    let is_structural = |i: usize| {
-        matches!(
-            indexed[i].kind,
-            crate::domain::model::NodeKind::File
-                | crate::domain::model::NodeKind::Repository
-                | crate::domain::model::NodeKind::Module
-        )
+    // Symbols first, then Solidity declarations (custom errors, state
+    // variables, constants: every function references them, so they would
+    // win on degree and name the feature), then files/modules (a File node's
+    // Contains fan-out would otherwise always win); then by weighted degree.
+    let tier = |i: usize| -> u8 {
+        let n = indexed[i];
+        let declaration = |k: &str| n.metadata.get(k).and_then(|v| v.as_bool()) == Some(true);
+        match n.kind {
+            NodeKind::File | NodeKind::Repository | NodeKind::Module => 2,
+            NodeKind::Field
+                if ["error", "state_var", "constant"]
+                    .into_iter()
+                    .any(declaration) =>
+            {
+                1
+            }
+            _ => 0,
+        }
     };
     ranked.sort_by(|&a, &b| {
-        is_structural(a)
-            .cmp(&is_structural(b))
+        tier(a)
+            .cmp(&tier(b))
             .then(degree[b].partial_cmp(&degree[a]).unwrap_or(Ordering::Equal))
             .then(indexed[a].stable_id.cmp(&indexed[b].stable_id))
     });
@@ -720,6 +729,82 @@ mod tests {
             assert_eq!(r.top_members.len(), 4);
             assert!(r.summary.is_none() && r.summary_hash.is_none());
         }
+    }
+
+    /// onchainlabs OnChainLab.sol: `revert InvalidCaller()` in every entry
+    /// function makes the error the best-connected node; a function still
+    /// names the feature. A GraphQL `Field` keeps its rank.
+    #[test]
+    fn solidity_declaration_fields_never_label_a_community() {
+        let fns: Vec<Node> = ["execute", "validateUserOp", "installModule"]
+            .iter()
+            .map(|f| {
+                node(
+                    &format!("solidity:src/OnChainLab.sol:method:OnChainLab::{f}"),
+                    NodeKind::Method,
+                )
+            })
+            .collect();
+        let mut err = node(
+            "solidity:src/interfaces/IOnChainLab.sol:field:IOnChainLab::InvalidCaller",
+            NodeKind::Field,
+        );
+        err.metadata = json!({"error": true});
+        let mut var = node(
+            "solidity:src/OnChainLab.sol:field:OnChainLab::ENTRYPOINT",
+            NodeKind::Field,
+        );
+        var.metadata = json!({"state_var": true, "immutable": true});
+        let mut edges: Vec<Edge> = Vec::new();
+        for f in &fns {
+            edges.push(edge(f, &err, EdgeKind::Reverts));
+            edges.push(edge(f, &var, EdgeKind::Calls));
+        }
+        edges.push(edge(&fns[0], &fns[1], EdgeKind::Calls));
+        let mut nodes = fns.clone();
+        nodes.push(err.clone());
+        nodes.push(var.clone());
+        let det = detect(Uuid::nil(), &nodes, &edges);
+        assert_eq!(det.communities.len(), 1);
+        let c = &det.communities[0];
+        assert!(
+            fns.iter().any(|f| f.name == c.top_members[0]),
+            "{:?}",
+            c.top_members
+        );
+        assert!(
+            c.label.ends_with(&format!(" · {}", c.top_members[0])),
+            "{}",
+            c.label
+        );
+        let tail: Vec<&str> = c
+            .top_members
+            .iter()
+            .rev()
+            .take(2)
+            .map(String::as_str)
+            .collect();
+        assert!(
+            tail.contains(&"InvalidCaller") && tail.contains(&"ENTRYPOINT"),
+            "{tail:?}"
+        );
+        // A GraphQL field is a symbol like any other.
+        let mut q = node("graphql:schema.graphql:field:Query::lab", NodeKind::Field);
+        q.metadata = json!({"root": "Query"});
+        let mut nodes = vec![q.clone(), err.clone()];
+        nodes.push(fns[0].clone());
+        let edges = vec![
+            edge(&fns[0], &err, EdgeKind::Reverts),
+            edge(&q, &fns[0], EdgeKind::Calls),
+            edge(&q, &err, EdgeKind::Calls),
+        ];
+        let det = detect(Uuid::nil(), &nodes, &edges);
+        let top = &det.communities[0].top_members;
+        assert_eq!(
+            top.last().map(String::as_str),
+            Some("InvalidCaller"),
+            "{top:?}"
+        );
     }
 
     #[test]

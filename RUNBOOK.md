@@ -21,6 +21,11 @@ base_url = "http://localhost:11434"   # optional; Ollama default shown
 skip_dirs = [".git", "target", "node_modules", ".venv", "dist", "build", ".next", "coverage"]
 ```
 
+`skip_dirs` matches directory basenames and replaces the default list. Foundry dependency
+directories need no entry: every directory a `foundry.toml` names in `libs` (`lib/` when it names
+none) is skipped by path, relative to that `foundry.toml`. `remappings.txt` and `foundry.toml`
+are read for Solidity import resolution and never indexed.
+
 OpenAI instead: `provider = "open_ai"`, `model = "text-embedding-3-small"`, `dimensions = 1536`,
 and `OPENAI_API_KEY` in the environment.
 
@@ -57,7 +62,7 @@ Chaos calls `POST {base_url}/api/embed`. Any Ollama embedding model works as lon
 
 ```sh
 docker compose up -d            # pgvector/pgvector:pg16 on localhost:54329, volume chaos_substrate_pg
-chaos migrate                   # applies migrations/001_init.sql (8 tables + the vector extension)
+chaos migrate                   # applies migrations/*.sql (8 tables + the vector extension; 003 adds the stamp columns)
 chaos migrate --reset           # drop schema public cascade, recreate, migrate — deletes every index
 ```
 
@@ -79,8 +84,8 @@ counts), `embedder` (a real embedding of "chaos doctor" and its dimension count)
 | Command | Use when | Notes |
 | --- | --- | --- |
 | `chaos index [--repo R] [--dry-run]` | first time for a repo | `--dry-run` extracts, analyzes and chunks but writes nothing (the embedder is still used to split oversize units) |
-| `chaos add [--repo R] [--since REF]` | after every edit | content-hash drift vs the index (plus git changes with `--since REF`); files gone from disk purged; only new chunks embedded; summaries hash-gated |
-| `chaos reindex [--repo R] [--force]` | index looks stale | no-op when HEAD equals the indexed commit and the worktree is clean; embeddings reused by content hash |
+| `chaos add [--repo R] [--since REF]` | after every edit, commit, pull or checkout | git delta since the stamp: stamped commit → HEAD, uncommitted now, uncommitted at the stamp (`--since REF` adds REF → HEAD); content-equal files skipped; removed files purged; only new chunks embedded; summaries hash-gated |
+| `chaos reindex [--repo R] [--force]` | index looks stale | the `add` delta plus the files one hop upstream of each change; no-op when HEAD is the stamp and nothing is uncommitted; `--force` = full index; embeddings reused by content hash |
 
 All three return a JSON report: `files`, `nodes`, `edges`, `chunks`, `chunks_embedded`,
 `chunks_reused`, `communities`, `summaries_recomputed`, `call_resolution` (resolved calls /
@@ -91,7 +96,7 @@ is `chaos index --repo <alias>` per member.
 Answering and pages:
 
 ```sh
-chaos feature "how are embeddings reused on reindex" [--repo R] [--budget 6000] [--no-persist] [--json] [--repos a b | --all-repos]
+chaos feature "how are embeddings reused on reindex" [--repo R] [--budget 6000] [--no-persist] [--json] [--repos a b | --all-repos] [--entry Mutation.createLab]
 chaos compose [--repo R] [--out DIR] [--limit N] [--repos a b | --all-repos]
 chaos correlations [--project chaos.toml] [--repos api web] [--min-confidence 0.5]
 ```
@@ -151,12 +156,47 @@ index report, confirm the files are in a supported language and not under `skip_
 **Repository not indexed yet.** `feature`, `compose` and `correlations` require a prior `index`
 of that exact root path; run `chaos index --repo <path>` first.
 
-**`reindex` did nothing.** It returned `skipped: true` because HEAD is the indexed commit and the
-worktree is clean. Use `add` for uncommitted edits or `reindex --force`.
+**`reindex` did nothing.** It returned `skipped: true` because HEAD is the stamped commit, the
+worktree is clean, nothing was uncommitted at the last run and the indexing rules are unchanged.
+After a Chaos upgrade that changes extraction, use `reindex --force`.
+
+**`add` reconciled every file, or `reindex` ran in full.** The report's `delta.fallback` says why:
+no stamp yet, a stamp written before 1.4.0 or left incomplete by a failed run (the run also
+finishes embedding and the hierarchy), other indexing rules (`skip_dirs`, Foundry `libs` or a new
+language), or the stamped commit is not in this clone. The next run uses the delta again.
+
+**An edit `add` did not pick up.** `add` sees what git names: the diff from the stamped commit,
+uncommitted and untracked files, and files uncommitted at the stamp. Edits to
+`.git/info/exclude`, the global excludes, or a `.gitignore` above an indexed subdirectory are
+invisible to it; so is a file edited and reverted while a run was in progress. Use
+`reindex --force`.
 
 **Entry points or other new metadata missing after an upgrade.** `add` re-extracts only files
 whose content changed, so an extractor change does not reach unchanged files. Run
-`chaos reindex --force` on each repo. Chunk text stays the same, so nothing is embedded again.
+`chaos migrate`, then `chaos reindex --force` on each repo, then `compose`. Only chunks whose
+text changed are embedded again. 1.4.0 changed extraction for Solidity, ABIs, GraphQL resolvers and long file heads, so
+every repo needs it once. Rebuild every binary that reads the database (the MCP server too)
+before that: a 1.3 binary fails on the node and edge kinds 1.4.0 writes.
+
+**No `contract_abi` links, or a contract function with no callers.** The consumer's ABI must be
+indexed: `*.abi`, `*.abi.json`, a `.json` under an `abi/` or `abis/` directory, or an ABI
+constant in TS/JS. Git-ignored files (Foundry `out/` usually is) are never listed. A call whose
+ABI the index does not hold (viem's `erc20Abi`) and calls in test files are never linked. The
+`analyzed` log line on stderr counts `abi_uses` resolved/total; the File node's
+`metadata.contract_calls` holds the calls found. Re-index both repos with 1.4.0.
+
+**A Solidity function shows no selector** (`metadata.abi_unresolved` names the type). A
+parameter type comes from code the index does not hold, such as a skipped Foundry lib. The
+function is still indexed; only its ABI signature and selector are missing.
+
+**A GraphQL field shows no resolver.** A resolver is found from a `switch (fieldName)` case in
+TS/JS and a registration whose `typeName` and `fieldName` are literal strings (or same-file
+`const`s). A field registered only when the CDK app runs, or through computed values, has no
+resolver in the index; it is never guessed.
+
+**`feature` does not start from my GraphQL field.** Write the coordinate (`Mutation.createLab`),
+put a word such as query, mutation or resolver next to a bare root field name, or pass
+`--entry`. The repo must hold the field's SDL or an operation that selects it.
 
 **A page keeps its old layout after an upgrade.** The page hash covers the page's data, not the
 renderer. Delete the generated page (or the whole `docs/features_memory/site/` folder) and run

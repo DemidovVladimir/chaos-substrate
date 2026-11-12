@@ -170,6 +170,10 @@ pub(crate) fn row_to_repo(row: &PgRow) -> Repo {
         name: row.get("name"),
         root_path: row.get("root_path"),
         commit_sha: row.get("commit_sha"),
+        worktree_paths: row
+            .get::<Option<serde_json::Value>, _>("worktree_paths")
+            .map(|v| json_strings(&v)),
+        listing_rules: row.get("listing_rules"),
     }
 }
 
@@ -376,22 +380,69 @@ mod tests {
             name: "t".into(),
             root_path: "/tmp/chaos-adapter-test".into(),
             commit_sha: None,
+            worktree_paths: Some(vec!["stale.rs".into()]),
+            listing_rules: Some("v0:old".into()),
         };
         pg.upsert_repo(&repo).await.unwrap();
-        assert_eq!(
-            pg.find_repo(&repo.root_path).await.unwrap().unwrap().id,
-            repo.id
-        );
-        pg.set_repo_commit(repo.id, Some("abc")).await.unwrap();
-        assert_eq!(
-            pg.list_repos().await.unwrap()[0].commit_sha.as_deref(),
-            Some("abc")
-        );
+        assert_eq!(pg.find_repo(&repo.root_path).await.unwrap().unwrap(), repo);
+        let dirty = vec!["src/a b.rs".to_string(), "src/é.ts".to_string()];
+        pg.set_repo_stamp(repo.id, Some("abc"), &dirty, "v1:rules")
+            .await
+            .unwrap();
+        let stamped = pg.list_repos().await.unwrap().remove(0);
+        assert_eq!(stamped.commit_sha.as_deref(), Some("abc"));
+        assert_eq!(stamped.worktree_paths, Some(dirty));
+        assert_eq!(stamped.listing_rules.as_deref(), Some("v1:rules"));
+        // A run marks the stamp incomplete (NULL) while it writes …
+        let incomplete = Repo {
+            worktree_paths: None,
+            ..stamped
+        };
+        pg.upsert_repo(&incomplete).await.unwrap();
+        let read = pg.find_repo(&repo.root_path).await.unwrap().unwrap();
+        assert_eq!(read, incomplete);
+        assert_eq!(read.commit_sha.as_deref(), Some("abc"), "base kept");
+        // … and completes it at the end.
+        pg.set_repo_stamp(repo.id, Some("def"), &[], "v1:rules")
+            .await
+            .unwrap();
+        let stamped = pg.find_repo(&repo.root_path).await.unwrap().unwrap();
+        assert_eq!(stamped.commit_sha.as_deref(), Some("def"));
+        assert_eq!(stamped.worktree_paths, Some(Vec::new()));
         assert!(pg.pending_migrations().await.unwrap().is_empty());
+        // A row stamped before migration 003 reads as incomplete, so its next
+        // `add` reconciles every file once instead of trusting `[]`.
+        let legacy = Uuid::new_v4();
+        sqlx::query("insert into repositories (id, name, root_path, commit_sha) values ($1, 'old', '/tmp/chaos-adapter-legacy', 'abc')")
+            .bind(legacy)
+            .execute(&pg.pool)
+            .await
+            .unwrap();
+        let old = pg
+            .find_repo("/tmp/chaos-adapter-legacy")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(old.commit_sha.as_deref(), Some("abc"));
+        assert_eq!((old.worktree_paths, old.listing_rules), (None, None));
+        sqlx::query("delete from repositories where id = $1")
+            .bind(legacy)
+            .execute(&pg.pool)
+            .await
+            .unwrap();
 
         let b = bundle(repo.id);
         pg.replace_repo(repo.id, &b).await.unwrap();
         assert_eq!(pg.count_chunks(repo.id).await.unwrap(), 2);
+        let mut hashes = pg.file_hashes(repo.id).await.unwrap();
+        hashes.sort();
+        assert_eq!(
+            hashes,
+            vec![
+                ("src/a.rs".to_string(), "h-src/a.rs".to_string()),
+                ("src/b.rs".to_string(), "h-src/b.rs".to_string())
+            ]
+        );
         let graph = pg.load_graph(repo.id).await.unwrap();
         assert_eq!(
             (graph.files.len(), graph.nodes.len(), graph.edges.len()),
@@ -476,6 +527,131 @@ mod tests {
         assert_eq!(
             pg.file_paths(&[b.files[0].id]).await.unwrap()[0].1,
             "src/a.rs"
+        );
+
+        // GraphQL entry lookups, in a second repo: an SDL field, a TypeScript
+        // node with the same qualified name (not SDL), a resolver, a
+        // registration and an operation.
+        let gq = Repo {
+            id: Uuid::new_v4(),
+            name: "gq".into(),
+            root_path: "/tmp/chaos-adapter-test-gql".into(),
+            commit_sha: None,
+            worktree_paths: None,
+            listing_rules: None,
+        };
+        pg.upsert_repo(&gq).await.unwrap();
+        let gf = Uuid::new_v5(&gq.id, b"file:src/labs.graphql");
+        let gn = |stable: &str, name: &str, kind, metadata| Node {
+            id: node_id(gq.id, stable),
+            repo_id: gq.id,
+            file_id: Some(gf),
+            kind,
+            stable_id: stable.into(),
+            name: name.into(),
+            signature: None,
+            doc: None,
+            line_start: Some(1),
+            line_end: Some(3),
+            metadata,
+        };
+        let field = gn(
+            "graphql:src/labs.graphql:field:Mutation.createLab",
+            "createLab",
+            NodeKind::Field,
+            json!({"language": "graphql", "qualified_name": "Mutation.createLab"}),
+        );
+        let not_sdl = gn(
+            "typescript:src/labs.graphql:field:Mutation.createLab",
+            "createLab",
+            NodeKind::Field,
+            json!({"language": "typescript", "qualified_name": "Mutation.createLab"}),
+        );
+        let resolver = gn(
+            "typescript:src/labs.graphql:resolver:originalHandler::createLab",
+            "createLab",
+            NodeKind::Resolver,
+            json!({"qualified_name": "originalHandler::createLab"}),
+        );
+        let registrar = gn(
+            "typescript:src/labs.graphql:method:Config::getResolvers",
+            "getResolvers",
+            NodeKind::Method,
+            json!({}),
+        );
+        let op = gn(
+            "graphql:src/labs.graphql:operation:CreateLab",
+            "CreateLab",
+            NodeKind::Operation,
+            json!({"root_fields": ["Mutation.createLab", "Query.lab"]}),
+        );
+        let ge = |s: &Node, t: &Node, kind, confidence| Edge {
+            id: Uuid::new_v4(),
+            repo_id: gq.id,
+            source_node_id: s.id,
+            target_node_id: t.id,
+            kind,
+            confidence,
+        };
+        let gb = IndexBundle {
+            files: vec![SourceFile {
+                id: gf,
+                repo_id: gq.id,
+                path: "src/labs.graphql".into(),
+                language: Language::GraphQL,
+                content_hash: "h-gql".into(),
+                line_count: 3,
+            }],
+            edges: vec![
+                ge(&resolver, &field, EdgeKind::Resolves, 0.9),
+                ge(&registrar, &field, EdgeKind::Binds, 1.0),
+            ],
+            nodes: vec![
+                field.clone(),
+                not_sdl,
+                resolver.clone(),
+                registrar,
+                op.clone(),
+            ],
+            chunks: vec![],
+        };
+        pg.replace_repo(gq.id, &gb).await.unwrap();
+        let coords = |c: &[&str]| c.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let fields = pg
+            .graphql_fields(gq.id, &coords(&["Mutation.createLab"]))
+            .await
+            .unwrap();
+        assert_eq!(
+            fields.iter().map(|n| n.id).collect::<Vec<_>>(),
+            vec![field.id]
+        );
+        assert!(pg.graphql_fields(gq.id, &[]).await.unwrap().is_empty());
+        assert!(pg
+            .graphql_fields(repo.id, &coords(&["Mutation.createLab"]))
+            .await
+            .unwrap()
+            .is_empty());
+        let ops = pg
+            .operations_selecting(gq.id, &coords(&["Query.lab", "Query.none"]))
+            .await
+            .unwrap();
+        assert_eq!(ops.iter().map(|n| n.id).collect::<Vec<_>>(), vec![op.id]);
+        assert!(pg
+            .operations_selecting(gq.id, &coords(&["Query.none"]))
+            .await
+            .unwrap()
+            .is_empty());
+        let gg = pg.load_graph(gq.id).await.unwrap();
+        assert!(gg
+            .nodes
+            .iter()
+            .any(|n| n.id == resolver.id && n.kind == NodeKind::Resolver));
+        let mut kinds: Vec<(EdgeKind, f32)> =
+            gg.edges.iter().map(|e| (e.kind, e.confidence)).collect();
+        kinds.sort_by_key(|(k, _)| k.as_str());
+        assert_eq!(
+            kinds,
+            vec![(EdgeKind::Binds, 1.0), (EdgeKind::Resolves, 0.9)]
         );
 
         // Communities: a summary embedding is kept under its summary_hash.
@@ -625,6 +801,27 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+
+        // ABI kinds round-trip: the store parses `abi` files, nodes and `uses_abi` edges.
+        let abi_repo = Repo {
+            id: Uuid::new_v4(),
+            name: "abi".into(),
+            root_path: "/tmp/chaos-adapter-test-abi".into(),
+            commit_sha: None,
+            worktree_paths: None,
+            listing_rules: None,
+        };
+        pg.upsert_repo(&abi_repo).await.unwrap();
+        let mut ab = bundle(abi_repo.id);
+        ab.files[1].path = "abis/Token.json".into();
+        ab.files[1].language = Language::Abi;
+        ab.nodes[1].kind = NodeKind::Abi;
+        ab.edges[0].kind = EdgeKind::UsesAbi;
+        pg.replace_repo(abi_repo.id, &ab).await.unwrap();
+        let g = pg.load_graph(abi_repo.id).await.unwrap();
+        assert!(g.files.iter().any(|f| f.language == Language::Abi));
+        assert!(g.nodes.iter().any(|n| n.kind == NodeKind::Abi));
+        assert_eq!(g.edges[0].kind, EdgeKind::UsesAbi);
 
         // Legacy schema detection: a 0.x table makes a plain migrate refuse.
         sqlx::raw_sql("create table analysis_runs (id int)")

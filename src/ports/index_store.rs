@@ -19,8 +19,19 @@ pub trait IndexStore: Send + Sync {
     async fn upsert_repo(&self, repo: &Repo) -> Result<()>;
     async fn find_repo(&self, root_path: &str) -> Result<Option<Repo>>;
     async fn list_repos(&self) -> Result<Vec<Repo>>;
-    /// Record the commit the index now reflects (`reindex` skips when HEAD equals it).
-    async fn set_repo_commit(&self, repo_id: Uuid, commit_sha: Option<&str>) -> Result<()>;
+    /// Record the stamp of a successful run: the HEAD it read, the paths that
+    /// were uncommitted then and its listing rules (see [`Repo`]). `add` and
+    /// `reindex` diff from this stamp; `reindex` skips when HEAD equals it,
+    /// the worktree is clean, `worktree_paths` is empty and the rules match.
+    /// A run marks the stamp incomplete before its first index write by
+    /// upserting the repository with `worktree_paths: None`.
+    async fn set_repo_stamp(
+        &self,
+        repo_id: Uuid,
+        commit_sha: Option<&str>,
+        worktree_paths: &[String],
+        listing_rules: &str,
+    ) -> Result<()>;
 
     /// Replace the WHOLE index of a repo. Embeddings whose `(content_hash,
     /// model)` still exist in the new bundle MUST be preserved (harvested into
@@ -41,6 +52,18 @@ pub trait IndexStore: Send + Sync {
     ) -> Result<()>;
 
     async fn load_graph(&self, repo_id: Uuid) -> Result<Graph>;
+
+    /// `(path, content_hash)` of every indexed file — what the git delta
+    /// compares against without loading the whole graph.
+    async fn file_hashes(&self, repo_id: Uuid) -> Result<Vec<(String, String)>> {
+        Ok(self
+            .load_graph(repo_id)
+            .await?
+            .files
+            .into_iter()
+            .map(|f| (f.path, f.content_hash))
+            .collect())
+    }
 
     async fn chunks_missing_embeddings(
         &self,

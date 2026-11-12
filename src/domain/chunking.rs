@@ -33,6 +33,8 @@ pub struct HeaderInput<'a> {
     pub uses: &'a [String],
     pub calls: &'a [String],
     pub doc: Option<&'a str>,
+    /// Solidity external function: `<abi_signature> <selector>`.
+    pub abi: Option<&'a str>,
 }
 
 /// Render the `// ...` context header prepended to every chunk body.
@@ -53,6 +55,9 @@ pub fn render_header(input: &HeaderInput) -> String {
     }
     if !input.kind.is_empty() || !input.name.is_empty() {
         lines.push(format!("// kind: {}  name: {}", input.kind, input.name));
+    }
+    if let Some(abi) = input.abi.filter(|a| !a.is_empty()) {
+        lines.push(format!("// abi: {abi}"));
     }
     if !input.uses.is_empty() {
         lines.push(format!("// uses: {}", input.uses.join(", ")));
@@ -279,6 +284,7 @@ mod tests {
             uses: &uses,
             calls: &[],
             doc: Some("  Does things.\nMore."),
+            abi: None,
         });
         assert_eq!(
             h,
@@ -292,6 +298,33 @@ mod tests {
         assert!(h.len() <= HEADER_MAX_CHARS);
         assert!(h.contains(&"x".repeat(300)));
         assert!(!h.contains(&"x".repeat(301)));
+    }
+
+    #[test]
+    fn header_renders_abi_line() {
+        // An ERC-20 `transfer`, as the analyze ABI pass writes `Unit.abi`.
+        let h = render_header(&HeaderInput {
+            path: "src/Token.sol",
+            language: "solidity",
+            line_start: 40,
+            line_end: 44,
+            container: Some("Token"),
+            kind: "method",
+            name: "transfer",
+            abi: Some("transfer(address,uint256) 0xa9059cbb"),
+            ..Default::default()
+        });
+        assert_eq!(
+            h,
+            "// file: src/Token.sol (solidity)  L40-44\n// in: Token\n// kind: method  name: transfer\n// abi: transfer(address,uint256) 0xa9059cbb"
+        );
+        let plain = render_header(&HeaderInput {
+            kind: "method",
+            name: "x",
+            abi: Some(""),
+            ..Default::default()
+        });
+        assert!(!plain.contains("abi"));
     }
 
     #[test]

@@ -5,19 +5,20 @@
 
 Chaos Substrate (1.0) is a small Rust crate that builds a persistent knowledge graph of one or
 more code repositories so an agent can answer feature questions with code excerpts from the index
-instead of re-reading source. Languages: Rust, TypeScript, JavaScript, Python, Solidity, GraphQL
-(SDL, operations, and `gql`-embedded documents in TS/JS/Python), plus Markdown and `.srt`/`.vtt`
-transcripts. Storage is
-Postgres + pgvector; the memory survives process restarts.
+instead of re-reading source. Languages: Rust, TypeScript, JavaScript, Python, Solidity (with
+Foundry remappings), contract ABIs (`*.abi`, `*.abi.json`, `.json` under `abi/` or `abis/`),
+GraphQL (SDL, operations, `gql`-embedded documents in TS/JS/Python, and TS/JS resolvers), plus
+Markdown and `.srt`/`.vtt` transcripts. Storage is Postgres + pgvector; the memory survives
+process restarts.
 
 ## Hard rules
 
 - No mock embedders, fake vectors, or random vectors. If the embedder is unavailable, indexing fails.
 - Persistence stays Postgres + pgvector (`migrations/001_init.sql`). Never swap in in-memory storage.
 - MCP stays on stdio with newline-delimited JSON-RPC 2.0.
-- Runtime implementation is Rust only. All code extraction is tree-sitter in Rust (Markdown uses
-  pulldown-cmark, transcripts a line scanner: neither has a tree-sitter grammar) — no Node or
-  Python sidecars.
+- Runtime implementation is Rust only. All code extraction is tree-sitter in Rust, ABI JSON
+  included (tree-sitter-json); Markdown uses pulldown-cmark and transcripts a line scanner, since
+  neither has a tree-sitter grammar. No Node or Python sidecars.
 - On an indexed TARGET repository, answer feature questions with chaos tools only: no `rg`/`grep`/
   `ls` and no generated scripts against that repo. A missing capability is a chaos feature request.
 - Hexagonal layering (enforced by the `layering` test in `src/main.rs`): `domain` depends on
@@ -33,27 +34,33 @@ argument schemas live in one place: `src/application/tools.rs`.
 - `index` — fully index a repository: tree-sitter extraction -> project-wide import/call
   resolution -> contextual chunks -> real embeddings -> feature communities -> summaries (each
   embedded only when its text changed). Run once per repo.
-- `reindex [--force]` — re-run a full index; a no-op when git HEAD equals the indexed commit and the
-  worktree is clean. Unchanged chunks keep their embeddings (content-hash reuse).
-- `add [--since <ref>]` — incrementally index what changed since the last index (content-hash
-  drift, plus git's changes when `--since` is given); files gone from disk
-  are purged; only new chunks are embedded. Use after every edit.
-- `feature "<question>" [--budget N] [--no-persist] [--json] [--repos a b | --all-repos]` — answer
-  one feature question from the index without reading source: routed to matching features, code
-  excerpts with exact line ranges, a 1-hop call/import graph, env vars and HTTP routes. Persists
-  `docs/features_memory/<slug>.html` (hash-gated). Read `excerpts[].code` instead of opening files.
-  With `--repos`/`--all-repos` it answers in each repo of the project (budget split between them)
-  and links them where a symbol name from one repo appears verbatim in another's code, on one page.
+- `reindex [--force]` — bring the index up to HEAD: the `add` delta plus the files one hop
+  upstream of each change; a no-op when HEAD is the stamped commit and nothing is uncommitted;
+  `--force` runs a full index. Unchanged chunks keep their embeddings (content-hash reuse).
+- `add [--since <ref>]` — incrementally index the git delta since the last stamped run: the diff
+  from the stamped commit to HEAD, files uncommitted now and files uncommitted at the stamp
+  (`--since` adds ref..HEAD). Content-equal files are skipped, removed ones purged, only new
+  chunks embedded. Without a usable stamp it reconciles every file once. Use after every edit,
+  commit, pull or checkout.
+- `feature "<question>" [--budget N] [--no-persist] [--json] [--repos a b | --all-repos] [--entry <field>]`
+  — answer one feature question from the index without reading source: routed to matching
+  features, code excerpts with exact line ranges, a 1-hop call/import graph, env vars, HTTP routes
+  and MCP tools. Persists `docs/features_memory/<slug>.html` (hash-gated). Read `excerpts[].code`
+  instead of opening files. With `--repos`/`--all-repos` it answers in each repo of the project
+  (budget split between them) and links them where a symbol name from one repo appears verbatim
+  in another's code, on one page. A GraphQL field named in the question (`Mutation.createLab`),
+  or given with `--entry`, leads the answer: its SDL, registration, resolver, the calls behind it
+  and its callers.
 - `compose [--out <dir>] [--limit N] [--repos a b | --all-repos]` — write the feature website
-  (`docs/features_memory/site/`): an index with the repo's entry points (GraphQL fields, contract
-  functions, MCP tools, HTTP routes, React hooks; for text the document plan and transcript
-  timestamps) plus one page per feature, content-hash gated. Across repos it also writes one
+  (`docs/features_memory/site/`): an index with the repo's entry points (GraphQL fields with
+  their resolvers, contract functions and getters with selectors and callers, MCP tools, HTTP
+  routes, React hooks; for text the document plan and transcript timestamps) plus one page per
+  feature, content-hash gated. Across repos it also writes one
   project hub with a feature graph and the whole project's entry points. Cached pages must not be
   re-read.
 - `correlations [--repos a b] [--min-confidence 0.5]` — intra-repo pairs of features sharing files
   or symbols, and cross-repo consumer->provider links (`package_dep`, `http_route`,
-  `graphql_field`) across the
-  repos of a project. Writes `correlations.html`.
+  `graphql_field`, `contract_abi`) across the repos of a project. Writes `correlations.html`.
 
 CLI-only plumbing: `migrate [--reset]`, `doctor`, `mcp`, `help` (no config or DB needed).
 Global flags: `--config <chaos-substrate.toml>`, `--project <chaos.toml>`, `--repo <alias|path>`, `-v`.
@@ -70,7 +77,8 @@ Global flags: `--config <chaos-substrate.toml>`, `--project <chaos.toml>`, `--re
 ## Configuration
 
 - `chaos-substrate.toml` (`[storage] database_url`, `[embedding] provider|model|dimensions|base_url`,
-  optional `[indexing] skip_dirs`). Env overrides: `DATABASE_URL`, `CHAOS_EMBED_PROVIDER`,
+  optional `[indexing] skip_dirs`; Foundry `libs` directories are skipped by path without an
+  entry). Env overrides: `DATABASE_URL`, `CHAOS_EMBED_PROVIDER`,
   `CHAOS_EMBED_MODEL`, `CHAOS_EMBED_DIMENSIONS`, `CHAOS_EMBED_BASE_URL`. Without a file,
   `DATABASE_URL` is required and the embedder defaults to Ollama `embeddinggemma` (768d).
 - `chaos.toml` next to the repos defines a project: `name = "..."` plus `[[repos]]` entries with
@@ -80,10 +88,11 @@ Global flags: `--config <chaos-substrate.toml>`, `--project <chaos.toml>`, `--re
 
 1. `chaos doctor`, then `chaos migrate` (`--reset` to leave a legacy 0.x schema).
 2. `chaos index` once per repo.
-3. `chaos add` after every edit.
+3. `chaos add` after every edit, commit, pull or checkout.
 4. `chaos feature "<question>"` to answer from the index; `chaos compose` for the website;
    `chaos correlations` for cross-feature and cross-repo links.
-5. `chaos reindex` only when the index looks stale.
+5. `chaos reindex` only when the index looks stale, and `chaos reindex --force` on every repo
+   after an upgrade that changes extraction (the delta re-extracts changed files only).
 
 ## Validation
 

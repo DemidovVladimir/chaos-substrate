@@ -77,15 +77,21 @@ const BODY_TYPES: &[&str] = &[
     "enum_body",
 ];
 
+/// `dispatch_cases` runs before `calls` so a call inside a `case` is
+/// attributed to its `Resolver` (the smallest enclosing symbol).
 const EXTRAS: &[super::lang::ExtraPass] = &[
     function_values,
+    super::abi::ts_definitions,
     own_exports,
+    super::resolvers::dispatch_cases,
     calls,
     heritage_relations,
     packages,
     super::surface::typescript,
     super::entry::typescript,
+    super::resolvers::bindings,
     super::graphql::embedded_ts,
+    super::abi::ts_contract_calls,
 ];
 
 macro_rules! spec {
@@ -117,7 +123,7 @@ pub fn spec(lang: Language, path: &str) -> Option<&'static LangSpec> {
 }
 
 /// Pre-order, source-ordered traversal of named nodes.
-fn walk_named<'t>(root: Node<'t>, mut f: impl FnMut(Node<'t>)) {
+pub(super) fn walk_named<'t>(root: Node<'t>, mut f: impl FnMut(Node<'t>)) {
     let mut stack = vec![root];
     while let Some(n) = stack.pop() {
         f(n);
@@ -133,7 +139,7 @@ fn is_function_value(n: Node) -> bool {
 
 /// Contiguous `comment` siblings directly above `node` (decorators skipped),
 /// cleaned of markers. Returns the doc and the byte start of the first one.
-fn leading_comments(node: Node, src: &str) -> (Option<String>, Option<usize>) {
+pub(super) fn leading_comments(node: Node, src: &str) -> (Option<String>, Option<usize>) {
     let mut lines: Vec<String> = Vec::new();
     let mut start = None;
     let mut expected_row = node.start_position().row;
@@ -171,7 +177,7 @@ fn clean_comment_line(line: &str) -> String {
 }
 
 /// First line of `outer` up to `body_start`, without trailing `=>`, `{` or `=`.
-fn value_signature(outer: Node, body_start: usize, src: &str) -> String {
+pub(super) fn value_signature(outer: Node, body_start: usize, src: &str) -> String {
     let head = &src[outer.start_byte()..body_start.max(outer.start_byte())];
     let first: String = head
         .lines()
@@ -206,14 +212,14 @@ fn body_segments(value: Node) -> Vec<(usize, usize)> {
 }
 
 /// Outer statement of a declarator: the `export_statement` if it wraps the declaration.
-fn outer_statement(decl: Node) -> Node {
+pub(super) fn outer_statement(decl: Node) -> Node {
     match decl.parent() {
         Some(p) if p.kind() == "export_statement" => p,
         _ => decl,
     }
 }
 
-fn unique_id(symbols: &[Symbol], base: String) -> String {
+pub(super) fn unique_id(symbols: &[Symbol], base: String) -> String {
     let n = symbols
         .iter()
         .filter(|s| s.stable_id == base || s.stable_id.starts_with(&format!("{base}#")))

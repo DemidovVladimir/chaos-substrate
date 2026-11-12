@@ -2,14 +2,21 @@
 //! without reading source files.
 //!
 //! Pipeline: embed the question once → route to the best-matching feature
-//! communities by summary embedding → fused chunk retrieval: literal
-//! identifiers named in the question over the whole repo, then semantic and
-//! keyword over the routed files plus the files of those literal hits (an
-//! exact identifier outranks summary routing) → 1-hop graph
-//! expansion of the top hits → env-var / HTTP-route surfaces of the involved
-//! files → pack everything under a token budget → optionally persist the
-//! answer as a hash-gated page. Deterministic given the store outputs.
+//! communities by summary embedding → GraphQL entry anchor: when the question
+//! (or `FeatureRequest.entry`) names a GraphQL field the repository defines or
+//! calls, trace it through the graph ([`super::graphql_entry`]) and trim it to
+//! its share of the budget → fused chunk
+//! retrieval: literal identifiers named in the question over the whole repo,
+//! then semantic and keyword over the routed files plus the files of those
+//! literal hits and of the anchor (an exact identifier outranks summary
+//! routing) → the anchor's chunks lead the excerpts → 1-hop graph expansion
+//! of the top hits (minus the anchor's own edges) → env-var / HTTP-route
+//! surfaces of the involved files → pack the rest under what the anchor left
+//! of the token budget (`tokens_used` counts the anchor too) → optionally
+//! persist the answer as a hash-gated page. Deterministic given the store
+//! outputs.
 
+use super::graphql_entry::{self, EntryTrace, ENTRY_BUDGET_SHARE};
 use crate::domain::budget::{self, ExcerptMode, Item};
 use crate::domain::fusion::{self, Candidate, Channel};
 use crate::domain::hash;
@@ -63,6 +70,10 @@ pub struct FeatureRequest {
     /// Clamped to `MIN_BUDGET..=MAX_BUDGET`.
     pub budget_tokens: usize,
     pub persist: bool,
+    /// GraphQL field to start from: a coordinate (`Mutation.createLab`) or a
+    /// root field name (`createLab`). A coordinate in the question anchors
+    /// without it.
+    pub entry: Option<String>,
 }
 
 impl FeatureRequest {
@@ -71,6 +82,7 @@ impl FeatureRequest {
             question: question.into(),
             budget_tokens: DEFAULT_BUDGET,
             persist: true,
+            entry: None,
         }
     }
 }
@@ -92,7 +104,7 @@ pub struct Excerpt {
     pub symbol: String,
     pub kind: String,
     pub score: f32,
-    /// `semantic` / `keyword` / `literal` / `graph`.
+    /// `entry` / `semantic` / `keyword` / `literal` / `graph`.
     pub why: Vec<&'static str>,
     /// `header + "\n" + body`, clipped per the budget; header only when `code_truncated`
     /// and the body was dropped.
@@ -126,6 +138,11 @@ pub struct FeatureAnswer {
     pub excerpts: Vec<Excerpt>,
     pub graph: Vec<GraphEdge>,
     pub surfaces: Vec<SurfaceHit>,
+    /// The GraphQL field the answer is anchored on (SDL, registration,
+    /// resolver, call trace, callers), when the question names one. Its
+    /// `binds` / `resolves` / `calls` edges live here only, never in `graph`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry: Option<EntryTrace>,
     /// Page path relative to the repo root (when persisted).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub page: Option<String>,
@@ -222,7 +239,7 @@ fn truncate_chars(s: &str, max: usize) -> String {
 
 /// Qualified symbol of a node: the tail of `{lang}:{path}:{kind}:{qualified}`
 /// (or the path for `file:{path}`).
-fn node_symbol(node: &Node) -> String {
+pub(crate) fn node_symbol(node: &Node) -> String {
     let parts: Vec<&str> = node.stable_id.splitn(4, ':').collect();
     match parts.as_slice() {
         [_, _, _, tail] if !tail.is_empty() => tail.to_string(),
@@ -238,7 +255,7 @@ fn edge_cost(g: &GraphEdge) -> usize {
 
 /// Repo-relative file of a node: the `{path}` of `{lang}:{path}:{kind}:{qualified}`
 /// (or of `file:{path}`); empty when the id has neither shape.
-fn node_path(node: &Node) -> String {
+pub(crate) fn node_path(node: &Node) -> String {
     let parts: Vec<&str> = node.stable_id.splitn(4, ':').collect();
     match parts.as_slice() {
         [_, path, _, _] | ["file", path] => path.to_string(),
@@ -275,6 +292,7 @@ async fn retrieve(
     question: &str,
     embedding: &[f32],
     file_ids: Option<&[Uuid]>,
+    entry_files: &[Uuid],
 ) -> Result<Candidates> {
     let model = deps.embedder.model_ref();
     let mut hit_by_chunk: HashMap<Uuid, Hit> = HashMap::new();
@@ -330,6 +348,13 @@ async fn retrieve(
         (Some(s), Some(r)) => s.len() - r.len(),
         _ => 0,
     };
+    // The GraphQL anchor's files join the scope too.
+    let scope = scope.map(|mut ids| {
+        ids.extend_from_slice(entry_files);
+        ids.sort();
+        ids.dedup();
+        ids
+    });
 
     let semantic = deps
         .search
@@ -447,8 +472,72 @@ pub async fn feature(
         }
     }
 
+    // --- GraphQL entry anchor ----------------------------------------------
+    let coords = graphql_entry::coordinates(&question, req.entry.as_deref());
+    let (mut entry, entry_hits) = match graphql_entry::trace(deps.search, repo, &coords).await? {
+        Some((t, hits)) => (Some(t), hits),
+        None => (None, Vec::new()),
+    };
+    // The anchor is charged first, in full, trimmed to its share of the budget.
+    let entry_cap =
+        (budget_tokens as f64 * budget::CHARS_PER_TOKEN as f64 * ENTRY_BUDGET_SHARE) as usize;
+    let mut entry_chars = 0;
+    if let Some(t) = entry.as_mut() {
+        let before = (t.trace.len(), t.sdl.len(), t.callers.len());
+        entry_chars = t.fit(entry_cap);
+        let dropped = [
+            (before.0 - t.trace.len(), "call edges"),
+            (before.1 - t.sdl.len(), "SDL copies"),
+            (before.2 - t.callers.len(), "callers"),
+        ]
+        .iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, what)| format!("{n} {what}"))
+        .collect::<Vec<_>>();
+        let mut detail = t.describe();
+        if !dropped.is_empty() {
+            detail.push_str(&format!(
+                "; {} dropped to fit {entry_cap} chars",
+                dropped.join(", ")
+            ));
+        }
+        if entry_chars > entry_cap {
+            detail.push_str(&format!(
+                "; {entry_chars} chars exceed the {entry_cap}-char share (counted in tokens_used)"
+            ));
+        }
+        provenance.push(
+            Breadcrumb::new(source::GRAPH, "entry", detail)
+                .with_locator("nodes.metadata.qualified_name"),
+        );
+    } else if let Some(asked) = req
+        .entry
+        .as_deref()
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+    {
+        // An explicit `entry` that anchors nothing is said so, not dropped silently.
+        provenance.push(
+            Breadcrumb::new(
+                source::GRAPH,
+                "entry",
+                format!("{asked}: no SDL field or calling operation in this repository; answer not anchored"),
+            )
+            .with_locator("nodes.metadata.qualified_name"),
+        );
+    }
+    let entry_files: Vec<Uuid> = entry_hits.iter().filter_map(|h| h.chunk.file_id).collect();
+
     // --- fused retrieval ---------------------------------------------------
-    let cands = retrieve(&deps, repo, &question, &embedding, file_ids.as_deref()).await?;
+    let cands = retrieve(
+        &deps,
+        repo,
+        &question,
+        &embedding,
+        file_ids.as_deref(),
+        &entry_files,
+    )
+    .await?;
     let fused = fusion::fuse(cands.channels, FUSE_LIMIT);
     provenance.push(
         Breadcrumb::new(
@@ -460,7 +549,10 @@ pub async fn feature(
                 cands.counts.get("keyword").copied().unwrap_or(0),
                 cands.counts.get("literal").copied().unwrap_or(0),
                 fused.len(),
-                file_ids.as_ref().map(|f| format!("{} routed + {} literal-hit files", f.len(), cands.literal_files)).unwrap_or_else(|| "whole repo".into())
+                file_ids.as_ref().map(|f| format!("{} routed + {} literal-hit files{}", f.len(), cands.literal_files, match entry_files.iter().collect::<HashSet<_>>().len() {
+                    0 => String::new(),
+                    n => format!(" + {n} GraphQL entry files"),
+                })).unwrap_or_else(|| "whole repo".into())
             ),
         )
         .with_locator("chunks"),
@@ -505,12 +597,13 @@ pub async fn feature(
         node_ids.insert(e.source_node_id);
         node_ids.insert(e.target_node_id);
     }
-    // Nodes of every fused excerpt too (for symbol names).
+    // Nodes of every fused excerpt and anchor chunk too (for symbol names).
     for f in &fused {
         if let Some(n) = hit_by_chunk.get(&f.key).and_then(|h| h.chunk.node_id) {
             node_ids.insert(n);
         }
     }
+    node_ids.extend(entry_hits.iter().filter_map(|h| h.chunk.node_id));
     let node_id_list: Vec<Uuid> = node_ids.iter().copied().collect();
     let nodes = if node_id_list.is_empty() {
         Vec::new()
@@ -531,7 +624,12 @@ pub async fn feature(
         v.dedup();
         v
     };
-    let fused_chunk_ids: HashSet<Uuid> = fused.iter().map(|f| f.key).collect();
+    let entry_chunk_ids: HashSet<Uuid> = entry_hits.iter().map(|h| h.chunk.id).collect();
+    let fused_chunk_ids: HashSet<Uuid> = fused
+        .iter()
+        .map(|f| f.key)
+        .chain(entry_chunk_ids.iter().copied())
+        .collect();
     let mut expansion: Vec<Chunk> = if others.is_empty() {
         Vec::new()
     } else {
@@ -570,6 +668,14 @@ pub async fn feature(
         .collect();
     graph.sort();
     graph.dedup();
+    // The anchor's binds / resolves / call-trace edges are emitted once, in `entry`.
+    let entry_graph: BTreeSet<GraphEdge> = entry
+        .as_ref()
+        .map(EntryTrace::graph_edges)
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    graph.retain(|g| !entry_graph.contains(g));
     graph.truncate(GRAPH_MAX_EDGES);
     provenance.push(
         Breadcrumb::new(
@@ -611,18 +717,46 @@ pub async fn feature(
     } else {
         0.0
     };
-    let mut raws: Vec<Raw> = fused
+    // The anchor's chunks lead, scored at the top fused score; a chunk also
+    // fused keeps its channel names after `entry`.
+    let top_fused = fused
         .iter()
-        .filter_map(|f| {
-            let h = hit_by_chunk.get(&f.key)?;
-            Some(Raw {
+        .map(|f| f.score)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let top_fused = if top_fused.is_finite() {
+        top_fused
+    } else {
+        1.0
+    };
+    let mut raws: Vec<Raw> = entry_hits
+        .iter()
+        .map(|h| {
+            let mut why = vec!["entry"];
+            if let Some(f) = fused.iter().find(|f| f.key == h.chunk.id) {
+                why.extend(f.channels.iter().map(|c| c.name()));
+            }
+            Raw {
                 chunk: h.chunk.clone(),
                 path: Some(h.path.clone()),
-                score: f.score,
-                why: f.channels.iter().map(|c| c.name()).collect(),
-            })
+                score: top_fused,
+                why,
+            }
         })
         .collect();
+    raws.extend(
+        fused
+            .iter()
+            .filter(|f| !entry_chunk_ids.contains(&f.key))
+            .filter_map(|f| {
+                let h = hit_by_chunk.get(&f.key)?;
+                Some(Raw {
+                    chunk: h.chunk.clone(),
+                    path: Some(h.path.clone()),
+                    score: f.score,
+                    why: f.channels.iter().map(|c| c.name()).collect(),
+                })
+            }),
+    );
     for c in expansion {
         let path = c.file_id.and_then(|f| path_by_file.get(&f).cloned());
         raws.push(Raw {
@@ -692,7 +826,17 @@ pub async fn feature(
             .iter()
             .map(|s| s.kind.len() + s.name.len() + s.path.len() + 36)
             .sum::<usize>();
-    let packed = budget::pack(budget_tokens, &summary_sizes, &items, graph_chars);
+    // The anchor (already fitted) is charged in full; the rest packs into
+    // what its share left. An anchor whose irreducible rows overrun the share
+    // takes no more from the rest: the overrun shows in `tokens_used`.
+    let entry_tokens = entry_chars.div_ceil(budget::CHARS_PER_TOKEN);
+    let reserved = entry_chars.min(entry_cap).div_ceil(budget::CHARS_PER_TOKEN);
+    let packed = budget::pack(
+        budget_tokens.saturating_sub(reserved),
+        &summary_sizes,
+        &items,
+        graph_chars,
+    );
     let kept: HashSet<usize> = packed.summaries.iter().copied().collect();
     for (i, f) in features.iter_mut().enumerate() {
         if !kept.contains(&i) {
@@ -764,12 +908,17 @@ pub async fn feature(
         source::GRAPH,
         "budget",
         format!(
-            "packed {} summaries, {} of {} excerpts, {} edges, {} surfaces under {} tokens",
+            "packed {} summaries, {} of {} excerpts, {} edges, {} surfaces{} under {} tokens",
             packed.summaries.len(),
             excerpts.len(),
             raws.len(),
             kept_graph.len(),
             kept_surfaces.len(),
+            if entry.is_some() {
+                format!(", the GraphQL entry ({entry_tokens} tokens)")
+            } else {
+                String::new()
+            },
             budget_tokens
         ),
     ));
@@ -778,7 +927,13 @@ pub async fn feature(
     let mut hashes: Vec<&str> = raws.iter().map(|r| r.chunk.content_hash.as_str()).collect();
     hashes.sort();
     hashes.dedup();
-    let content_hash = hash::sha256_hex(&format!("{question}\n{}", hashes.join("\n")));
+    // The anchor's registrations and callers are not chunks: fold them in.
+    let entry_key = entry
+        .as_ref()
+        .and_then(|t| serde_json::to_string(t).ok())
+        .map(|j| format!("\nentry:{}", hash::sha256_hex(&j)))
+        .unwrap_or_default();
+    let content_hash = hash::sha256_hex(&format!("{question}\n{}{entry_key}", hashes.join("\n")));
 
     let mut answer = FeatureAnswer {
         question: question.clone(),
@@ -787,10 +942,11 @@ pub async fn feature(
         excerpts,
         graph: kept_graph,
         surfaces: kept_surfaces,
+        entry,
         page: None,
         page_cached: false,
         content_hash,
-        tokens_used: packed.tokens_used,
+        tokens_used: packed.tokens_used + entry_tokens,
         warnings,
         provenance,
     };
@@ -831,7 +987,16 @@ pub async fn feature(
 pub fn manifest(answer: &FeatureAnswer) -> Value {
     let mut v = serde_json::to_value(answer).unwrap_or_else(|_| json!({}));
     v["title"] = json!(answer.question);
-    v["edges"] = json!(answer.graph);
+    // The page's feature map draws the anchor's edges ahead of the 1-hop graph.
+    let edges: Vec<GraphEdge> = answer
+        .entry
+        .as_ref()
+        .map(EntryTrace::graph_edges)
+        .unwrap_or_default()
+        .into_iter()
+        .chain(answer.graph.iter().cloned())
+        .collect();
+    v["edges"] = json!(edges);
     v["features"] = json!(answer
         .features
         .iter()
@@ -934,6 +1099,9 @@ mod tests {
         expansion: Vec<Chunk>,
         surfaces: Vec<Node>,
         paths: Vec<(Uuid, String)>,
+        /// SDL `Field` copies and operations the GraphQL entry lookups serve.
+        gql_fields: Vec<Node>,
+        ops: Vec<Node>,
         calls: Mutex<Vec<String>>,
     }
 
@@ -992,8 +1160,13 @@ mod tests {
             self.log(format!("community_file_ids {}", ids.len()));
             Ok(self.file_ids.clone())
         }
-        async fn edges_for_nodes(&self, _r: Uuid, _n: &[Uuid]) -> Result<Vec<Edge>> {
-            Ok(self.edges.clone())
+        async fn edges_for_nodes(&self, _r: Uuid, ids: &[Uuid]) -> Result<Vec<Edge>> {
+            Ok(self
+                .edges
+                .iter()
+                .filter(|e| ids.contains(&e.source_node_id) || ids.contains(&e.target_node_id))
+                .cloned()
+                .collect())
         }
         async fn nodes_by_ids(&self, ids: &[Uuid]) -> Result<Vec<Node>> {
             Ok(self
@@ -1024,6 +1197,34 @@ mod tests {
                 .paths
                 .iter()
                 .filter(|(i, _)| ids.contains(i))
+                .cloned()
+                .collect())
+        }
+        async fn graphql_fields(&self, _r: Uuid, coords: &[String]) -> Result<Vec<Node>> {
+            self.log(format!("graphql_fields {}", coords.join(",")));
+            Ok(self
+                .gql_fields
+                .iter()
+                .filter(|n| {
+                    n.metadata["qualified_name"]
+                        .as_str()
+                        .is_some_and(|q| coords.iter().any(|c| c == q))
+                })
+                .cloned()
+                .collect())
+        }
+        async fn operations_selecting(&self, _r: Uuid, coords: &[String]) -> Result<Vec<Node>> {
+            self.log(format!("operations_selecting {}", coords.join(",")));
+            Ok(self
+                .ops
+                .iter()
+                .filter(|n| {
+                    n.metadata["root_fields"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .any(|f| f.as_str().is_some_and(|f| coords.iter().any(|c| c == f)))
+                })
                 .cloned()
                 .collect())
         }
@@ -1105,6 +1306,8 @@ mod tests {
             name: "api".into(),
             root_path: "/r".into(),
             commit_sha: None,
+            worktree_paths: Some(Vec::new()),
+            listing_rules: None,
         }
     }
 
@@ -1323,6 +1526,442 @@ mod tests {
         );
     }
 
+    /// A node with an explicit stable id and metadata (GraphQL fixtures).
+    fn gnode(n: u128, file: u128, kind: NodeKind, stable_id: &str, metadata: Value) -> Node {
+        Node {
+            id: id(n),
+            repo_id: id(1),
+            file_id: Some(id(file)),
+            kind,
+            stable_id: stable_id.into(),
+            name: stable_id.rsplit([':', '.']).next().unwrap().to_string(),
+            signature: None,
+            doc: None,
+            line_start: Some(13),
+            line_end: Some(20),
+            metadata,
+        }
+    }
+
+    fn edge(n: u128, from: u128, to: u128, kind: EdgeKind, confidence: f32) -> Edge {
+        Edge {
+            id: id(n),
+            repo_id: id(1),
+            source_node_id: id(from),
+            target_node_id: id(to),
+            kind,
+            confidence,
+        }
+    }
+
+    /// desci-infra's shape: `getResolvers()` binds `Mutation.createLab` to the
+    /// Labs Lambda, whose `switch (fieldName)` case calls
+    /// `DataRoomResolvers::handleCreateLab`; a web hook and a test select it.
+    fn create_lab_script() -> Script {
+        let field = gnode(
+            500,
+            110,
+            NodeKind::Field,
+            "graphql:src/appsync/labs.graphql:field:Mutation.createLab",
+            json!({"language": "graphql", "qualified_name": "Mutation.createLab",
+                   "path": "src/appsync/labs.graphql",
+                   "header": "createLab(input: CreateLabInput!): Lab!"}),
+        );
+        let resolver = gnode(
+            501,
+            111,
+            NodeKind::Resolver,
+            "typescript:lambda/appsync-resolver-labs-lambda/index.ts:resolver:originalHandler::createLab",
+            json!({"fields": ["createLab"], "dispatch": "fieldName"}),
+        );
+        let registrar = gnode(
+            502,
+            112,
+            NodeKind::Method,
+            "typescript:lib/labs/config.ts:method:AppSyncLabsLambdaConfig::getResolvers",
+            json!({}),
+        );
+        let registrar_file = Node {
+            id: hash::scoped_id(id(1), "file:lib/labs/config.ts"),
+            kind: NodeKind::File,
+            name: "lib/labs/config.ts".into(),
+            metadata: json!({
+                "graphql_bindings": [{"coordinate": "Mutation.createLab", "line": 21,
+                    "owner": "typescript:lib/labs/config.ts:method:AppSyncLabsLambdaConfig::getResolvers"}],
+                "lambda_entries": ["lambda/appsync-resolver-labs-lambda/index.ts"]
+            }),
+            ..gnode(
+                503,
+                112,
+                NodeKind::File,
+                "file:lib/labs/config.ts",
+                json!({}),
+            )
+        };
+        let callee = gnode(
+            504,
+            113,
+            NodeKind::Method,
+            "typescript:lambda/appsync-resolver-labs-lambda/resolvers.ts:method:DataRoomResolvers::handleCreateLab",
+            json!({}),
+        );
+        let op = |n: u128, path: &str| {
+            gnode(
+                n,
+                114,
+                NodeKind::Operation,
+                &format!("graphql:{path}:operation:CreateLab"),
+                json!({"root_fields": ["Mutation.createLab"], "path": path}),
+            )
+        };
+        Script {
+            communities: vec![(community(10, "labs", "s1"), 0.9)],
+            file_ids: vec![id(100)],
+            semantic: vec![
+                hit(chunk(20, Some(200), 100, 100), 0.9),
+                hit(chunk(21, Some(501), 111, 100), 0.5),
+            ],
+            gql_fields: vec![field.clone()],
+            ops: vec![
+                op(505, "apps/web/hooks/useCreateLab.ts"),
+                op(506, "apps/web/__tests__/createLab.test.ts"),
+            ],
+            edges: vec![
+                edge(1, 502, 500, EdgeKind::Binds, 1.0),
+                edge(2, 501, 500, EdgeKind::Resolves, 0.9),
+                edge(3, 501, 504, EdgeKind::Calls, 1.0),
+            ],
+            nodes: vec![
+                node(200, 100, NodeKind::Function, "alpha"),
+                field,
+                resolver,
+                registrar,
+                registrar_file,
+                callee,
+            ],
+            expansion: vec![
+                chunk(21, Some(501), 111, 100),
+                chunk(22, Some(504), 113, 100),
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn entry_anchor_leads_the_answer() {
+        let script = create_lab_script();
+        let out = run(
+            &script,
+            &MemPages::default(),
+            FeatureRequest {
+                persist: false,
+                ..FeatureRequest::new("Mutation.createLab")
+            },
+        )
+        .await;
+        let entry = out.entry.as_ref().expect("anchored");
+        assert_eq!(entry.coordinates, vec!["Mutation.createLab"]);
+        assert_eq!(entry.sdl[0].path, "src/appsync/labs.graphql");
+        assert_eq!(
+            (
+                entry.bindings[0].symbol.as_str(),
+                entry.bindings[0].line,
+                entry.bindings[0].lambda_entries.clone()
+            ),
+            (
+                "AppSyncLabsLambdaConfig::getResolvers",
+                21,
+                vec!["lambda/appsync-resolver-labs-lambda/index.ts".to_string()]
+            )
+        );
+        assert_eq!(entry.resolvers[0].symbol, "originalHandler::createLab");
+        assert_eq!(entry.resolvers[0].lines, [13, 20]);
+        assert_eq!(entry.trace[0].to, "DataRoomResolvers::handleCreateLab");
+        assert_eq!(entry.trace[0].hop, 1);
+        // The test file's operation is not a caller.
+        assert_eq!(entry.callers.len(), 1);
+        assert_eq!(entry.callers[0].path, "apps/web/hooks/useCreateLab.ts");
+
+        // Anchor chunks lead: the resolver (also semantic), then its callee.
+        let lead: Vec<(&str, Vec<&str>)> = out
+            .excerpts
+            .iter()
+            .map(|e| (e.symbol.as_str(), e.why.clone()))
+            .collect();
+        assert_eq!(
+            lead,
+            vec![
+                ("originalHandler::createLab", vec!["entry", "semantic"]),
+                ("DataRoomResolvers::handleCreateLab", vec!["entry"]),
+                ("alpha", vec!["semantic"]),
+            ]
+        );
+        assert_eq!(
+            out.excerpts[0].path,
+            "lambda/appsync-resolver-labs-lambda/index.ts"
+        );
+        // The anchor's binds, resolves and call trace live in `entry` only:
+        // the 1-hop graph around the resolver chunk does not repeat them.
+        let anchor = entry.graph_edges();
+        let kinds: Vec<&str> = anchor.iter().map(|g| g.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["binds", "resolves", "calls"]);
+        assert_eq!(anchor[0].to_path, "src/appsync/labs.graphql");
+        assert!(
+            out.graph.iter().all(|g| !anchor.contains(g)),
+            "{:?}",
+            out.graph
+        );
+        // The page's feature map still draws them, ahead of the 1-hop graph.
+        let page = manifest(&out);
+        let drawn: Vec<&str> = page["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(drawn[..3], ["binds", "resolves", "calls"]);
+        assert!(out
+            .provenance
+            .iter()
+            .any(|b| b.method == "entry" && b.detail.contains("1 resolvers")));
+        // The anchor's files join the retrieval scope (routed 1 + 2 entry files).
+        let calls = script.calls.lock().unwrap().clone();
+        assert!(
+            calls.contains(&"semantic scope=Some(3)".to_string()),
+            "{calls:?}"
+        );
+        // The JSON carries the anchor.
+        assert!(serde_json::to_value(&out).unwrap()["entry"]["resolvers"].is_array());
+    }
+
+    /// `create_lab_script` behind a wide, deep call trace (8 more hop-1
+    /// callees, 2 hop-2 callees each, 1 hop-3 callee each of those, long
+    /// names), a second SDL copy of the field, as desci-infra's createLab.
+    fn wide_trace_script() -> Script {
+        let mut s = create_lab_script();
+        let dir = "lambda/appsync-resolver-labs-lambda/services/data-room";
+        let mut n = 600u128;
+        let mut next = || {
+            n += 1;
+            n
+        };
+        let mut calls: Vec<(u128, u128)> = Vec::new();
+        for i in 0..8 {
+            let a = next();
+            calls.push((501, a));
+            s.nodes.push(gnode(a, 113, NodeKind::Method, &format!("typescript:{dir}/resolvers-{i}.ts:method:DataRoomResolverService{i}::handleCreateLabStep{i}"), json!({})));
+            for j in 0..2 {
+                let b = next();
+                calls.push((a, b));
+                s.nodes.push(gnode(b, 113, NodeKind::Function, &format!("typescript:{dir}/helpers-{i}-{j}.ts:function:validateAndPersistLabRecord{i}{j}"), json!({})));
+                let c = next();
+                calls.push((b, c));
+                s.nodes.push(gnode(c, 113, NodeKind::Function, &format!("typescript:{dir}/aurora-{i}-{j}.ts:function:writeLabRowInsideTransaction{i}{j}"), json!({})));
+            }
+        }
+        for (k, (from, to)) in calls.into_iter().enumerate() {
+            s.edges
+                .push(edge(100 + k as u128, from, to, EdgeKind::Calls, 0.9));
+        }
+        let copy = gnode(
+            520,
+            115,
+            NodeKind::Field,
+            "graphql:graphql/schemas/ip-hubs.graphql:field:Mutation.createLab",
+            json!({"language": "graphql", "qualified_name": "Mutation.createLab",
+                   "path": "graphql/schemas/ip-hubs.graphql",
+                   "header": "createLab(input: CreateLabInput!): Lab!"}),
+        );
+        s.gql_fields.push(copy.clone());
+        s.nodes.push(copy);
+        s
+    }
+
+    #[tokio::test]
+    async fn entry_anchor_is_charged_and_trimmed_to_its_share() {
+        let script = wide_trace_script();
+        let ask = |budget_tokens| FeatureRequest {
+            budget_tokens,
+            persist: false,
+            ..FeatureRequest::new("Mutation.createLab")
+        };
+        let full = run(&script, &MemPages::default(), ask(MAX_BUDGET)).await;
+        let full = full.entry.expect("anchored");
+        assert_eq!(full.trace.len(), graphql_entry::ENTRY_MAX_TRACE_EDGES);
+        assert_eq!(full.sdl.len(), 2);
+        let hop1 = full.trace.iter().filter(|t| t.hop == 1).count();
+        for budget_tokens in [MIN_BUDGET, DEFAULT_BUDGET, MAX_BUDGET] {
+            let out = run(&script, &MemPages::default(), ask(budget_tokens)).await;
+            let entry = out.entry.as_ref().expect("anchored");
+            let total = budget_tokens * budget::CHARS_PER_TOKEN;
+            assert!(
+                entry.chars() <= total / 4,
+                "{budget_tokens}: {}",
+                entry.chars()
+            );
+            // Cut from the deepest hop; registrations and resolvers never.
+            assert_eq!(entry.trace[..], full.trace[..entry.trace.len()]);
+            assert_eq!(
+                (&entry.bindings, &entry.resolvers),
+                (&full.bindings, &full.resolvers)
+            );
+            assert_eq!(entry.sdl[0], full.sdl[0]);
+            // Every emitted char is counted, and the count is within budget.
+            let emitted = entry.chars()
+                + out.graph.iter().map(edge_cost).sum::<usize>()
+                + out.excerpts.iter().map(|e| e.code.len()).sum::<usize>()
+                + out.features.iter().map(|f| f.summary.len()).sum::<usize>();
+            assert!(
+                emitted <= out.tokens_used * budget::CHARS_PER_TOKEN,
+                "{budget_tokens}: {emitted} chars emitted, {} tokens reported",
+                out.tokens_used
+            );
+            assert!(out.tokens_used <= budget_tokens, "{}", out.tokens_used);
+            // The anchor's edges are not repeated in the graph.
+            let anchor = entry.graph_edges();
+            assert!(out.graph.iter().all(|g| !anchor.contains(g)));
+        }
+        // The default budget keeps hop 1 and drops deeper edges first.
+        let mid = run(&script, &MemPages::default(), ask(DEFAULT_BUDGET)).await;
+        let entry = mid.entry.as_ref().unwrap();
+        assert!(entry.trace.len() < full.trace.len());
+        assert_eq!(entry.trace.iter().filter(|t| t.hop == 1).count(), hop1);
+        let dropped = format!(
+            "{} call edges dropped to fit 6000 chars",
+            full.trace.len() - entry.trace.len()
+        );
+        assert!(
+            mid.provenance
+                .iter()
+                .any(|b| b.method == "entry" && b.detail.ends_with(&dropped)),
+            "{:?}",
+            mid.provenance
+        );
+        // The smallest budget: the SDL copy and the callers go before hop 1.
+        let min = run(&script, &MemPages::default(), ask(MIN_BUDGET)).await;
+        let entry = min.entry.unwrap();
+        assert_eq!((entry.sdl.len(), entry.callers.len()), (1, 0));
+        assert!(entry.trace.len() < hop1 && entry.trace.iter().all(|t| t.hop == 1));
+        assert_eq!(full.callers.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn explicit_entry_argument_anchors_a_bare_name() {
+        let script = create_lab_script();
+        let out = run(
+            &script,
+            &MemPages::default(),
+            FeatureRequest {
+                persist: false,
+                entry: Some("createLab".into()),
+                ..FeatureRequest::new("how are labs made")
+            },
+        )
+        .await;
+        let entry = out.entry.expect("anchored by the argument");
+        assert_eq!(entry.sdl[0].coordinate, "Mutation.createLab");
+        // Query.createLab / Subscription.createLab were asked for, not found.
+        assert_eq!(entry.coordinates, vec!["Mutation.createLab"]);
+        assert_eq!(out.excerpts[0].why[0], "entry");
+    }
+
+    #[tokio::test]
+    async fn explicit_entry_that_anchors_nothing_is_reported() {
+        let script = create_lab_script();
+        let out = run(
+            &script,
+            &MemPages::default(),
+            FeatureRequest {
+                persist: false,
+                entry: Some("Mutation.deleteLab".into()),
+                ..FeatureRequest::new("how are labs made")
+            },
+        )
+        .await;
+        assert!(out.entry.is_none());
+        assert!(
+            out.provenance.iter().any(|b| b.method == "entry"
+                && b.detail.starts_with("Mutation.deleteLab: no SDL field")
+                && b.detail.ends_with("answer not anchored")),
+            "{:?}",
+            out.provenance
+        );
+        // A malformed entry yields no coordinate at all and is reported too.
+        let out = run(
+            &script,
+            &MemPages::default(),
+            FeatureRequest {
+                persist: false,
+                entry: Some("create lab".into()),
+                ..FeatureRequest::new("how are labs made")
+            },
+        )
+        .await;
+        assert!(out.entry.is_none());
+        assert!(out
+            .provenance
+            .iter()
+            .any(|b| b.method == "entry" && b.detail.starts_with("create lab: ")));
+    }
+
+    #[tokio::test]
+    async fn unknown_coordinate_changes_nothing() {
+        let anchored = create_lab_script();
+        let plain = Script {
+            gql_fields: vec![],
+            ops: vec![],
+            ..create_lab_script()
+        };
+        let ask = || FeatureRequest {
+            persist: false,
+            ..FeatureRequest::new("Mutation.deleteLab")
+        };
+        let a = run(&anchored, &MemPages::default(), ask()).await;
+        let b = run(&plain, &MemPages::default(), ask()).await;
+        assert!(a.entry.is_none() && b.entry.is_none());
+        assert_eq!(a.excerpts, b.excerpts);
+        assert_eq!(a.graph, b.graph);
+        assert_eq!(a.content_hash, b.content_hash);
+        assert!(a.excerpts.iter().all(|e| !e.why.contains(&"entry")));
+        assert!(!serde_json::to_value(&a)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("entry"));
+        assert!(a.provenance.iter().all(|p| p.method != "entry"));
+    }
+
+    #[tokio::test]
+    async fn bare_name_without_cue_word_is_not_an_entry() {
+        let script = create_lab_script();
+        let out = run(
+            &script,
+            &MemPages::default(),
+            FeatureRequest {
+                persist: false,
+                ..FeatureRequest::new("how does createLab work")
+            },
+        )
+        .await;
+        assert!(out.entry.is_none());
+        let calls = script.calls.lock().unwrap().clone();
+        assert!(
+            calls.iter().all(|c| !c.starts_with("graphql_fields")),
+            "{calls:?}"
+        );
+        // With a cue word the same name anchors.
+        let cued = run(
+            &script,
+            &MemPages::default(),
+            FeatureRequest {
+                persist: false,
+                ..FeatureRequest::new("how does the createLab mutation work")
+            },
+        )
+        .await;
+        assert!(cued.entry.is_some());
+    }
+
     #[tokio::test]
     async fn budget_degrades_to_header_only() {
         // 1000 tokens = 4000 chars → excerpts get 2800 + unused summary share.
@@ -1348,6 +1987,7 @@ mod tests {
                 question: "alpha".into(),
                 budget_tokens: 1000,
                 persist: false,
+                entry: None,
             },
         )
         .await;
@@ -1380,6 +2020,7 @@ mod tests {
                 question: "alpha".into(),
                 budget_tokens: 10,
                 persist: false,
+                entry: None,
             },
         )
         .await;

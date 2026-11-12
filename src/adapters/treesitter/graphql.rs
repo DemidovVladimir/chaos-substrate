@@ -20,16 +20,19 @@
 //! * `fragment_definition` → `Fragment`.
 //!
 //! Embedded documents (`gql`/`graphql` tagged templates and `gql(...)` calls in
-//! TS/JS; `gql("...")` calls and operation-looking triple-quoted strings in
-//! Python) are blanked of `${…}` substitutions with offset-preserving spaces,
+//! TS/JS; `gql("...")` calls and operation-looking strings in Python, an
+//! implicit concatenation `"a " "b"` being one string) are blanked of `${…}`
+//! substitutions / f-string `{…}` interpolations with offset-preserving spaces,
 //! parsed with the same grammar, and yield the same `Operation`/`Fragment`
 //! symbols with the HOST path in the id (`graphql:{host_path}:operation:{name}`)
 //! and host line numbers. Each also gets `Relation{source: enclosing host
-//! symbol id (or "file:{path}"), Defines, target_name: op qualified name}`.
+//! symbol id (or "file:{path}"), Defines, target_name: the op's stable id}`
+//! (the id, not the name: two same-named operations in one file, `Op` and
+//! `Op#2`, each keep their own host).
 //! **Resolution of `Defines`:** the target is always a symbol of the SAME
 //! file as the source, so the analyzer resolves `target_name` against the
-//! qualified names of that file's `Operation`/`Fragment` symbols only — never
-//! repo-wide.
+//! stable ids (then the unique qualified name) of that file's
+//! `Operation`/`Fragment` symbols only — never repo-wide.
 
 use super::lang::LangSpec;
 use super::walker::{enclosing_symbol, text};
@@ -454,7 +457,7 @@ fn add_embedded(embedded: Vec<Embedded>, file: &FileInput, out: &mut FileExtract
             sink.relations.push(Relation {
                 source: owner.clone(),
                 kind: EdgeKind::Defines,
-                target_name: s.qualified_name.clone(),
+                target_name: s.stable_id.clone(),
             });
         }
     }
@@ -524,26 +527,143 @@ pub fn embedded_ts(tree: &Tree, file: &FileInput, out: &mut FileExtraction) {
     add_embedded(found, file, out);
 }
 
+/// Whether a Python string node is the argument of a `gql(...)` / `graphql(...)` call.
+fn in_python_gql_call(n: Node, src: &str) -> bool {
+    n.parent()
+        .filter(|p| p.kind() == "argument_list")
+        .and_then(|p| p.parent())
+        .and_then(|c| c.child_by_field_name("function"))
+        .is_some_and(|f| f.kind() == "identifier" && is_gql_name(text(f, src)))
+}
+
+/// A byte of a GraphQL name, number, `...` spread or `$` / `@` prefix.
+fn token_byte(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'-' | b'$' | b'@')
+}
+
+/// Whether blanks between `a` (the end of one piece) and `b` (the start of
+/// the next) would split one token that Python's joined value keeps whole.
+fn splits_token(a: u8, b: u8) -> bool {
+    token_byte(a) && (b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.'))
+}
+
+/// A Python implicit concatenation (`"mutation X " "{ x }"`, pieces possibly
+/// f-strings) as ONE document: the source from the first piece to the last
+/// with every byte outside string contents blanked to a space (newlines kept),
+/// f-string `{…}` interpolations blanked and `{{`/`}}` read as `{`/`}`, so
+/// offsets and host lines are preserved. A `(…)` holding nothing but blanked
+/// interpolations (`DecryptDataKey({', '.join(decls)})`) is blanked too, so
+/// the rest parses cleanly. A token split across pieces (`"q" "uery Q"`,
+/// which Python reads as `query Q`) is joined by swapping its leading
+/// fragment with the blanked gap after it: only that fragment moves, onto the
+/// line of the piece that continues it. `None` unless it sits in a
+/// `gql(...)` call or looks like an executable document.
+fn concatenated_python(n: Node, src: &str) -> Option<Embedded> {
+    let pieces = children_of_type(n, "string");
+    let (first, last) = (pieces.first()?, pieces.last()?);
+    let (start, end) = (first.start_byte(), last.end_byte());
+    let mut bytes = src.as_bytes()[start..end].to_vec();
+    let mut keep = vec![false; bytes.len()];
+    let mut interpolated = vec![false; bytes.len()];
+    let mut contents: Vec<(usize, usize)> = Vec::with_capacity(pieces.len());
+    for p in &pieces {
+        let (Some(s), Some(e)) = (
+            child_of_type(*p, "string_start"),
+            child_of_type(*p, "string_end"),
+        ) else {
+            return None;
+        };
+        contents.push((s.end_byte() - start, e.start_byte() - start));
+        keep[s.end_byte() - start..e.start_byte() - start].fill(true);
+        if !text(s, src).to_ascii_lowercase().contains('f') {
+            continue;
+        }
+        let mut stack = vec![*p];
+        while let Some(x) = stack.pop() {
+            match x.kind() {
+                "interpolation" => {
+                    keep[x.start_byte() - start..x.end_byte() - start].fill(false);
+                    interpolated[x.start_byte() - start..x.end_byte() - start].fill(true);
+                }
+                // `{{` / `}}` is one literal brace: keep the first, blank the second.
+                "escape_interpolation" if x.end_byte() - x.start_byte() == 2 => {
+                    bytes[x.start_byte() + 1 - start] = b' ';
+                }
+                _ => {
+                    let mut cursor = x.walk();
+                    stack.extend(x.named_children(&mut cursor));
+                }
+            }
+        }
+    }
+    for (b, k) in bytes.iter_mut().zip(&keep) {
+        if !*k && *b != b'\n' {
+            *b = b' ';
+        }
+    }
+    // `( <blanked interpolation> )` → blank the parentheses as well.
+    for open in 0..bytes.len() {
+        if bytes[open] != b'(' || !keep[open] {
+            continue;
+        }
+        let mut close = open + 1;
+        while close < bytes.len() && bytes[close].is_ascii_whitespace() {
+            close += 1;
+        }
+        if close < bytes.len()
+            && bytes[close] == b')'
+            && interpolated[open + 1..close].iter().any(|i| *i)
+        {
+            bytes[open] = b' ';
+            bytes[close] = b' ';
+        }
+    }
+    // Split tokens: every byte between two contents is blanked ASCII by now.
+    let mut prev_end: Option<usize> = None;
+    for &(cs, ce) in &contents {
+        if cs == ce {
+            continue;
+        }
+        if let Some(pe) = prev_end.filter(|pe| splits_token(bytes[pe - 1], bytes[cs])) {
+            let mut fs = pe;
+            while fs > 0 && token_byte(bytes[fs - 1]) {
+                fs -= 1;
+            }
+            bytes[fs..cs].rotate_left(pe - fs);
+        }
+        prev_end = Some(ce);
+    }
+    let doc = String::from_utf8(bytes).ok()?;
+    (in_python_gql_call(n, src) || looks_like_document(&doc)).then_some(Embedded {
+        doc,
+        place: Placement {
+            byte_offset: start,
+            row_offset: first.start_position().row as u32,
+        },
+    })
+}
+
 /// Python `ExtraPass`: `gql("…")` calls and any non-f string whose trimmed
-/// content starts with `query|mutation|subscription|fragment|{`.
+/// content starts with `query|mutation|subscription|fragment|{`; an implicit
+/// concatenation of strings is one document ([`concatenated_python`]).
 pub fn embedded_python(tree: &Tree, file: &FileInput, out: &mut FileExtraction) {
     let src = file.content.as_str();
     let mut found = Vec::new();
     let mut stack = vec![tree.root_node()];
     while let Some(n) = stack.pop() {
+        if n.kind() == "concatenated_string" {
+            found.extend(concatenated_python(n, src));
+            continue;
+        }
         if n.kind() == "string" {
             let start = child_of_type(n, "string_start");
             let end = child_of_type(n, "string_end");
             if let (Some(s), Some(e)) = (start, end) {
                 let prefix = text(s, src).to_ascii_lowercase();
-                let in_gql_call = n
-                    .parent()
-                    .filter(|p| p.kind() == "argument_list")
-                    .and_then(|p| p.parent())
-                    .and_then(|c| c.child_by_field_name("function"))
-                    .is_some_and(|f| f.kind() == "identifier" && is_gql_name(text(f, src)));
                 let inner = &src[s.end_byte()..e.start_byte()];
-                if !prefix.contains('f') && (in_gql_call || looks_like_document(inner)) {
+                if !prefix.contains('f')
+                    && (in_python_gql_call(n, src) || looks_like_document(inner))
+                {
                     found.push(Embedded {
                         doc: inner.to_string(),
                         place: Placement {
@@ -744,12 +864,12 @@ type Mutation {
         assert!(x.relations.contains(&Relation {
             source: "typescript:src/Profile.tsx:function:Profile".into(),
             kind: EdgeKind::Defines,
-            target_name: "Profile".into(),
+            target_name: "graphql:src/Profile.tsx:operation:Profile".into(),
         }));
         assert!(x.relations.contains(&Relation {
             source: "file:src/Profile.tsx".into(),
             kind: EdgeKind::Defines,
-            target_name: "F".into(),
+            target_name: "graphql:src/Profile.tsx:fragment:F".into(),
         }));
         assert!(x.relations.contains(&Relation {
             source: "graphql:src/Profile.tsx:operation:Profile".into(),
@@ -757,6 +877,150 @@ type Mutation {
             target_name: "Query.user".into(),
         }));
         assert!(x.warnings.is_empty(), "{:?}", x.warnings);
+    }
+
+    fn py(src: &str) -> FileExtraction {
+        let file = FileInput {
+            path: "mcp/server.py".into(),
+            language: Language::Python,
+            content: src.into(),
+        };
+        super::super::walker::extract(super::super::python::spec().unwrap(), &file)
+    }
+
+    fn operations(x: &FileExtraction) -> Vec<&Symbol> {
+        x.symbols
+            .iter()
+            .filter(|s| s.kind == NodeKind::Operation)
+            .collect()
+    }
+
+    /// molecule-plugin mcp/server.py: one mutation written as three
+    /// implicitly concatenated literals.
+    #[test]
+    fn python_concatenated_strings_are_one_document() {
+        let src = "def issue(serviceName, expiresIn, addr, message_signature):\n    tok = labs_graphql_call(\n        \"mutation GenerateServiceToken($serviceName: String!, $expiresIn: String!, $walletAddress: String, $messageSignature: String) \"\n        \"{ generateServiceToken(serviceName: $serviceName, expiresIn: $expiresIn, walletAddress: $walletAddress, messageSignature: $messageSignature) \"\n        \"{ token tokenId serviceName expiresAt isSuccess message } }\",\n        {\"serviceName\": serviceName},\n    )\n    return tok\n";
+        let x = py(src);
+        let ops = operations(&x);
+        assert_eq!(ops.len(), 1, "{:?}", ops);
+        assert_eq!(
+            ops[0].stable_id,
+            "graphql:mcp/server.py:operation:GenerateServiceToken"
+        );
+        assert_eq!(ops[0].metadata["operation_type"], "mutation");
+        assert_eq!(
+            ops[0].metadata["root_fields"],
+            serde_json::json!(["Mutation.generateServiceToken"])
+        );
+        assert_eq!((ops[0].line_start, ops[0].line_end), (3, 5));
+        assert_eq!(
+            &src[ops[0].byte_start..ops[0].byte_start + 30],
+            "mutation GenerateServiceToken("
+        );
+        assert!(x.relations.contains(&Relation {
+            source: "python:mcp/server.py:function:issue".into(),
+            kind: EdgeKind::Defines,
+            target_name: "graphql:mcp/server.py:operation:GenerateServiceToken".into(),
+        }));
+        assert!(!x.symbols.iter().any(|s| s.name.starts_with("anon#")));
+    }
+
+    /// molecule-plugin mcp/server.py: `issue_service_token` and
+    /// `issue_owner_service_token` each send `GetServiceSignInMessage`. The
+    /// second copy is `…#2`, and each `Defines` names its own copy's id, so
+    /// neither host loses its operation to a same-name tie.
+    #[test]
+    fn same_named_operations_keep_their_own_host() {
+        let call = "    return labs_graphql_call(\n        \"query GetServiceSignInMessage($w: String!) \"\n        \"{ getServiceSignInMessage(walletAddress: $w) { message } }\",\n        {},\n    )\n";
+        let src = format!(
+            "def issue_service_token(w):\n{call}\n\ndef issue_owner_service_token(w):\n{call}"
+        );
+        let x = py(&src);
+        let ids: Vec<&str> = operations(&x)
+            .iter()
+            .map(|s| s.stable_id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "graphql:mcp/server.py:operation:GetServiceSignInMessage",
+                "graphql:mcp/server.py:operation:GetServiceSignInMessage#2"
+            ]
+        );
+        let defines: Vec<(&str, &str)> = x
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Defines)
+            .map(|r| (r.source.as_str(), r.target_name.as_str()))
+            .collect();
+        assert_eq!(
+            defines,
+            [
+                (
+                    "python:mcp/server.py:function:issue_service_token",
+                    "graphql:mcp/server.py:operation:GetServiceSignInMessage"
+                ),
+                (
+                    "python:mcp/server.py:function:issue_owner_service_token",
+                    "graphql:mcp/server.py:operation:GetServiceSignInMessage#2"
+                ),
+            ]
+        );
+    }
+
+    /// molecule-plugin mcp/server.py: an f-string piece with interpolated
+    /// argument lists and `{{` escapes, then a plain piece.
+    #[test]
+    fn python_fstring_pieces_blank_interpolations() {
+        let src = "def decrypt(arg_decls, arg_uses):\n    query = (\n        f\"mutation DecryptDataKey({', '.join(arg_decls)}) {{ decryptDataKey({', '.join(arg_uses)}) \"\n        \"{ isSuccess plaintextDEK iv message error { message code retryable } } }\"\n    )\n    return query\n";
+        let x = py(src);
+        let ops = operations(&x);
+        assert_eq!(ops.len(), 1, "{:?}", ops);
+        assert_eq!(ops[0].name, "DecryptDataKey");
+        assert_eq!(
+            ops[0].metadata["root_fields"],
+            serde_json::json!(["Mutation.decryptDataKey"])
+        );
+        assert_eq!(ops[0].line_start, 3);
+        // The interpolated argument lists leave no `( )` behind.
+        assert!(x.warnings.is_empty(), "{:?}", x.warnings);
+        // A lone f-string is still never a document.
+        let lone = py("Q = f\"query {{ user(id: {uid}) {{ id }} }}\"\n");
+        assert!(operations(&lone).is_empty());
+    }
+
+    /// Python joins `"q" "uery Q { a }"` with nothing between the pieces.
+    #[test]
+    fn python_tokens_split_across_pieces_are_joined() {
+        let x = py("Q = gql(\"q\" \"uery Q { a }\")\n");
+        let ops = operations(&x);
+        assert_eq!(ops.len(), 1, "{:?}", ops);
+        assert_eq!(ops[0].stable_id, "graphql:mcp/server.py:operation:Q");
+        assert_eq!(
+            ops[0].metadata["root_fields"],
+            serde_json::json!(["Query.a"])
+        );
+        assert!(x.warnings.is_empty(), "{:?}", x.warnings);
+
+        // Split names over several lines, an empty piece, an f-string piece:
+        // the operation keeps its host lines; only the leading fragments move.
+        let src = "def f(n):\n    doc = (\n        \"mutation Up\"\n        \"\"\n        \"date($id: I\"\n        f\"D!) {{ upd\"\n        \"ate(id: $id, n: 1) { id } }\"\n    )\n    return doc\n";
+        let x = py(src);
+        let ops = operations(&x);
+        assert_eq!(ops.len(), 1, "{:?}", ops);
+        assert_eq!(ops[0].name, "Update");
+        assert_eq!(
+            ops[0].metadata["root_fields"],
+            serde_json::json!(["Mutation.update"])
+        );
+        assert_eq!((ops[0].line_start, ops[0].line_end), (3, 7));
+        assert_eq!(&src[ops[0].byte_start..ops[0].byte_start + 8], "mutation");
+        assert!(src[..ops[0].byte_end].ends_with('}'));
+        assert!(x.warnings.is_empty(), "{:?}", x.warnings);
+
+        // Pieces that end and start on a separator are untouched.
+        assert!(splits_token(b'p', b'd') && splits_token(b'$', b'i'));
+        assert!(!splits_token(b' ', b'a') && !splits_token(b'a', b'{'));
     }
 
     #[test]
@@ -786,12 +1050,12 @@ type Mutation {
         assert!(x.relations.contains(&Relation {
             source: "python:app/api.py:method:Client::create".into(),
             kind: EdgeKind::Defines,
-            target_name: "Create".into(),
+            target_name: "graphql:app/api.py:operation:Create".into(),
         }));
         assert!(x.relations.contains(&Relation {
             source: "file:app/api.py".into(),
             kind: EdgeKind::Defines,
-            target_name: "ListUsers".into(),
+            target_name: "graphql:app/api.py:operation:ListUsers".into(),
         }));
         assert!(x
             .relations
